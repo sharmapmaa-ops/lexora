@@ -11,7 +11,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import urlparse
 
-PORT     = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
+PORT     = int(os.environ.get("PORT", sys.argv[1] if len(sys.argv) > 1 else 8080))
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_DIR   = os.path.join(ROOT_DIR, "db")
 USER_DIR = os.path.join(ROOT_DIR, "user_directory")
@@ -846,6 +846,18 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     os.chdir(ROOT_DIR)
     os.makedirs(USER_DIR, exist_ok=True)
+
+    # ── Auto-generate api_config.json from env vars (Render / production) ──
+    api_cfg_path = os.path.join(DB_DIR, "api_config.json")
+    if not os.path.exists(api_cfg_path):
+        _or_key  = os.environ.get("OPENROUTER_API_KEY", "")
+        _oai_key = os.environ.get("OPENAI_API_KEY", "")
+        with open(api_cfg_path, "w") as _f:
+            json.dump({"providers": [
+                {"id": "openrouter", "api_key": _or_key},
+                {"id": "openai",     "api_key": _oai_key}
+            ]}, _f, indent=2)
+        print(f"  ✅  api_config.json generated from environment variables")
 
     with socketserver.TCPServer(("", PORT), LexoraHandler) as httpd:
         httpd.allow_reuse_address = True

@@ -1,1 +1,17 @@
+# API keys — never commit real credentials
 db/api_config.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Large uploads / user-generated content
+user_directory/
+
+# Zip artifacts
+*.zip
