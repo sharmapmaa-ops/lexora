@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "schema": "lexora_transactions",
+  "updatedAt": "2026-06-25T00:00:00.000Z",
+  "user_transactions": {
+    "usr_001": {
+      "transactions": [
+        { "id": "TXN-001", "date": "2026-06-25T14:30:00.000Z", "description": "Payment received from Client A", "type": "credit", "amount": 1500.00, "balance": 2150.00 },
+        { "id": "TXN-002", "date": "2026-06-24T10:15:00.000Z", "description": "Subscription payment - Pro Plan",  "type": "debit",  "amount": 49.00,   "balance": 650.00  },
+        { "id": "TXN-003", "date": "2026-06-23T16:45:00.000Z", "description": "Refund - Service cancellation",    "type": "credit", "amount": 100.00,  "balance": 699.00  },
+        { "id": "TXN-004", "date": "2026-06-22T09:00:00.000Z", "description": "Lease Abstraction service fee",    "type": "debit",  "amount": 250.00,  "balance": 599.00  },
+        { "id": "TXN-005", "date": "2026-06-21T11:20:00.000Z", "description": "Translation service fee",           "type": "debit",  "amount": 180.00,  "balance": 849.00  },
+        { "id": "TXN-006", "date": "2026-06-20T15:00:00.000Z", "description": "Monthly retainer - Client B",       "type": "credit", "amount": 2750.00, "balance": 1029.00 },
+        { "id": "TXN-007", "date": "2026-06-19T13:30:00.000Z", "description": "Consultation fee - Client C",       "type": "credit", "amount": 500.00,  "balance": 1247.00 }
+      ],
+      "summary": {
+        "totalCredit": 4850.00,
+        "totalDebit":  479.00,
+        "balance":     1247.00
+      }
+    }
+  }
+}

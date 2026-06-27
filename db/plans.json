@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "schema": "lexora_plans",
+  "updatedAt": "2026-06-25T00:00:00.000Z",
+  "plans": [
+    {
+      "id": "plan_free",
+      "name": "Basic",
+      "amount": 0,
+      "currency": "USD",
+      "frequency": "forever",
+      "included": ["5 Projects", "10GB Storage", "Basic Support", "API Access"],
+      "excluded": ["Priority Support", "Advanced Features", "Custom Branding", "1TB Storage"],
+      "start_date": "2026-01-01",
+      "lock": "yes",
+      "active": true,
+      "color": "blue",
+      "icon": "🆓",
+      "description": "Perfect for individuals getting started"
+    },
+    {
+      "id": "plan_pro",
+      "name": "Pro",
+      "amount": 49,
+      "currency": "USD",
+      "frequency": "monthly",
+      "included": ["50 Projects", "100GB Storage", "Priority Support", "API Access", "Advanced Features", "Human Review UI"],
+      "excluded": ["Unlimited Projects", "1TB Storage", "Custom Branding"],
+      "start_date": "2026-01-01",
+      "lock": "no",
+      "active": true,
+      "color": "green",
+      "icon": "⭐",
+      "description": "For professionals and growing teams"
+    },
+    {
+      "id": "plan_enterprise",
+      "name": "Enterprise",
+      "amount": 99,
+      "currency": "USD",
+      "frequency": "monthly",
+      "included": ["Unlimited Projects", "1TB Storage", "24/7 Premium Support", "API Access", "Advanced Features", "Human Review UI", "Custom Branding", "Dedicated Account Manager"],
+      "excluded": [],
+      "start_date": "2026-01-01",
+      "lock": "no",
+      "active": true,
+      "color": "purple",
+      "icon": "👑",
+      "description": "For large organizations with full requirements"
+    }
+  ]
+}

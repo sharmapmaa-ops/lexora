@@ -1,0 +1,46 @@
+{
+  "version": 2,
+  "createdAt": "2026-06-25T00:00:00.000Z",
+  "schema": "lexora_users",
+  "users": [
+    {
+      "id": "usr_001",
+      "firstName": "Himmat",
+      "lastName": "Parmar",
+      "gender": "Male",
+      "dob": "1983-05-24",
+      "mobile": "9904143278",
+      "email": "himmat4f1@gmail.com",
+      "passwordHash": "7dd1705a",
+      "role": "admin",
+      "account_type": "admin",
+      "plan": "Pro",
+      "balance": 1247.0,
+      "apikey": "",
+      "lock": "no",
+      "status": "active",
+      "session_status": "online",
+      "verification_code": "",
+      "profile_photo": "user_directory/usr_001/profile_photo",
+      "input_folder": "user_directory/usr_001/input",
+      "output_folder": "user_directory/usr_001/output",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "lastLogin": "2026-06-25T00:00:00.000Z",
+      "active": true,
+      "system_setup": {
+        "theme": "light",
+        "language": "en",
+        "timezone": "Asia/Kolkata",
+        "date_format": "DD/MM/YYYY",
+        "email_notifications": true,
+        "sms_notifications": false,
+        "lease_rules_version": 3,
+        "auto_save": true,
+        "sidebar_collapsed": false
+      },
+      "two_factor_auth": true
+    }
+  ],
+  "resetCodes": [],
+  "totalUsers": 1
+}

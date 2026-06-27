@@ -1,0 +1,1254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/png" href="db/logo.png" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lexora · Dashboard</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
+  <link rel="stylesheet" href="css/style.css" />
+  <style>
+    /* Force white background always - override auth.css */
+    body { background: #ffffff !important; }
+    /* Admin section: full width since sidebar removed */
+    .admin-layout { grid-template-columns: 1fr !important; }
+    .admin-content { border-left: none !important; }
+    .main-app-wrapper { background: #ffffff; }
+    .section-header { display: none !important; }
+    .logo-text { line-height: 1; }
+    .scroll-content { display:flex; flex-direction:column; min-height:100%; }
+    .content-section.active { flex:1; }
+    /* Footer always at bottom, centered */
+    .footer { margin-top:auto; flex-shrink:0; text-align:center; background:#fafbfc; padding:0.8rem 1rem; border-top:1px solid #eef2f6; width:100%; }
+    .footer p { margin:0; font-size:0.85rem; color:#64748b; }
+    /* JSON Editor Full Overlay */
+    #jsonFullOverlay { position:fixed; inset:0; z-index:10000; background:rgba(0,0,0,0.55); display:none; overflow-y:auto; padding:1.5rem 1rem; }
+    #jsonFullOverlay.open { display:flex; align-items:flex-start; justify-content:center; }
+    #jsonEditorCard { background:#fff; border-radius:14px; width:100%; max-width:1100px; box-shadow:0 20px 60px rgba(0,0,0,0.3); overflow:hidden; }
+    #jsonEditorCard .je-header { display:flex; align-items:center; justify-content:space-between; padding:1rem 1.5rem; border-bottom:2px solid #eef2f6; background:#f8fafc; }
+    #jsonEditorCard .je-title { font-size:1.1rem; font-weight:700; color:#1e293b; }
+    #jsonEditorCard .je-body { max-height:65vh; overflow:auto; }
+    .je-table { width:100%; border-collapse:collapse; font-size:0.85rem; }
+    .je-table thead th { background:#1e293b; color:#fff; padding:0.55rem 0.8rem; text-align:left; position:sticky; top:0; z-index:5; white-space:nowrap; font-weight:600; }
+    .je-table tbody tr:nth-child(even) { background:#f8fafc; }
+    .je-table tbody tr:hover { background:#eff6ff; }
+    .je-cell { width:100%; padding:0.3rem 0.5rem; border:1.5px solid transparent; border-radius:5px; font-size:0.83rem; font-family:inherit; background:transparent; }
+    .je-cell:focus { border-color:#3b82f6; background:#fff; outline:none; box-shadow:0 0 0 2px rgba(59,130,246,0.15); }
+    #jsonEditorCard .je-footer { display:flex; gap:0.75rem; padding:1rem 1.5rem; border-top:2px solid #eef2f6; background:#f8fafc; }
+  </style>
+  <!-- Auth guard: redirect to login if no session -->
+<script src="js/auth.js"></script>
+
+  <link rel="stylesheet" href="css/auth.css" />
+  <style id="authOverlayStyle">
+    #authOverlay {
+      position:fixed; inset:0; z-index:9999;
+      background: linear-gradient(135deg, #1e1b4b 0%, #2d2170 35%, #3b3ab0 65%, #4f46e5 100%);
+      display:flex; align-items:stretch; overflow-y:auto;
+    }
+    #authOverlay .auth-left { flex:1; min-width:0; }
+    #authOverlay .auth-right { width:440px; flex-shrink:0; padding:2rem; display:flex; align-items:center; justify-content:center; }
+    .main-app-wrapper { display:none; }
+    .main-app-wrapper.active { display:flex; flex-direction:column; height:100vh; }
+  </style>
+  <!-- PDF.js for client-side PDF text extraction -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    if (typeof pdfjsLib !== "undefined") {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    }
+  </script>
+  <!-- Mammoth.js for DOCX text extraction -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+  <!-- JSZip for DOCX output generation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <!-- jsPDF for PDF generation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+</head>
+<body>
+  <!-- ═══════════════════════════════════════════════════════
+       AUTH OVERLAY — shown when not logged in
+       ═══════════════════════════════════════════════════════ -->
+  <div id="authOverlay">
+    <!-- Left panel -->
+    <div class="auth-left">
+      <div class="auth-logo" style="flex-direction:column;align-items:flex-start;gap:0.6rem;margin-bottom:1.2rem;">
+        <img src="db/logo.png" alt="Lexora Logo" style="height:90px;width:90px;object-fit:contain;" />
+        <div>
+          <div style="font-size:1.9rem;font-weight:800;color:#fff;letter-spacing:-0.5px;line-height:1;" id="authCompanyName">Lexora AI Solutions</div>
+          <div style="font-size:0.92rem;color:rgba(255,255,255,0.75);margin-top:0.3rem;">Lease Abstraction AI Tool</div>
+        </div>
+      </div>
+      <p class="auth-subtitle" style="font-size:0.9rem;margin-bottom:2rem;">RAG · Structured Extraction · Review UI.<br>RAG-grounded Claude extraction with source citations.</p>
+      <div class="auth-features">
+        <div class="auth-feature-card"><div class="feat-title">📋 Structured Fields</div><div class="feat-desc">Insurance, CAM, Options, Late Fee</div></div>
+        <div class="auth-feature-card"><div class="feat-title">🔍 Rent Roll Audit</div><div class="feat-desc">53% rent roll error audit — escalation &amp; CAM caps</div></div>
+        <div class="auth-feature-card"><div class="feat-title">✏️ Human Review UI</div><div class="feat-desc">Verify or Edit every extracted field</div></div>
+        <div class="auth-feature-card"><div class="feat-title">📁 Lease Repository</div><div class="feat-desc">All abstracted lease history stored</div></div>
+      </div>
+      <div class="auth-translation"><span class="dot"></span> Translation Engine</div>
+    </div>
+
+    <!-- Right panel: Auth views -->
+    <div class="auth-right">
+
+      <!-- LOGIN -->
+      <div id="view-login" class="auth-card">
+        <h2>Welcome Back</h2>
+        <form onsubmit="handleLogin(event)" novalidate>
+          <div class="auth-field">
+            <input type="email" id="login-email" placeholder="Email Address" autocomplete="username" />
+            <span class="auth-error" id="login-email-err"></span>
+          </div>
+          <div class="auth-field">
+            <div class="pw-wrapper">
+              <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" />
+              <button type="button" class="pw-toggle" id="login-pw-btn" onclick="togglePwd('login-password','login-pw-btn')"><i class="fas fa-eye"></i></button>
+            </div>
+            <span class="auth-error" id="login-pw-err"></span>
+          </div>
+          <div class="auth-actions">
+            <button type="submit" class="btn-auth-primary">Login</button>
+            <button type="button" class="btn-auth-secondary" onclick="authShowView('view-reset')">Reset</button>
+          </div>
+          <div class="auth-links">
+            <button type="button" class="auth-link" onclick="authShowView('view-reset')">Forgot Password?</button>
+            <button type="button" class="auth-link" onclick="authShowView('view-create')">Create Account</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- OTP VERIFY (shared for login / register / reset) -->
+      <div id="view-verify" class="auth-card hidden">
+        <h2 id="verifyTitle">Verify Code</h2>
+        <p class="auth-card-sub" id="verifySubtext">Enter the 6-digit code sent to your email.</p>
+<!-- demo box removed - codes sent via SMTP only -->
+        <div class="auth-field">
+          <input type="text" id="verify-code" placeholder="_ _ _ _ _ _" maxlength="6"
+            style="letter-spacing:8px;font-size:1.4rem;text-align:center;font-weight:700;padding:0.8rem;border:2px solid #e2e8f0;border-radius:10px;width:100%;"
+            oninput="this.value=this.value.replace(/[^0-9]/g,'');" />
+          <span class="auth-error" id="verify-err"></span>
+        </div>
+        <div style="text-align:center;font-size:0.82rem;color:#94a3b8;margin-bottom:0.8rem;">
+          Expires in <span id="verify-timer" style="color:#f59e0b;font-weight:600;">—:——</span>
+        </div>
+        <div class="auth-actions">
+          <button type="button" class="btn-auth-primary" onclick="handleVerifyCode()">Verify</button>
+          <button type="button" class="btn-auth-secondary" onclick="resendVerifyCode()">Resend</button>
+        </div>
+        <div class="auth-links">
+          <button type="button" class="auth-link" onclick="cancelVerify()">← Back</button>
+        </div>
+      </div>
+
+      <!-- RESET PASSWORD Step 1 -->
+      <div id="view-reset" class="auth-card hidden">
+        <h2>Reset Password</h2>
+        <div id="reset-step1">
+          <p class="auth-card-sub">Enter your email to receive a verification code.</p>
+          <form onsubmit="handleResetStep1(event)" novalidate>
+            <div class="auth-field"><input type="email" id="reset-email" placeholder="Email Address" /><span class="auth-error" id="reset-email-err"></span></div>
+            <div class="auth-actions">
+              <button type="submit" class="btn-auth-primary">Send Code</button>
+              <button type="button" class="btn-auth-secondary" onclick="authShowView('view-login')">Back to Login</button>
+            </div>
+          </form>
+        </div>
+        <!-- Step 3: New password (shown after OTP verified) -->
+        <div id="reset-step3" style="display:none;">
+          <p class="auth-card-sub">Create your new password.</p>
+          <form onsubmit="handleResetNewPwd(event)" novalidate>
+            <div class="auth-field">
+              <div class="pw-wrapper">
+                <input type="password" id="reset-newpw" placeholder="New Password" />
+                <button type="button" class="pw-toggle" id="reset-newpw-btn" onclick="togglePwd('reset-newpw','reset-newpw-btn')"><i class="fas fa-eye"></i></button>
+              </div>
+              <span class="auth-error" id="reset-newpw-err"></span>
+            </div>
+            <div class="auth-field">
+              <div class="pw-wrapper">
+                <input type="password" id="reset-confirmpw" placeholder="Confirm Password" />
+                <button type="button" class="pw-toggle" id="reset-confirmpw-btn" onclick="togglePwd('reset-confirmpw','reset-confirmpw-btn')"><i class="fas fa-eye"></i></button>
+              </div>
+              <span class="auth-error" id="reset-confirmpw-err"></span>
+            </div>
+            <div class="auth-actions">
+              <button type="submit" class="btn-auth-primary">Set Password</button>
+            </div>
+          </form>
+        </div>
+        <div id="reset-success" style="display:none;">
+          <div class="auth-success-msg" style="display:block;">✅ Password reset! You can now login.</div>
+          <button class="btn-auth-full" onclick="authShowView('view-login')">Back to Login</button>
+        </div>
+      </div>
+
+      <!-- CREATE ACCOUNT -->
+      <div id="view-create" class="auth-card hidden">
+        <h2>Create Account</h2>
+        <p class="auth-card-sub">Fill your details — verification code will be sent.</p>
+        <div class="auth-success-msg" id="reg-success"></div>
+        <form onsubmit="handleCreateAccount(event)" novalidate>
+          <div class="auth-row">
+            <div class="auth-field"><input type="text" id="reg-firstname" placeholder="First Name *" /><span class="auth-error" id="reg-firstname-err"></span></div>
+            <div class="auth-field"><input type="text" id="reg-lastname" placeholder="Last Name *" /><span class="auth-error" id="reg-lastname-err"></span></div>
+          </div>
+          <div class="auth-row">
+            <div class="auth-field">
+              <select id="reg-gender"><option value="">Select Gender *</option><option>Male</option><option>Female</option><option>Other</option></select>
+              <span class="auth-error" id="reg-gender-err"></span>
+            </div>
+            <div class="auth-field"><input type="date" id="reg-dob" /><span class="auth-error" id="reg-dob-err"></span></div>
+          </div>
+          <div class="auth-field"><input type="tel" id="reg-mobile" placeholder="Mobile No *" maxlength="10" /><span class="auth-error" id="reg-mobile-err"></span></div>
+          <div class="auth-field"><input type="email" id="reg-email" placeholder="Email Address *" /><span class="auth-error" id="reg-email-err"></span></div>
+          <div class="auth-row">
+            <div class="auth-field"><div class="pw-wrapper"><input type="password" id="reg-password" placeholder="Password *" /><button type="button" class="pw-toggle" id="reg-pw-btn" onclick="togglePwd('reg-password','reg-pw-btn')"><i class="fas fa-eye"></i></button></div><span class="auth-error" id="reg-pw-err"></span></div>
+            <div class="auth-field"><div class="pw-wrapper"><input type="password" id="reg-confirmpw" placeholder="Confirm *" /><button type="button" class="pw-toggle" id="reg-confirmpw-btn" onclick="togglePwd('reg-confirmpw','reg-confirmpw-btn')"><i class="fas fa-eye"></i></button></div><span class="auth-error" id="reg-confirmpw-err"></span></div>
+          </div>
+          <div class="auth-actions">
+            <button type="submit" class="btn-auth-primary">Submit</button>
+            <button type="button" class="btn-auth-secondary" onclick="authShowView('view-login')">Back to Login</button>
+          </div>
+        </form>
+      </div>
+
+    </div><!-- /auth-right -->
+  </div><!-- /authOverlay -->
+
+
+  <div class="app main-app-wrapper" id="mainAppWrapper">
+
+    <!-- HEADER -->
+    <header class="header">
+      <div class="logo-area" style="align-items:center;gap:0.6rem;">
+        <img id="headerLogoImg" src="db/logo.png" alt="Logo"
+          style="height:48px;width:48px;object-fit:contain;" />
+        <div style="display:flex;flex-direction:column;line-height:1.2;">
+          <div id="headerCompanyName" style="color:#1e293b;font-size:1rem;font-weight:700;letter-spacing:-0.2px;white-space:nowrap;">Lexora AI Solutions</div>
+          <div id="headerSectionLabel" style="font-size:0.78rem;font-weight:500;color:#475569;">Dashboard</div>
+        </div>
+      </div>
+
+      <ul class="nav-menu">
+        <li><a href="#" onclick="showSection('dashboard'); return false;"><i class="fas fa-home"></i> Dashboard</a></li>
+
+        <li id="services-menu">
+          <a href="#" onclick="toggleMenu('subMenu'); return false;">
+            <i class="fas fa-concierge-bell"></i> Services <i class="fas fa-chevron-down" style="font-size: 0.7rem; margin-left: 4px;"></i>
+          </a>
+          <ul class="sub-menu" id="subMenu">
+            <li><a href="#" onclick="showSection('lease'); return false;"><i class="fas fa-file-contract"></i> Lease Abstraction</a></li>
+            <li><a href="#" onclick="showSection('translation'); return false;"><i class="fas fa-language"></i> Translation</a></li>
+          </ul>
+        </li>
+
+        <li><a href="#" onclick="showSection('payments'); return false;"><i class="fas fa-credit-card"></i> Payments</a></li>
+        <li><a href="#" onclick="showSection('contact'); return false;"><i class="fas fa-envelope"></i> Contact Us</a></li>
+        <li><a href="#" onclick="showSection('plans'); return false;"><i class="fas fa-tag"></i> Plan and Offer</a></li>
+        <li><a href="#" onclick="showSection('api'); return false;"><i class="fas fa-plug"></i> API</a></li>
+        <li><a href="#" onclick="showSection('admin'); return false;"><i class="fas fa-cog"></i> Admin</a></li>
+        <li class="api-item">
+          <div class="user-profile-wrapper">
+            <div class="user-profile" onclick="toggleMenu('userSubMenu'); return false;">
+              <span class="user-name" id="header-username">User</span>
+              <div class="user-avatar-circle" id="headerAvatarCircle" style="overflow:hidden;">
+                <i class="fas fa-user" id="headerAvatarIcon"></i>
+                <img id="headerAvatarImg" style="display:none;width:100%;height:100%;object-fit:cover;border-radius:50%;" />
+              </div>
+            </div>
+            <ul class="user-sub-menu" id="userSubMenu">
+              <li><a href="#" onclick="showSection('profile'); return false;"><i class="fas fa-user-circle"></i> Profile</a></li>
+              <li class="logout-item"><a href="#" onclick="doLogout(); return false;"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
+            </ul>
+          </div>
+        </li>
+      </ul>
+    </header>
+
+    <!-- MAIN CONTENT -->
+    <main class="main-content" onclick="closeAllMenus(event)">
+      <div class="scroll-content">
+
+        <!-- ==========================================
+             SECTION: DASHBOARD
+             ========================================== -->
+        <div id="section-dashboard" class="content-section active">
+          <div class="section-header">
+            <span class="section-icon">🏠</span>
+            <h2>Dashboard</h2>
+          </div>
+          <div class="message-container" id="dashboard-messages"></div>
+
+          <div class="stats-grid">
+            <div class="stat-card">
+              <span class="stat-icon">📋</span>
+              <div class="stat-value" id="dash-plan">—</div>
+              <div class="stat-label">Current Plan</div>
+              <div class="stat-sub" id="dash-account-type">—</div>
+            </div>
+            <div class="stat-card">
+              <span class="stat-icon">💰</span>
+              <div class="stat-value" id="dash-balance">—</div>
+              <div class="stat-label">Balance</div>
+              <div class="stat-sub">Last updated: Today</div>
+            </div>
+            <div class="stat-card">
+              <span class="stat-icon">📄</span>
+              <div class="stat-value" id="dash-leases">0</div>
+              <div class="stat-label">Lease Abstractions</div>
+              <div class="stat-sub">This session</div>
+            </div>
+            <div class="stat-card">
+              <span class="stat-icon">🌍</span>
+              <div class="stat-value" id="dash-translations">0</div>
+              <div class="stat-label">Translations</div>
+              <div class="stat-sub">This session</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <span class="icon">⚙️</span>
+              <h3 class="title">System Setup</h3>
+            </div>
+            <div class="card-body">
+              <div class="system-setup">
+                <label for="systemSelect">Select System:</label>
+                <select id="systemSelect" onchange="handleSystemChange()">
+                  <option value="desktop">Desktop</option>
+                  <option value="sharefile">ShareFile</option>
+                  <option value="sharepoint">SharePoint</option>
+                </select>
+                
+                <button class="connect-btn" id="connectBtn" onclick="handleConnect()">
+                  <i class="fas fa-link"></i> Connect
+                </button>
+                
+                <span class="status-badge" id="statusBadge">
+                  <i class="fas fa-check-circle"></i> Connected
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ==========================================
+             SECTION: LEASE ABSTRACTION
+             ========================================== -->
+        <div id="section-lease" class="content-section">
+          <div class="section-header">
+            <span class="section-icon">📄</span>
+            <h2>Services/Lease Abstraction</h2>
+          </div>
+          <div class="message-container" id="lease-messages"></div>
+
+          <div class="two-column">
+            <div class="card">
+              <div class="card-header">
+                <span class="icon">📤</span>
+                <h3 class="title">Upload Files</h3>
+              </div>
+              <div class="card-body upload-card-body">
+                <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
+                  <div class="upload-icon"><i class="fas fa-cloud-upload-alt"></i></div>
+                  <div class="upload-text">Upload File(s)</div>
+                  <div class="upload-subtext">Drag & drop files here or click to browse</div>
+                  <input type="file" id="fileInput" multiple style="display:none" onchange="handleFileSelect(event)" />
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <span class="icon">⚙️</span>
+                <h3 class="title">Processing Settings</h3>
+              </div>
+              <div class="card-body">
+                <div class="lease-controls">
+                  <div class="control-group">
+                    <label>Output Template <span style="font-size:0.75rem;color:#94a3b8;">(PDF or DOCX)</span></label>
+                    <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+                      <button type="button" onclick="selectOutputTemplate()"
+                        style="padding:0.45rem 0.9rem;background:#6366f1;color:white;border:none;border-radius:7px;cursor:pointer;font-size:0.85rem;font-weight:600;display:flex;align-items:center;gap:0.4rem;white-space:nowrap;">
+                        <i class="fas fa-file-upload"></i> Select Template
+                      </button>
+                      <span id="templateFileName"
+                        style="font-size:0.8rem;color:#64748b;font-style:italic;">No template — Default format</span>
+                      <button type="button" id="templateClearBtn" onclick="clearOutputTemplate()"
+                        style="display:none;border:none;background:none;color:#ef4444;cursor:pointer;font-size:0.8rem;" title="Remove template">✕</button>
+                    </div>
+                    <input type="file" id="outputTemplateFile" accept=".pdf,.docx,.doc"
+                      style="display:none;" onchange="handleTemplateFileSelect(event)" />
+                  </div>
+
+                  <div class="checkbox-group">
+                    <label><input type="checkbox" id="portfolio" /> Portfolio Mode</label>
+                  </div>
+
+                  <div class="action-buttons" id="actionButtons">
+                    <button class="btn btn-start" id="btnStart" onclick="startProcess()">
+                      <i class="fas fa-play"></i> Start
+                    </button>
+                    <button class="btn btn-clear" id="btnClear" onclick="clearAll()">
+                      <i class="fas fa-eraser"></i> Clear All
+                    </button>
+                  </div>
+
+                  <div class="action-buttons" id="actionButtonsRunning" style="display:none;">
+                    <button class="btn btn-pause" id="btnPause" onclick="pauseProcess()">
+                      <i class="fas fa-pause"></i> Pause
+                    </button>
+                    <button class="btn btn-stop" id="btnStop" onclick="stopProcess()">
+                      <i class="fas fa-stop"></i> Stop
+                    </button>
+                  </div>
+
+                  <div class="action-buttons" id="actionButtonsReport" style="display:none;">
+                    <!-- Report → "Download Activity Logs" is in Activity Log card header -->
+                    <!-- Output → "Download All" is in Uploaded Files card header -->
+                  </div>
+
+                  <!-- Agent Pipeline Panel — shown only while process is running -->
+                  <div class="agent-pipeline" id="agentPipeline">
+                    <div class="agent-node" id="agent-foreman" title="Foreman — Orchestration &amp; audit layer">
+                      <span class="agent-icon">👷</span>
+                      <span class="agent-label">Foreman</span>
+                    </div>
+                    <div class="agent-node" id="agent-extractor" title="Extractor — Claude Sonnet 4.5 | Attorney-grade 33-clause extraction">
+                      <span class="agent-icon">🤖</span>
+                      <span class="agent-label">Extractor</span>
+                    </div>
+                    <div class="agent-node" id="agent-validator" title="Validator — Pure JS quality check | No API cost">
+                      <span class="agent-icon">🔍</span>
+                      <span class="agent-label">Validator</span>
+                    </div>
+                    <div class="agent-node" id="agent-critic" title="Critic — Claude Opus 4.7 | Fixes flagged fields">
+                      <span class="agent-icon">⚖️</span>
+                      <span class="agent-label">Critic</span>
+                    </div>
+                    <div class="agent-node" id="agent-attorney" title="Attorney — Legal clause formatter &amp; template mapper">
+                      <span class="agent-icon">👨‍⚖️</span>
+                      <span class="agent-label">Attorney</span>
+                    </div>
+                    <div class="agent-node" id="agent-ai_validator" title="AI Validator — GPT-4o-mini post-extraction quality pass">
+                      <span class="agent-icon">🧠</span>
+                      <span class="agent-label">AI Val</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top: 1.5rem;">
+            <div class="card-header card-header-with-action">
+              <div class="card-header-left">
+                <span class="icon">📋</span>
+                <h3 class="title">Uploaded Files</h3>
+              </div>
+              <button id="btnDownloadAll" class="btn-download-all" onclick="downloadAll()">
+                <i class="fas fa-download"></i> Download All
+              </button>
+            </div>
+            <div class="card-body">
+              <div class="file-table-wrapper">
+                <table class="file-table" id="fileTable">
+                  <thead>
+                    <tr>
+                      <th>File Name</th>
+                      <th>Scan Result</th>
+                      <th>Status</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="fileTableBody">
+                    <tr>
+                      <td colspan="4" style="text-align: center; color: #94a3b8; padding: 2rem 0;">
+                        <i class="fas fa-upload" style="font-size: 1.5rem; display: block; margin-bottom: 0.5rem;"></i>
+                        No files uploaded yet
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top:1.5rem;">
+            <div class="activity-log-card-header">
+              <div class="log-title">
+                <span>📝</span>
+                <span>Activity Log</span>
+              </div>
+              <button class="btn-log-download" onclick="generateActivityReport()">
+                <i class="fas fa-file-download"></i> Download Activity Logs
+              </button>
+            </div>
+            <div class="activity-log" id="activityLog">
+              <div class="log-entry log-info">
+                <span class="log-time">[System]</span> Ready to process files...
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ==========================================
+             SECTION: TRANSLATION
+             ========================================== -->
+        <div id="section-translation" class="content-section">
+          <div class="section-header">
+            <span class="section-icon">🌍</span>
+            <h2>Services/Translation</h2>
+          </div>
+          <div class="message-container" id="translation-messages"></div>
+
+          <div class="two-column">
+            <div class="card">
+              <div class="card-header">
+                <span class="icon">📤</span>
+                <h3 class="title">Upload Files</h3>
+              </div>
+              <div class="card-body upload-card-body">
+                <div class="upload-area" id="uploadAreaTrans" onclick="document.getElementById('fileInputTrans').click()">
+                  <div class="upload-icon"><i class="fas fa-cloud-upload-alt"></i></div>
+                  <div class="upload-text">Upload File(s)</div>
+                  <div class="upload-subtext">Drag & drop files here or click to browse</div>
+                  <input type="file" id="fileInputTrans" multiple style="display:none" onchange="handleFileSelectTrans(event)" />
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <span class="icon">⚙️</span>
+                <h3 class="title">Processing Settings</h3>
+              </div>
+              <div class="card-body">
+                <div class="lease-controls">
+                  <div class="control-group">
+                    <label for="outputTemplateTrans">Output Template</label>
+                    <div style="font-size:0.82rem;color:#64748b;padding:0.4rem 0;font-style:italic;">
+                      Translation output is Word (.docx) format by default.
+                    </div>
+                  </div>
+
+                  <div class="checkbox-group">
+                    <label><input type="checkbox" id="humanReviewTrans" /> Human Review</label>
+                    <label><input type="checkbox" id="portfolioTrans" /> Portfolio</label>
+                    <label><input type="checkbox" id="advancedModeTrans" /> Advanced Mode</label>
+                  </div>
+
+                  <div class="action-buttons" id="actionButtonsTrans">
+                    <button class="btn btn-start" id="btnStartTrans" onclick="startProcessTrans()">
+                      <i class="fas fa-play"></i> Start
+                    </button>
+                    <button class="btn btn-clear" id="btnClearTrans" onclick="clearAllTrans()">
+                      <i class="fas fa-eraser"></i> Clear All
+                    </button>
+                  </div>
+
+                  <div class="action-buttons" id="actionButtonsRunningTrans" style="display:none;">
+                    <button class="btn btn-pause" id="btnPauseTrans" onclick="pauseProcessTrans()">
+                      <i class="fas fa-pause"></i> Pause
+                    </button>
+                    <button class="btn btn-stop" id="btnStopTrans" onclick="stopProcessTrans()">
+                      <i class="fas fa-stop"></i> Stop
+                    </button>
+                  </div>
+
+                  <div class="action-buttons" id="actionButtonsReportTrans" style="display:none;">
+                    <button class="btn btn-report" id="btnReportTrans" onclick="generateReportTrans()">
+                      <i class="fas fa-file-alt"></i> Report
+                    </button>
+                    <button class="btn btn-output" id="btnOutputTrans" onclick="downloadOutputTrans()">
+                      <i class="fas fa-download"></i> Output
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top: 1.5rem;">
+            <div class="card-header">
+              <span class="icon">📋</span>
+              <h3 class="title">Uploaded Files</h3>
+            </div>
+            <div class="card-body">
+              <div class="file-table-wrapper">
+                <table class="file-table" id="fileTableTrans">
+                  <thead>
+                    <tr>
+                      <th>File Name</th>
+                      <th>Scan Result</th>
+                      <th>Status</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="fileTableBodyTrans">
+                    <tr>
+                      <td colspan="4" style="text-align: center; color: #94a3b8; padding: 2rem 0;">
+                        <i class="fas fa-upload" style="font-size: 1.5rem; display: block; margin-bottom: 0.5rem;"></i>
+                        No files uploaded yet
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="activity-log-container">
+            <div class="activity-log" id="activityLogTrans">
+              <div class="log-entry log-info">
+                <span class="log-time">[System]</span> Ready to process files...
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ==========================================
+             SECTION: PAYMENTS
+             ========================================== -->
+        <div id="section-payments" class="content-section">
+          <div class="section-header">
+            <span class="section-icon">💳</span>
+            <h2>Payments</h2>
+          </div>
+          <div class="message-container" id="payments-messages"></div>
+
+          <div class="two-column">
+            <div class="card">
+              <div class="card-header">
+                <span class="icon">💳</span>
+                <h3 class="title">Payment Methods</h3>
+              </div>
+              <div class="card-body">
+                <ul class="payment-methods" id="paymentMethodsList"></ul>
+                <div style="display: flex; gap: 0.75rem; margin-top: 1rem; flex-wrap: wrap;">
+                  <button class="btn-add" onclick="showAddPayment()"><i class="fas fa-plus"></i> Add Payment Method</button>
+                  <button class="btn-add secondary" onclick="showAddAmount()"><i class="fas fa-dollar-sign"></i> Add Amount</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <span class="icon">📊</span>
+                <h3 class="title">Transaction History</h3>
+              </div>
+              <div class="card-body">
+                <div class="filter-row">
+                  <label>Date Range:</label>
+                  <input type="date" id="fromDate" />
+                  <input type="date" id="toDate" />
+                  <button class="btn-add" style="padding: 0.4rem 1rem; font-size: 0.8rem;" onclick="filterTransactions()">Apply</button>
+                </div>
+
+                <div class="txn-summary" id="txnSummary">
+                  <div class="summary-item">
+                    <span class="summary-label">Total Credit</span>
+                    <span class="summary-value credit" id="totalCredit">$0.00</span>
+                  </div>
+                  <div class="summary-item">
+                    <span class="summary-label">Total Debit</span>
+                    <span class="summary-value debit" id="totalDebit">$0.00</span>
+                  </div>
+                  <div class="summary-item">
+                    <span class="summary-label">Balance</span>
+                    <span class="summary-value balance" id="currentBalance">$0.00</span>
+                  </div>
+                </div>
+
+                <div class="transaction-list" id="transactionList" style="max-height:220px;overflow-y:auto;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ==========================================
+             SECTION: ADMIN PANEL
+             ========================================== -->
+        <div id="section-admin" class="content-section">
+          <div class="section-header">
+            <span class="section-icon">⚙️</span>
+            <h2>Admin Panel</h2>
+          </div>
+          <div class="message-container" id="admin-messages"></div>
+
+          <div class="admin-layout">
+            <div class="admin-content" id="adminContent">
+              <!-- Files and Folder -->
+              <div id="admin-files" style="display:none;">
+                <h3 style="margin-bottom: 1rem; color: #1e293b; font-size: 1.1rem;">Files and Folder</h3>
+                
+                <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem;">
+                  <button onclick="addNewFile()" style="padding:0.5rem 1.2rem; background:#22c55e; color:white; border:none; border-radius:8px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:0.5rem;">
+                    <i class="fas fa-file-plus"></i> Add File
+                  </button>
+                  <button onclick="addNewFolder()" style="padding:0.5rem 1.2rem; background:#8b5cf6; color:white; border:none; border-radius:8px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:0.5rem;">
+                    <i class="fas fa-folder-plus"></i> Add Folder
+                  </button>
+                  <button onclick="deleteSelectedFiles()" style="padding:0.5rem 1.2rem; background:#ef4444; color:white; border:none; border-radius:8px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:0.5rem;">
+                    <i class="fas fa-trash"></i> Delete
+                  </button>
+                  <button onclick="downloadSelectedFiles()" style="padding:0.5rem 1.2rem; background:#3b82f6; color:white; border:none; border-radius:8px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:0.5rem;">
+                    <i class="fas fa-download"></i> Download
+                  </button>
+
+                </div>
+
+                <!-- Breadcrumb navigation -->
+                <div id="fileBreadcrumb" style="padding:0.6rem 1rem;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:0.75rem;font-size:0.88rem;min-height:34px;">
+                  <i class="fas fa-hdd" style="color:#64748b;margin-right:0.4rem;"></i><span style="color:#64748b;">Root</span>
+                </div>
+                <div style="max-height:220px;overflow-y:auto;border:1px solid #eef2f6;border-radius:10px;">
+                  <table style="width:100%;border-collapse:collapse;font-size:0.88rem;">
+                    <thead style="background:#1e293b;color:#fff;position:sticky;top:0;z-index:10;">
+                      <tr>
+                        <th style="padding:0.55rem 0.5rem;width:36px;"><input type="checkbox" id="selectAll" onchange="toggleAllFileCheckboxes()" style="accent-color:#3b82f6;width:15px;height:15px;" /></th>
+                        <th style="padding:0.55rem 0.8rem;text-align:left;">Name</th>
+                        <th style="padding:0.55rem 0.8rem;text-align:left;white-space:nowrap;">Type</th>
+                        <th style="padding:0.55rem 0.8rem;text-align:left;white-space:nowrap;">Size</th>
+                        <th style="padding:0.55rem 0.8rem;text-align:left;white-space:nowrap;">Modified</th>
+                        <th style="padding:0.55rem 0.8rem;text-align:left;">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="filesTableBody">
+                      <tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:1.5rem;">Click "Show" to load files</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div><!-- /admin-files -->
+          </div>
+        </div>
+        </div><!-- /section-admin -->
+
+        <div id="section-contact" class="content-section">
+          <div class="section-header">
+            <span class="section-icon">📧</span>
+            <h2>Contact Us</h2>
+          </div>
+          <div class="message-container" id="contact-messages"></div>
+
+          <div class="two-column">
+            <div class="card company-details" style="height: 100%;">
+              <div class="card-header">
+                <span class="icon">🏢</span>
+                <h3 class="title">Company Details</h3>
+              </div>
+              <div class="card-body">
+                <div class="detail-row">
+                  <span class="detail-icon"><i class="fas fa-building"></i></span>
+                  <span class="detail-label">Company Name</span>
+                  <span class="detail-value"><span id="co-name">Lexora AI Solutions</span></span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-icon"><i class="fas fa-map-marker-alt"></i></span>
+                  <span class="detail-label">Address</span>
+                  <span class="detail-value"><span id="co-addr">123 Tech Park, Silicon Valley, CA 94025</span></span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-icon"><i class="fas fa-clock"></i></span>
+                  <span class="detail-label">Working Hours</span>
+                  <span class="detail-value"><span id="co-hours">Mon–Fri: 9:00 AM – 6:00 PM (PST)</span></span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-icon"><i class="fas fa-calendar-alt"></i></span>
+                  <span class="detail-label">Working Days</span>
+                  <span class="detail-value"><span id="co-days">Monday – Friday (Weekends Closed)</span></span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-icon"><i class="fas fa-globe-americas"></i></span>
+                  <span class="detail-label">Location</span>
+                  <span class="detail-value"><span id="co-loc">San Francisco Bay Area, California</span></span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-icon"><i class="fas fa-envelope"></i></span>
+                  <span class="detail-label">Email</span>
+                  <span class="detail-value"><span id="co-email">support@lexora.ai</span></span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-icon"><i class="fas fa-phone"></i></span>
+                  <span class="detail-label">Phone</span>
+                  <span class="detail-value"><span id="co-phone">+1 (800) 555-LEXO</span></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="card" style="height: 100%;">
+              <div class="card-header">
+                <span class="icon">✉️</span>
+                <h3 class="title">Send a Message</h3>
+              </div>
+              <div class="card-body">
+                <form class="contact-form" onsubmit="handleFormSubmit(event)">
+                  <div class="form-group">
+                    <label for="subject">Subject</label>
+                    <input type="text" id="subject" placeholder="Enter subject..." required style="width:100%;padding:0.65rem 1rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.9rem;" />
+                  </div>
+                  <div class="form-group">
+                    <label for="message">Message</label>
+                    <textarea id="message" placeholder="Enter your message here..." required style="width:100%;padding:0.65rem 1rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.9rem;min-height:140px;resize:vertical;font-family:inherit;"></textarea>
+                  </div>
+                  <button type="submit" class="btn-send">
+                    <i class="fas fa-paper-plane" style="margin-right: 0.5rem;"></i> Send Message
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ==========================================
+             SECTION: PLAN AND OFFER
+             ========================================== -->
+        <div id="section-plans" class="content-section">
+          <div class="section-header">
+            <span class="section-icon">🏷️</span>
+            <h2>Plan and Offer</h2>
+          </div>
+          <div class="message-container" id="plans-messages"></div>
+          <div id="plansContainer" class="card-grid">
+            <p style="color:#94a3b8;text-align:center;padding:2rem;grid-column:1/-1;">
+              <i class="fas fa-spinner fa-spin"></i> Loading plans...
+            </p>
+          </div>
+        </div>
+
+        <!-- ==========================================
+             SECTION: API
+             ========================================== -->
+        <div id="section-api" class="content-section">
+          <div class="section-header">
+            <span class="section-icon">🔌</span>
+            <h2>API</h2>
+          </div>
+          <div class="message-container" id="api-messages"></div>
+
+          <!-- API Key Management -->
+          <div class="card" style="margin-bottom:1.5rem;border-left:4px solid #4f46e5;">
+            <div class="card-header">
+              <span class="icon">🔑</span>
+              <h3 class="title">Your API Key</h3>
+            </div>
+            <div class="card-body">
+              <p style="margin-bottom:1rem;color:#64748b;font-size:0.9rem;">Use this key to authenticate your API requests. Keep it secret — do not share it publicly.</p>
+              <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:flex-end;">
+                <div style="flex:1;min-width:260px;display:flex;flex-direction:column;gap:0.3rem;">
+                  <label style="font-weight:600;font-size:0.85rem;color:#1e293b;">API Key</label>
+                  <div style="position:relative;">
+                    <input type="password" id="userApiKey" placeholder="No API key set — generate one or enter manually"
+                      style="width:100%;padding:0.65rem 1rem;padding-right:3rem;border:2px solid #e2e8f0;border-radius:10px;font-size:0.9rem;background:#fafbfc;font-family:monospace;" />
+                    <button type="button" onclick="toggleApiKeyVisibility()"
+                      style="position:absolute;right:0.7rem;top:50%;transform:translateY(-50%);background:none;border:none;color:#94a3b8;cursor:pointer;font-size:1rem;">
+                      <i class="fas fa-eye" id="apiKeyEyeIcon"></i>
+                    </button>
+                  </div>
+                </div>
+                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+                  <button onclick="generateApiKey()"
+                    style="padding:0.65rem 1.1rem;background:#8b5cf6;color:white;border:none;border-radius:10px;font-weight:600;cursor:pointer;font-size:0.88rem;display:flex;align-items:center;gap:0.4rem;">
+                    <i class="fas fa-magic"></i> Generate
+                  </button>
+                  <button onclick="copyApiKey()"
+                    style="padding:0.65rem 1.1rem;background:#e2e8f0;color:#475569;border:none;border-radius:10px;font-weight:600;cursor:pointer;font-size:0.88rem;display:flex;align-items:center;gap:0.4rem;">
+                    <i class="fas fa-copy"></i> Copy
+                  </button>
+                  <button onclick="saveApiKey()"
+                    style="padding:0.65rem 1.3rem;background:#22c55e;color:white;border:none;border-radius:10px;font-weight:600;cursor:pointer;font-size:0.88rem;display:flex;align-items:center;gap:0.4rem;">
+                    <i class="fas fa-save"></i> Save
+                  </button>
+                  <button onclick="revokeApiKey()"
+                    style="padding:0.65rem 1.1rem;background:#fee2e2;color:#ef4444;border:none;border-radius:10px;font-weight:600;cursor:pointer;font-size:0.88rem;display:flex;align-items:center;gap:0.4rem;">
+                    <i class="fas fa-ban"></i> Revoke
+                  </button>
+                </div>
+              </div>
+              <div id="apiKeyStatus" style="margin-top:0.75rem;font-size:0.82rem;color:#64748b;"></div>
+            </div>
+          </div>
+
+          <!-- API Docs: Lease Abstraction -->
+          <div class="card" style="margin-bottom:1.5rem;border-left:4px solid #22c55e;">
+            <div class="card-header">
+              <span class="icon">📄</span>
+              <h3 class="title">Lease Abstraction API</h3>
+            </div>
+            <div class="card-body" style="font-size:0.88rem;">
+              <p style="color:#64748b;margin-bottom:1.2rem;">Extract structured data from commercial lease PDFs/DOCXs using the AI pipeline (Extractor → Validator → Critic).</p>
+
+              <!-- POST /api/extract -->
+              <div style="margin-bottom:1.4rem;">
+                <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.5rem;">
+                  <span style="background:#22c55e;color:white;font-size:0.72rem;font-weight:700;padding:0.2rem 0.55rem;border-radius:5px;letter-spacing:0.5px;">POST</span>
+                  <code style="font-size:0.88rem;color:#6366f1;font-weight:600;">/api/extract</code>
+                  <span style="color:#94a3b8;font-size:0.8rem;">— AI clause extraction via OpenRouter</span>
+                </div>
+                <details style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:0.7rem 1rem;">
+                  <summary style="cursor:pointer;font-weight:600;color:#1e293b;font-size:0.82rem;">Request / Response</summary>
+                  <pre style="margin-top:0.7rem;font-size:0.76rem;color:#334155;overflow-x:auto;white-space:pre;line-height:1.5;">// Request headers
+Content-Type: application/json
+Authorization: Bearer &lt;your-api-key&gt;
+
+// Request body
+{
+  "system": "You are an attorney-grade lease abstraction AI...",
+  "messages": [{ "role": "user", "content": "&lt;lease text here&gt;" }],
+  "task": "extraction",
+  "model": "anthropic/claude-sonnet-4-5",
+  "max_tokens": 16000
+}
+
+// Response 200
+{
+  "content": [{ "type": "text", "text": "{ \"parties\": {...}, \"clauses\": {...} }" }],
+  "usage": { "input_tokens": 4200, "output_tokens": 3800 },
+  "_meta": { "model": "anthropic/claude-sonnet-4-5", "task": "extraction" }
+}
+
+// Response 400 (error)
+{ "error": "OpenRouter API key not configured in db/api_config.json" }</pre>
+                </details>
+              </div>
+
+              <!-- POST /api/extract-text -->
+              <div style="margin-bottom:1.4rem;">
+                <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.5rem;">
+                  <span style="background:#22c55e;color:white;font-size:0.72rem;font-weight:700;padding:0.2rem 0.55rem;border-radius:5px;letter-spacing:0.5px;">POST</span>
+                  <code style="font-size:0.88rem;color:#6366f1;font-weight:600;">/api/extract-text</code>
+                  <span style="color:#94a3b8;font-size:0.8rem;">— Server-side PDF text extraction (pdfplumber)</span>
+                </div>
+                <details style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:0.7rem 1rem;">
+                  <summary style="cursor:pointer;font-weight:600;color:#1e293b;font-size:0.82rem;">Request / Response</summary>
+                  <pre style="margin-top:0.7rem;font-size:0.76rem;color:#334155;overflow-x:auto;white-space:pre;line-height:1.5;">// Request body (base64-encoded PDF)
+{
+  "fileData": "&lt;base64-encoded PDF bytes&gt;"
+}
+
+// Response 200
+{
+  "success": true,
+  "text": "LEASE AGREEMENT\nThis agreement dated...",
+  "pages": 12,
+  "method": "pdfplumber",
+  "chars": 48320
+}
+
+// Response 503 (pdfplumber not installed)
+{ "error": "pdfplumber not installed. Run: pip install pdfplumber --break-system-packages" }</pre>
+                </details>
+              </div>
+
+              <!-- POST /api/critique -->
+              <div>
+                <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.5rem;">
+                  <span style="background:#22c55e;color:white;font-size:0.72rem;font-weight:700;padding:0.2rem 0.55rem;border-radius:5px;letter-spacing:0.5px;">POST</span>
+                  <code style="font-size:0.88rem;color:#6366f1;font-weight:600;">/api/critique</code>
+                  <span style="color:#94a3b8;font-size:0.8rem;">— Critic Agent review (Claude Opus 4.7)</span>
+                </div>
+                <details style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:0.7rem 1rem;">
+                  <summary style="cursor:pointer;font-weight:600;color:#1e293b;font-size:0.82rem;">Request / Response</summary>
+                  <pre style="margin-top:0.7rem;font-size:0.76rem;color:#334155;overflow-x:auto;white-space:pre;line-height:1.5;">// Request body
+{
+  "extracted": { "parties": {...}, "clauses": {...} },
+  "flags": [{ "id": "parties.tenant_name", "severity": "critical" }],
+  "leaseText": "LEASE AGREEMENT\nThis agreement..."
+}
+
+// Response 200
+{
+  "operations": [
+    { "field": "parties.tenant_name", "action": "set", "value": "Oracle Flooring Direct LLC" }
+  ],
+  "unresolved": []
+}</pre>
+                </details>
+              </div>
+            </div>
+          </div>
+
+          <!-- API Docs: Translation -->
+          <div class="card" style="margin-bottom:1.5rem;border-left:4px solid #3b82f6;">
+            <div class="card-header">
+              <span class="icon">🌍</span>
+              <h3 class="title">Translation API</h3>
+            </div>
+            <div class="card-body" style="font-size:0.88rem;">
+              <p style="color:#64748b;margin-bottom:1.2rem;">Translate documents between languages using OpenAI models. All translation requests go through the same <code>/api/extract</code> proxy with <code>"task":"quick"</code> and an OpenAI model.</p>
+
+              <!-- POST /api/extract (translation) -->
+              <div style="margin-bottom:1.4rem;">
+                <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.5rem;">
+                  <span style="background:#22c55e;color:white;font-size:0.72rem;font-weight:700;padding:0.2rem 0.55rem;border-radius:5px;letter-spacing:0.5px;">POST</span>
+                  <code style="font-size:0.88rem;color:#3b82f6;font-weight:600;">/api/extract</code>
+                  <span style="color:#94a3b8;font-size:0.8rem;">— Translation via OpenAI (task: "quick")</span>
+                </div>
+                <details style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:0.7rem 1rem;">
+                  <summary style="cursor:pointer;font-weight:600;color:#1e293b;font-size:0.82rem;">Request / Response</summary>
+                  <pre style="margin-top:0.7rem;font-size:0.76rem;color:#334155;overflow-x:auto;white-space:pre;line-height:1.5;">// Request body
+{
+  "system": "You are a professional document translator. Translate the following text to Spanish. Preserve all formatting, headers, and structure. Return only the translated text.",
+  "messages": [{ "role": "user", "content": "LEASE AGREEMENT\nThis agreement..." }],
+  "task": "quick",
+  "model": "openai/gpt-4o-mini",
+  "max_tokens": 16000
+}
+
+// Response 200
+{
+  "content": [{ "type": "text", "text": "CONTRATO DE ARRENDAMIENTO\nEste acuerdo..." }],
+  "usage": { "input_tokens": 1200, "output_tokens": 1350 },
+  "_meta": { "model": "openai/gpt-4o-mini", "task": "quick" }
+}
+
+// Supported models
+// Fast:   openai/gpt-4o-mini       (default translation)
+// Better: openai/gpt-4o            (high-accuracy mode)
+// Legal:  anthropic/claude-sonnet-4-5  (legal document translation)</pre>
+                </details>
+              </div>
+
+              <!-- GET /api/health -->
+              <div>
+                <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.5rem;">
+                  <span style="background:#3b82f6;color:white;font-size:0.72rem;font-weight:700;padding:0.2rem 0.55rem;border-radius:5px;letter-spacing:0.5px;">GET</span>
+                  <code style="font-size:0.88rem;color:#3b82f6;font-weight:600;">/api/health</code>
+                  <span style="color:#94a3b8;font-size:0.8rem;">— Server health check</span>
+                </div>
+                <details style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:0.7rem 1rem;">
+                  <summary style="cursor:pointer;font-weight:600;color:#1e293b;font-size:0.82rem;">Response</summary>
+                  <pre style="margin-top:0.7rem;font-size:0.76rem;color:#334155;overflow-x:auto;white-space:pre;line-height:1.5;">// Response 200
+{
+  "status": "ok",
+  "time": "2026-06-27T14:32:00.000Z",
+  "server": "Lexora Dev Server v3.0"
+}</pre>
+                </details>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- ==========================================
+             SECTION: PROFILE
+             ========================================== -->
+        <div id="section-profile" class="content-section">
+          <div class="section-header">
+            <span class="section-icon">👤</span>
+            <h2>Profile</h2>
+          </div>
+          <div class="message-container" id="profile-messages"></div>
+
+          <div class="two-column" style="align-items:stretch;">
+
+            <!-- LEFT CARD: Photo Upload -->
+            <div class="card" style="text-align:center;display:flex;flex-direction:column;">
+              <div class="card-header">
+                <span class="icon">📷</span>
+                <h3 class="title">Profile Photo</h3>
+              </div>
+              <div class="card-body" style="display:flex;flex-direction:column;align-items:center;gap:1.2rem;">
+                <div id="profilePhotoCircle" onclick="document.getElementById('profilePhotoInput').click()"
+                  style="width:160px;height:160px;border-radius:50%;background:#e2e8f0;display:flex;align-items:center;justify-content:center;font-size:4.5rem;color:#94a3b8;overflow:hidden;border:3px solid #e2e8f0;cursor:pointer;transition:border-color 0.2s;"
+                  onmouseover="this.style.borderColor='#3b82f6'" onmouseout="this.style.borderColor='#e2e8f0'">
+                  <span id="profilePhotoPlaceholder">👤</span>
+                  <img id="profilePhotoImg" style="display:none;width:100%;height:100%;object-fit:cover;" />
+                </div>
+                <input type="file" id="profilePhotoInput" accept="image/*" style="display:none" onchange="handlePhotoUpload(event)" />
+                <div style="font-size:0.82rem;color:#64748b;">Click photo or use buttons to change</div>
+                <div style="display:flex;flex-direction:column;gap:0.6rem;width:100%;max-width:200px;">
+                  <button type="button" onclick="document.getElementById('profilePhotoInput').click()"
+                    style="padding:0.55rem 1rem;background:#3b82f6;color:white;border:none;border-radius:8px;font-size:0.88rem;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.5rem;">
+                    <i class="fas fa-upload"></i> Upload Photo
+                  </button>
+                  <button type="button" onclick="removePhoto()"
+                    style="padding:0.55rem 1rem;background:#f1f5f9;color:#475569;border:none;border-radius:8px;font-size:0.88rem;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.5rem;">
+                    <i class="fas fa-trash-alt"></i> Remove Photo
+                  </button>
+                </div>
+                <div style="font-size:0.82rem;padding:0.6rem 0.8rem;background:#eff6ff;border-radius:8px;width:100%;text-align:left;line-height:1.8;">
+                  <div><span style="font-weight:600;color:#1e293b;">Account Type:</span> <span id="profileAccountType" style="color:#3b82f6;font-weight:600;">—</span></div>
+                  <div><span style="font-weight:600;color:#1e293b;">Status:</span> <span id="profileStatus" style="color:#22c55e;font-weight:600;">—</span></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- RIGHT CARD: Details Form -->
+            <div class="card" style="display:flex;flex-direction:column;">
+              <div class="card-header">
+                <span class="icon">📝</span>
+                <h3 class="title">Personal Information</h3>
+              </div>
+              <div class="card-body">
+                <form id="profileForm" onsubmit="updateProfile(event)">
+
+                  <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
+                    <div style="flex:1;min-width:130px;display:flex;flex-direction:column;gap:0.3rem;">
+                      <label style="font-weight:600;font-size:0.85rem;color:#1e293b;">First Name <span style="color:#ef4444;">*</span></label>
+                      <input type="text" id="firstName" placeholder="First Name" required
+                        style="width:100%;padding:0.6rem 1rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.9rem;background:#fafbfc;" />
+                    </div>
+                    <div style="flex:1;min-width:130px;display:flex;flex-direction:column;gap:0.3rem;">
+                      <label style="font-weight:600;font-size:0.85rem;color:#1e293b;">Last Name <span style="color:#ef4444;">*</span></label>
+                      <input type="text" id="lastName" placeholder="Last Name" required
+                        style="width:100%;padding:0.6rem 1rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.9rem;background:#fafbfc;" />
+                    </div>
+                  </div>
+
+                  <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
+                    <div style="flex:1;min-width:130px;display:flex;flex-direction:column;gap:0.3rem;">
+                      <label style="font-weight:600;font-size:0.85rem;color:#1e293b;">Gender <span style="color:#ef4444;">*</span></label>
+                      <select id="gender" required style="width:100%;padding:0.6rem 1rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.9rem;background:#fafbfc;">
+                        <option value="">Select Gender</option>
+                        <option value="Male">Male</option>
+                        <option value="Female">Female</option>
+                        <option value="Other">Other</option>
+                        <option value="Prefer not to say">Prefer not to say</option>
+                      </select>
+                    </div>
+                    <div style="flex:1;min-width:130px;display:flex;flex-direction:column;gap:0.3rem;">
+                      <label style="font-weight:600;font-size:0.85rem;color:#1e293b;">Date of Birth <span style="color:#ef4444;">*</span></label>
+                      <input type="date" id="dob" required
+                        style="width:100%;padding:0.6rem 1rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.9rem;background:#fafbfc;" />
+                    </div>
+                  </div>
+
+                  <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
+                    <div style="flex:1;min-width:130px;display:flex;flex-direction:column;gap:0.3rem;">
+                      <label style="font-weight:600;font-size:0.85rem;color:#1e293b;">Mobile Number <span style="color:#ef4444;">*</span></label>
+                      <input type="tel" id="phone" placeholder="10-digit mobile" maxlength="10" required
+                        style="width:100%;padding:0.6rem 1rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.9rem;background:#fafbfc;" />
+                    </div>
+                    <div style="flex:1;min-width:130px;display:flex;flex-direction:column;gap:0.3rem;">
+                      <label style="font-weight:600;font-size:0.85rem;color:#1e293b;">
+                        Email
+                        <span style="font-size:0.72rem;color:#94a3b8;font-weight:400;">(read-only)</span>
+                      </label>
+                      <input type="email" id="profileEmail" readonly disabled
+                        style="width:100%;padding:0.6rem 1rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.9rem;background:#f1f5f9;color:#64748b;cursor:not-allowed;" />
+                    </div>
+                  </div>
+
+                  <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
+                    <div style="flex:1;min-width:130px;display:flex;flex-direction:column;gap:0.3rem;">
+                      <label style="font-weight:600;font-size:0.85rem;color:#1e293b;">
+                        New Password <span style="color:#94a3b8;font-weight:400;font-size:0.75rem;">(optional)</span>
+                      </label>
+                      <div style="position:relative;">
+                        <input type="password" id="password" placeholder="Leave blank to keep current"
+                          style="width:100%;padding:0.6rem 1rem;padding-right:2.5rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.9rem;background:#fafbfc;" />
+                        <button type="button" onclick="togglePassword('password')" style="position:absolute;right:0.5rem;top:50%;transform:translateY(-50%);background:none;border:none;color:#94a3b8;cursor:pointer;font-size:1rem;">
+                          <i class="fas fa-eye" id="passwordIcon"></i>
+                        </button>
+                      </div>
+                    </div>
+                    <div style="flex:1;min-width:130px;display:flex;flex-direction:column;gap:0.3rem;">
+                      <label style="font-weight:600;font-size:0.85rem;color:#1e293b;">Confirm Password</label>
+                      <div style="position:relative;">
+                        <input type="password" id="confirmPassword" placeholder="Confirm new password"
+                          style="width:100%;padding:0.6rem 1rem;padding-right:2.5rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.9rem;background:#fafbfc;" />
+                        <button type="button" onclick="togglePassword('confirmPassword')" style="position:absolute;right:0.5rem;top:50%;transform:translateY(-50%);background:none;border:none;color:#94a3b8;cursor:pointer;font-size:1rem;">
+                          <i class="fas fa-eye" id="confirmPasswordIcon"></i>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+
+                  <!-- 2FA Toggle -->
+                  <div style="display:flex;align-items:center;gap:0.75rem;padding:0.75rem 1rem;background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;margin-bottom:1.2rem;">
+                    <input type="checkbox" id="profile2FA" style="width:18px;height:18px;accent-color:#3b82f6;cursor:pointer;flex-shrink:0;" />
+                    <div>
+                      <label for="profile2FA" style="font-weight:700;font-size:0.88rem;color:#1e293b;cursor:pointer;display:block;">
+                        <i class="fas fa-shield-alt" style="color:#3b82f6;margin-right:0.3rem;"></i>
+                        Two-Factor Authentication (2FA)
+                      </label>
+                      <span style="font-size:0.75rem;color:#64748b;">When enabled, a verification code is required at each login.</span>
+                    </div>
+                    <span id="twoFAStatus" style="margin-left:auto;font-size:0.75rem;font-weight:600;padding:0.2rem 0.6rem;border-radius:5px;background:#dcfce7;color:#16a34a;">ON</span>
+                  </div>
+
+                  <button type="submit" style="padding:0.65rem 2rem;background:#3b82f6;color:white;border:none;border-radius:8px;font-size:0.95rem;font-weight:600;cursor:pointer;transition:background 0.2s;display:flex;align-items:center;gap:0.5rem;"
+                    onmouseover="this.style.background='#2563eb'" onmouseout="this.style.background='#3b82f6'">
+                    <i class="fas fa-save"></i> Update Profile
+                  </button>
+
+                </form>
+              </div>
+            </div>
+
+          </div><!-- /two-column -->
+
+
+        </div><!-- /two-column -->
+
+
+
+        </div>
+
+      </div>
+    </main>
+
+        <!-- FOOTER -->
+    <footer class="footer">
+      <p id="appFooterCopyright">
+        <i class="far fa-copyright"></i>
+        2026 Lexora AI Solutions. All rights reserved.
+      </p>
+    </footer>
+
+  </div>
+
+  <!-- ==========================================
+       MODAL OVERLAY
+       ========================================== -->
+  <div class="modal-overlay" id="modalOverlay" onclick="closeModalOnBackdrop(event)">
+    <div class="modal-box" id="modalBox">
+      <button class="modal-close-btn" onclick="closeModal()">✕</button>
+      <span class="modal-icon" id="modalIcon">ℹ️</span>
+      <h3 class="modal-title" id="modalTitle">Information</h3>
+      <div class="modal-message" id="modalMessage">This is a message.</div>
+      <div class="modal-actions" id="modalActions">
+        <button class="btn-primary" onclick="closeModal()">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+  <script>
+    // Populate header with session data
+    (function() {
+      const s = getSession();
+      if (s) {
+        const el = document.getElementById('header-username');
+        if (el) el.textContent = s.firstName + ' ' + s.lastName;
+      }
+    })();
+  </script>
+
+  <!-- Full-width JSON Editor Overlay -->
+  <div id="jsonFullOverlay">
+    <div id="jsonEditorCard">
+      <div class="je-header">
+        <span class="je-title" id="jeTitle">file.json</span>
+        <button onclick="closeJsonFullEditor()" style="border:none;background:none;font-size:1.4rem;cursor:pointer;color:#64748b;padding:0.2rem 0.5rem;border-radius:6px;" title="Close">✕</button>
+      </div>
+      <div class="je-body" id="jeBody">
+        <p style="padding:2rem;text-align:center;color:#94a3b8;">Loading...</p>
+      </div>
+      <div class="je-footer" style="flex-wrap:wrap;gap:0.5rem;">
+        <button id="jeAddRowBtn" onclick="addJsonEditorRow()" style="padding:0.5rem 1rem;background:#22c55e;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.85rem;display:flex;align-items:center;gap:0.3rem;"><span>＋</span> Add Row</button>
+        <button id="jeDelSelBtn" onclick="jeDeleteSelected()" style="padding:0.5rem 1rem;background:#ef4444;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.85rem;display:flex;align-items:center;gap:0.3rem;">🗑 Delete Selected</button>
+        <button id="jeSelAllBtn" onclick="document.getElementById('jeSelectAll')&&document.getElementById('jeSelectAll').click()" style="padding:0.5rem 1rem;background:#64748b;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.85rem;">☑ Select All</button>
+        <div style="flex:1;"></div>
+        <button onclick="saveJsonFullEditor()" style="padding:0.5rem 1.2rem;background:#3b82f6;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.85rem;display:flex;align-items:center;gap:0.3rem;">💾 Save</button>
+        <button onclick="closeJsonFullEditor()" style="padding:0.5rem 1rem;background:#e2e8f0;color:#475569;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:0.85rem;">Cancel</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

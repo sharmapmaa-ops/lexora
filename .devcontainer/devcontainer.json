@@ -1,0 +1,39 @@
+{
+  "name": "Lexora — Lease Abstraction AI Tool",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": {
+      "label": "Lexora App",
+      "onAutoForward": "openPreview"
+    }
+  },
+
+  "postStartCommand": "python3 py/server.py 8080",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.pylance",
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint",
+        "ecmel.vscode-html-css",
+        "zignd.html-css-class-completion",
+        "ritwickdey.LiveServer",
+        "formulahendry.auto-rename-tag"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "editor.tabSize": 2,
+        "editor.wordWrap": "on",
+        "python.defaultInterpreterPath": "/usr/local/bin/python3",
+        "liveServer.settings.port": 8080,
+        "liveServer.settings.root": "/workspaces/${localWorkspaceFolderBasename}"
+      }
+    }
+  },
+
+  "remoteUser": "vscode"
+}

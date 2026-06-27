@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "schema": "lexora_agents",
+  "updatedAt": "2026-06-26T00:00:00.000Z",
+  "agents": [
+    {
+      "id": "extractor",
+      "lock": "yes",
+      "role": "Extractor",
+      "phase": "Phase 1",
+      "description": "Primary pass. Reads the lease and pulls structured fields and clauses. Attorney-grade clause logic (V41.1/V45.1) covering 71-clause superset.",
+      "powered_by": "Claude Sonnet 4 / 4.5",
+      "model": "anthropic/claude-sonnet-4.5",
+      "api_provider": "openrouter",
+      "frequency_in_code": 46,
+      "active": true
+    },
+    {
+      "id": "validator",
+      "lock": "yes",
+      "role": "Validator",
+      "phase": "Phase 1",
+      "description": "Deterministic pure-JS quality layer (V44.28). Checks missing critical fields, bad formats, structural problems. Feeds flags to Critic. No API call.",
+      "powered_by": "Pure JavaScript (no model)",
+      "model": null,
+      "api_provider": "none",
+      "frequency_in_code": 90,
+      "active": true
+    },
+    {
+      "id": "critic",
+      "lock": "yes",
+      "role": "Critic",
+      "phase": "Phase 2",
+      "description": "AI review pass (V45.0). Takes Validator flags, searches lease text to fix or fill flagged fields. Single cost-tracked call.",
+      "powered_by": "Claude Opus 4.7",
+      "model": "claude-opus-4.7",
+      "api_provider": "openrouter",
+      "frequency_in_code": 167,
+      "active": true
+    },
+    {
+      "id": "ai_validator",
+      "lock": "no",
+      "role": "AI Validator",
+      "phase": "Phase 3",
+      "description": "Post-extraction validation pass that auto-flags field quality. Uses fast, cheap model deliberately.",
+      "powered_by": "GPT-4o-mini",
+      "model": "gpt-4o-mini",
+      "api_provider": "openai",
+      "frequency_in_code": 0,
+      "active": true
+    },
+    {
+      "id": "attorney",
+      "lock": "yes",
+      "role": "Attorney",
+      "phase": "Extraction",
+      "description": "Attorney-grade clause-extraction mode — deeper legal-clause logic for renewal, holdover, co-tenancy, etc.",
+      "powered_by": "Claude (via backend)",
+      "model": "anthropic/claude-sonnet-4.5",
+      "api_provider": "openrouter",
+      "frequency_in_code": 7,
+      "active": true
+    },
+    {
+      "id": "foreman",
+      "lock": "yes",
+      "role": "Foreman Agent",
+      "phase": "Orchestration",
+      "description": "Supervisor/audit layer (V62). Always-visible panel watching every agent, auto-corrects what it safely can. Consolidated 7 earlier conflicting layers (V54-V61). Devil's Advocate mode stress-tests results.",
+      "powered_by": "Orchestration layer",
+      "model": null,
+      "api_provider": "none",
+      "frequency_in_code": 282,
+      "active": true
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "schema": "lexora_payment_methods",
+  "updatedAt": "2026-06-25T00:00:00.000Z",
+  "user_payments": {
+    "usr_001": {
+      "balance": 1247.00,
+      "methods": [
+        {
+          "id": "pm_001",
+          "name": "Visa •••• 4242",
+          "details": "Expires 12/25",
+          "icon": "fa-credit-card",
+          "isDefault": true
+        }
+      ]
+    }
+  }
+}
