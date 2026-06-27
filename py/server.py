@@ -43,12 +43,20 @@ def send_email(to_list, subject, body_html, body_text=""):
         msg.attach(MIMEText(body_text, "plain"))
     msg.attach(MIMEText(body_html, "html"))
     port = int(cfg.get("port", 587))
-    with smtplib.SMTP(cfg["host"], port) as server:
-        if cfg.get("use_tls", True):
-            server.starttls()
-        server.login(cfg["username"], cfg["password"])
-        recipients = to_list if isinstance(to_list, list) else [to_list]
-        server.sendmail(cfg.get("sender_email", cfg["username"]), recipients, msg.as_string())
+    recipients = to_list if isinstance(to_list, list) else [to_list]
+    # Port 465 = SSL directly, Port 587/25 = STARTTLS
+    if port == 465:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        with smtplib.SMTP_SSL(cfg["host"], port, context=ctx, timeout=15) as server:
+            server.login(cfg["username"], cfg["password"])
+            server.sendmail(cfg.get("sender_email", cfg["username"]), recipients, msg.as_string())
+    else:
+        with smtplib.SMTP(cfg["host"], port, timeout=15) as server:
+            if cfg.get("use_tls", True):
+                server.starttls()
+            server.login(cfg["username"], cfg["password"])
+            server.sendmail(cfg.get("sender_email", cfg["username"]), recipients, msg.as_string())
 
 
 # ── Request Handler ──────────────────────────────────────────────────────────

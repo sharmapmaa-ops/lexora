@@ -1,10 +1,10 @@
 {
   "host": "smtp.gmail.com",
-  "port": 587,
+  "port": 465,
   "username": "himmat4f1@gmail.com",
   "password": "rumkkjpvxicyaaeh",
   "sender_email": "himmat4f1@gmail.com",
   "receiver_email": "himmat4f1@gmail.com",
-  "use_tls": true,
+  "use_tls": false,
   "expiry_minutes": 4
 }
