@@ -490,10 +490,26 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
 <p>Your verification code is: <b style='font-size:1.4rem;letter-spacing:4px;'>{code}</b></p>
 <p>This code expires in <b>{expiry} minutes</b>.</p>
 <p style='color:#64748b;font-size:0.85em;'>If you did not request this, ignore this email.</p>"""
-                send_email(to_email, "Lexora — Login Verification Code", html_body)
-                self._json({"success": True})
+                try:
+                    send_email(to_email, "Lexora — Login Verification Code", html_body)
+                    self._json({"success": True, "emailSent": True})
+                except Exception as smtp_err:
+                    # Email failed but still return code so login can proceed
+                    self._log(f"⚠️  SMTP error (sendcode): {smtp_err}")
+                    self._json({"success": True, "emailSent": False, "code": code})
             except Exception as e:
                 self._json({"success": False, "error": str(e)}, 400)
+            return
+
+        # /api/templates/scan — Return list of saved templates
+        if p == "/api/templates/scan":
+            try:
+                tmpl_file = os.path.join(DB_DIR, "templates.json")
+                data      = self._read(tmpl_file)
+                templates = data.get("templates", []) if isinstance(data, dict) else []
+                self._json({"success": True, "templates": templates, "count": len(templates)})
+            except Exception as e:
+                self._json({"success": True, "templates": [], "count": 0})
             return
 
         # /api/templates/save — Save templates.json
@@ -865,7 +881,13 @@ if __name__ == "__main__":
                 {"id": "openrouter", "api_key": _or_key},
                 {"id": "openai",     "api_key": _oai_key}
             ]}, _f, indent=2)
-        print(f"  ✅  api_config.json generated from environment variables")
+        if _or_key:
+            print(f"  ✅  api_config.json generated from environment variables")
+        else:
+            print(f"  ⚠️   api_config.json created but OPENROUTER_API_KEY env var is NOT SET!")
+            print(f"  ⚠️   Set OPENROUTER_API_KEY and OPENAI_API_KEY in Render Environment settings")
+    else:
+        print(f"  ✅  api_config.json found")
 
     with socketserver.TCPServer(("", PORT), LexoraHandler) as httpd:
         httpd.allow_reuse_address = True

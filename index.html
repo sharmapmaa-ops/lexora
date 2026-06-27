@@ -123,7 +123,11 @@
       <div id="view-verify" class="auth-card hidden">
         <h2 id="verifyTitle">Verify Code</h2>
         <p class="auth-card-sub" id="verifySubtext">Enter the 6-digit code sent to your email.</p>
-<!-- demo box removed - codes sent via SMTP only -->
+        <!-- Shown only when SMTP is unavailable (e.g. Render free tier) -->
+        <div id="verify-demo-box" style="display:none;background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:0.7rem 1rem;margin-bottom:0.8rem;text-align:center;">
+          <div style="font-size:0.75rem;color:#92400e;font-weight:600;margin-bottom:0.3rem;">⚠️ Email could not be sent — use this code:</div>
+          <div id="verify-demo-code" style="font-size:1.6rem;font-weight:800;letter-spacing:8px;color:#1e293b;font-family:monospace;">——————</div>
+        </div>
         <div class="auth-field">
           <input type="text" id="verify-code" placeholder="_ _ _ _ _ _" maxlength="6"
             style="letter-spacing:8px;font-size:1.4rem;text-align:center;font-weight:700;padding:0.8rem;border:2px solid #e2e8f0;border-radius:10px;width:100%;"

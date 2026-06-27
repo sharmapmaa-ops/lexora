@@ -146,7 +146,10 @@ function startOTP(context, email, title, onSuccess) {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ email, code: _otpCode, expiryMins })
   }).then(function(r){return r.json();})
-    .then(function(res){ if(!res.success) _showDemoCode(_otpCode); })
+    .then(function(res){
+      // Show fallback code if email was not sent (SMTP blocked on cloud / not configured)
+      if(!res.success || res.emailSent === false) _showDemoCode(_otpCode);
+    })
     .catch(function() { _showDemoCode(_otpCode); });
 
   authShowView('view-verify');
@@ -154,12 +157,12 @@ function startOTP(context, email, title, onSuccess) {
 }
 
 function _showDemoCode(code) {
-  // Demo mode: log to browser console ONLY (not shown in UI)
-  // Configure SMTP in Admin > Email Settings to send real emails
+  // Show code in UI when email fails (e.g. Gmail blocks cloud IP on Render)
   console.info('%c[Lexora OTP] Code: ' + code + ' (expires soon)', 'background:#3b82f6;color:white;padding:4px 8px;border-radius:4px;font-size:14px;font-weight:bold;');
-  // Hide demo box if it exists (no visible fallback)
-  const box = document.getElementById('verify-demo-box');
-  if (box) box.style.display = 'none';
+  const box     = document.getElementById('verify-demo-box');
+  const codeEl  = document.getElementById('verify-demo-code');
+  if (box)    box.style.display    = 'block';
+  if (codeEl) codeEl.textContent   = code;
 }
 
 function _startOTPTimer(mins) {
