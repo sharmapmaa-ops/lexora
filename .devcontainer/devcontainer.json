@@ -6,11 +6,17 @@
   "portsAttributes": {
     "8080": {
       "label": "Lexora App",
-      "onAutoForward": "openPreview"
+      "onAutoForward": "openPreview",
+      "visibility": "public"
     }
   },
 
-  "postStartCommand": "python3 py/server.py 8080",
+  "postCreateCommand": "pip install -r requirements.txt --break-system-packages && echo '✅ Dependencies installed'",
+
+  "postStartCommand": "fuser -k 8080/tcp 2>/dev/null; sleep 1 && python3 py/server.py 8080",
+
+  "containerUser": "vscode",
+  "remoteUser": "vscode",
 
   "customizations": {
     "vscode": {
@@ -33,7 +39,5 @@
         "liveServer.settings.root": "/workspaces/${localWorkspaceFolderBasename}"
       }
     }
-  },
-
-  "remoteUser": "vscode"
+  }
 }

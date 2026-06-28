@@ -362,3 +362,126 @@ body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif; }
   .auth-card { padding: 1.8rem 1.4rem; }
   .auth-right { padding: 1rem; }
 }
+
+/* ── TOTP Instruction Box (verify screen) ────────────────────────────────── */
+.totp-instr-box {
+  background: #f0fdf4;
+  border: 1.5px solid #86efac;
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 1rem;
+}
+.totp-instr-apps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.65rem;
+}
+.totp-app-badge {
+  font-size: 0.72rem;
+  background: #dcfce7;
+  color: #15803d;
+  border: 1px solid #86efac;
+  border-radius: 20px;
+  padding: 0.2rem 0.6rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.totp-steps-list {
+  font-size: 0.82rem;
+  color: #166534;
+  padding-left: 1.1rem;
+  margin-bottom: 0.65rem;
+  line-height: 1.7;
+}
+.totp-refresh-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.3rem;
+}
+.totp-refresh-bar-bg {
+  flex: 1;
+  height: 6px;
+  background: #bbf7d0;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.totp-refresh-bar-fill {
+  height: 6px;
+  width: 100%;
+  background: #22c55e;
+  border-radius: 3px;
+  transition: width 1s linear, background 0.3s;
+}
+.totp-refresh-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #15803d;
+  min-width: 28px;
+  text-align: right;
+}
+.totp-refresh-note {
+  font-size: 0.72rem;
+  color: #64748b;
+  text-align: center;
+}
+
+/* ── TOTP Setup Card ─────────────────────────────────────────────────────── */
+.totp-setup-steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  margin: 0.75rem 0;
+}
+.tss-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  color: #475569;
+  text-align: center;
+  line-height: 1.3;
+}
+.tss-num {
+  width: 24px; height: 24px;
+  background: #6366f1;
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.tss-arrow { color: #cbd5e1; font-size: 1rem; }
+
+.totp-dl-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin: 0.5rem 0;
+}
+.totp-dl-btn {
+  font-size: 0.72rem;
+  background: #f1f5f9;
+  color: #334155;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 0.25rem 0.6rem;
+  text-decoration: none;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+.totp-dl-btn:hover { background: #e2e8f0; }
+
+.totp-manual-key {
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  text-align: center;
+}

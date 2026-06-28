@@ -26,6 +26,7 @@ const DEFAULT_USERS = [{
   verification_code:'', profile_photo:'user_directory/usr_001/profile_photo',
   profile_photo_data:'', input_folder:'user_directory/usr_001/input',
   output_folder:'user_directory/usr_001/output',
+  two_factor_auth: false,
   createdAt: new Date().toISOString(), lastLogin:null, active:true,
   system_setup:{ theme:'light', language:'en', timezone:'Asia/Kolkata', email_notifications:true }
 }];
@@ -41,12 +42,15 @@ function saveUsers(u) { localStorage.setItem(USERS_KEY, JSON.stringify(u)); }
   if (!raw) { saveUsers(DEFAULT_USERS); return; }
   try {
     const existing = JSON.parse(raw);
-    // If admin user has a non-djb2 hash (SHA-256 = 64 chars, or old format),
-    // force reseed with correct DEFAULT_USERS
+    // Only reseed if the hash format is wrong (old SHA-256 or known bad hash)
     const admin = existing.find(function(u){ return u.role === 'admin'; });
-    if (admin && (admin.passwordHash.length > 12 || admin.passwordHash === '1a73090f' || admin.two_factor_auth === undefined)) {
+    if (admin && (admin.passwordHash.length > 12 || admin.passwordHash === '1a73090f')) {
       console.log('[Lexora] Reseeding users (hash version mismatch)');
       saveUsers(DEFAULT_USERS);
+    } else if (admin && admin.two_factor_auth === undefined) {
+      // Patch: add two_factor_auth without wiping existing data (totp_secret etc.)
+      admin.two_factor_auth = false;
+      saveUsers(existing);
     }
   } catch(e) { saveUsers(DEFAULT_USERS); }
 })();
@@ -112,6 +116,100 @@ function togglePwd(inputId, btnId) {
 }
 
 // ════════════════════════════════════════════════
+// ════════════════════════════════════════════════
+// TOTP ENGINE (RFC 6238, WebCrypto — no external lib)
+// ════════════════════════════════════════════════
+const _B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function _b32decode(s) {
+  s = s.toUpperCase().replace(/[^A-Z2-7]/g,'');
+  let bits=0, val=0; const out=[];
+  for(let i=0;i<s.length;i++){val=(val<<5)|_B32.indexOf(s[i]);bits+=5;if(bits>=8){out.push((val>>>(bits-8))&255);bits-=8;}}
+  return new Uint8Array(out);
+}
+function _b32encode(bytes) {
+  let bits=0,val=0,out='';
+  for(let i=0;i<bytes.length;i++){val=(val<<8)|bytes[i];bits+=8;while(bits>=5){out+=_B32[(val>>>(bits-5))&31];bits-=5;}}
+  if(bits>0) out+=_B32[(val<<(5-bits))&31];
+  return out;
+}
+function _generateTotpSecret() { return _b32encode(crypto.getRandomValues(new Uint8Array(20))); }
+async function _computeTotp(secret, slot) {
+  const key=_b32decode(secret), t=slot!==undefined?slot:Math.floor(Date.now()/30000);
+  const msg=new ArrayBuffer(8); new DataView(msg).setUint32(4,t,false);
+  const ck=await crypto.subtle.importKey('raw',key,{name:'HMAC',hash:'SHA-1'},false,['sign']);
+  const sig=new Uint8Array(await crypto.subtle.sign('HMAC',ck,msg));
+  const off=sig[19]&0x0f;
+  return String((((sig[off]&0x7f)<<24)|(sig[off+1]<<16)|(sig[off+2]<<8)|sig[off+3])%1000000).padStart(6,'0');
+}
+async function _verifyTotp(secret, code) {
+  const t=Math.floor(Date.now()/30000);
+  for(let d=-1;d<=1;d++) if(await _computeTotp(secret,t+d)===code) return true;
+  return false;
+}
+
+// TOTP state
+let _totpMode=false, _totpPendingSecret='', _totpRefreshTimer=null;
+
+function _startTotpCountdown() {
+  clearInterval(_totpRefreshTimer);
+  const bar=document.getElementById('totp-progress-bar'), secs=document.getElementById('totp-seconds');
+  function tick(){
+    const rem=30-(Math.floor(Date.now()/1000)%30), pct=(rem/30)*100;
+    if(bar){bar.style.width=pct+'%'; bar.style.background=rem<5?'#ef4444':'#22c55e';}
+    if(secs) secs.textContent=rem+'s';
+  }
+  tick(); _totpRefreshTimer=setInterval(tick,1000);
+}
+
+async function saveTotpSecret(email, secret) {
+  try { await fetch('/api/auth/save-totp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,secret})}); } catch(e){}
+}
+
+function startTotpSetup(user) {
+  _totpPendingSecret = _generateTotpSecret();
+  const uri = 'otpauth://totp/Lexora:'+encodeURIComponent(user.email)+'?secret='+_totpPendingSecret+'&issuer=Lexora&algorithm=SHA1&digits=6&period=30';
+  authShowView('view-totp-setup');
+  var qrEl=document.getElementById('totp-qr');
+  if(qrEl){ qrEl.innerHTML=''; if(typeof QRCode!=='undefined') new QRCode(qrEl,{text:uri,width:180,height:180,colorDark:'#1e293b',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.M}); }
+  var keyEl=document.getElementById('totp-secret-text');
+  if(keyEl) keyEl.textContent=(_totpPendingSecret.match(/.{1,4}/g)||[]).join(' ');
+  var inp=document.getElementById('totp-setup-code'); if(inp) inp.value='';
+  clearError('totp-setup-err');
+}
+
+async function confirmTotpSetup() {
+  var code=(document.getElementById('totp-setup-code').value||'').trim();
+  if(!code||code.length!==6){showError('totp-setup-err','6-digit code enter kariye.');return;}
+  if(!(await _verifyTotp(_totpPendingSecret,code))){showError('totp-setup-err','Galat code. App me dobara dekhiye.');return;}
+  var users=getUsers(), u=users.find(function(x){return x.id===_pendingData.user.id;});
+  if(u){u.totp_secret=_totpPendingSecret;saveUsers(users);}
+  await saveTotpSecret(_pendingData.user.email, _totpPendingSecret);
+  _pendingData.user.totp_secret=_totpPendingSecret;
+  var us=getUsers(), lu=us.find(function(x){return x.id===_pendingData.user.id;});
+  if(lu){lu.lastLogin=new Date().toISOString();saveUsers(us);}
+  setSession(_pendingData.user);
+  window.location.reload();
+}
+
+function cancelTotpSetup() { _totpPendingSecret=''; authShowView('view-login'); }
+
+function _startTotpVerify(secret, context, callback) {
+  _totpMode=true; _totpPendingSecret=secret; _otpContext=context; _otpCallback=callback;
+  var els={title:document.getElementById('verifyTitle'),sub:document.getElementById('verifySubtext'),
+    instr:document.getElementById('totp-instructions'),demo:document.getElementById('verify-demo-box'),
+    timerRow:document.getElementById('verify-timer-row'),resend:document.getElementById('btnResendCode')};
+  if(els.title) els.title.textContent='🔐 Authenticator Verify';
+  if(els.sub)   els.sub.textContent='Authenticator app se Lexora ka code enter kariye';
+  if(els.instr) els.instr.style.display='block';
+  if(els.demo)  els.demo.style.display='none';
+  if(els.timerRow) els.timerRow.style.display='none';
+  if(els.resend)   els.resend.style.display='none';
+  var inp=document.getElementById('verify-code'); if(inp) inp.value='';
+  clearError('verify-err');
+  _startTotpCountdown();
+  authShowView('view-verify');
+}
+
 // UNIFIED OTP SYSTEM
 // ════════════════════════════════════════════════
 let _otpCode     = null;
@@ -124,6 +222,15 @@ let _pendingData = {};   // stores pending login user / registration data / rese
 function startOTP(context, email, title, onSuccess) {
   _otpContext  = context;
   _otpCallback = onSuccess;
+  _totpMode    = false;  // ensure email mode
+
+  // Reset verify view to email OTP mode
+  var instrBox  = document.getElementById('totp-instructions');
+  var timerRow  = document.getElementById('verify-timer-row');
+  var resendBtn = document.getElementById('btnResendCode');
+  if(instrBox)  instrBox.style.display  = 'none';
+  if(timerRow)  timerRow.style.display  = '';
+  if(resendBtn) resendBtn.style.display = '';
 
   const smtpCfg    = JSON.parse(localStorage.getItem('lexora_smtp') || '{}');
   const expiryMins = parseInt(smtpCfg.expiry_minutes) || 4;
@@ -180,19 +287,36 @@ function _startOTPTimer(mins) {
   }, 1000);
 }
 
-function handleVerifyCode() {
+async function handleVerifyCode() {
   clearAllErrors();
   const code = (document.getElementById('verify-code').value||'').trim();
-  if (!code)                    { showError('verify-err','Enter the verification code.'); return; }
-  if (!_otpCode)                { authShowView('view-login'); return; }
-  if (Date.now() > _otpExpiry)  { showError('verify-err','Code expired. Click Resend.'); return; }
-  if (code !== _otpCode)        { showError('verify-err','Incorrect code. Try again.'); return; }
+  if (!code) { showError('verify-err','Code enter kariye.'); return; }
 
-  clearInterval(_otpTimer);
-  if (_otpCallback) _otpCallback();
+  if (_totpMode) {
+    // ── TOTP path ──────────────────────────────────────────────────
+    if (!_totpPendingSecret) { authShowView('view-login'); return; }
+    const valid = await _verifyTotp(_totpPendingSecret, code);
+    if (!valid) { showError('verify-err','Galat code. App me dobara dekhiye.'); return; }
+    clearInterval(_totpRefreshTimer);
+    _totpMode = false;
+    if (_otpCallback) _otpCallback();
+  } else {
+    // ── Email OTP path ─────────────────────────────────────────────
+    if (!_otpCode)               { authShowView('view-login'); return; }
+    if (Date.now() > _otpExpiry) { showError('verify-err','Code expire ho gaya. Resend kariye.'); return; }
+    if (code !== _otpCode)       { showError('verify-err','Galat code. Dobara try kariye.'); return; }
+    clearInterval(_otpTimer);
+    if (_otpCallback) _otpCallback();
+  }
 }
 
 function resendVerifyCode() {
+  if (_totpMode) {
+    // TOTP mode — no resend needed, just clear input
+    document.getElementById('verify-code').value = '';
+    clearError('verify-err');
+    return;
+  }
   if (!_pendingData.email) { authShowView('view-login'); return; }
   document.getElementById('verify-code').value = '';
   clearError('verify-err');
@@ -202,8 +326,9 @@ function resendVerifyCode() {
 
 function cancelVerify() {
   clearInterval(_otpTimer);
-  _otpCode=null; _otpCallback=null;
-  if (_otpContext==='reset')    { authShowView('view-reset'); }
+  clearInterval(_totpRefreshTimer);
+  _otpCode=null; _otpCallback=null; _totpMode=false; _totpPendingSecret='';
+  if (_otpContext==='reset')         { authShowView('view-reset'); }
   else if (_otpContext==='register') { authShowView('view-create'); }
   else                               { authShowView('view-login'); }
 }
@@ -222,34 +347,19 @@ function handleLogin(e) {
 
   const users = getUsers();
   const user  = users.find(function(u){ return u.email===email && u.active; });
-  if (!user)                                   { showError('login-email-err','No account found.'); return; }
-  if (user.passwordHash !== hashPassword(pw))  { showError('login-pw-err','Incorrect password.'); return; }
-  if (user.status === 'hold')                  { showError('login-email-err','Account on hold. Contact admin.'); return; }
+  if (!user)                                  { showError('login-email-err','No account found.'); return; }
+  if (user.passwordHash !== hashPassword(pw)) { showError('login-pw-err','Incorrect password.'); return; }
+  if (user.status === 'hold')                 { showError('login-email-err','Account on hold. Contact admin.'); return; }
 
-  _pendingData = { user };
+  _pendingData = { user: user, email: user.email };
 
-  // Check if user has 2FA enabled (default: true)
-  if (user.two_factor_auth === false) {
-    // 2FA disabled — skip OTP, login directly
+  startOTP('login', user.email, '🔐 Login Verify', function() {
+    // OTP verified — update lastLogin and complete login
     var us = getUsers();
-    var u  = us.find(function(x){ return x.id===user.id; });
-    if (u) { u.lastLogin=new Date().toISOString(); saveUsers(us); }
+    var u  = us.find(function(x){ return x.id === user.id; });
+    if (u) { u.lastLogin = new Date().toISOString(); saveUsers(us); }
     setSession(user);
-    hideAuthOverlay();
-    if (typeof loadDashboard==='function') loadDashboard();
-    if (typeof loadProfile==='function')   loadProfile();
-    return;
-  }
-
-  // 2FA enabled — send OTP
-  startOTP('login', email, 'Verify Login', function() {
-    var us = getUsers();
-    var u  = us.find(function(x){ return x.id===_pendingData.user.id; });
-    if (u) { u.lastLogin=new Date().toISOString(); saveUsers(us); }
-    setSession(_pendingData.user);
-    hideAuthOverlay();
-    if (typeof loadDashboard==='function') loadDashboard();
-    if (typeof loadProfile==='function')   loadProfile();
+    window.location.reload();
   });
 }
 
@@ -416,3 +526,6 @@ window.cancelVerify        = cancelVerify;
 window.handleResetStep1    = handleResetStep1;
 window.handleResetNewPwd   = handleResetNewPwd;
 window.handleCreateAccount = handleCreateAccount;
+window.startTotpSetup      = startTotpSetup;
+window.confirmTotpSetup    = confirmTotpSetup;
+window.cancelTotpSetup     = cancelTotpSetup;

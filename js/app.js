@@ -936,7 +936,8 @@ var TASK_AGENT_MAP = {
   'extraction': 'extractor',
   'critique':   'critic',
   'quick':      'attorney',
-  'validation': 'ai_validator'
+  'validation': 'ai_validator',
+  'scoring':    'ai_validator'
 };
 
 function _agentLog(agentId, action, detail) {
@@ -973,22 +974,25 @@ async function _callExtractAPI(system, userMsg, task, model) {
   }
 
   var agentId    = TASK_AGENT_MAP[task || 'extraction'] || 'extractor';
-  var finalModel = model || 'anthropic/claude-sonnet-4-5';
+  var taskDefaults = { extraction: 'anthropic/claude-sonnet-4-5', critique: 'anthropic/claude-opus-4.7' };
+  var finalModel = model || taskDefaults[task || 'extraction'] || null;  // null → server uses MODEL_MAP routing
 
   // ── Log: request ──
   _agentLog(agentId, 'Sending request',
     'Model: ' + finalModel + ' | Input: ' + (userMsg || '').slice(0, 80) + '…');
 
+  var reqBody = {
+    system:     finalSystem,
+    messages:   [{ role: 'user', content: userMsg }],
+    task:       task || 'extraction',
+    max_tokens: 16000
+  };
+  if (finalModel) reqBody.model = finalModel;
+
   var r = await fetch('/api/extract', {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system:     finalSystem,
-      messages:   [{ role: 'user', content: userMsg }],
-      task:       task || 'extraction',
-      model:      finalModel,
-      max_tokens: 16000
-    })
+    body: JSON.stringify(reqBody)
   });
   // Use .text() first to avoid "Unexpected end of JSON input" on empty/error responses
   var rawText = await r.text();
@@ -1018,23 +1022,64 @@ async function _callExtractAPI(system, userMsg, task, model) {
 }
 
 // ── Extractor System Prompt (attorney-grade, 71 clauses) ─────────────────────
-var EXTRACTOR_SYSTEM = null;  // Loaded from db/extraction_prompt.txt
+var EXTRACTOR_SYSTEM = null;  // Loaded + rules injected
+var _RULES_BLOCK     = null;  // Cached from db/rules.json
+
+// ── Load LMS rules from rules.json and build injection block ─────────────
+async function _loadRules() {
+  if (_RULES_BLOCK !== null) return _RULES_BLOCK;
+  try {
+    var r = await fetch('/db/rules.json');
+    if (!r.ok) { _RULES_BLOCK = ''; return ''; }
+    var d = await r.json();
+    var approved = (d.approved || []).filter(function(x) {
+      return x.status === 'approved' || x.status === 'active';
+    }).slice(0, 25);
+    if (!approved.length) { _RULES_BLOCK = ''; return ''; }
+    var block = '\n\n═══════════════════════════════════════════════════════\n'
+              + 'LEARNED EXTRACTION RULES (apply precisely):\n'
+              + '═══════════════════════════════════════════════════════\n';
+    approved.forEach(function(rule, i) {
+      block += '\nRULE ' + (i+1) + ' [' + rule.fieldId + ']: ' + rule.ruleText.slice(0, 200);
+    });
+    _RULES_BLOCK = block;
+    return _RULES_BLOCK;
+  } catch(e) { _RULES_BLOCK = ''; return ''; }
+}
 
 async function _loadExtractionPrompt() {
   if (EXTRACTOR_SYSTEM) return EXTRACTOR_SYSTEM;
+  var base = '';
   try {
     var r = await fetch('/db/extraction_prompt.txt?_=' + Date.now());
-    if (r.ok) { EXTRACTOR_SYSTEM = await r.text(); return EXTRACTOR_SYSTEM; }
+    if (r.ok) base = await r.text();
   } catch(e) {}
-  // Fallback: inline basic prompt
-  EXTRACTOR_SYSTEM = (
-    'You are an attorney-grade commercial lease abstraction AI. ' +
-    'Extract all lease fields and return ONLY valid JSON — no markdown fences. ' +
-    'For missing fields write "Lease is silent." ' +
-    'Cite section and page for each field. ' +
-    'Use abbreviations: TT=Tenant, LL=Landlord, LCD=Lease Commencement Date, LED=Lease Expiration Date.'
-  );
+  if (!base) {
+    base = 'You are an attorney-grade commercial lease abstraction AI. '
+         + 'Extract all lease fields and return ONLY valid JSON — no markdown fences. '
+         + 'For missing fields write "Lease is silent." '
+         + 'Cite section and page for each field. '
+         + 'Use abbreviations: TT=Tenant, LL=Landlord, LCD=Lease Commencement Date, LED=Lease Expiration Date.';
+  }
+  var rules = await _loadRules();
+  EXTRACTOR_SYSTEM = base + rules;
+  if (rules.length > 10) addLog('📚 ' + ((rules.match(/RULE \d+/g) || []).length) + ' LMS rules injected', 'info');
   return EXTRACTOR_SYSTEM;
+}
+
+// ── Retry wrapper (max 1 retry, 3s backoff) ───────────────────────────────
+async function _callExtractAPIWithRetry(system, userMsg, task, model) {
+  for (var attempt = 0; attempt <= 1; attempt++) {
+    try {
+      return await _callExtractAPI(system, userMsg, task, model);
+    } catch(err) {
+      if (attempt === 0) {
+        var aid = TASK_AGENT_MAP[task || 'extraction'] || 'extractor';
+        _agentLog(aid, 'Retry 1/1', err.message.slice(0, 80) + ' → 3s wait');
+        await new Promise(function(res){ setTimeout(res, 3000); });
+      } else { throw err; }
+    }
+  }
 }
 
 // ── JS Validator (pure JS, no API cost) ─────────────────────────────────────
@@ -1354,20 +1399,71 @@ async function processFileStages(fileIndex) {
 
     if (isStopped) { _handleStop(fileIndex); return; }
 
-    // ── STEP 3: Create JSON from input file (Extractor Agent) ─────────────
-    updateFileStatus(fileIndex, 'Processing', '40%', 'Processing');
-    _actLog(fileName, 'Step 3 — Extract', 'Calling Extractor Agent (Claude Sonnet 4.5)...', 'info');
+    // ── STEP 3: 2-Pass Extraction ─────────────────────────────────────────
+
+    // Pass 1 — core fields (parties, dates, rent, CAM, options, insurance, contacts)
+    var PASS1_SCHEMA = JSON.stringify({
+      document_list: [],
+      parties: { tenant_legal_name:"", tenant_dba:"", tenant_type_of_organization:"",
+                 tenant_state_of_organization:"", landlord_legal_name:"", guarantor:"", guarantor_name:"" },
+      premises: { property_address:"", premises_size:"", lease_type:"" },
+      term: { sign_date:"", lease_commencement_date:"", rent_commencement_date:"",
+              lease_expiration_date:"", lease_term:"", rental_term:"", delivery_of_possession:"",
+              lease_year_definition:"", rent_abatement:"", proration:"" },
+      rent: { rent_schedule:[], rent_escalation:"", prepaid_rent_cam:"", security_deposit:"",
+              late_fee:"", interest_on_late_payment:"", percentage_rent:"", holdover:"" },
+      cam_opex: { cam_detail:"", cam_pro_rata_share:"", cam_inclusions:"", real_property_taxes_pro_rata_share:"" },
+      options: { renewal_options:"", renewal_notice:"" },
+      insurance: "",
+      contacts: { tenant_notice:"", tenant_billing:"", landlord_notice:"", guarantor_contact:"" }
+    }, null, 1);
+
+    // Pass 2 — legal clauses
+    var PASS2_SCHEMA = JSON.stringify({
+      assignment_subletting: { with_consent:"", corporate_transfer:"", excess_rent_split:"",
+                               permitted_transfers:"", notice_period:"", assignment_fee:"", tenant_liability:"" },
+      use: { permitted_use:"", prohibited_use:"", go_dark:"", failure_to_open:"" },
+      utilities: "", repairs: { tenant_repair:"", roof_repair:"" }, alterations:"",
+      default: { monetary_default:"", non_monetary_default:"" },
+      estoppel:"", subordination:"", ti_allowance:"", tenancy_type:"",
+      brokers: { landlord_broker:"", tenant_broker:"" },
+      miscellaneous:"", amendment_notes:"", queries_assumptions:[]
+    }, null, 1);
+
+    updateFileStatus(fileIndex, 'Processing', '20%', 'Processing');
+    _actLog(fileName, 'Step 3a — Extract', 'Pass 1/2: Core fields (parties, dates, rent, CAM, insurance)…', 'info');
     _setActiveAgent('extractor');
 
-    var textForAI = leaseText.substring(0, 40000);
-    var rawJson   = '';
+    var textForAI = leaseText.substring(0, 68000);  // 68K chars ≈ 17K tokens; captures ~Sec. 25 in 40-page leases
+    var sysPrompt = await _loadExtractionPrompt();
     var parsed    = null;
 
     try {
-      rawJson = await _callExtractAPI(EXTRACTOR_SYSTEM, textForAI, 'extraction');
-      parsed  = _parseExtractionJSON(rawJson);
-      if (!parsed) throw new Error('Could not parse AI response as JSON');
-      _actLog(fileName, 'Step 3 — Extract', 'Extraction complete — ' + Object.keys(parsed).length + ' sections', 'success');
+      // ── Pass 1: core fields ──────────────────────────────────────────────
+      var p1msg = 'Extract ONLY the following sections. Return ONLY valid JSON matching this schema:\n'
+                + PASS1_SCHEMA
+                + '\n\nLEASE TEXT:\n' + textForAI;
+      updateFileStatus(fileIndex, 'Processing', '28%', 'Processing');
+      var p1raw    = await _callExtractAPIWithRetry(sysPrompt, p1msg, 'extraction');
+      var pass1    = _parseExtractionJSON(p1raw);
+      _actLog(fileName, 'Step 3a — Extract', 'Pass 1 complete: ' + (pass1 ? Object.keys(pass1).length : 0) + ' sections', 'success');
+
+      updateFileStatus(fileIndex, 'Processing', '38%', 'Processing');
+
+      // ── Pass 2: legal clauses ────────────────────────────────────────────
+      _actLog(fileName, 'Step 3b — Extract', 'Pass 2/2: Legal clauses (assignment, use, default, options, misc)…', 'info');
+      var p2msg = 'Extract ONLY the following legal clause sections. Return ONLY valid JSON matching this schema:\n'
+                + PASS2_SCHEMA
+                + '\n\nLEASE TEXT:\n' + textForAI;
+      var p2raw    = await _callExtractAPIWithRetry(sysPrompt, p2msg, 'extraction');
+      var pass2    = _parseExtractionJSON(p2raw);
+      _actLog(fileName, 'Step 3b — Extract', 'Pass 2 complete: ' + (pass2 ? Object.keys(pass2).length : 0) + ' clauses', 'success');
+
+      // ── Merge passes ─────────────────────────────────────────────────────
+      parsed = Object.assign({}, pass1 || {}, pass2 || {});
+      if (!parsed || Object.keys(parsed).length === 0) throw new Error('Both passes returned empty JSON');
+      _actLog(fileName, 'Step 3 — Merge', 'Merged: ' + Object.keys(parsed).length + ' total sections', 'success');
+
     } catch(apiErr) {
       _actLog(fileName, 'Step 3 — Extract', 'API error: ' + apiErr.message + ' — using demo data', 'warning');
       parsed = _getDemoData(fileName);
@@ -1376,22 +1472,95 @@ async function processFileStages(fileIndex) {
     if (isStopped) { _handleStop(fileIndex); return; }
 
     // ── STEP 3.5: JS Validator ────────────────────────────────────────────
-    updateFileStatus(fileIndex, 'Processing', '55%', 'Processing');
+    updateFileStatus(fileIndex, 'Processing', '57%', 'Processing');
     var validation = _jsValidator(parsed);
     _markAgentDone('extractor');
     _setActiveAgent('validator');
-    _actLog(fileName, 'Step 3.5 — Validate', 'JS Validator: ' + validation.fieldCount + ' fields found, ' + validation.flagCount + ' flags raised (no API cost)', 'info');
-    _agentLog('validator', 'Validation complete', validation.fieldCount + ' fields extracted | ' + validation.flagCount + ' flags raised' + (validation.flagCount > 0 ? ' → Critic review needed' : ' → No issues'));
+    _actLog(fileName, 'Step 3.5 — Validate', 'JS Validator: ' + validation.fieldCount + ' fields, ' + validation.flagCount + ' flags (free)', 'info');
+    _agentLog('validator', 'JS validation complete', validation.fieldCount + ' fields | ' + validation.flagCount + ' flags' + (validation.flagCount > 0 ? ' → AI review' : ' → clean'));
     _markAgentDone('validator');
 
-    // Calculate accuracy now (both parsed + validation available)
-    var _accuracy = _calcAccuracy(parsed, validation);
+    if (isStopped) { _handleStop(fileIndex); return; }
+
+    // ── STEP 3.7: GPT-4o-mini AI Validation ──────────────────────────────
+    updateFileStatus(fileIndex, 'Processing', '62%', 'Processing');
+    _setActiveAgent('ai_validator');
+    _actLog(fileName, 'Step 3.7 — AI Validate', 'GPT-4o-mini quality check…', 'info');
+    var aiValidation = null;
+    try {
+      var valSys = 'You are a commercial lease abstraction QC validator. Analyze the extracted data and return ONLY valid JSON — no markdown, no code fences:\n'
+                 + '{"is_valid":true/false,"confidence_score":0.0-1.0,"missing_critical":["field names"],"low_confidence":["fields"],"suggestions":["improvements"],"summary":"one sentence"}';
+      var valUser = 'Check this lease extraction for completeness and accuracy:\n\n' + JSON.stringify(parsed, null, 1).slice(0, 5000);
+      var valRaw  = await _callExtractAPIWithRetry(valSys, valUser, 'validation');
+      var valParsed = _parseExtractionJSON(valRaw);
+      if (valParsed) {
+        aiValidation = valParsed;
+        var confPct = Math.round((valParsed.confidence_score || 0) * 100);
+        _actLog(fileName, 'Step 3.7 — AI Validate', 'Confidence: ' + confPct + '% | Missing: ' + (valParsed.missing_critical || []).join(', '), confPct >= 70 ? 'success' : 'warning');
+        _agentLog('ai_validator', 'QC complete', confPct + '% confidence | ' + (valParsed.missing_critical || []).length + ' missing fields');
+        if (valParsed.suggestions && valParsed.suggestions.length) {
+          valParsed.suggestions.slice(0, 3).forEach(function(s) { _agentLog('ai_validator', 'Suggestion', s.slice(0, 100)); });
+        }
+      }
+    } catch(valErr) {
+      _actLog(fileName, 'Step 3.7 — AI Validate', 'Skipped: ' + valErr.message.slice(0, 60), 'warning');
+    }
+
+    if (isStopped) { _handleStop(fileIndex); return; }
+
+    // ── STEP 3.8: Per-field Confidence Scoring (flagged fields only) ──────
+    updateFileStatus(fileIndex, 'Processing', '68%', 'Processing');
+    var allFlags = validation.flags.slice(0, 8);
+    if (aiValidation && aiValidation.missing_critical) {
+      aiValidation.missing_critical.forEach(function(f) {
+        if (!allFlags.find(function(x){ return x.id === f; })) {
+          allFlags.push({ id: f, category: 'ai_missing', severity: 'medium', requiresAI: true });
+        }
+      });
+    }
+    var fieldScores = {};
+    if (allFlags.length > 0) {
+      _actLog(fileName, 'Step 3.8 — Score', 'Scoring ' + allFlags.length + ' flagged fields via GPT-4o-mini…', 'info');
+      try {
+        // Filter out any non-object or id-less flags (defensive)
+        var scorableFlags = allFlags.filter(function(f) { return f && typeof f.id === 'string'; });
+        var scoreFields = scorableFlags.map(function(f) {
+          var parts = f.id.split('.');
+          var val   = (parts.length === 2 && parsed[parts[0]]) ? parsed[parts[0]][parts[1]] : (parsed[f.id] || '');
+          return { field: f.id, value: val || '(empty)', severity: f.severity };
+        });
+        var scoreSys  = 'You are a lease data scorer. Score each field confidence. Return ONLY valid JSON:\n'
+                      + '{"scores":[{"field":"name","confidence":0.0-1.0,"flag":true/false,"reason":"brief"}]}';
+        var scoreUser = 'Score these extracted lease fields:\n' + JSON.stringify(scoreFields, null, 1);
+        var scoreRaw  = await _callExtractAPIWithRetry(scoreSys, scoreUser, 'scoring');
+        var scoreParsed = _parseExtractionJSON(scoreRaw);
+        if (scoreParsed && scoreParsed.scores) {
+          scoreParsed.scores.forEach(function(s) { fieldScores[s.field] = s; });
+          var flagged = scoreParsed.scores.filter(function(s){ return s.flag; });
+          _actLog(fileName, 'Step 3.8 — Score', flagged.length + ' fields scored below threshold → critic review', flagged.length > 0 ? 'warning' : 'success');
+          _agentLog('ai_validator', 'Scoring complete', scoreParsed.scores.length + ' fields | ' + flagged.length + ' flagged');
+          // Force critic if critical fields have low confidence
+          var criticalLow = scoreParsed.scores.filter(function(s){ return s.confidence < 0.65 && s.flag; });
+          if (criticalLow.length > 0) {
+            allFlags.forEach(function(f) { f.requiresAI = true; });
+          }
+        }
+      } catch(scoreErr) {
+        _actLog(fileName, 'Step 3.8 — Score', 'Scoring skipped: ' + scoreErr.message.slice(0, 60), 'warning');
+      }
+    }
+    _markAgentDone('ai_validator');
+
+    // ── Calculate accuracy (using AI validation score if available) ──────
+    var _accuracy = aiValidation && aiValidation.confidence_score
+      ? Math.round(aiValidation.confidence_score * 100)
+      : _calcAccuracy(parsed, validation);
 
     // Display extracted data table
     _displayExtractedTable(fileIndex, parsed);
 
     // ── STEP 4: Read Output Template Format ───────────────────────────────
-    updateFileStatus(fileIndex, 'Processing', '65%', 'Processing');
+    updateFileStatus(fileIndex, 'Processing', '73%', 'Processing');
     _actLog(fileName, 'Step 4 — Template', 'Reading output template...', 'info');
     _setActiveAgent('attorney');
     var templateInfo = await _readTemplateFile();
@@ -1406,7 +1575,7 @@ async function processFileStages(fileIndex) {
     if (isStopped) { _handleStop(fileIndex); return; }
 
     // ── STEP 5: Set JSON data into output template format ─────────────────
-    updateFileStatus(fileIndex, 'Processing', '80%', 'Processing');
+    updateFileStatus(fileIndex, 'Processing', '84%', 'Processing');
     _actLog(fileName, 'Step 5 — Format', 'Mapping extracted data to output format...', 'info');
     _markAgentDone('attorney');
     _setActiveAgent('foreman');
@@ -1444,8 +1613,11 @@ async function processFileStages(fileIndex) {
     _actLog(fileName, 'Step 6 — Output', 'Generating PDF: ' + outName + ' (accuracy: ' + _accuracy + '%)', 'info');
     _agentLog('foreman', 'Output generation', 'Accuracy: ' + _accuracy + '% | File: ' + outName);
 
+    // Map 2-pass extraction JSON → Midtown National PDF field structure
+    var pdfData = _mapExtractedToPDFFormat(parsed);
+
     try {
-      var pdfResult = await _generatePDF(parsed, outName, fileName);
+      var pdfResult = await _generatePDF(pdfData, outName, fileName);
       if (pdfResult && pdfResult.url && fileStatuses[fileIndex]) {
         fileStatuses[fileIndex].downloadUrl  = pdfResult.url;
         fileStatuses[fileIndex].downloadName = pdfResult.name || outName;
@@ -1484,6 +1656,150 @@ async function processFileStages(fileIndex) {
 }
 
 // ── Demo data fallback ────────────────────────────────────────────────────────
+// ── Map 2-pass extraction JSON → _generatePDF data structure ────────────────
+function _mapExtractedToPDFFormat(ex) {
+  var p   = ex.parties      || {};
+  var pre = ex.premises     || {};
+  var trm = ex.term         || {};
+  var rnt = ex.rent         || {};
+  var cam = ex.cam_opex     || {};
+  var opt = ex.options      || {};
+  var con = ex.contacts     || {};
+  var brk = ex.brokers      || {};
+  var use = ex.use          || {};
+  var def = ex.default      || {};
+  var rep = ex.repairs      || {};
+  var asg = ex.assignment_subletting || {};
+
+  // Annual rent from first non-zero period
+  var annRent = '0.00';
+  var rs = Array.isArray(rnt.rent_schedule) ? rnt.rent_schedule : [];
+  var firstRent = rs.find(function(r){
+    if (!r) return false;
+    var mo = parseFloat((r.monthly_base_rent||r.monthly_amount||'0').replace(/[$,\s]/g,''));
+    return !isNaN(mo) && mo > 0;
+  });
+  if (firstRent) {
+    var mo = parseFloat((firstRent.monthly_base_rent||firstRent.monthly_amount||'0').replace(/[$,]/g,'')) || 0;
+    annRent = (mo * 12).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+
+  // Months from term string
+  var termMonths = '0.00';
+  var mMatch = (trm.lease_term||'').match(/(\d+)/);
+  if (mMatch) termMonths = parseFloat(mMatch[1]).toFixed(2);
+
+  // Late fee %
+  var lfPct = '0.00', lfGrace = '0';
+  var lfStr = rnt.late_fee || '';
+  var pm = lfStr.match(/(\d+(?:\.\d+)?)\s*%/);  if (pm) lfPct   = pm[1];
+  var gm = lfStr.match(/(\d+)\s*day/i);          if (gm) lfGrace = gm[1];
+
+  var lease_info = {
+    tenant_name:           p.tenant_legal_name      || '',
+    dba:                   p.tenant_dba             || '',
+    status:                'Active',
+    property_code:         '',
+    ics_code:              '',
+    lease_type:            pre.lease_type           || '',
+    location:              pre.property_address     || '',
+    sales_category:        'General',
+    contract_area_sf:      pre.premises_size        || '0.00',
+    area:                  pre.premises_size        || '0.00',
+    customer:              '-',
+    primary_contact_name:  p.tenant_legal_name      || '',
+    primary_contact_phone: '',
+    primary_contact_email: '',
+    annual_rent:           annRent,
+    deposit:               rnt.security_deposit     || '0.00',
+    lease_term_from:       trm.lease_commencement_date || trm.rent_commencement_date || '',
+    lease_term_to:         trm.lease_expiration_date   || ''
+  };
+
+  // Charge schedules
+  var charge_schedules = rs.map(function(r) {
+    if (!r) return null;
+    return {
+      charge_code:      'rent',
+      charge_desc:      'Base Rent',
+      date_from:        r.from_date    || r.date_from    || r.period_start || '',
+      date_to:          r.to_date      || r.date_to      || r.period_end   || '',
+      monthly_amt:      r.monthly_base_rent || r.monthly_amount || '',
+      annual_amt:       r.annual_base_rent  || r.annual_amount  || '',
+      amt_per_area_psf: r.rent_per_sf || r.per_sf  || '',
+      amendment_type:   'Original Lease',
+      units:            ''
+    };
+  }).filter(Boolean);
+
+  var amendments = [{
+    type: 'Original Lease', description: 'Original Lease', status: 'In Process',
+    term_months: termMonths,
+    date_from:   trm.lease_commencement_date || '',
+    date_to:     trm.lease_expiration_date   || '',
+    units:       ''
+  }];
+
+  var late_fee = { calculation_type:'% Owed-Total', grace_period_days: lfGrace, percent: lfPct, per_day_fee:'0.00' };
+
+  var _c = function(desc) { return (desc && desc.trim() !== '') ? desc : 'Lease is silent.'; };
+
+  var clauses = {
+    assign:         { name:'Assignment & Sublease',              description: _c(asg.with_consent || asg.corporate_transfer) },
+    rent:           { name:'Rent',                               description: _c(rnt.rent_escalation) },
+    cotenanc:       { name:'Co-Tenancy',                         description: 'Lease is silent.' },
+    default:        { name:'Default',                            description: _c([def.monetary_default, def.non_monetary_default].filter(Boolean).join(' | ')) },
+    estoppel:       { name:'Estoppel',                           description: _c(ex.estoppel) },
+    conuse:         { name:'Continuous Use or Go Dark',          description: _c(use.go_dark) },
+    guaranty:       { name:'Guaranty',                           description: _c(p.guarantor_name ? 'Guarantor: ' + p.guarantor_name + (p.guarantor ? ' — ' + p.guarantor : '') : p.guarantor) },
+    pro_rata:       { name:'Pro Rata Definition',                description: _c(cam.cam_pro_rata_share) },
+    holdover:       { name:'Holdover',                           description: _c(rnt.holdover) },
+    late_fee_clause:{ name:'Late Fee',                           description: _c(rnt.late_fee) },
+    opex_cam:       { name:'OpEx/CAM',                           description: _c(cam.cam_detail || cam.cam_inclusions) },
+    parking:        { name:'Parking',                            description: 'Lease is silent.' },
+    insreimb:       { name:'Insurance Reimbursement',            description: _c(ex.insurance) },
+    radius:         { name:'Radius Restriction',                 description: 'Lease is silent.' },
+    brokers:        { name:'Brokers',                            description: _c([brk.landlord_broker ? 'LL: '+brk.landlord_broker : '', brk.tenant_broker ? 'TT: '+brk.tenant_broker : ''].filter(Boolean).join(' | ')) },
+    taxes:          { name:'Real Estate Taxes',                  description: _c(cam.real_property_taxes_pro_rata_share) },
+    signage:        { name:'Signage',                            description: 'Lease is silent.' },
+    kickout:        { name:'Sales Kickout',                      description: 'Lease is silent.' },
+    alter:          { name:'Alterations',                        description: _c(ex.alterations) },
+    snda:           { name:'Subordination',                      description: _c(ex.subordination) },
+    prohib:         { name:'Prohibited Use',                     description: _c(use.prohibited_use) },
+    permit:         { name:'Permitted Use',                      description: _c(use.permitted_use) },
+    percent:        { name:'Percentage Rent / Gross Sales',      description: _c(rnt.percentage_rent) },
+    tt_ins:         { name:'Tenant Insurance',                   description: _c(ex.insurance) },
+    utility:        { name:'Utilities',                          description: _c(ex.utilities) },
+    mktg:           { name:'Advertising/Marketing Fund',         description: 'Lease is silent.' },
+    security:       { name:'Security Deposit',                   description: _c(rnt.security_deposit ? 'Amount: ' + rnt.security_deposit : '') },
+    ti_allow:       { name:'TI Allowance',                       description: _c(ex.ti_allowance) },
+    exclusiv:       { name:'Tenant Exclusives',                  description: 'Lease is silent.' },
+    restrict:       { name:'LL\'s Restriction',                  description: 'Lease is silent.' },
+    llrepair:       { name:'LL\'s Repair',                       description: 'Lease is silent.' },
+    ttrep:          { name:'TT\'s Repair',                       description: _c(rep.tenant_repair) },
+    misc:           { name:'Miscellaneous',                      description: _c(ex.miscellaneous) },
+    reloc:          { name:'Relocation Option',                  description: 'Lease is silent.' },
+    roof:           { name:'Roof Repairs',                       description: _c(rep.roof_repair) }
+  };
+
+  var contacts = [];
+  if (con.tenant_notice)  contacts.push({ role:'Notice',   company: p.tenant_legal_name||'',   name: p.tenant_legal_name||'',   address: con.tenant_notice,   phone:'', email:'' });
+  if (con.tenant_billing) contacts.push({ role:'Billing',  company: p.tenant_legal_name||'',   name: p.tenant_legal_name||'',   address: con.tenant_billing,  phone:'', email:'' });
+  if (con.landlord_notice)contacts.push({ role:'Landlord', company: p.landlord_legal_name||'', name: p.landlord_legal_name||'', address: con.landlord_notice, phone:'', email:'' });
+  if (con.guarantor_contact) contacts.push({ role:'Guarantor', company: p.guarantor_name||'', name: p.guarantor_name||'', address: con.guarantor_contact, phone:'', email:'' });
+  if (!contacts.length) contacts.push({ role:'Billing', company: p.tenant_legal_name||'', name: p.tenant_legal_name||'', address:'', phone:'', email:'' });
+
+  return {
+    lease_info:          lease_info,
+    charge_schedules:    charge_schedules,
+    amendments:          amendments,
+    late_fee:            late_fee,
+    clauses:             clauses,
+    contacts:            contacts,
+    queries_assumptions: Array.isArray(ex.queries_assumptions) ? ex.queries_assumptions : []
+  };
+}
+
 function _getDemoData(fileName) {
   return {
     lease_info: {
@@ -1581,7 +1897,7 @@ function _safeParseJson(text) {
   return { raw_extraction: text, parse_error: true };
 }
 
-function _jsValidator(data) {
+function _legacyFlatValidator(data) {
   var CRITICAL = ['tenant_name','landlord_name','property_address','lease_start_date','lease_end_date','base_rent'];
   var flags = [], fieldCount = 0;
   CRITICAL.forEach(function(f) {

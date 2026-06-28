@@ -479,6 +479,31 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
             return
 
 
+        # /api/auth/save-totp — Store TOTP secret in users.json
+        if p == "/api/auth/save-totp":
+            try:
+                data   = json.loads(body)
+                email  = data.get("email","").lower().strip()
+                secret = data.get("secret","").upper().strip()
+                if not email or not secret:
+                    self._json({"success":False,"error":"email and secret required"},400); return
+                users = self._read(USERS_FILE)
+                if isinstance(users,dict): users = []
+                found = False
+                for u in users:
+                    if u.get("email","").lower() == email:
+                        u["totp_secret"] = secret
+                        found = True; break
+                if found:
+                    self._write(USERS_FILE, users)
+                    self._log(f"🔐  TOTP secret saved for {email}")
+                    self._json({"success": True})
+                else:
+                    self._json({"success":False,"error":"User not found"},404)
+            except Exception as e:
+                self._json({"success":False,"error":str(e)},400)
+            return
+
         # /api/auth/sendcode — Send verification code email for login
         if p == "/api/auth/sendcode":
             try:
@@ -677,6 +702,7 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
                     'extraction': 'anthropic/claude-sonnet-4-5',
                     'critique':   'anthropic/claude-opus-4.7',
                     'validation': 'openai/gpt-4o-mini',
+                    'scoring':    'openai/gpt-4o-mini',
                     'quick':      'openai/gpt-4o-mini',
                 }
                 if not data.get('model'):
@@ -696,10 +722,10 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
                 if system_msg and len(system_msg) > 25000:
                     system_msg = system_msg[:25000]
 
-                # Trim user message if too large (max 35000 chars ~9000 tokens)
+                # Trim user message if too large (max 70000 chars ~17500 tokens; safe for 200K context window)
                 for msg in messages:
-                    if isinstance(msg.get('content'), str) and len(msg['content']) > 35000:
-                        msg['content'] = msg['content'][:35000] + '\n[...TRUNCATED FOR TOKEN LIMIT...]'
+                    if isinstance(msg.get('content'), str) and len(msg['content']) > 70000:
+                        msg['content'] = msg['content'][:70000] + '\n[...TRUNCATED FOR TOKEN LIMIT...]'
 
                 or_messages = []
                 if system_msg:
