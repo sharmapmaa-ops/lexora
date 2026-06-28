@@ -556,6 +556,12 @@ function handleFileSelect(event) {
       });
     }
     updateFileTable();
+    // Update file count badge
+    var countEl = document.getElementById('uploadFileCount');
+    if (countEl) {
+      countEl.textContent = uploadedFiles.length + (uploadedFiles.length === 1 ? ' file selected' : ' files selected');
+      countEl.style.display = 'inline-block';
+    }
   }
   event.target.value = '';
 }
@@ -1010,13 +1016,25 @@ async function _callExtractAPI(system, userMsg, task, model) {
 
   var resultText = (d.content && d.content[0] && d.content[0].text) || '';
   var usage      = d.usage || {};
-  var tokStr     = usage.input_tokens
+
+  // ── Calculate API credit cost ──
+  var MODEL_PRICING = {
+    'anthropic/claude-sonnet-4-5': { input: 3.00,  output: 15.00 },
+    'anthropic/claude-opus-4.7':   { input: 15.00, output: 75.00 },
+    'anthropic/claude-haiku-4-5':  { input: 0.80,  output: 4.00  },
+    'openai/gpt-4o-mini':          { input: 0.15,  output: 0.60  },
+    'openai/gpt-4o':               { input: 2.50,  output: 10.00 },
+  };
+  var mPrice    = MODEL_PRICING[finalModel] || MODEL_PRICING['anthropic/claude-sonnet-4-5'];
+  var costUSD   = ((usage.input_tokens||0)*mPrice.input + (usage.output_tokens||0)*mPrice.output) / 1e6;
+  var tokStr    = usage.input_tokens
     ? (usage.input_tokens + ' in / ' + usage.output_tokens + ' out tokens')
     : '';
+  var creditStr = costUSD > 0 ? ' | 💰 $' + costUSD.toFixed(5) : '';
 
   // ── Log: response ──
   _agentLog(agentId, 'Response received',
-    (tokStr ? tokStr + ' | ' : '') + resultText.slice(0, 80) + (resultText.length > 80 ? '…' : ''));
+    (tokStr ? tokStr + creditStr + ' | ' : '') + resultText.slice(0, 80) + (resultText.length > 80 ? '…' : ''));
 
   return resultText;
 }
@@ -2198,6 +2216,12 @@ function handleFileSelectTrans(event) {
       });
     }
     updateFileTableTrans();
+    // Update file count badge
+    var countEl = document.getElementById('uploadFileCountTrans');
+    if (countEl) {
+      countEl.textContent = uploadedFilesTrans.length + (uploadedFilesTrans.length === 1 ? ' file selected' : ' files selected');
+      countEl.style.display = 'inline-block';
+    }
   }
   event.target.value = '';
 }
@@ -2326,8 +2350,7 @@ function startProcessTrans() {
   if (actionButtons) actionButtons.style.display = 'none';
   if (actionButtonsRunning) actionButtonsRunning.style.display = 'flex';
   
-  addLogTrans('🚀 Process started with ' + totalFilesTrans + ' file(s)', 'success');
-  addLogTrans('📋 Output template: Default', 'info');
+  addLogTrans('🚀 Translation started — ' + totalFilesTrans + ' file(s) | Language: ' + ((document.getElementById('targetLanguage')||{}).value||'English'), 'success');
   
   processNextFileTrans();
 }
@@ -2362,126 +2385,132 @@ function processFileStagesTrans(fileIndex) {
     return;
   }
 
-  if (isPausedTrans) {
-    updateFileStatusTrans(fileIndex, 'Processing', fileStatusesTrans[fileIndex]?.status || '0%', 'Paused');
-    setTimeout(() => processFileStagesTrans(fileIndex), 500);
-    return;
-  }
+  var file     = uploadedFilesTrans[fileIndex];
+  var fileName = file.name;
+  var targetLang = (document.getElementById('targetLanguage') || {}).value || 'English';
 
-  addLogTrans(`📄 Processing: ${uploadedFilesTrans[fileIndex].name}`, 'info');
-  
-  updateFileStatusTrans(fileIndex, 'Processing', '5%', 'Processing');
-  setTimeout(() => {
-    if (isStoppedTrans || isPausedTrans) return processFileStagesTrans(fileIndex);
-    updateFileStatusTrans(fileIndex, 'Processing', '10%', 'Processing');
-    
-    setTimeout(() => {
-      if (isStoppedTrans || isPausedTrans) return processFileStagesTrans(fileIndex);
-      updateFileStatusTrans(fileIndex, 'Processing', '25%', 'Processing');
-      
-      setTimeout(() => {
-        if (isStoppedTrans || isPausedTrans) return processFileStagesTrans(fileIndex);
-        updateFileStatusTrans(fileIndex, 'Processing', '35%', 'Processing');
-        
-        setTimeout(() => {
-          if (isStoppedTrans || isPausedTrans) return processFileStagesTrans(fileIndex);
-          updateFileStatusTrans(fileIndex, 'Processing', '45%', 'Processing');
-          const scanPass = Math.random() > 0.2;
-          
-          setTimeout(() => {
-            if (isStoppedTrans || isPausedTrans) return processFileStagesTrans(fileIndex);
-            updateFileStatusTrans(fileIndex, 'Processing', '55%', 'Processing');
-            const humanReview = document.getElementById('humanReviewTrans')?.checked || false;
-            
-            setTimeout(() => {
-              if (isStoppedTrans || isPausedTrans) return processFileStagesTrans(fileIndex);
-              updateFileStatusTrans(fileIndex, 'Processing', '65%', 'Processing');
-              
-              setTimeout(() => {
-                if (isStoppedTrans || isPausedTrans) return processFileStagesTrans(fileIndex);
-                updateFileStatusTrans(fileIndex, 'Processing', '80%', 'Processing');
-                
-                setTimeout(() => {
-                  if (isStoppedTrans || isPausedTrans) return processFileStagesTrans(fileIndex);
-                  updateFileStatusTrans(fileIndex, 'Processing', '90%', 'Processing');
-                  
-                  setTimeout(() => {
-                    if (isStoppedTrans) {
-                      updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Stopped');
-                      addLogTrans(`❌ ${uploadedFilesTrans[fileIndex].name} stopped`, 'error');
-                      currentFileIndexTrans++;
-                      setTimeout(processNextFileTrans, 500);
-                      return;
-                    }
-                    
-                    if (isPausedTrans) {
-                      updateFileStatusTrans(fileIndex, 'Processing', '90%', 'Paused');
-                      setTimeout(() => processFileStagesTrans(fileIndex), 500);
-                      return;
-                    }
-                    
-                    if (scanPass) {
-                      if (Math.random() < 0.10) {
-                        updateFileStatusTrans(fileIndex, 'Pass', '75%', 'Error');
-                        addLogTrans(`❌ ${uploadedFilesTrans[fileIndex].name} error at 75%`, 'error');
-                        currentFileIndexTrans++;
-                        setTimeout(processNextFileTrans, 500);
-                        return;
-                      }
-                      updateFileStatusTrans(fileIndex, 'Pass', '100%', 'Download');
-                      addLogTrans(`✅ ${uploadedFilesTrans[fileIndex].name} completed`, 'success');
-                    } else {
-                      updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
-                      addLogTrans(`❌ ${uploadedFilesTrans[fileIndex].name} scan failed`, 'error');
-                    }
-                    currentFileIndexTrans++;
-                    setTimeout(processNextFileTrans, 500);
-                  }, 400);
-                }, 500);
-              }, 500);
-            }, humanReview ? 800 : 400);
-          }, 500);
-        }, 500);
-      }, 500);
-    }, 500);
-  }, 500);
+  addLogTrans(`📄 Processing: ${fileName}`, 'info');
+  updateFileStatusTrans(fileIndex, 'Processing', '10%', 'Processing');
+  _setActiveAgentTrans('foreman');
+  addLogTrans(`Step 1 — Scan: ${fileName} (${(file.size/1024).toFixed(1)} KB)`, 'info');
+
+  // Step 2: Extract text from file
+  updateFileStatusTrans(fileIndex, 'Processing', '25%', 'Processing');
+  _markAgentDoneTrans('foreman'); _setActiveAgentTrans('reader');
+  addLogTrans('Step 2 — Read: Extracting text...', 'info');
+
+  _readFileTextTrans(file).then(function(text) {
+    if (!text || text.trim().length === 0) {
+      updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
+      addLogTrans('❌ Could not extract text from file', 'error');
+      currentFileIndexTrans++;
+      setTimeout(processNextFileTrans, 500);
+      return;
+    }
+    addLogTrans(`Step 2 — Read: ${text.length.toLocaleString()} chars extracted`, 'success');
+    updateFileStatusTrans(fileIndex, 'Processing', '40%', 'Processing');
+    _markAgentDoneTrans('reader'); _setActiveAgentTrans('translator');
+
+    // Step 3: Translate via AI
+    addLogTrans(`Step 3 — Translate: Calling AI → ${targetLang}...`, 'info');
+    var sysPrompt = `You are a professional document translator. Translate the following text accurately to ${targetLang}. Preserve all formatting, structure, paragraph breaks, and meaning. Return ONLY the translated text — no explanations, no preamble.`;
+    var userMsg   = `Translate this document to ${targetLang}:\n\n${text.substring(0, 60000)}`;
+
+    return _callExtractAPIWithRetry(sysPrompt, userMsg, 'quick').then(function(translated) {
+      if (!translated || !translated.trim()) {
+        updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
+        addLogTrans('❌ Translation returned empty result', 'error');
+        currentFileIndexTrans++;
+        setTimeout(processNextFileTrans, 500);
+        return;
+      }
+      addLogTrans(`Step 3 — Translate: ${translated.length.toLocaleString()} chars → ${targetLang}`, 'success');
+      updateFileStatusTrans(fileIndex, 'Processing', '80%', 'Processing');
+      _markAgentDoneTrans('translator'); _setActiveAgentTrans('output');
+
+      // Step 4: Generate output file (text blob)
+      addLogTrans('Step 4 — Output: Generating download...', 'info');
+      var baseName  = fileName.replace(/\.[^.]+$/, '');
+      var outName   = baseName + '_' + targetLang.replace(/\s+/g,'_') + '.txt';
+      var blob      = new Blob([translated], { type: 'text/plain;charset=utf-8' });
+      var blobUrl   = URL.createObjectURL(blob);
+
+      updateFileStatusTrans(fileIndex, 'Complete', '100%', 'Download');
+      _markAgentDoneTrans('output');
+
+      // Update file row with download link
+      var tbody = document.getElementById('fileTableBodyTrans');
+      if (tbody) {
+        var rows = tbody.querySelectorAll('tr');
+        if (rows[fileIndex]) {
+          var actionCell = rows[fileIndex].querySelector('td:last-child');
+          if (actionCell) {
+            actionCell.innerHTML = `<a href="${blobUrl}" download="${outName}" style="color:#3b82f6;font-weight:600;text-decoration:none;font-size:0.82rem;"><i class="fas fa-download"></i> Download</a>`;
+          }
+        }
+      }
+      // Show Download All button
+      var dlAll = document.getElementById('btnDownloadAllTrans');
+      if (dlAll) dlAll.style.display = 'inline-flex';
+
+      addLogTrans(`✅ ${outName} ready — ${targetLang} translation complete`, 'success');
+      currentFileIndexTrans++;
+      setTimeout(processNextFileTrans, 300);
+
+    }).catch(function(apiErr) {
+      updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
+      addLogTrans(`❌ API error: ${apiErr.message}`, 'error');
+      currentFileIndexTrans++;
+      setTimeout(processNextFileTrans, 500);
+    });
+
+  }).catch(function(readErr) {
+    updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
+    addLogTrans(`❌ Read error: ${readErr.message}`, 'error');
+    currentFileIndexTrans++;
+    setTimeout(processNextFileTrans, 500);
+  });
 }
 
-function pauseProcessTrans() {
-  if (isPausedTrans) {
-    isPausedTrans = false;
-    document.getElementById('btnPauseTrans').innerHTML = '<i class="fas fa-pause"></i> Pause';
-    addLogTrans('▶️ Process resumed', 'info');
-    if (!isStoppedTrans && isRunningTrans) {
-      processFileStagesTrans(currentFileIndexTrans);
-    }
-  } else {
-    isPausedTrans = true;
-    document.getElementById('btnPauseTrans').innerHTML = '<i class="fas fa-play"></i> Resume';
-    addLogTrans('⏸️ Process paused', 'warning');
-    if (currentFileIndexTrans < totalFilesTrans) {
-      updateFileStatusTrans(currentFileIndexTrans, 'Processing', fileStatusesTrans[currentFileIndexTrans]?.status || '0%', 'Paused');
-    }
-  }
-}
-
-function stopProcessTrans() {
-  isStoppedTrans = true;
-  isPausedTrans = false;
-  addLogTrans('⏹️ Process stopped by user', 'error');
-  
-  fileStatusesTrans.forEach((f, index) => {
-    if (f.action === 'Processing' || f.action === 'Pending' || f.scanResult === 'Processing') {
-      updateFileStatusTrans(index, 'Failed', '0%', 'Stopped');
+// Read text from uploaded file (PDF via pdf.js, DOCX via mammoth, else plain text)
+function _readFileTextTrans(file) {
+  return new Promise(function(resolve, reject) {
+    var ext = file.name.split('.').pop().toLowerCase();
+    if (ext === 'pdf') {
+      var reader = new FileReader();
+      reader.onload = function(e) {
+        var typedArray = new Uint8Array(e.target.result);
+        pdfjsLib.getDocument({ data: typedArray }).promise.then(function(pdf) {
+          var pages = [];
+          var promises = [];
+          for (var i = 1; i <= pdf.numPages; i++) {
+            promises.push(pdf.getPage(i).then(function(page) {
+              return page.getTextContent().then(function(tc) {
+                return tc.items.map(function(item){ return item.str; }).join(' ');
+              });
+            }));
+          }
+          Promise.all(promises).then(function(texts) { resolve(texts.join('\n')); }).catch(reject);
+        }).catch(reject);
+      };
+      reader.onerror = reject;
+      reader.readAsArrayBuffer(file);
+    } else if (ext === 'docx') {
+      var reader2 = new FileReader();
+      reader2.onload = function(e) {
+        mammoth.extractRawText({ arrayBuffer: e.target.result })
+          .then(function(res){ resolve(res.value); }).catch(reject);
+      };
+      reader2.onerror = reject;
+      reader2.readAsArrayBuffer(file);
+    } else {
+      var reader3 = new FileReader();
+      reader3.onload  = function(e){ resolve(e.target.result); };
+      reader3.onerror = reject;
+      reader3.readAsText(file);
     }
   });
-  
-  showModal('warning', 'Process stopped. Please check file status.');
-  const actionButtonsReport = document.getElementById('actionButtonsReportTrans');
-  if (actionButtonsReport) actionButtonsReport.style.display = 'flex';
-  resetToStartTrans();
 }
-
 function resetToStartTrans() {
   isRunningTrans = false;
   isPausedTrans = false;
@@ -2808,9 +2837,6 @@ function showSection(sectionId) {
 // ============================================
 
 function showAdminTab(tab) {
-  // Admin now only has Files & Folder
-  var filesDiv = document.getElementById('admin-files');
-  if (filesDiv) filesDiv.style.display = 'block';
   loadAdminFiles();
 }
 
@@ -5775,6 +5801,11 @@ document.addEventListener('DOMContentLoaded', function() {
           });
         }
         updateFileTable();
+        var countEl = document.getElementById('uploadFileCount');
+        if (countEl) {
+          countEl.textContent = uploadedFiles.length + (uploadedFiles.length === 1 ? ' file selected' : ' files selected');
+          countEl.style.display = 'inline-block';
+        }
       }
     });
   }
@@ -5806,6 +5837,11 @@ document.addEventListener('DOMContentLoaded', function() {
           });
         }
         updateFileTableTrans();
+        var countElT = document.getElementById('uploadFileCountTrans');
+        if (countElT) {
+          countElT.textContent = uploadedFilesTrans.length + (uploadedFilesTrans.length === 1 ? ' file selected' : ' files selected');
+          countElT.style.display = 'inline-block';
+        }
       }
     });
   }
@@ -6150,3 +6186,153 @@ function _pdfFooter(doc, pageW) {
   doc.setTextColor(0);
 }
 
+
+// ════════════════════════════════════════════════════════════
+// ADMIN PAYMENT ACCOUNTS
+// ════════════════════════════════════════════════════════════
+
+function loadAdminPaymentAccounts() {
+  fetch('/api/admin/payment-accounts?_=' + Date.now())
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(data) {
+      if (!data) return;
+      renderPaymentAccountsTable(data.accounts || []);
+      renderAllPaymentsTable(data.all_user_payments || []);
+    })
+    .catch(function(e){ console.warn('Could not load payment accounts:', e.message); });
+}
+
+function renderPaymentAccountsTable(accounts) {
+  var tbody = document.getElementById('paymentAccountsBody');
+  if (!tbody) return;
+  if (!accounts.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:1.5rem;">No payment accounts configured</td></tr>';
+    return;
+  }
+  var typeIcons = { paypal:'fab fa-paypal', bank:'fas fa-university', upi:'fas fa-mobile-alt', stripe:'fab fa-stripe', card:'fas fa-credit-card' };
+  tbody.innerHTML = accounts.map(function(acc) {
+    var icon = typeIcons[acc.type] || 'fas fa-wallet';
+    var details = acc.email || acc.upi_id || acc.account_number || '—';
+    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
+      '<td style="padding:0.65rem 0.8rem;font-weight:600;color:#1e293b;"><i class="' + icon + '" style="color:#3b82f6;margin-right:0.5rem;"></i>' + acc.name + '</td>' +
+      '<td style="padding:0.65rem 0.8rem;color:#475569;text-transform:capitalize;">' + (acc.type||'—') + '</td>' +
+      '<td style="padding:0.65rem 0.8rem;color:#64748b;font-size:0.82rem;">' + details + '</td>' +
+      '<td style="padding:0.65rem 0.8rem;text-align:center;">' + (acc.isDefault ? '<span style="color:#22c55e;font-weight:700;">✓ Default</span>' : '') + '</td>' +
+      '<td style="padding:0.65rem 0.8rem;text-align:right;font-weight:700;color:#1e293b;">$' + (Number(acc.total_received||0).toFixed(2)) + '</td>' +
+      '<td style="padding:0.65rem 0.8rem;text-align:center;"><span style="padding:0.2rem 0.6rem;border-radius:20px;font-size:0.75rem;font-weight:700;background:' + (acc.status==='active'?'#dcfce7':'#f1f5f9') + ';color:' + (acc.status==='active'?'#16a34a':'#64748b') + ';">' + (acc.status||'inactive') + '</span></td>' +
+      '<td style="padding:0.65rem 0.8rem;text-align:center;"><button onclick="editPaymentAccount(\'' + acc.id + '\')" style="background:none;border:none;color:#3b82f6;cursor:pointer;font-size:0.82rem;"><i class="fas fa-edit"></i></button></td>' +
+      '</tr>';
+  }).join('');
+}
+
+function renderAllPaymentsTable(payments) {
+  var tbody = document.getElementById('allPaymentsBody');
+  if (!tbody) return;
+  if (!payments.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:1.5rem;">No payment records yet</td></tr>';
+    renderAdminPaymentSummary(payments);
+    return;
+  }
+  // Sort newest first
+  var sorted = payments.slice().sort(function(a,b){ return new Date(b.date) - new Date(a.date); });
+  tbody.innerHTML = sorted.map(function(p) {
+    var isCredit = p.type === 'credit';
+    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
+      '<td style="padding:0.6rem 0.8rem;font-size:0.82rem;color:#64748b;">' + (p.date ? new Date(p.date).toLocaleDateString('en-IN') : '—') + '</td>' +
+      '<td style="padding:0.6rem 0.8rem;font-weight:600;color:#1e293b;">' + (p.userName || p.userId || '—') + '</td>' +
+      '<td style="padding:0.6rem 0.8rem;color:#475569;">' + (p.description || '—') + '</td>' +
+      '<td style="padding:0.6rem 0.8rem;text-align:center;"><span style="padding:0.15rem 0.55rem;border-radius:20px;font-size:0.75rem;font-weight:700;background:' + (isCredit?'#dcfce7':'#fee2e2') + ';color:' + (isCredit?'#16a34a':'#dc2626') + ';">' + (p.type||'—') + '</span></td>' +
+      '<td style="padding:0.6rem 0.8rem;text-align:right;font-weight:700;color:' + (isCredit?'#16a34a':'#dc2626') + ';">' + (isCredit?'+':'-') + '$' + Number(p.amount||0).toFixed(2) + '</td>' +
+      '<td style="padding:0.6rem 0.8rem;text-align:center;"><span style="font-size:0.75rem;color:#64748b;">' + (p.status||'completed') + '</span></td>' +
+      '</tr>';
+  }).join('');
+  renderAdminPaymentSummary(payments);
+}
+
+function renderAdminPaymentSummary(payments) {
+  var el = document.getElementById('adminPaymentSummary');
+  if (!el) return;
+  var totalIn  = payments.filter(function(p){ return p.type==='credit'; }).reduce(function(s,p){ return s+Number(p.amount||0); }, 0);
+  var totalOut = payments.filter(function(p){ return p.type==='debit';  }).reduce(function(s,p){ return s+Number(p.amount||0); }, 0);
+  var pill = function(label, val, color) {
+    return '<div style="background:#fff;border:1px solid #eef2f6;border-radius:10px;padding:0.6rem 1rem;font-size:0.85rem;">' +
+           '<div style="color:#64748b;margin-bottom:0.1rem;">' + label + '</div>' +
+           '<div style="font-weight:700;color:' + color + ';font-size:1.1rem;">$' + val.toFixed(2) + '</div></div>';
+  };
+  el.innerHTML = pill('Total Received',totalIn,'#16a34a') + pill('Total Paid Out',totalOut,'#dc2626') + pill('Net Balance',totalIn-totalOut,'#3b82f6');
+}
+
+function filterAdminPayments() { loadAdminPaymentAccounts(); } // reload with filter — extend later
+
+function addPaymentAccount() {
+  showModal('info', 'Payment account management: Edit db/admin_payment_accounts.json directly or use the API endpoint POST /api/admin/payment-accounts/save', { onConfirm: function(){} });
+}
+
+function editPaymentAccount(id) {
+  showModal('info', 'Edit account ' + id + ': update db/admin_payment_accounts.json', { onConfirm: function(){} });
+}
+
+window.loadAdminPaymentAccounts = loadAdminPaymentAccounts;
+window.addPaymentAccount        = addPaymentAccount;
+window.editPaymentAccount       = editPaymentAccount;
+window.filterAdminPayments      = filterAdminPayments;
+
+// ════════════════════════════════════════════════════════════
+// USER FILE STORAGE — Save files to user_directory
+// ════════════════════════════════════════════════════════════
+
+function saveUserFile(type, filename, blobOrArrayBuffer) {
+  var user = getCurrentUser();
+  if (!user) return Promise.resolve(null);
+  return new Promise(function(resolve, reject) {
+    var reader = new FileReader();
+    var blob   = blobOrArrayBuffer instanceof Blob ? blobOrArrayBuffer : new Blob([blobOrArrayBuffer]);
+    reader.onload = function(e) {
+      var b64 = e.target.result.split(',')[1];
+      fetch('/api/user/save-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id, type: type, filename: filename, data: b64 })
+      }).then(function(r){ return r.json(); }).then(resolve).catch(reject);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+window.saveUserFile = saveUserFile;
+
+// ════════════════════════════════════════════════════════════
+// TRANSLATION AGENT PANEL + REPORT + DOWNLOAD
+// ════════════════════════════════════════════════════════════
+function _setActiveAgentTrans(agentKey) {
+  document.querySelectorAll('#agentPipelineTrans .agent-node').forEach(function(n){ n.classList.remove('active'); });
+  var el = document.getElementById('agent-trans-' + agentKey);
+  if (el) el.classList.add('active');
+  var panel = document.getElementById('agentPipelineTrans');
+  if (panel) panel.style.display = 'flex';
+}
+function _markAgentDoneTrans(agentKey) {
+  var el = document.getElementById('agent-trans-' + agentKey);
+  if (el) { el.classList.remove('active'); el.classList.add('done'); }
+}
+
+function downloadAllTrans() {
+  document.querySelectorAll('#fileTableBodyTrans tr a[download]').forEach(function(a){ a.click(); });
+}
+
+function generateActivityReportTrans() {
+  var log = document.getElementById('activityLogTrans'); if (!log) return;
+  var lines = ['# Lexora Translation — Activity Log', 'Generated: ' + new Date().toLocaleString(), ''];
+  log.querySelectorAll('.log-entry').forEach(function(e){ lines.push(e.textContent); });
+  var blob = new Blob([lines.join('\n')], {type:'text/markdown'});
+  var a    = document.createElement('a');
+  a.href   = URL.createObjectURL(blob);
+  a.download = 'Translation_Activity_' + Date.now() + '.md';
+  a.click(); URL.revokeObjectURL(a.href);
+}
+
+window.downloadAllTrans            = downloadAllTrans;
+window.generateActivityReportTrans = generateActivityReportTrans;
+window._setActiveAgentTrans        = _setActiveAgentTrans;
+window._markAgentDoneTrans         = _markAgentDoneTrans;

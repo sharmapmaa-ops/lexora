@@ -26,9 +26,25 @@ TXN_FILE   = os.path.join(DB_DIR, "transaction_history.json")
 def load_smtp():
     try:
         with open(SMTP_FILE, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+            if data.get("host") and data.get("username") and data.get("password"):
+                return data
     except Exception:
-        return {}
+        pass
+    # Fallback: read from environment variables (Render / cloud deployment)
+    host = os.environ.get("SMTP_HOST", "")
+    if host:
+        return {
+            "host":           host,
+            "port":           int(os.environ.get("SMTP_PORT", "587")),
+            "username":       os.environ.get("SMTP_USER", os.environ.get("SMTP_EMAIL", "")),
+            "password":       os.environ.get("SMTP_PASSWORD", ""),
+            "sender_email":   os.environ.get("SMTP_FROM", os.environ.get("SMTP_EMAIL", "")),
+            "receiver_email": os.environ.get("SMTP_RECEIVER", ""),
+            "use_tls":        os.environ.get("SMTP_TLS", "true").lower() != "false",
+            "expiry_minutes": int(os.environ.get("SMTP_EXPIRY_MINS", "4"))
+        }
+    return {}
 
 
 def send_email(to_list, subject, body_html, body_text=""):
@@ -92,6 +108,8 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
                                     "server": "Lexora Dev Server v3.0"},
             "/api/users":  lambda: self._read(USERS_FILE),
             "/api/smtp":   lambda: self._read(SMTP_FILE),
+            "/api/admin/payment-accounts": lambda: self._read(
+                os.path.join(DB_DIR, "admin_payment_accounts.json")),
         }
         if p in routes:
             self._json(routes[p]())
@@ -502,6 +520,51 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
                     self._json({"success":False,"error":"User not found"},404)
             except Exception as e:
                 self._json({"success":False,"error":str(e)},400)
+
+        # /api/user/save-file — Save user file to their folder
+        elif p == "/api/user/save-file":
+            try:
+                data      = json.loads(body)
+                user_id   = data.get("userId", "")
+                file_type = data.get("type", "")     # profile_photo | input | output | template
+                filename  = data.get("filename", "")
+                file_b64  = data.get("data", "")
+                if not all([user_id, file_type, filename, file_b64]):
+                    self._json({"success": False, "error": "Missing fields"}, 400); return
+                # Load user record
+                users_rec = self._read(USERS_FILE)
+                users_list = users_rec.get("users", users_rec) if isinstance(users_rec, dict) else users_rec
+                user = next((u for u in users_list if u.get("id") == user_id), None)
+                if not user:
+                    self._json({"success": False, "error": "User not found"}, 404); return
+                folder_map = {
+                    "profile_photo": user.get("profile_photo", f"user_directory/{user_id}/profile_photo"),
+                    "input":         user.get("input_folder",  f"user_directory/{user_id}/input"),
+                    "output":        user.get("output_folder", f"user_directory/{user_id}/output"),
+                    "template":      user.get("output_template", f"user_directory/{user_id}/output_template"),
+                }
+                rel_folder = folder_map.get(file_type, f"user_directory/{user_id}/{file_type}")
+                abs_folder = os.path.join(ROOT_DIR, rel_folder)
+                os.makedirs(abs_folder, exist_ok=True)
+                file_bytes = base64.b64decode(file_b64)
+                abs_path   = os.path.join(abs_folder, filename)
+                with open(abs_path, "wb") as f:
+                    f.write(file_bytes)
+                rel_path   = os.path.relpath(abs_path, ROOT_DIR)
+                self._log(f"💾  Saved {file_type} file: {rel_path}")
+                self._json({"success": True, "path": rel_path})
+            except Exception as e:
+                self._json({"success": False, "error": str(e)}, 400)
+
+        # /api/admin/payment-accounts/save
+        elif p == "/api/admin/payment-accounts/save":
+            try:
+                PAY_FILE = os.path.join(DB_DIR, "admin_payment_accounts.json")
+                self._write(PAY_FILE, json.loads(body))
+                self._json({"success": True})
+            except Exception as e:
+                self._json({"success": False, "error": str(e)}, 400)
+
             return
 
         # /api/auth/sendcode — Send verification code email for login

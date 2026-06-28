@@ -38,7 +38,8 @@
         "auto_save": true,
         "sidebar_collapsed": false
       },
-      "two_factor_auth": true
+      "two_factor_auth": true,
+      "output_template": "user_directory/usr_001/output_template"
     }
   ],
   "resetCodes": [],

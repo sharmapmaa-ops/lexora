@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Midtown National Lease Abstract",
+  "description": "Standard commercial lease abstraction template",
+  "format": "pdf",
+  "sections": [
+    "lease_info", "charge_schedules", "amendments",
+    "late_fee", "clauses", "contacts", "queries_assumptions"
+  ],
+  "fields": {
+    "lease_info": ["tenant_name","dba","status","ics_code","property_code","lease_type",
+                   "location","sales_category","contract_area_sf","annual_rent",
+                   "deposit","lease_term_from","lease_term_to"],
+    "clauses": ["assign","rent","cotenanc","default","estoppel","conuse","guaranty",
+                "pro_rata","holdover","late_fee_clause","opex_cam","parking","insreimb",
+                "radius","brokers","taxes","signage","kickout","alter","snda","prohib",
+                "permit","percent","tt_ins","utility","mktg","security","ti_allow",
+                "exclusiv","restrict","llrepair","ttrep","misc","reloc","roof"]
+  },
+  "createdAt": "2026-01-01T00:00:00.000Z"
+}

@@ -1,5 +1,5 @@
 /* LEXORA BODY FIX */
-html, body { background: #ffffff !important; overflow: hidden; }
+html, body { background: #f1f5f9 !important; overflow: hidden; }
 
 /* ============================================
    COMMON CSS - Reusable across all pages
@@ -1464,12 +1464,16 @@ html, body {
   align-items: center;
   justify-content: space-between;
   padding: 1.2rem 0 1rem 0;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  background: #0a192f;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
   flex-wrap: wrap;
   row-gap: 0.8rem;
   flex-shrink: 0;
   position: relative;
   z-index: 100;
+  margin: 0 -2rem;
+  padding-left: 2rem;
+  padding-right: 2rem;
 }
 
 .logo-area {
@@ -1496,11 +1500,11 @@ html, body {
 .logo-text {
   font-size: 1.7rem;
   font-weight: 600;
-  color: #0b1a2e;
+  color: #e2e8f0;
   letter-spacing: -0.3px;
 }
 
-.logo-text span { color: #3b82f6; font-weight: 300; }
+.logo-text span { color: #60a5fa; font-weight: 300; }
 
 /* ---------- NAVIGATION MENU ---------- */
 .nav-menu {
@@ -1519,7 +1523,7 @@ html, body {
 
 .nav-menu a {
   text-decoration: none;
-  color: #1e293b;
+  color: #cbd5e1;
   font-weight: 500;
   font-size: 1rem;
   padding: 0.4rem 0.1rem;
@@ -1535,15 +1539,15 @@ html, body {
 
 .nav-menu a i {
   font-size: 0.9rem;
-  color: #5e6f8d;
+  color: #64748b;
   transition: color 0.15s;
 }
 
 .nav-menu a:hover {
-  color: #0a1a2e;
-  border-bottom-color: #3b82f6;
+  color: #ffffff;
+  border-bottom-color: #60a5fa;
 }
-.nav-menu a:hover i { color: #1e293b; }
+.nav-menu a:hover i { color: #94a3b8; }
 
 /* ---------- SUB-MENUS ---------- */
 .sub-menu, .user-sub-menu {
@@ -1932,3 +1936,57 @@ html, body {
     gap: 1rem;
   }
 }
+
+/* ════════════════════════════════════════════════════════════
+   LEXORA THEME — Dark Header Overrides & Logo Visibility Fix
+   ════════════════════════════════════════════════════════════ */
+
+/* Logo image: white pill so any logo color is always visible */
+#headerLogoImg {
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 10px;
+  padding: 4px;
+}
+
+/* Company name + section label on dark header */
+#headerCompanyName { color: #f1f5f9 !important; }
+#headerSectionLabel { color: #64748b !important; }
+
+/* User name on dark header */
+.user-name { color: #cbd5e1 !important; }
+
+/* Avatar circle on dark header */
+.user-avatar-circle {
+  background: #1e3a5f !important;
+  border: 2px solid rgba(255,255,255,0.15) !important;
+  color: #94a3b8 !important;
+}
+.user-avatar-circle i { color: #94a3b8 !important; }
+
+/* Active nav item */
+.nav-menu a.active,
+.nav-menu a[data-active="true"] {
+  color: #ffffff;
+  border-bottom-color: #3b82f6;
+}
+
+/* Main app content area: soft bg */
+.main-app-wrapper { background: #f1f5f9 !important; }
+
+/* Scrollable content area padding from dark header */
+.main-content { background: transparent; }
+.scroll-content { padding-top: 1.5rem; }
+
+/* Cards pop on light grey bg */
+.card {
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.04);
+}
+.card:hover {
+  box-shadow: 0 4px 16px rgba(0,0,0,0.10), 0 8px 28px rgba(0,0,0,0.06);
+}
+
+/* Stat cards: colored top-border accent */
+.stat-card:nth-child(1) { border-top: 3px solid #3b82f6; }
+.stat-card:nth-child(2) { border-top: 3px solid #22c55e; }
+.stat-card:nth-child(3) { border-top: 3px solid #f59e0b; }
+.stat-card:nth-child(4) { border-top: 3px solid #8b5cf6; }

@@ -13,7 +13,7 @@
     /* Admin section: full width since sidebar removed */
     .admin-layout { grid-template-columns: 1fr !important; }
     .admin-content { border-left: none !important; }
-    .main-app-wrapper { background: #ffffff; }
+    .main-app-wrapper { background: #f1f5f9; }
     .section-header { display: none !important; }
     .logo-text { line-height: 1; }
     .scroll-content { display:flex; flex-direction:column; min-height:100%; }
@@ -45,7 +45,7 @@
   <style id="authOverlayStyle">
     #authOverlay {
       position:fixed; inset:0; z-index:9999;
-      background: linear-gradient(135deg, #1e1b4b 0%, #2d2170 35%, #3b3ab0 65%, #4f46e5 100%);
+      background: linear-gradient(135deg, #050d1a 0%, #0a192f 30%, #0f2847 60%, #1a3a6b 100%);
       display:flex; align-items:stretch; overflow-y:auto;
     }
     #authOverlay .auth-left { flex:1; min-width:0; }
@@ -443,6 +443,7 @@
                   <div class="upload-icon"><i class="fas fa-cloud-upload-alt"></i></div>
                   <div class="upload-text">Upload File(s)</div>
                   <div class="upload-subtext">Drag & drop files here or click to browse</div>
+                  <div id="uploadFileCount" style="display:none;margin-top:0.5rem;font-size:0.82rem;font-weight:700;color:#3b82f6;background:rgba(59,130,246,0.1);border-radius:20px;padding:0.25rem 0.75rem;">0 files selected</div>
                   <input type="file" id="fileInput" multiple style="display:none" onchange="handleFileSelect(event)" />
                 </div>
               </div>
@@ -583,6 +584,7 @@
         </div>
 
         <!-- ==========================================
+        <!-- ==========================================
              SECTION: TRANSLATION
              ========================================== -->
         <div id="section-translation" class="content-section">
@@ -593,6 +595,7 @@
           <div class="message-container" id="translation-messages"></div>
 
           <div class="two-column">
+            <!-- Upload card -->
             <div class="card">
               <div class="card-header">
                 <span class="icon">📤</span>
@@ -602,12 +605,14 @@
                 <div class="upload-area" id="uploadAreaTrans" onclick="document.getElementById('fileInputTrans').click()">
                   <div class="upload-icon"><i class="fas fa-cloud-upload-alt"></i></div>
                   <div class="upload-text">Upload File(s)</div>
-                  <div class="upload-subtext">Drag & drop files here or click to browse</div>
+                  <div class="upload-subtext">Drag &amp; drop files here or click to browse</div>
+                  <div id="uploadFileCountTrans" style="display:none;margin-top:0.5rem;font-size:0.82rem;font-weight:700;color:#3b82f6;background:rgba(59,130,246,0.1);border-radius:20px;padding:0.25rem 0.75rem;">0 files selected</div>
                   <input type="file" id="fileInputTrans" multiple style="display:none" onchange="handleFileSelectTrans(event)" />
                 </div>
               </div>
             </div>
 
+            <!-- Settings card -->
             <div class="card">
               <div class="card-header">
                 <span class="icon">⚙️</span>
@@ -616,16 +621,25 @@
               <div class="card-body">
                 <div class="lease-controls">
                   <div class="control-group">
-                    <label for="outputTemplateTrans">Output Template</label>
-                    <div style="font-size:0.82rem;color:#64748b;padding:0.4rem 0;font-style:italic;">
-                      Translation output is Word (.docx) format by default.
-                    </div>
-                  </div>
-
-                  <div class="checkbox-group">
-                    <label><input type="checkbox" id="humanReviewTrans" /> Human Review</label>
-                    <label><input type="checkbox" id="portfolioTrans" /> Portfolio</label>
-                    <label><input type="checkbox" id="advancedModeTrans" /> Advanced Mode</label>
+                    <label for="targetLanguage">Output Language</label>
+                    <select id="targetLanguage" style="width:100%;padding:0.6rem 0.9rem;border:1.5px solid #e2e8f0;border-radius:10px;font-size:0.9rem;color:#1e293b;background:#fafbfc;outline:none;cursor:pointer;">
+                      <option value="English" selected>🇬🇧 English</option>
+                      <option value="Hindi">🇮🇳 Hindi (हिन्दी)</option>
+                      <option value="Gujarati">🇮🇳 Gujarati (ગુજરાતી)</option>
+                      <option value="Marathi">🇮🇳 Marathi (मराठी)</option>
+                      <option value="Tamil">🇮🇳 Tamil (தமிழ்)</option>
+                      <option value="Spanish">🇪🇸 Spanish (Español)</option>
+                      <option value="French">🇫🇷 French (Français)</option>
+                      <option value="German">🇩🇪 German (Deutsch)</option>
+                      <option value="Arabic">🇸🇦 Arabic (العربية)</option>
+                      <option value="Chinese (Simplified)">🇨🇳 Chinese Simplified</option>
+                      <option value="Chinese (Traditional)">🇹🇼 Chinese Traditional</option>
+                      <option value="Japanese">🇯🇵 Japanese (日本語)</option>
+                      <option value="Korean">🇰🇷 Korean (한국어)</option>
+                      <option value="Portuguese">🇧🇷 Portuguese</option>
+                      <option value="Italian">🇮🇹 Italian (Italiano)</option>
+                      <option value="Russian">🇷🇺 Russian (Русский)</option>
+                    </select>
                   </div>
 
                   <div class="action-buttons" id="actionButtonsTrans">
@@ -646,23 +660,42 @@
                     </button>
                   </div>
 
-                  <div class="action-buttons" id="actionButtonsReportTrans" style="display:none;">
-                    <button class="btn btn-report" id="btnReportTrans" onclick="generateReportTrans()">
-                      <i class="fas fa-file-alt"></i> Report
-                    </button>
-                    <button class="btn btn-output" id="btnOutputTrans" onclick="downloadOutputTrans()">
-                      <i class="fas fa-download"></i> Output
-                    </button>
+                  <div class="action-buttons" id="actionButtonsReportTrans" style="display:none;"></div>
+
+                  <!-- Agent Pipeline Panel -->
+                  <div class="agent-pipeline" id="agentPipelineTrans">
+                    <div class="agent-node" id="agent-trans-foreman" title="Foreman — orchestration">
+                      <span class="agent-icon">👷</span>
+                      <span class="agent-label">Foreman</span>
+                    </div>
+                    <div class="agent-node" id="agent-trans-reader" title="Reader — text extraction">
+                      <span class="agent-icon">📖</span>
+                      <span class="agent-label">Reader</span>
+                    </div>
+                    <div class="agent-node" id="agent-trans-translator" title="Translator — AI translation">
+                      <span class="agent-icon">🌐</span>
+                      <span class="agent-label">Translator</span>
+                    </div>
+                    <div class="agent-node" id="agent-trans-output" title="Output — file generation">
+                      <span class="agent-icon">📄</span>
+                      <span class="agent-label">Output</span>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
           </div>
 
-          <div class="card" style="margin-top: 1.5rem;">
-            <div class="card-header">
-              <span class="icon">📋</span>
-              <h3 class="title">Uploaded Files</h3>
+          <!-- Uploaded Files card -->
+          <div class="card" style="margin-top:1.5rem;">
+            <div class="card-header card-header-with-action">
+              <div class="card-header-left">
+                <span class="icon">📋</span>
+                <h3 class="title">Uploaded Files</h3>
+              </div>
+              <button id="btnDownloadAllTrans" class="btn-download-all" onclick="downloadAllTrans()" style="display:none;">
+                <i class="fas fa-download"></i> Download All
+              </button>
             </div>
             <div class="card-body">
               <div class="file-table-wrapper">
@@ -677,8 +710,8 @@
                   </thead>
                   <tbody id="fileTableBodyTrans">
                     <tr>
-                      <td colspan="4" style="text-align: center; color: #94a3b8; padding: 2rem 0;">
-                        <i class="fas fa-upload" style="font-size: 1.5rem; display: block; margin-bottom: 0.5rem;"></i>
+                      <td colspan="4" style="text-align:center;color:#94a3b8;padding:2rem 0;">
+                        <i class="fas fa-upload" style="font-size:1.5rem;display:block;margin-bottom:0.5rem;"></i>
                         No files uploaded yet
                       </td>
                     </tr>
@@ -688,16 +721,25 @@
             </div>
           </div>
 
-          <div class="activity-log-container">
+          <!-- Activity Log -->
+          <div style="margin-top:1.5rem;">
+            <div class="activity-log-card-header">
+              <div class="log-title">
+                <span>📝</span>
+                <span>Activity Log</span>
+              </div>
+              <button class="btn-log-download" onclick="generateActivityReportTrans()">
+                <i class="fas fa-file-download"></i> Download Activity Logs
+              </button>
+            </div>
             <div class="activity-log" id="activityLogTrans">
               <div class="log-entry log-info">
-                <span class="log-time">[System]</span> Ready to process files...
+                <span class="log-time">[System]</span> Ready to translate files...
               </div>
             </div>
           </div>
         </div>
 
-        <!-- ==========================================
              SECTION: PAYMENTS
              ========================================== -->
         <div id="section-payments" class="content-section">
@@ -766,52 +808,48 @@
           </div>
           <div class="message-container" id="admin-messages"></div>
 
-          <div class="admin-layout">
-            <div class="admin-content" id="adminContent">
-              <!-- Files and Folder -->
-              <div id="admin-files" style="display:none;">
-                <h3 style="margin-bottom: 1rem; color: #1e293b; font-size: 1.1rem;">Files and Folder</h3>
-                
-                <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem;">
-                  <button onclick="addNewFile()" style="padding:0.5rem 1.2rem; background:#22c55e; color:white; border:none; border-radius:8px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:0.5rem;">
-                    <i class="fas fa-file-plus"></i> Add File
-                  </button>
-                  <button onclick="addNewFolder()" style="padding:0.5rem 1.2rem; background:#8b5cf6; color:white; border:none; border-radius:8px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:0.5rem;">
-                    <i class="fas fa-folder-plus"></i> Add Folder
-                  </button>
-                  <button onclick="deleteSelectedFiles()" style="padding:0.5rem 1.2rem; background:#ef4444; color:white; border:none; border-radius:8px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:0.5rem;">
-                    <i class="fas fa-trash"></i> Delete
-                  </button>
-                  <button onclick="downloadSelectedFiles()" style="padding:0.5rem 1.2rem; background:#3b82f6; color:white; border:none; border-radius:8px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:0.5rem;">
-                    <i class="fas fa-download"></i> Download
-                  </button>
-
-                </div>
-
-                <!-- Breadcrumb navigation -->
-                <div id="fileBreadcrumb" style="padding:0.6rem 1rem;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:0.75rem;font-size:0.88rem;min-height:34px;">
-                  <i class="fas fa-hdd" style="color:#64748b;margin-right:0.4rem;"></i><span style="color:#64748b;">Root</span>
-                </div>
-                <div style="max-height:220px;overflow-y:auto;border:1px solid #eef2f6;border-radius:10px;">
-                  <table style="width:100%;border-collapse:collapse;font-size:0.88rem;">
-                    <thead style="background:#1e293b;color:#fff;position:sticky;top:0;z-index:10;">
-                      <tr>
-                        <th style="padding:0.55rem 0.5rem;width:36px;"><input type="checkbox" id="selectAll" onchange="toggleAllFileCheckboxes()" style="accent-color:#3b82f6;width:15px;height:15px;" /></th>
-                        <th style="padding:0.55rem 0.8rem;text-align:left;">Name</th>
-                        <th style="padding:0.55rem 0.8rem;text-align:left;white-space:nowrap;">Type</th>
-                        <th style="padding:0.55rem 0.8rem;text-align:left;white-space:nowrap;">Size</th>
-                        <th style="padding:0.55rem 0.8rem;text-align:left;white-space:nowrap;">Modified</th>
-                        <th style="padding:0.55rem 0.8rem;text-align:left;">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody id="filesTableBody">
-                      <tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:1.5rem;">Click "Show" to load files</td></tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div><!-- /admin-files -->
+          <div class="card">
+            <div class="card-header">
+              <span class="icon">📁</span>
+              <h3 class="title">Files and Folder</h3>
+            </div>
+            <div class="card-body">
+              <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;">
+                <button onclick="addNewFile()" style="padding:0.5rem 1.2rem;background:#22c55e;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:0.5rem;">
+                  <i class="fas fa-file-plus"></i> Add File
+                </button>
+                <button onclick="addNewFolder()" style="padding:0.5rem 1.2rem;background:#8b5cf6;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:0.5rem;">
+                  <i class="fas fa-folder-plus"></i> Add Folder
+                </button>
+                <button onclick="deleteSelectedFiles()" style="padding:0.5rem 1.2rem;background:#ef4444;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:0.5rem;">
+                  <i class="fas fa-trash"></i> Delete
+                </button>
+                <button onclick="downloadSelectedFiles()" style="padding:0.5rem 1.2rem;background:#3b82f6;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:0.5rem;">
+                  <i class="fas fa-download"></i> Download
+                </button>
+              </div>
+              <div id="fileBreadcrumb" style="padding:0.6rem 1rem;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:0.75rem;font-size:0.88rem;min-height:34px;">
+                <i class="fas fa-hdd" style="color:#64748b;margin-right:0.4rem;"></i><span style="color:#64748b;">Root</span>
+              </div>
+              <div style="max-height:420px;overflow-y:auto;border:1px solid #eef2f6;border-radius:10px;">
+                <table style="width:100%;border-collapse:collapse;font-size:0.88rem;">
+                  <thead style="background:#0a192f;color:#e2e8f0;position:sticky;top:0;z-index:10;">
+                    <tr>
+                      <th style="padding:0.55rem 0.5rem;width:36px;"><input type="checkbox" id="selectAll" onchange="toggleAllFileCheckboxes()" style="accent-color:#3b82f6;width:15px;height:15px;" /></th>
+                      <th style="padding:0.55rem 0.8rem;text-align:left;">Name</th>
+                      <th style="padding:0.55rem 0.8rem;text-align:left;white-space:nowrap;">Type</th>
+                      <th style="padding:0.55rem 0.8rem;text-align:left;white-space:nowrap;">Size</th>
+                      <th style="padding:0.55rem 0.8rem;text-align:left;white-space:nowrap;">Modified</th>
+                      <th style="padding:0.55rem 0.8rem;text-align:left;">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="filesTableBody">
+                    <tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:1.5rem;">Click "Show" to load files</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
-        </div>
         </div><!-- /section-admin -->
 
         <div id="section-contact" class="content-section">
