@@ -353,14 +353,41 @@ function handleLogin(e) {
 
   _pendingData = { user: user, email: user.email };
 
-  startOTP('login', user.email, '🔐 Login Verify', function() {
-    // OTP verified — update lastLogin and complete login
+  // Show OTP method selector if mobile is verified
+  var methodSel = document.getElementById('otpMethodSelector');
+  if (methodSel) {
+    if (user.mobile_verified && user.mobile) {
+      methodSel.style.display = 'block';
+      // Auto-select from user's saved preference
+      var savedMethod = user.otp_method || 'email';
+      var emailRad = document.getElementById('otpMethodEmail');
+      var waRad    = document.getElementById('otpMethodWA');
+      if (emailRad) emailRad.checked = (savedMethod !== 'whatsapp');
+      if (waRad)    waRad.checked    = (savedMethod === 'whatsapp');
+    } else {
+      methodSel.style.display = 'none';
+    }
+  }
+
+  var onVerified = function() {
     var us = getUsers();
     var u  = us.find(function(x){ return x.id === user.id; });
     if (u) { u.lastLogin = new Date().toISOString(); saveUsers(us); }
     setSession(user);
     window.location.reload();
-  });
+  };
+
+  _pendingData._onVerified = onVerified;
+
+  // Check selected method
+  var waRadio = document.getElementById('otpMethodWA');
+  var useWA   = waRadio && waRadio.checked && user.mobile_verified && user.mobile;
+
+  if (useWA) {
+    _startWhatsAppLoginOTP(user, onVerified);
+  } else {
+    startOTP('login', user.email, '🔐 Login Verify', onVerified);
+  }
 }
 
 // ════════════════════════════════════════════════
@@ -529,3 +556,198 @@ window.handleCreateAccount = handleCreateAccount;
 window.startTotpSetup      = startTotpSetup;
 window.confirmTotpSetup    = confirmTotpSetup;
 window.cancelTotpSetup     = cancelTotpSetup;
+
+// ════════════════════════════════════════════════════════════
+// WHATSAPP LOGIN OTP
+// ════════════════════════════════════════════════════════════
+var _waLoginCode   = null;
+var _waLoginExpiry = null;
+var _waLoginTimer  = null;
+
+function _startWhatsAppLoginOTP(user, onVerified) {
+  _waLoginCode   = Math.floor(100000 + Math.random() * 900000).toString();
+  _waLoginExpiry = Date.now() + 4 * 60 * 1000;
+  var mobile     = (user.mobile || '').replace(/^\+91|^91/,'');
+
+  // Reset verify view for WhatsApp mode
+  var titleEl   = document.getElementById('verifyTitle');
+  var subtextEl = document.getElementById('verifySubtext');
+  var demoBox   = document.getElementById('verify-demo-box');
+  var demoCode  = document.getElementById('verify-demo-code');
+  var timerRow  = document.getElementById('verify-timer-row');
+  var resendBtn = document.getElementById('btnResendCode');
+  var instrBox  = document.getElementById('totp-instructions');
+  if (titleEl)   titleEl.textContent   = '📱 WhatsApp Verify';
+  if (subtextEl) subtextEl.textContent = 'Code sent to WhatsApp: +91' + mobile;
+  if (instrBox)  instrBox.style.display = 'none';
+  if (demoBox)   demoBox.style.display  = 'none';
+  if (timerRow)  timerRow.style.display = '';
+  if (resendBtn) resendBtn.style.display = '';
+  var inp = document.getElementById('verify-code'); if (inp) inp.value = '';
+  clearError('verify-err');
+
+  _totpMode    = false;
+  _otpContext  = 'login';
+  _otpCallback = onVerified;
+  _otpCode     = _waLoginCode;
+  _otpExpiry   = _waLoginExpiry;
+
+  authShowView('view-verify');
+  _startOTPTimer(4);
+
+  fetch('/api/whatsapp/send', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mobile: '91' + mobile, code: _waLoginCode })
+  }).then(function(r){ return r.json(); })
+    .then(function(res) {
+      if (!res.sent) {
+        if (demoBox)  demoBox.style.display  = 'block';
+        if (demoCode) demoCode.textContent    = res.code || _waLoginCode;
+        console.info('%c[Lexora WhatsApp OTP] ' + (res.code || _waLoginCode),
+          'background:#25d366;color:white;padding:4px 8px;border-radius:4px;font-weight:bold;');
+      }
+    }).catch(function() {
+      if (demoBox)  demoBox.style.display  = 'block';
+      if (demoCode) demoCode.textContent    = _waLoginCode;
+    });
+}
+
+// Called when user switches Email ↔ WhatsApp radio on verify screen
+function handleOTPMethodChange() {
+  var waRadio  = document.getElementById('otpMethodWA');
+  var useWA    = waRadio && waRadio.checked;
+  var user     = _pendingData && _pendingData.user;
+  var callback = _pendingData && _pendingData._onVerified;
+  if (!user || !callback) return;
+
+  clearInterval(_otpTimer);
+  if (useWA && user.mobile_verified && user.mobile) {
+    _startWhatsAppLoginOTP(user, callback);
+  } else {
+    startOTP('login', user.email, '🔐 Login Verify', callback);
+  }
+}
+
+window.handleOTPMethodChange = handleOTPMethodChange;
+
+// ════════════════════════════════════════════════════════════
+// PROFILE — INLINE MOBILE VERIFY
+// ════════════════════════════════════════════════════════════
+var _mobileOTPCode   = null;
+var _mobileOTPExpiry = null;
+var _mobileOTPTimer  = null;
+
+// Open modal first, then send OTP
+function openMobileVerifyModal() {
+  var phoneEl = document.getElementById('phone');
+  var mobile  = phoneEl ? phoneEl.value.trim() : '';
+  if (!mobile || mobile.length < 10) {
+    alert('Please enter a valid 10-digit mobile number first.');
+    return;
+  }
+  var modal = document.getElementById('mobileVerifyModal');
+  if (modal) modal.style.display = 'flex';
+  var subtext = document.getElementById('mobileModalSubtext');
+  if (subtext) subtext.textContent = 'Sending OTP to WhatsApp: +91 ' + mobile;
+  sendMobileVerifyOTP();
+}
+
+function closeMobileVerifyModal() {
+  clearInterval(_mobileOTPTimer);
+  var modal = document.getElementById('mobileVerifyModal');
+  if (modal) modal.style.display = 'none';
+  var inp = document.getElementById('mobileModalOTPInput');
+  if (inp) inp.value = '';
+}
+
+function sendMobileVerifyOTP() {
+  var phoneEl = document.getElementById('phone');
+  var mobile  = phoneEl ? phoneEl.value.trim() : '';
+  if (!mobile || mobile.length < 10) return;
+
+  _mobileOTPCode   = Math.floor(100000 + Math.random() * 900000).toString();
+  _mobileOTPExpiry = Date.now() + 4 * 60 * 1000;
+
+  var inp      = document.getElementById('mobileModalOTPInput');
+  var demoBox  = document.getElementById('mobileModalDemoBox');
+  var errEl    = document.getElementById('mobileModalErr');
+  if (inp)     inp.value             = '';
+  if (errEl)   errEl.style.display   = 'none';
+  if (demoBox) demoBox.style.display = 'none';
+
+  fetch('/api/whatsapp/send', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ mobile: '91' + mobile, code: _mobileOTPCode })
+  }).then(function(r){ return r.json(); })
+    .then(function(res) {
+      if (!res.sent) {
+        var demoCode = document.getElementById('mobileModalDemoCode');
+        if (demoBox)  demoBox.style.display = 'block';
+        if (demoCode) demoCode.textContent   = res.code || _mobileOTPCode;
+        console.info('%c[Lexora Mobile OTP] ' + (res.code || _mobileOTPCode),
+          'background:#25d366;color:white;padding:4px;border-radius:4px;font-weight:bold;');
+      }
+      _startMobileOTPTimer(4);
+    }).catch(function() {
+      var demoBox2 = document.getElementById('mobileModalDemoBox');
+      var demoCode2 = document.getElementById('mobileModalDemoCode');
+      if (demoBox2)  demoBox2.style.display = 'block';
+      if (demoCode2) demoCode2.textContent   = _mobileOTPCode;
+      _startMobileOTPTimer(4);
+    });
+}
+
+function confirmMobileVerifyOTP() {
+  var inp   = document.getElementById('mobileModalOTPInput');
+  var code  = inp ? inp.value.trim() : '';
+  var errEl = document.getElementById('mobileModalErr');
+  var showErr = function(m){ if(errEl){ errEl.textContent=m; errEl.style.display='block'; } };
+
+  if (!code)                         { showErr('Please enter the OTP.'); return; }
+  if (!_mobileOTPCode)               { showErr('Please send OTP first.'); return; }
+  if (Date.now() > _mobileOTPExpiry) { showErr('OTP expired. Please resend.'); return; }
+  if (code !== _mobileOTPCode)       { showErr('Incorrect OTP. Try again.'); return; }
+
+  clearInterval(_mobileOTPTimer);
+  var phone   = (document.getElementById('phone') || {}).value || '';
+  var session = getSession();
+  var userId  = session ? session.id : null;
+  if (!userId) return;
+
+  fetch('/api/whatsapp/mark-verified', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ userId: userId, mobile: phone })
+  }).then(function(r){ return r.json(); })
+    .then(function(res) {
+      if (res.success) {
+        var s = getSession(); if (s) { s.mobile_verified=true; s.mobile=phone; setSession(s); }
+        closeMobileVerifyModal();
+        var badge = document.getElementById('mobileVerifiedBadge');
+        if (badge) badge.style.display = 'inline';
+        var hint = document.getElementById('waOTPMethodHint');
+        if (hint) hint.style.display = 'none';
+        if (typeof showModal === 'function')
+          showModal('success', '✅ Mobile verified! WhatsApp OTP available for login.');
+      }
+    }).catch(function(){});
+}
+
+function _startMobileOTPTimer(mins) {
+  clearInterval(_mobileOTPTimer);
+  var rem = mins * 60;
+  var el  = document.getElementById('mobileModalTimer');
+  _mobileOTPTimer = setInterval(function() {
+    rem--;
+    if (el) {
+      var m=Math.floor(rem/60), s=rem%60;
+      el.textContent = m+':'+(s<10?'0':'')+s;
+      el.style.color = rem<60?'#ef4444':'#f59e0b';
+    }
+    if (rem<=0){ clearInterval(_mobileOTPTimer); if(el){el.textContent='Expired';el.style.color='#ef4444';} }
+  }, 1000);
+}
+
+window.openMobileVerifyModal  = openMobileVerifyModal;
+window.closeMobileVerifyModal = closeMobileVerifyModal;
+window.sendMobileVerifyOTP    = sendMobileVerifyOTP;
+window.confirmMobileVerifyOTP = confirmMobileVerifyOTP;

@@ -110,6 +110,7 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
             "/api/smtp":   lambda: self._read(SMTP_FILE),
             "/api/admin/payment-accounts": lambda: self._read(
                 os.path.join(DB_DIR, "admin_payment_accounts.json")),
+            "/api/templates/scan": lambda: self._scan_templates(),
         }
         if p in routes:
             self._json(routes[p]())
@@ -556,11 +557,154 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 self._json({"success": False, "error": str(e)}, 400)
 
+        # /api/transactions/add — Record a transaction (API credit usage)
+        elif p == "/api/transactions/add":
+            try:
+                TXN_FILE = os.path.join(DB_DIR, "transaction_history.json")
+                txn  = json.loads(body)
+                data = self._read(TXN_FILE) if os.path.exists(TXN_FILE) else {"transactions": []}
+                if isinstance(data, list): data = {"transactions": data}
+                if "transactions" not in data: data["transactions"] = []
+                txn["id"] = "txn_" + datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+                data["transactions"].insert(0, txn)  # newest first
+                # Keep max 1000
+                data["transactions"] = data["transactions"][:1000]
+                self._write(TXN_FILE, data)
+                # Update payment accounts total
+                try:
+                    PAY_FILE = os.path.join(DB_DIR, "admin_payment_accounts.json")
+                    pay_data = self._read(PAY_FILE)
+                    if not pay_data.get("all_user_payments"):
+                        pay_data["all_user_payments"] = []
+                    pay_data["all_user_payments"].insert(0, txn)
+                    pay_data["all_user_payments"] = pay_data["all_user_payments"][:1000]
+                    self._write(PAY_FILE, pay_data)
+                except Exception:
+                    pass
+                self._json({"success": True, "id": txn["id"]})
+            except Exception as e:
+                self._json({"success": False, "error": str(e)}, 400)
+
+        # /api/transactions/list — Get transactions for a user
+        elif p == "/api/transactions/list":
+            try:
+                TXN_FILE = os.path.join(DB_DIR, "transaction_history.json")
+                data     = self._read(TXN_FILE) if os.path.exists(TXN_FILE) else {"transactions": []}
+                params   = dict(q.split('=') for q in urlparse(self.path).query.split('&') if '=' in q)
+                uid      = params.get('userId', '')
+                txns     = data.get("transactions", data if isinstance(data, list) else [])
+                if uid:
+                    txns = [t for t in txns if t.get('userId') == uid]
+                self._json({"success": True, "transactions": txns[:200]})
+            except Exception as e:
+                self._json({"success": False, "error": str(e)}, 400)
+
         # /api/admin/payment-accounts/save
         elif p == "/api/admin/payment-accounts/save":
             try:
                 PAY_FILE = os.path.join(DB_DIR, "admin_payment_accounts.json")
                 self._write(PAY_FILE, json.loads(body))
+                self._json({"success": True})
+            except Exception as e:
+                self._json({"success": False, "error": str(e)}, 400)
+
+        # /api/whatsapp/send — Send OTP via WhatsApp (Twilio ContentSid template or plain text)
+        elif p == "/api/whatsapp/send":
+            try:
+                data   = json.loads(body)
+                mobile = str(data.get("mobile","")).strip().lstrip("+")
+                code   = str(data.get("code","")).strip()
+                if not mobile or not code:
+                    self._json({"success":False,"error":"mobile and code required"},400); return
+
+                # Read company WhatsApp from company.json (used as display context only;
+                # actual FROM is controlled by Twilio account)
+                company_wa = ""
+                try:
+                    with open(os.path.join(DB_DIR, "company.json")) as cf:
+                        company_wa = json.load(cf).get("company",{}).get("whatsapp_number","")
+                except Exception:
+                    pass
+
+                # Twilio credentials
+                sid         = os.environ.get("TWILIO_ACCOUNT_SID","")
+                token       = os.environ.get("TWILIO_AUTH_TOKEN","")
+                wa_from     = os.environ.get("TWILIO_WHATSAPP_FROM","whatsapp:+14155238886")
+                content_sid = os.environ.get("TWILIO_CONTENT_SID","")
+                to_         = "whatsapp:+" + mobile.lstrip("+")
+
+                if sid and token:
+                    import urllib.request as _ur, urllib.parse as _up, base64 as _b64
+                    api_url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
+                    creds   = _b64.b64encode(f"{sid}:{token}".encode()).decode()
+                    headers = {
+                        "Authorization": f"Basic {creds}",
+                        "Content-Type":  "application/x-www-form-urlencoded"
+                    }
+
+                    if content_sid:
+                        # ── ContentSid template approach (recommended) ──────────
+                        # Template variable {{1}} = OTP code
+                        payload = _up.urlencode({
+                            "To":               to_,
+                            "From":             wa_from,
+                            "ContentSid":       content_sid,
+                            "ContentVariables": json.dumps({"1": code}),
+                        }).encode()
+                        self._log(f"📱 WhatsApp OTP (template) → {to_} | code={code}")
+                    else:
+                        # ── Free-form text (sandbox only) ──────────────────────
+                        msg = (
+                            f"Your *Lexora* verification code:\n\n"
+                            f"*{code}*\n\n"
+                            f"Expires in 4 minutes. Do not share."
+                        )
+                        payload = _up.urlencode({
+                            "To":   to_,
+                            "From": wa_from,
+                            "Body": msg,
+                        }).encode()
+                        self._log(f"📱 WhatsApp OTP (text) → {to_} | code={code}")
+
+                    req = _ur.Request(api_url, data=payload, headers=headers, method="POST")
+                    try:
+                        with _ur.urlopen(req, timeout=12) as r:
+                            resp   = json.loads(r.read())
+                            msg_id = resp.get("sid","")[:10]
+                        self._log(f"✅ Twilio accepted: {msg_id}… status={resp.get('status')}")
+                        self._json({"success": True, "sent": True, "from": wa_from, "sid": msg_id})
+                    except Exception as tw_err:
+                        # Twilio returned an error — fall back to demo mode
+                        self._log(f"❌ Twilio error: {tw_err}")
+                        self._json({"success": True, "sent": False, "code": code,
+                                    "error": str(tw_err)})
+                else:
+                    # No token — demo/dev mode
+                    self._log(f"⚠️  TWILIO_AUTH_TOKEN not set. OTP for {mobile}: {code}")
+                    self._json({"success": True, "sent": False, "code": code})
+            except Exception as e:
+                self._log(f"❌ WhatsApp send error: {e}")
+                self._json({"success": False, "error": str(e), "sent": False})
+
+        # /api/whatsapp/mark-verified — Save mobile_verified flag to user
+        elif p == "/api/whatsapp/mark-verified":
+            try:
+                data    = json.loads(body)
+                user_id = data.get("userId","")
+                mobile  = data.get("mobile","")
+                users_rec = self._read(USERS_FILE)
+                users_list = users_rec.get("users", users_rec) if isinstance(users_rec, dict) else users_rec
+                for u in users_list:
+                    if u.get("id") == user_id:
+                        u["mobile"]          = mobile
+                        u["mobile_verified"] = True
+                        break
+                if isinstance(users_rec, dict):
+                    users_rec["users"] = users_list
+                    self._write(USERS_FILE, users_rec)
+                else:
+                    self._write(USERS_FILE, users_list)
+                self._log(f"✅ Mobile verified for user {user_id}: {mobile}")
                 self._json({"success": True})
             except Exception as e:
                 self._json({"success": False, "error": str(e)}, 400)
@@ -762,11 +906,12 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
 
                 # Model routing (same as old project)
                 MODEL_MAP = {
-                    'extraction': 'anthropic/claude-sonnet-4-5',
-                    'critique':   'anthropic/claude-opus-4.7',
-                    'validation': 'openai/gpt-4o-mini',
-                    'scoring':    'openai/gpt-4o-mini',
-                    'quick':      'openai/gpt-4o-mini',
+                    'extraction':  'anthropic/claude-sonnet-4-5',
+                    'critique':    'anthropic/claude-opus-4.7',
+                    'validation':  'openai/gpt-4o-mini',
+                    'scoring':     'openai/gpt-4o-mini',
+                    'quick':       'openai/gpt-4o-mini',
+                    'translation': 'openai/gpt-4o-mini',
                 }
                 if not data.get('model'):
                     model = MODEL_MAP.get(task, MODEL_MAP['extraction'])
@@ -950,6 +1095,33 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
 
     def _log(self, msg):
         print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}")
+
+    def _scan_templates(self):
+        """Scan db/templates/ folder and user_directory for template files."""
+        tpl_dir = os.path.join(DB_DIR, "templates")
+        folders  = []
+        # Default templates folder
+        if os.path.isdir(tpl_dir):
+            files = []
+            for fn in sorted(os.listdir(tpl_dir)):
+                if fn.lower().endswith(('.json','.pdf','.docx','.doc')):
+                    files.append({"name": fn, "path": "db/templates/" + fn})
+            if files:
+                folders.append({"name": "Default Templates", "files": files})
+        # User template folders
+        ud = os.path.join(ROOT_DIR, "user_directory")
+        if os.path.isdir(ud):
+            for uid in sorted(os.listdir(ud)):
+                tdir = os.path.join(ud, uid, "output_template")
+                if os.path.isdir(tdir):
+                    files = []
+                    for fn in sorted(os.listdir(tdir)):
+                        if fn.lower().endswith(('.json','.pdf','.docx','.doc')):
+                            files.append({"name": fn,
+                                          "path": f"user_directory/{uid}/output_template/{fn}"})
+                    if files:
+                        folders.append({"name": f"User {uid}", "files": files})
+        return {"success": True, "data": {"folders": folders}}
 
     def log_message(self, fmt, *args):
         print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {fmt % args}")

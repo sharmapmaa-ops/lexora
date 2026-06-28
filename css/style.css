@@ -1990,3 +1990,33 @@ html, body {
 .stat-card:nth-child(2) { border-top: 3px solid #22c55e; }
 .stat-card:nth-child(3) { border-top: 3px solid #f59e0b; }
 .stat-card:nth-child(4) { border-top: 3px solid #8b5cf6; }
+
+
+/* ════════════════════════════════════════════════════════════
+   TRANSLATION SECTION — fixed card heights + activity log
+   ════════════════════════════════════════════════════════════ */
+
+/* Uploaded Files card in translation: same fixed height as lease abstraction */
+#section-translation .file-table-wrapper {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+/* Activity log in translation: same fixed height */
+#section-translation .activity-log {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+/* Auth logo: ensure white bg on dark left panel */
+.auth-logo img,
+#authOverlay img[alt="Logo"] {
+  background: rgba(255,255,255,0.92) !important;
+  border-radius: 10px !important;
+  padding: 4px !important;
+}
+
+/* Main app wrapper: hide footer */
+.main-app-wrapper .footer,
+.app .footer,
+footer.footer { display: none !important; }

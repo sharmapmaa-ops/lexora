@@ -126,7 +126,22 @@
         <h2 id="verifyTitle">Verify Code</h2>
         <p class="auth-card-sub" id="verifySubtext">Enter the 6-digit code.</p>
 
-        <!-- TOTP Instructions (shown when in TOTP/authenticator mode) -->
+        <!-- OTP Method Selector — shown only for login when mobile is verified -->
+        <div id="otpMethodSelector" style="display:none;background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:0.75rem 1rem;margin-bottom:1rem;">
+          <div style="font-size:0.78rem;font-weight:700;color:#475569;margin-bottom:0.5rem;text-transform:uppercase;letter-spacing:0.5px;">Send OTP via</div>
+          <div style="display:flex;gap:1rem;flex-wrap:wrap;">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-size:0.88rem;font-weight:600;color:#1e293b;">
+              <input type="radio" name="otpMethod" value="email" id="otpMethodEmail" checked
+                style="accent-color:#3b82f6;width:16px;height:16px;" onchange="handleOTPMethodChange()" />
+              <i class="fas fa-envelope" style="color:#3b82f6;"></i> Email
+            </label>
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;font-size:0.88rem;font-weight:600;color:#1e293b;">
+              <input type="radio" name="otpMethod" value="whatsapp" id="otpMethodWA"
+                style="accent-color:#25d366;width:16px;height:16px;" onchange="handleOTPMethodChange()" />
+              <i class="fab fa-whatsapp" style="color:#25d366;"></i> WhatsApp
+            </label>
+          </div>
+        </div>
         <div id="totp-instructions" style="display:none;" class="totp-instr-box">
           <div class="totp-instr-apps">
             <span class="totp-app-badge">📱 Google Authenticator</span>
@@ -584,7 +599,6 @@
         </div>
 
         <!-- ==========================================
-        <!-- ==========================================
              SECTION: TRANSLATION
              ========================================== -->
         <div id="section-translation" class="content-section">
@@ -740,6 +754,7 @@
           </div>
         </div>
 
+        <!-- ==========================================
              SECTION: PAYMENTS
              ========================================== -->
         <div id="section-payments" class="content-section">
@@ -900,6 +915,11 @@
                   <span class="detail-icon"><i class="fas fa-phone"></i></span>
                   <span class="detail-label">Phone</span>
                   <span class="detail-value"><span id="co-phone">+1 (800) 555-LEXO</span></span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-icon"><i class="fab fa-whatsapp" style="color:#25d366;"></i></span>
+                  <span class="detail-label">WhatsApp</span>
+                  <span class="detail-value"><span id="co-wa">—</span></span>
                 </div>
               </div>
             </div>
@@ -1245,9 +1265,26 @@ Authorization: Bearer &lt;your-api-key&gt;
 
                   <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
                     <div style="flex:1;min-width:130px;display:flex;flex-direction:column;gap:0.3rem;">
-                      <label style="font-weight:600;font-size:0.85rem;color:#1e293b;">Mobile Number <span style="color:#ef4444;">*</span></label>
-                      <input type="tel" id="phone" placeholder="10-digit mobile" maxlength="10" required
-                        style="width:100%;padding:0.6rem 1rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.9rem;background:#fafbfc;" />
+                      <label style="font-weight:600;font-size:0.85rem;color:#1e293b;">
+                        Mobile Number <span style="color:#ef4444;">*</span>
+                      </label>
+                      <div style="position:relative;">
+                        <input type="tel" id="phone" placeholder="10-digit mobile" maxlength="10" required
+                          style="width:100%;padding:0.6rem 1rem;padding-right:5.5rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.9rem;background:#fafbfc;"
+                          oninput="this.value=this.value.replace(/\D/g,'')" />
+                        <a href="#" id="btnVerifyMobile" onclick="openMobileVerifyModal();return false;"
+                          style="position:absolute;right:0.6rem;top:50%;transform:translateY(-50%);font-size:0.78rem;font-weight:700;color:#3b82f6;text-decoration:none;white-space:nowrap;background:#eff6ff;padding:0.2rem 0.6rem;border-radius:6px;border:1px solid #bfdbfe;">
+                          Verify ↗
+                        </a>
+                      </div>
+                      <div style="margin-top:0.3rem;min-height:1.2rem;">
+                        <span id="mobileVerifiedBadge" style="display:none;font-size:0.75rem;font-weight:700;color:#16a34a;background:#dcfce7;padding:0.15rem 0.6rem;border-radius:8px;">
+                          ✓ Verified
+                        </span>
+                        <span id="mobileUnverifiedBadge" style="font-size:0.75rem;font-weight:600;color:#92400e;background:#fef9c3;padding:0.15rem 0.6rem;border-radius:8px;">
+                          ✗ Not Verified
+                        </span>
+                      </div>
                     </div>
                     <div style="flex:1;min-width:130px;display:flex;flex-direction:column;gap:0.3rem;">
                       <label style="font-weight:600;font-size:0.85rem;color:#1e293b;">
@@ -1298,6 +1335,26 @@ Authorization: Bearer &lt;your-api-key&gt;
                     <span id="twoFAStatus" style="margin-left:auto;font-size:0.75rem;font-weight:600;padding:0.2rem 0.6rem;border-radius:5px;background:#dcfce7;color:#16a34a;">ON</span>
                   </div>
 
+                  <!-- OTP Delivery Method -->
+                  <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:0.75rem 1rem;margin-bottom:1.2rem;">
+                    <div style="font-size:0.8rem;font-weight:700;color:#475569;margin-bottom:0.5rem;text-transform:uppercase;letter-spacing:0.4px;">
+                      <i class="fas fa-bell" style="color:#3b82f6;margin-right:0.3rem;"></i> Login OTP — Receive via
+                    </div>
+                    <div style="display:flex;gap:1.5rem;flex-wrap:wrap;">
+                      <label style="display:flex;align-items:center;gap:0.45rem;cursor:pointer;font-size:0.88rem;font-weight:600;color:#1e293b;">
+                        <input type="radio" name="profileOTPMethod" id="profileOTPEmail" value="email" checked
+                          style="accent-color:#3b82f6;width:15px;height:15px;" />
+                        <i class="fas fa-envelope" style="color:#3b82f6;"></i> Send OTP on Email
+                      </label>
+                      <label style="display:flex;align-items:center;gap:0.45rem;cursor:pointer;font-size:0.88rem;font-weight:600;color:#1e293b;" id="waOTPMethodLabel">
+                        <input type="radio" name="profileOTPMethod" id="profileOTPWA" value="whatsapp"
+                          style="accent-color:#25d366;width:15px;height:15px;" />
+                        <i class="fab fa-whatsapp" style="color:#25d366;"></i> Send OTP on WhatsApp
+                        <span id="waOTPMethodHint" style="font-size:0.72rem;color:#94a3b8;font-weight:400;">(verify mobile first)</span>
+                      </label>
+                    </div>
+                  </div>
+
                   <button type="submit" style="padding:0.65rem 2rem;background:#3b82f6;color:white;border:none;border-radius:8px;font-size:0.95rem;font-weight:600;cursor:pointer;transition:background 0.2s;display:flex;align-items:center;gap:0.5rem;"
                     onmouseover="this.style.background='#2563eb'" onmouseout="this.style.background='#3b82f6'">
                     <i class="fas fa-save"></i> Update Profile
@@ -1309,10 +1366,21 @@ Authorization: Bearer &lt;your-api-key&gt;
 
           </div><!-- /two-column -->
 
+            <div class="card-body">
+              <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:1rem;">
+                <span id="mobileVerifiedBadge" style="display:none;padding:0.25rem 0.75rem;background:#dcfce7;color:#16a34a;border-radius:20px;font-size:0.8rem;font-weight:700;">
+                  <i class="fas fa-check-circle"></i> Verified
+                </span>
+                <span id="mobileUnverifiedBadge" style="padding:0.25rem 0.75rem;background:#fef9c3;color:#92400e;border-radius:20px;font-size:0.8rem;font-weight:700;">
+                  <i class="fas fa-exclamation-circle"></i> Not Verified
+                </span>
+              </div>
+
+              <p style="font-size:0.88rem;color:#475569;margin-bottom:1.2rem;">
+                Verify your mobile number to receive OTP via WhatsApp for login. Your current mobile number from profile will be used.
+              </p>
 
         </div><!-- /two-column -->
-
-
 
         </div>
 
@@ -1320,12 +1388,7 @@ Authorization: Bearer &lt;your-api-key&gt;
     </main>
 
         <!-- FOOTER -->
-    <footer class="footer">
-      <p id="appFooterCopyright">
-        <i class="far fa-copyright"></i>
-        2026 Lexora AI Solutions. All rights reserved.
-      </p>
-    </footer>
+
 
   </div>
 
@@ -1376,5 +1439,40 @@ Authorization: Bearer &lt;your-api-key&gt;
       </div>
     </div>
   </div>
+
+  <!-- ═══════════════════════════════════════════════════════
+       MOBILE VERIFY MODAL — same style as auth verify card
+       ═══════════════════════════════════════════════════════ -->
+  <div id="mobileVerifyModal" style="display:none;position:fixed;inset:0;background:rgba(10,25,47,0.7);z-index:8000;align-items:center;justify-content:center;">
+    <div class="auth-card" style="width:380px;max-width:92vw;position:relative;">
+      <button onclick="closeMobileVerifyModal()" style="position:absolute;top:1rem;right:1rem;background:none;border:none;font-size:1.2rem;color:#94a3b8;cursor:pointer;">✕</button>
+      <h2 style="font-size:1.4rem;font-weight:700;color:#0f172a;margin-bottom:0.3rem;">Verify Mobile Number</h2>
+      <p class="auth-card-sub" id="mobileModalSubtext">OTP sent to your WhatsApp</p>
+
+      <!-- Demo/fallback code box -->
+      <div id="mobileModalDemoBox" style="display:none;background:#fef9c3;border:1px solid #fde68a;border-radius:8px;padding:0.7rem 1rem;margin-bottom:0.8rem;text-align:center;">
+        <div style="font-size:0.75rem;color:#92400e;font-weight:600;margin-bottom:0.3rem;">⚠️ WhatsApp not configured — use this code:</div>
+        <div id="mobileModalDemoCode" style="font-size:1.6rem;font-weight:800;letter-spacing:8px;color:#1e293b;font-family:monospace;">——————</div>
+      </div>
+
+      <div class="auth-field">
+        <input type="text" id="mobileModalOTPInput" placeholder="_ _ _ _ _ _" maxlength="6"
+          style="letter-spacing:8px;font-size:1.4rem;text-align:center;font-weight:700;padding:0.8rem;border:2px solid #e2e8f0;border-radius:10px;width:100%;"
+          oninput="this.value=this.value.replace(/[^0-9]/g,'')" />
+        <span id="mobileModalErr" style="display:none;color:#ef4444;font-size:0.78rem;margin-top:0.3rem;display:block;"></span>
+      </div>
+      <div style="text-align:center;font-size:0.82rem;color:#94a3b8;margin-bottom:0.8rem;">
+        Expires in <span id="mobileModalTimer" style="color:#f59e0b;font-weight:600;">4:00</span>
+      </div>
+      <div class="auth-actions">
+        <button type="button" class="btn-auth-primary" onclick="confirmMobileVerifyOTP()">Verify</button>
+        <button type="button" class="btn-auth-secondary" onclick="sendMobileVerifyOTP()">Resend</button>
+      </div>
+      <div class="auth-links" style="justify-content:center;margin-top:0.8rem;">
+        <button type="button" class="auth-link" onclick="closeMobileVerifyModal()">← Cancel</button>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>

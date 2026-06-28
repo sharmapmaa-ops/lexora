@@ -756,6 +756,9 @@ function processNextFile() {
 
   if (currentFileIndex >= totalFiles) {
     addLog('✅ All files processed successfully!', 'success');
+    var _lc = parseInt(localStorage.getItem('lexora_lease_count')||'0') + fileStatuses.filter(function(s){ return s.status==='Complete'; }).length;
+    localStorage.setItem('lexora_lease_count', _lc);
+    if (typeof _updateDashboardCounts === 'function') _updateDashboardCounts();
     showModal('success', 'All files processed successfully!');
     const actionButtonsReport = document.getElementById('actionButtonsReport');
     if (actionButtonsReport) actionButtonsReport.style.display = 'flex';
@@ -939,11 +942,12 @@ var AGENT_META = {
   'foreman':      { icon: '👷', role: 'Foreman',       color: '#0f766e' }
 };
 var TASK_AGENT_MAP = {
-  'extraction': 'extractor',
-  'critique':   'critic',
-  'quick':      'attorney',
-  'validation': 'ai_validator',
-  'scoring':    'ai_validator'
+  'extraction':  'extractor',
+  'critique':    'critic',
+  'quick':       'attorney',
+  'translation': 'attorney',
+  'validation':  'ai_validator',
+  'scoring':     'ai_validator'
 };
 
 function _agentLog(agentId, action, detail) {
@@ -1031,6 +1035,21 @@ async function _callExtractAPI(system, userMsg, task, model) {
     ? (usage.input_tokens + ' in / ' + usage.output_tokens + ' out tokens')
     : '';
   var creditStr = costUSD > 0 ? ' | 💰 $' + costUSD.toFixed(5) : '';
+
+  // Record API cost as transaction
+  if (costUSD > 0) {
+    var _u = typeof getCurrentUser === 'function' ? getCurrentUser() : null;
+    if (_u) fetch('/api/transactions/add', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        date: new Date().toISOString(), userId: _u.id,
+        userName: (_u.firstName||'') + ' ' + (_u.lastName||''),
+        type: 'debit', status: 'completed',
+        description: 'API: ' + (task||'extraction') + ' — ' + finalModel.split('/').pop(),
+        amount: parseFloat(costUSD.toFixed(5))
+      })
+    }).catch(function(){});
+  }
 
   // ── Log: response ──
   _agentLog(agentId, 'Response received',
@@ -2066,22 +2085,20 @@ function resetToStart() {
 
 function clearAll() {
   uploadedFiles = [];
-  fileStatuses = [];
+  fileStatuses  = [];
   updateFileTable();
-  document.getElementById('fileInput').value = '';
-  clearOutputTemplate();
-  document.getElementById('humanReview').checked = false;
-  document.getElementById('portfolio').checked = false;
-  document.getElementById('advancedMode').checked = false;
-  
-  const actionButtonsReport = document.getElementById('actionButtonsReport');
-  if (actionButtonsReport) actionButtonsReport.style.display = 'none';
-  
-  const log = document.getElementById('activityLog');
-  if (log) {
-    log.innerHTML = '<div class="log-entry log-info"><span class="log-time">[System]</span> Ready to process files...</div>';
-  }
-  
+  var fi = document.getElementById('fileInput');
+  if (fi) fi.value = '';
+  var countEl = document.getElementById('uploadFileCount');
+  if (countEl) { countEl.style.display = 'none'; }
+  if (typeof clearOutputTemplate === 'function') clearOutputTemplate();
+  ['humanReview','portfolio','advancedMode'].forEach(function(id) {
+    var el = document.getElementById(id); if (el) el.checked = false;
+  });
+  var arep = document.getElementById('actionButtonsReport');
+  if (arep) arep.style.display = 'none';
+  var log = document.getElementById('activityLog');
+  if (log) log.innerHTML = '<div class="log-entry log-info"><span class="log-time">[System]</span> Ready to process files...</div>';
   showModal('info', 'All files and settings cleared.');
 }
 
@@ -2378,101 +2395,111 @@ function processNextFileTrans() {
 
 function processFileStagesTrans(fileIndex) {
   if (isStoppedTrans) {
-    updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Stopped');
-    addLogTrans(`❌ ${uploadedFilesTrans[fileIndex].name} stopped`, 'error');
+    updateFileStatusTrans(fileIndex, 'Stopped', '0%', 'Stopped');
+    addLogTrans('❌ Stopped', 'error');
     currentFileIndexTrans++;
     setTimeout(processNextFileTrans, 500);
     return;
   }
 
-  var file     = uploadedFilesTrans[fileIndex];
-  var fileName = file.name;
+  var file       = uploadedFilesTrans[fileIndex];
+  var fileName   = file.name;
   var targetLang = (document.getElementById('targetLanguage') || {}).value || 'English';
 
-  addLogTrans(`📄 Processing: ${fileName}`, 'info');
-  updateFileStatusTrans(fileIndex, 'Processing', '10%', 'Processing');
+  addLogTrans('📄 Processing: ' + fileName, 'info');
   _setActiveAgentTrans('foreman');
-  addLogTrans(`Step 1 — Scan: ${fileName} (${(file.size/1024).toFixed(1)} KB)`, 'info');
+  updateFileStatusTrans(fileIndex, 'Scanning', '0%', 'Scanning');
 
-  // Step 2: Extract text from file
-  updateFileStatusTrans(fileIndex, 'Processing', '25%', 'Processing');
-  _markAgentDoneTrans('foreman'); _setActiveAgentTrans('reader');
-  addLogTrans('Step 2 — Read: Extracting text...', 'info');
+  // ── Phase 1: Pre-scan (animated progress bar) ──
+  var scanProgress = 0;
+  var scanInterval = setInterval(function() {
+    if (isStoppedTrans) { clearInterval(scanInterval); return; }
+    scanProgress += 20;
+    updateFileStatusTrans(fileIndex, 'Scanning', scanProgress + '%', 'Scanning');
+    if (scanProgress >= 100) {
+      clearInterval(scanInterval);
+      updateFileStatusTrans(fileIndex, 'Scanned', '100%', 'Processing');
+      addLogTrans('Step 1 — Scan: ' + fileName + ' (' + (file.size/1024).toFixed(1) + ' KB) ✓', 'success');
 
-  _readFileTextTrans(file).then(function(text) {
-    if (!text || text.trim().length === 0) {
-      updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
-      addLogTrans('❌ Could not extract text from file', 'error');
-      currentFileIndexTrans++;
-      setTimeout(processNextFileTrans, 500);
-      return;
-    }
-    addLogTrans(`Step 2 — Read: ${text.length.toLocaleString()} chars extracted`, 'success');
-    updateFileStatusTrans(fileIndex, 'Processing', '40%', 'Processing');
-    _markAgentDoneTrans('reader'); _setActiveAgentTrans('translator');
+      // ── Phase 2: Read ──
+      _markAgentDoneTrans('foreman'); _setActiveAgentTrans('reader');
+      addLogTrans('Step 2 — Read: Extracting text...', 'info');
+      updateFileStatusTrans(fileIndex, 'Reading', '10%', 'Processing');
 
-    // Step 3: Translate via AI
-    addLogTrans(`Step 3 — Translate: Calling AI → ${targetLang}...`, 'info');
-    var sysPrompt = `You are a professional document translator. Translate the following text accurately to ${targetLang}. Preserve all formatting, structure, paragraph breaks, and meaning. Return ONLY the translated text — no explanations, no preamble.`;
-    var userMsg   = `Translate this document to ${targetLang}:\n\n${text.substring(0, 60000)}`;
-
-    return _callExtractAPIWithRetry(sysPrompt, userMsg, 'quick').then(function(translated) {
-      if (!translated || !translated.trim()) {
-        updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
-        addLogTrans('❌ Translation returned empty result', 'error');
-        currentFileIndexTrans++;
-        setTimeout(processNextFileTrans, 500);
-        return;
-      }
-      addLogTrans(`Step 3 — Translate: ${translated.length.toLocaleString()} chars → ${targetLang}`, 'success');
-      updateFileStatusTrans(fileIndex, 'Processing', '80%', 'Processing');
-      _markAgentDoneTrans('translator'); _setActiveAgentTrans('output');
-
-      // Step 4: Generate output file (text blob)
-      addLogTrans('Step 4 — Output: Generating download...', 'info');
-      var baseName  = fileName.replace(/\.[^.]+$/, '');
-      var outName   = baseName + '_' + targetLang.replace(/\s+/g,'_') + '.txt';
-      var blob      = new Blob([translated], { type: 'text/plain;charset=utf-8' });
-      var blobUrl   = URL.createObjectURL(blob);
-
-      updateFileStatusTrans(fileIndex, 'Complete', '100%', 'Download');
-      _markAgentDoneTrans('output');
-
-      // Update file row with download link
-      var tbody = document.getElementById('fileTableBodyTrans');
-      if (tbody) {
-        var rows = tbody.querySelectorAll('tr');
-        if (rows[fileIndex]) {
-          var actionCell = rows[fileIndex].querySelector('td:last-child');
-          if (actionCell) {
-            actionCell.innerHTML = `<a href="${blobUrl}" download="${outName}" style="color:#3b82f6;font-weight:600;text-decoration:none;font-size:0.82rem;"><i class="fas fa-download"></i> Download</a>`;
-          }
+      _readFileTextTrans(file).then(function(text) {
+        if (!text || !text.trim()) {
+          updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
+          addLogTrans('❌ Could not extract text', 'error');
+          currentFileIndexTrans++; setTimeout(processNextFileTrans, 500); return;
         }
-      }
-      // Show Download All button
-      var dlAll = document.getElementById('btnDownloadAllTrans');
-      if (dlAll) dlAll.style.display = 'inline-flex';
+        var maxChars  = 30000;
+        var useText   = text.length > maxChars ? text.substring(0, maxChars) : text;
+        var truncNote = text.length > maxChars ? ' (capped at 30K for speed)' : '';
+        addLogTrans('Step 2 — Read: ' + text.length.toLocaleString() + ' chars extracted' + truncNote, 'success');
+        updateFileStatusTrans(fileIndex, 'Translating', '40%', 'Processing');
 
-      addLogTrans(`✅ ${outName} ready — ${targetLang} translation complete`, 'success');
-      currentFileIndexTrans++;
-      setTimeout(processNextFileTrans, 300);
+        // ── Phase 3: Translate ──
+        _markAgentDoneTrans('reader'); _setActiveAgentTrans('translator');
+        addLogTrans('Step 3 — Translate: Calling AI → ' + targetLang + '...', 'info');
 
-    }).catch(function(apiErr) {
-      updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
-      addLogTrans(`❌ API error: ${apiErr.message}`, 'error');
-      currentFileIndexTrans++;
-      setTimeout(processNextFileTrans, 500);
-    });
+        var sys = 'You are a professional document translator. Translate to ' + targetLang +
+                  '. Preserve formatting and meaning. Return ONLY the translated text.';
+        var msg = 'Translate to ' + targetLang + ':\n\n' + useText;
 
-  }).catch(function(readErr) {
-    updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
-    addLogTrans(`❌ Read error: ${readErr.message}`, 'error');
-    currentFileIndexTrans++;
-    setTimeout(processNextFileTrans, 500);
-  });
+        return _callExtractAPIWithRetry(sys, msg, 'translation').then(function(translated) {
+          if (!translated || !translated.trim()) {
+            updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
+            addLogTrans('❌ Empty translation result', 'error');
+            currentFileIndexTrans++; setTimeout(processNextFileTrans, 500); return;
+          }
+          addLogTrans('Step 3 — Translate: ' + translated.length.toLocaleString() + ' chars → ' + targetLang, 'success');
+          updateFileStatusTrans(fileIndex, 'Writing', '80%', 'Processing');
+
+          // ── Phase 4: Output ──
+          _markAgentDoneTrans('translator'); _setActiveAgentTrans('output');
+          addLogTrans('Step 4 — Output: Generating download...', 'info');
+
+          var baseName = fileName.replace(/\.[^.]+$/, '');
+          var outName  = baseName + '_' + targetLang.replace(/\s+/g,'_') + '.txt';
+          var blob     = new Blob([translated], {type:'text/plain;charset=utf-8'});
+          var blobUrl  = URL.createObjectURL(blob);
+
+          updateFileStatusTrans(fileIndex, 'Complete', '100%', 'Download');
+          _markAgentDoneTrans('output');
+
+          var tbody = document.getElementById('fileTableBodyTrans');
+          if (tbody) {
+            var rows = tbody.querySelectorAll('tr');
+            if (rows[fileIndex]) {
+              var ac = rows[fileIndex].querySelector('td:last-child');
+              if (ac) ac.innerHTML = '<a href="' + blobUrl + '" download="' + outName + '" style="color:#3b82f6;font-weight:600;text-decoration:none;font-size:0.82rem;"><i class="fas fa-download"></i> Download</a>';
+            }
+          }
+          var dlAll = document.getElementById('btnDownloadAllTrans');
+          if (dlAll) dlAll.style.display = 'inline-flex';
+
+          // Track count
+          var tc = parseInt(localStorage.getItem('lexora_trans_count')||'0') + 1;
+          localStorage.setItem('lexora_trans_count', tc);
+          if (typeof _updateDashboardCounts === 'function') _updateDashboardCounts();
+
+          addLogTrans('✅ ' + outName + ' ready!', 'success');
+          currentFileIndexTrans++; setTimeout(processNextFileTrans, 300);
+
+        }).catch(function(err) {
+          updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
+          addLogTrans('❌ API error: ' + err.message, 'error');
+          currentFileIndexTrans++; setTimeout(processNextFileTrans, 500);
+        });
+      }).catch(function(err) {
+        updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
+        addLogTrans('❌ Read error: ' + err.message, 'error');
+        currentFileIndexTrans++; setTimeout(processNextFileTrans, 500);
+      });
+    }
+  }, 120);
 }
 
-// Read text from uploaded file (PDF via pdf.js, DOCX via mammoth, else plain text)
 function _readFileTextTrans(file) {
   return new Promise(function(resolve, reject) {
     var ext = file.name.split('.').pop().toLowerCase();
@@ -2531,25 +2558,57 @@ function resetToStartTrans() {
   if (btnPause) btnPause.innerHTML = '<i class="fas fa-pause"></i> Pause';
 }
 
-function clearAllTrans() {
-  uploadedFilesTrans = [];
-  fileStatusesTrans = [];
-  updateFileTableTrans();
-  document.getElementById('fileInputTrans').value = '';
-  // translation template reset (no-op)
-  document.getElementById('humanReviewTrans').checked = false;
-  document.getElementById('portfolioTrans').checked = false;
-  document.getElementById('advancedModeTrans').checked = false;
-  
-  const actionButtonsReport = document.getElementById('actionButtonsReportTrans');
-  if (actionButtonsReport) actionButtonsReport.style.display = 'none';
-  
-  const log = document.getElementById('activityLogTrans');
-  if (log) {
-    log.innerHTML = '<div class="log-entry log-info"><span class="log-time">[System]</span> Ready to process files...</div>';
+function pauseProcessTrans() {
+  if (!isRunningTrans) return;
+  isPausedTrans = !isPausedTrans;
+  var btn = document.getElementById('btnPauseTrans');
+  if (isPausedTrans) {
+    addLogTrans('⏸️ Process paused', 'warning');
+    if (btn) btn.innerHTML = '<i class="fas fa-play"></i> Resume';
+  } else {
+    addLogTrans('▶️ Process resumed', 'info');
+    if (btn) btn.innerHTML = '<i class="fas fa-pause"></i> Pause';
+    processNextFileTrans();
   }
-  
-  showModal('info', 'All files and settings cleared.');
+}
+
+function stopProcessTrans() {
+  isStoppedTrans = true;
+  isPausedTrans  = false;
+  isRunningTrans = false;
+  addLogTrans('⏹️ Process stopped by user', 'error');
+  var actionButtonsRunning = document.getElementById('actionButtonsRunningTrans');
+  var actionButtonsReport  = document.getElementById('actionButtonsReportTrans');
+  if (actionButtonsRunning) actionButtonsRunning.style.display = 'none';
+  if (actionButtonsReport)  actionButtonsReport.style.display  = 'flex';
+  var btnStart = document.getElementById('btnStartTrans');
+  var btnClear = document.getElementById('btnClearTrans');
+  if (btnStart) btnStart.disabled = false;
+  if (btnClear) btnClear.disabled = false;
+  _hideAgentPipelineTrans();
+}
+
+function clearAllTrans() {
+  uploadedFilesTrans    = [];
+  fileStatusesTrans     = [];
+  currentFileIndexTrans = 0;
+  isRunningTrans = false; isPausedTrans = false; isStoppedTrans = false;
+  updateFileTableTrans();
+  var fi = document.getElementById('fileInputTrans'); if (fi) fi.value = '';
+  var countEl = document.getElementById('uploadFileCountTrans');
+  if (countEl) { countEl.style.display = 'none'; }
+  var arep = document.getElementById('actionButtonsReportTrans');
+  if (arep) arep.style.display = 'none';
+  var arun = document.getElementById('actionButtonsRunningTrans');
+  if (arun) arun.style.display = 'none';
+  var ast = document.getElementById('actionButtonsTrans');
+  if (ast) ast.style.display = 'flex';
+  var dlAll = document.getElementById('btnDownloadAllTrans');
+  if (dlAll) dlAll.style.display = 'none';
+  var log = document.getElementById('activityLogTrans');
+  if (log) log.innerHTML = '<div class="log-entry log-info"><span class="log-time">[System]</span> Ready to translate files...</div>';
+  _hideAgentPipelineTrans();
+  showModal('info', 'All files cleared.');
 }
 
 function downloadFileTrans(index) {
@@ -3797,6 +3856,11 @@ function updateProfile(event) {
   if (track('Mobile',       user.mobile,   phone))      updates.mobile    = phone;
   if (track('Lock',         user.lock,     lock))       updates.lock      = lock;
 
+  // Save OTP delivery preference
+  var waRadEl   = document.getElementById('profileOTPWA');
+  var newMethod = (waRadEl && waRadEl.checked && !waRadEl.disabled) ? 'whatsapp' : 'email';
+  if (track('OTP Method', user.otp_method || 'email', newMethod)) updates.otp_method = newMethod;
+
   var twoFaCheckbox = document.getElementById('profile2FA');
   var newTwoFA      = twoFaCheckbox ? twoFaCheckbox.checked : true;
   if (track('2FA', String(user.two_factor_auth !== false), String(newTwoFA)))  updates.two_factor_auth = newTwoFA;
@@ -3857,6 +3921,26 @@ function loadProfile() {
   const setTxt = function(id, val) { const el = document.getElementById(id); if (el) el.textContent = val || '—'; };
   setTxt('profileAccountType', user.account_type || user.role);
   setTxt('profileStatus',      user.status || 'active');
+
+  // Load WhatsApp verification status + badges
+  var _verified  = !!user.mobile_verified;
+  var _badge     = document.getElementById('mobileVerifiedBadge');
+  var _unbadge   = document.getElementById('mobileUnverifiedBadge');
+  var _vbtn      = document.getElementById('btnVerifyMobile');
+  if (_badge)   _badge.style.display   = _verified ? 'inline' : 'none';
+  if (_unbadge) _unbadge.style.display = _verified ? 'none'   : 'inline';
+  if (_vbtn)    _vbtn.style.display    = _verified ? 'none'   : '';
+
+  // Load OTP delivery preference
+  var otpMethod = user.otp_method || 'email';
+  var emailRad  = document.getElementById('profileOTPEmail');
+  var waRad     = document.getElementById('profileOTPWA');
+  var waHint    = document.getElementById('waOTPMethodHint');
+  if (emailRad) emailRad.checked = (otpMethod !== 'whatsapp');
+  if (waRad)    waRad.checked    = (otpMethod === 'whatsapp');
+  // Disable WhatsApp option if not verified
+  if (waRad)    waRad.disabled   = !user.mobile_verified;
+  if (waHint)   waHint.style.display = user.mobile_verified ? 'none' : 'inline';
 
   // 2FA toggle
   var twoFaEl     = document.getElementById('profile2FA');
@@ -4552,12 +4636,13 @@ function _injectSectionFooters() {
 function renderContactDetails() {
   const fields = [
     { id: 'co-name',    key: 'name',          icon: 'fa-building',       label: 'Company Name' },
-    { id: 'co-addr',    key: 'address',        icon: 'fa-map-marker-alt', label: 'Address' },
-    { id: 'co-hours',   key: 'working_hours',  icon: 'fa-clock',          label: 'Working Hours' },
-    { id: 'co-days',    key: 'working_days',   icon: 'fa-calendar-alt',   label: 'Working Days' },
-    { id: 'co-loc',     key: 'location',       icon: 'fa-globe-americas', label: 'Location' },
-    { id: 'co-email',   key: 'email',          icon: 'fa-envelope',       label: 'Email' },
-    { id: 'co-phone',   key: 'phone',          icon: 'fa-phone',          label: 'Phone' },
+    { id: 'co-addr',    key: 'address',          icon: 'fa-map-marker-alt', label: 'Address' },
+    { id: 'co-hours',   key: 'working_hours',    icon: 'fa-clock',          label: 'Working Hours' },
+    { id: 'co-days',    key: 'working_days',     icon: 'fa-calendar-alt',   label: 'Working Days' },
+    { id: 'co-loc',     key: 'location',         icon: 'fa-globe-americas', label: 'Location' },
+    { id: 'co-email',   key: 'email',            icon: 'fa-envelope',       label: 'Email' },
+    { id: 'co-phone',   key: 'phone',            icon: 'fa-phone',          label: 'Phone' },
+    { id: 'co-wa',      key: 'whatsapp_number',  icon: 'fa-whatsapp',       label: 'WhatsApp Number' },
   ];
   fields.forEach(function(f) {
     const el = document.getElementById(f.id);
@@ -4573,14 +4658,15 @@ function loadCompanyAdmin() {
   const scheduled = data.scheduled_changes || [];
 
   const fields = [
-    { key: 'name',         label: 'Company Name' },
-    { key: 'address',      label: 'Address' },
-    { key: 'email',        label: 'Email' },
-    { key: 'phone',        label: 'Phone' },
-    { key: 'working_hours',label: 'Working Hours' },
-    { key: 'working_days', label: 'Working Days' },
-    { key: 'location',     label: 'Location' },
-    { key: 'website',      label: 'Website' },
+    { key: 'name',            label: 'Company Name' },
+    { key: 'address',         label: 'Address' },
+    { key: 'email',           label: 'Email' },
+    { key: 'phone',           label: 'Phone' },
+    { key: 'whatsapp_number', label: 'WhatsApp Number (for OTP)' },
+    { key: 'working_hours',   label: 'Working Hours' },
+    { key: 'working_days',    label: 'Working Days' },
+    { key: 'location',        label: 'Location' },
+    { key: 'website',         label: 'Website' },
   ];
   tbody.innerHTML = fields.map(function(f) {
     const sched = scheduled.find(function(s) { return s.changes && s.changes[f.key]; });
@@ -6336,3 +6422,41 @@ window.downloadAllTrans            = downloadAllTrans;
 window.generateActivityReportTrans = generateActivityReportTrans;
 window._setActiveAgentTrans        = _setActiveAgentTrans;
 window._markAgentDoneTrans         = _markAgentDoneTrans;
+
+// ════════════════════════════════════════════════════════════
+// WHATSAPP MOBILE VERIFICATION
+// ════════════════════════════════════════════════════════════
+var _waOTPCode    = null;
+var _waOTPExpiry  = null;
+var _waOTPTimer   = null;
+var _waMobile     = null;
+
+window.verifyWhatsAppOTP = verifyWhatsAppOTP;
+window.resendWhatsAppOTP = resendWhatsAppOTP;
+
+// ════════════════════════════════════════════════════════════
+// DASHBOARD COUNTS + BALANCE
+// ════════════════════════════════════════════════════════════
+function _updateDashboardCounts() {
+  var lEl = document.getElementById('dash-leases');
+  var tEl = document.getElementById('dash-translations');
+  if (lEl) lEl.textContent = localStorage.getItem('lexora_lease_count') || '0';
+  if (tEl) tEl.textContent = localStorage.getItem('lexora_trans_count') || '0';
+  var user = typeof getCurrentUser === 'function' ? getCurrentUser() : null;
+  if (!user) return;
+  var planEl = document.getElementById('dash-plan');
+  var actEl  = document.getElementById('dash-account-type');
+  if (planEl) planEl.textContent = user.account_type || user.role || '—';
+  if (actEl)  actEl.textContent  = user.status || 'active';
+  fetch('/api/transactions/list?userId=' + encodeURIComponent(user.id))
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d) {
+      if (!d || !d.transactions) return;
+      var txns  = d.transactions;
+      var spent = txns.filter(function(t){ return t.type==='debit'; }).reduce(function(s,t){ return s+Number(t.amount||0); }, 0);
+      var added = txns.filter(function(t){ return t.type==='credit'; }).reduce(function(s,t){ return s+Number(t.amount||0); }, 0);
+      var el = document.getElementById('dash-balance');
+      if (el) el.textContent = '$' + Math.abs(added - spent).toFixed(4);
+    }).catch(function(){});
+}
+window._updateDashboardCounts = _updateDashboardCounts;
