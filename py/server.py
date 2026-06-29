@@ -17,62 +17,107 @@ DB_DIR   = os.path.join(ROOT_DIR, "db")
 USER_DIR = os.path.join(ROOT_DIR, "user_directory")
 
 USERS_FILE = os.path.join(DB_DIR, "users.json")
-SMTP_FILE  = os.path.join(DB_DIR, "smtp_config.json")
 PAY_FILE   = os.path.join(DB_DIR, "payment_methods.json")
 TXN_FILE   = os.path.join(DB_DIR, "transaction_history.json")
 
 
 # ── Email helper ─────────────────────────────────────────────────────────────
 def load_smtp():
-    try:
-        with open(SMTP_FILE, "r") as f:
-            data = json.load(f)
-            if data.get("host") and data.get("username") and data.get("password"):
-                return data
-    except Exception:
-        pass
-    # Fallback: read from environment variables (Render / cloud deployment)
+    """Load SMTP config from environment variables ONLY."""
     host = os.environ.get("SMTP_HOST", "")
-    if host:
-        return {
-            "host":           host,
-            "port":           int(os.environ.get("SMTP_PORT", "587")),
-            "username":       os.environ.get("SMTP_USER", os.environ.get("SMTP_EMAIL", "")),
-            "password":       os.environ.get("SMTP_PASSWORD", ""),
-            "sender_email":   os.environ.get("SMTP_FROM", os.environ.get("SMTP_EMAIL", "")),
-            "receiver_email": os.environ.get("SMTP_RECEIVER", ""),
-            "use_tls":        os.environ.get("SMTP_TLS", "true").lower() != "false",
-            "expiry_minutes": int(os.environ.get("SMTP_EXPIRY_MINS", "4"))
-        }
-    return {}
+    if not host:
+        return {}
+    return {
+        "host":           host,
+        "port":           int(os.environ.get("SMTP_PORT", "587")),
+        "username":       os.environ.get("SMTP_USER", os.environ.get("SMTP_EMAIL", "")),
+        "password":       os.environ.get("SMTP_PASSWORD", ""),
+        "sender_email":   os.environ.get("SMTP_FROM", os.environ.get("SMTP_EMAIL", "")),
+        "receiver_email": os.environ.get("SMTP_RECEIVER", ""),
+        "use_tls":        os.environ.get("SMTP_TLS", "true").lower() != "false",
+        "expiry_minutes": int(os.environ.get("SMTP_EXPIRY_MINS", "4"))
+    }
+
+
+def _smtp_send_attempt(host, port, username, password, sender, recipients, msg, use_tls=True):
+    """Single SMTP send attempt. Returns True on success, raises on failure."""
+    import ssl as _ssl, traceback as _tb
+    tls_mode = "SSL" if port == 465 else ("STARTTLS" if use_tls else "PLAIN")
+    print(f"[SMTP] Trying {host}:{port} ({tls_mode}) login={username}")
+    if port == 465:
+        ctx = _ssl.create_default_context()
+        with smtplib.SMTP_SSL(host, port, context=ctx, timeout=25) as srv:
+            srv.login(username, password)
+            srv.sendmail(sender, recipients, msg.as_string())
+    else:
+        with smtplib.SMTP(host, port, timeout=25) as srv:
+            srv.ehlo()
+            if use_tls:
+                srv.starttls()
+                srv.ehlo()
+            srv.login(username, password)
+            srv.sendmail(sender, recipients, msg.as_string())
+    return True
 
 
 def send_email(to_list, subject, body_html, body_text=""):
-    cfg = load_smtp()
-    if not cfg.get("host") or not cfg.get("username") or not cfg.get("password"):
-        raise ValueError("SMTP not configured in smtp_config.json")
+    import traceback as _tb
+    cfg      = load_smtp()
+    host     = cfg.get("host", "")
+    port     = int(cfg.get("port", 587))
+    username = cfg.get("username", "")
+    password = cfg.get("password", "")
+    sender   = cfg.get("sender_email", username)
+    use_tls  = cfg.get("use_tls", True)
+    to_str   = ", ".join(to_list) if isinstance(to_list, list) else to_list
+    recipients = to_list if isinstance(to_list, list) else [to_list]
+
+    tls_mode = "SSL/465" if port == 465 else ("STARTTLS/587" if use_tls else "PLAIN")
+    print(f"[SMTP] ══════════════════════════════════════════")
+    print(f"[SMTP] Host     : {host}:{port} ({tls_mode})")
+    print(f"[SMTP] Login    : {username}")
+    print(f"[SMTP] From     : {sender}")
+    print(f"[SMTP] To       : {to_str}")
+    print(f"[SMTP] Subject  : {subject}")
+    print(f"[SMTP] Password : {'SET (' + str(len(password)) + ' chars, starts=' + password[:6] + '...)' if password else 'NOT SET ⚠️'}")
+
+    if not host or not username or not password:
+        missing = [k for k,v in {"SMTP_HOST":host,"SMTP_USER":username,"SMTP_PASSWORD":password}.items() if not v]
+        err = f"SMTP missing env vars: {missing}"
+        print(f"[SMTP] ❌ {err}")
+        raise ValueError(err)
+
+    # Build message
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = cfg.get("sender_email", cfg["username"])
-    msg["To"]      = ", ".join(to_list) if isinstance(to_list, list) else to_list
+    msg["From"]    = sender
+    msg["To"]      = to_str
     if body_text:
         msg.attach(MIMEText(body_text, "plain"))
     msg.attach(MIMEText(body_html, "html"))
-    port = int(cfg.get("port", 587))
-    recipients = to_list if isinstance(to_list, list) else [to_list]
-    # Port 465 = SSL directly, Port 587/25 = STARTTLS
-    if port == 465:
-        import ssl as _ssl
-        ctx = _ssl.create_default_context()
-        with smtplib.SMTP_SSL(cfg["host"], port, context=ctx, timeout=15) as server:
-            server.login(cfg["username"], cfg["password"])
-            server.sendmail(cfg.get("sender_email", cfg["username"]), recipients, msg.as_string())
-    else:
-        with smtplib.SMTP(cfg["host"], port, timeout=15) as server:
-            if cfg.get("use_tls", True):
-                server.starttls()
-            server.login(cfg["username"], cfg["password"])
-            server.sendmail(cfg.get("sender_email", cfg["username"]), recipients, msg.as_string())
+
+    # ── Strategy: try configured port first, then fallback ──────────────────
+    # On Render/cloud, port 587 (STARTTLS) often times out — port 465 (SSL) is more reliable
+    alt_port = 465 if port == 587 else 587
+    attempts  = [(port, use_tls), (alt_port, alt_port != 465)]
+
+    last_err = None
+    for try_port, try_tls in attempts:
+        try:
+            _smtp_send_attempt(host, try_port, username, password, sender, recipients, msg, try_tls)
+            print(f"[SMTP] ✅ Sent via port {try_port} → {to_str}")
+            return  # success
+        except smtplib.SMTPAuthenticationError as e:
+            print(f"[SMTP] ❌ AUTH FAILED port {try_port}: {e.smtp_code} {getattr(e,'smtp_error',str(e))}")
+            raise   # auth failure — don't retry, wrong credentials
+        except Exception as e:
+            print(f"[SMTP] ⚠ Port {try_port} failed ({type(e).__name__}): {e} — trying fallback...")
+            last_err = e
+
+    # All attempts failed
+    print(f"[SMTP] ❌ All ports failed. Last error: {last_err}")
+    print(f"[SMTP] Traceback: {_tb.format_exc()}")
+    raise last_err
 
 
 # ── Request Handler ──────────────────────────────────────────────────────────
@@ -106,8 +151,20 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
             "/api/health": lambda: {"status": "ok",
                                     "time": datetime.datetime.utcnow().isoformat(),
                                     "server": "Lexora Dev Server v3.0"},
+            "/api/smtp/ping": lambda: self._smtp_ping(),
             "/api/users":  lambda: self._read(USERS_FILE),
-            "/api/smtp":   lambda: self._read(SMTP_FILE),
+            "/api/smtp":   lambda: {
+                "host":           os.environ.get("SMTP_HOST", ""),
+                "port":           int(os.environ.get("SMTP_PORT", "587")),
+                "username":       os.environ.get("SMTP_USER", os.environ.get("SMTP_EMAIL", "")),
+                "password":       "••••••••" if os.environ.get("SMTP_PASSWORD") else "",
+                "sender_email":   os.environ.get("SMTP_FROM", os.environ.get("SMTP_EMAIL", "")),
+                "receiver_email": os.environ.get("SMTP_RECEIVER", ""),
+                "use_tls":        os.environ.get("SMTP_TLS", "true").lower() != "false",
+                "expiry_minutes": int(os.environ.get("SMTP_EXPIRY_MINS", "4")),
+                "_source":        "environment_variables",
+                "_configured":    bool(os.environ.get("SMTP_HOST"))
+            },
             "/api/admin/payment-accounts": lambda: self._read(
                 os.path.join(DB_DIR, "admin_payment_accounts.json")),
             "/api/templates/scan": lambda: self._scan_templates(),
@@ -183,14 +240,9 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
                 self._json({"success": False, "error": str(e)}, 400)
             return
 
-        # /api/smtp/save
+        # /api/smtp/save — disabled: SMTP managed via env vars only
         if p == "/api/smtp/save":
-            try:
-                self._write(SMTP_FILE, json.loads(body))
-                self._log("💾  smtp_config.json saved")
-                self._json({"success": True})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
+            self._json({"success": False, "error": "SMTP is managed via environment variables. Update in Render Dashboard.", "_env_only": True})
             return
 
         # /api/users/photo/save
@@ -361,7 +413,7 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
                 import shutil
                 data     = json.loads(body)
                 rel_path = data.get("path", "").replace("..","").lstrip("/")
-                PROTECTED = {"db/users.json","db/smtp_config.json","db/api_config.json",
+                PROTECTED = {"db/users.json","db/api_config.json",
                              "py/server.py","index.html","db","py","js","css"}
                 if not rel_path or rel_path in PROTECTED:
                     self._json({"success": False, "error": "This path is protected."})
@@ -562,15 +614,34 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
             try:
                 TXN_FILE = os.path.join(DB_DIR, "transaction_history.json")
                 txn  = json.loads(body)
-                data = self._read(TXN_FILE) if os.path.exists(TXN_FILE) else {"transactions": []}
+                data = self._read(TXN_FILE) if os.path.exists(TXN_FILE) else {}
                 if isinstance(data, list): data = {"transactions": data}
                 if "transactions" not in data: data["transactions"] = []
                 txn["id"] = "txn_" + datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
                 data["transactions"].insert(0, txn)  # newest first
-                # Keep max 1000
                 data["transactions"] = data["transactions"][:1000]
+
+                # ALSO update per-user format so Payment History UI shows API costs
+                uid = txn.get("userId", "")
+                if uid:
+                    if "user_transactions" not in data:
+                        data["user_transactions"] = {}
+                    if uid not in data["user_transactions"]:
+                        data["user_transactions"][uid] = {"transactions": [], "summary": {}}
+                    data["user_transactions"][uid]["transactions"].insert(0, txn)
+                    data["user_transactions"][uid]["transactions"] = data["user_transactions"][uid]["transactions"][:500]
+                    utxns = data["user_transactions"][uid]["transactions"]
+                    credit = sum(float(t.get("amount", 0)) for t in utxns if t.get("type") == "credit")
+                    debit  = sum(float(t.get("amount", 0)) for t in utxns if t.get("type") == "debit")
+                    data["user_transactions"][uid]["summary"] = {
+                        "totalCredit": round(credit, 6),
+                        "totalDebit":  round(debit,  6),
+                        "balance":     round(credit - debit, 6)
+                    }
+
                 self._write(TXN_FILE, data)
-                # Update payment accounts total
+
+                # Update admin payment accounts
                 try:
                     PAY_FILE = os.path.join(DB_DIR, "admin_payment_accounts.json")
                     pay_data = self._read(PAY_FILE)
@@ -633,7 +704,18 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
                 content_sid = os.environ.get("TWILIO_CONTENT_SID","")
                 to_         = "whatsapp:+" + mobile.lstrip("+")
 
-                if sid and token:
+                # Detect placeholder token (common mistake)
+                is_placeholder = token in ("", "[AuthToken]", "your_auth_token", "xxxx")
+
+                print(f"[WHATSAPP] ══════════════════════════════════════════")
+                print(f"[WHATSAPP] To           : {to_}")
+                print(f"[WHATSAPP] From         : {wa_from}")
+                print(f"[WHATSAPP] Code         : {code}")
+                print(f"[WHATSAPP] Account SID  : {sid[:10] + '…' if sid else '⚠ NOT SET'}")
+                print(f"[WHATSAPP] Auth Token   : {'⚠ PLACEHOLDER [AuthToken]' if is_placeholder else 'SET (' + str(len(token)) + ' chars)' if token else '⚠ NOT SET'}")
+                print(f"[WHATSAPP] Content SID  : {content_sid if content_sid else '(not set — will use free-form)'}")
+
+                if sid and token and not is_placeholder:
                     import urllib.request as _ur, urllib.parse as _up, base64 as _b64
                     api_url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
                     creds   = _b64.b64encode(f"{sid}:{token}".encode()).decode()
@@ -674,14 +756,29 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
                         self._log(f"✅ Twilio accepted: {msg_id}… status={resp.get('status')}")
                         self._json({"success": True, "sent": True, "from": wa_from, "sid": msg_id})
                     except Exception as tw_err:
-                        # Twilio returned an error — fall back to demo mode
-                        self._log(f"❌ Twilio error: {tw_err}")
-                        self._json({"success": True, "sent": False, "code": code,
-                                    "error": str(tw_err)})
+                        err_str = str(tw_err)
+                        self._log(f"❌ Twilio error: {err_str}")
+                        print(f"[WHATSAPP] ❌ Twilio API error: {err_str}")
+                        self._json({"success": True, "sent": False, "code": code, "debug": {
+                            "error": err_str,
+                            "error_type": type(tw_err).__name__,
+                            "to": to_,
+                            "from": wa_from,
+                            "sid": sid[:10] + "…" if sid else "",
+                            "content_sid": content_sid
+                        }})
                 else:
-                    # No token — demo/dev mode
-                    self._log(f"⚠️  TWILIO_AUTH_TOKEN not set. OTP for {mobile}: {code}")
-                    self._json({"success": True, "sent": False, "code": code})
+                    # No valid token — demo mode
+                    reason = "TWILIO_AUTH_TOKEN is placeholder [AuthToken] — set real token in Render env vars" if is_placeholder else "TWILIO_AUTH_TOKEN or TWILIO_ACCOUNT_SID not set in environment variables"
+                    self._log(f"⚠️  WhatsApp demo mode: {reason} | OTP for {mobile}: {code}")
+                    print(f"[WHATSAPP] ⚠ DEMO MODE — {reason}")
+                    self._json({"success": True, "sent": False, "code": code, "debug": {
+                        "reason": reason,
+                        "to": to_,
+                        "sid_set": bool(sid),
+                        "token_set": bool(token and not is_placeholder),
+                        "is_placeholder": is_placeholder
+                    }})
             except Exception as e:
                 self._log(f"❌ WhatsApp send error: {e}")
                 self._json({"success": False, "error": str(e), "sent": False})
@@ -714,21 +811,38 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
         # /api/auth/sendcode — Send verification code email for login
         if p == "/api/auth/sendcode":
             try:
-                data       = json.loads(body)
-                to_email   = data.get("email", "")
-                code       = data.get("code", "")
-                expiry     = data.get("expiryMins", 4)
-                html_body  = f"""<h3>Lexora Login Verification</h3>
-<p>Your verification code is: <b style='font-size:1.4rem;letter-spacing:4px;'>{code}</b></p>
-<p>This code expires in <b>{expiry} minutes</b>.</p>
-<p style='color:#64748b;font-size:0.85em;'>If you did not request this, ignore this email.</p>"""
+                import traceback as _tb2
+                data     = json.loads(body)
+                to_email = data.get("email", "")
+                code     = data.get("code", "")
+                expiry   = data.get("expiryMins", 4)
+                html_body = (
+                    f"<h3>Lexora Login Verification</h3>"
+                    f"<p>Your verification code is: "
+                    f"<b style='font-size:1.4rem;letter-spacing:4px;'>{code}</b></p>"
+                    f"<p>This code expires in <b>{expiry} minutes</b>.</p>"
+                    f"<p style='color:#64748b;font-size:0.85em;'>If you did not request this, ignore this email.</p>"
+                )
+                smtp_debug = {
+                    "smtp_host":  os.environ.get("SMTP_HOST", "⚠ NOT SET"),
+                    "smtp_port":  os.environ.get("SMTP_PORT", "587"),
+                    "smtp_user":  os.environ.get("SMTP_USER", "⚠ NOT SET"),
+                    "smtp_from":  os.environ.get("SMTP_FROM", "⚠ NOT SET"),
+                    "smtp_recv":  os.environ.get("SMTP_RECEIVER", "(not needed for OTP)"),
+                    "to":         to_email,
+                }
                 try:
                     send_email(to_email, "Lexora — Login Verification Code", html_body)
-                    self._json({"success": True, "emailSent": True})
+                    self._log(f"✅ OTP email sent → {to_email}")
+                    self._json({"success": True, "emailSent": True, "debug": smtp_debug})
                 except Exception as smtp_err:
-                    # Email failed but still return code so login can proceed
-                    self._log(f"⚠️  SMTP error (sendcode): {smtp_err}")
-                    self._json({"success": True, "emailSent": False, "code": code})
+                    err_str  = str(smtp_err)
+                    tb_str   = _tb2.format_exc().split("\n")[-3].strip()
+                    self._log(f"❌ SMTP sendcode failed → {to_email}: {err_str}")
+                    smtp_debug["error"]      = err_str
+                    smtp_debug["error_type"] = type(smtp_err).__name__
+                    smtp_debug["traceback"]  = tb_str
+                    self._json({"success": True, "emailSent": False, "code": code, "debug": smtp_debug})
             except Exception as e:
                 self._json({"success": False, "error": str(e)}, 400)
             return
@@ -1092,6 +1206,45 @@ class LexoraHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _smtp_ping(self):
+        """Test SMTP connectivity without sending email. Returns detailed debug."""
+        import socket as _sock
+        cfg   = load_smtp()
+        host  = cfg.get("host","")
+        port  = int(cfg.get("port",587))
+        user  = cfg.get("username","")
+        pwd   = cfg.get("password","")
+        frm   = cfg.get("sender_email","")
+        rcv   = cfg.get("receiver_email","")
+        results = []
+        if not host:
+            return {"configured": False, "error": "SMTP_HOST not set in environment variables",
+                    "env_vars": {"SMTP_HOST":"NOT SET","SMTP_PORT":os.environ.get("SMTP_PORT",""),"SMTP_USER":os.environ.get("SMTP_USER",""),"SMTP_FROM":os.environ.get("SMTP_FROM",""),"SMTP_RECEIVER":os.environ.get("SMTP_RECEIVER","")}}
+        for try_port in [port, (465 if port==587 else 587)]:
+            try:
+                s = _sock.create_connection((host, try_port), timeout=8)
+                s.close()
+                results.append({"port": try_port, "tcp": "OPEN ✅"})
+            except Exception as e:
+                results.append({"port": try_port, "tcp": f"BLOCKED/TIMEOUT ❌ — {e}"})
+        return {
+            "configured": bool(host and user and pwd),
+            "host": host, "port": port,
+            "user": user, "from": frm,
+            "receiver": rcv,
+            "password_set": bool(pwd),
+            "password_starts": pwd[:6] + "…" if pwd else "",
+            "port_tests": results,
+            "env_vars": {
+                "SMTP_HOST":     os.environ.get("SMTP_HOST","⚠ NOT SET"),
+                "SMTP_PORT":     os.environ.get("SMTP_PORT","587"),
+                "SMTP_USER":     os.environ.get("SMTP_USER","⚠ NOT SET"),
+                "SMTP_FROM":     os.environ.get("SMTP_FROM","⚠ NOT SET"),
+                "SMTP_RECEIVER": os.environ.get("SMTP_RECEIVER","⚠ NOT SET"),
+                "SMTP_PASSWORD": "SET" if os.environ.get("SMTP_PASSWORD") else "⚠ NOT SET"
+            }
+        }
 
     def _log(self, msg):
         print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}")

@@ -2020,3 +2020,19 @@ html, body {
 .main-app-wrapper .footer,
 .app .footer,
 footer.footer { display: none !important; }
+
+/* ════════════════════════════════════════════════════════════
+   GLOBAL FOOTER — always at bottom of app, never inside sections
+   ════════════════════════════════════════════════════════════ */
+.section-copyright-bar { display: none !important; }
+
+#appFooter {
+  text-align: center;
+  padding: 0.55rem 1rem;
+  border-top: 1px solid #eef2f6;
+  background: #fafbfc;
+  font-size: 0.77rem;
+  color: #94a3b8;
+  flex-shrink: 0;
+  width: 100%;
+}

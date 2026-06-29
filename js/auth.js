@@ -249,15 +249,44 @@ function startOTP(context, email, title, onSuccess) {
   clearError('verify-err');
 
   // Send email
+  var _emailLogStyle = 'background:#3b82f6;color:white;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;';
+  console.log('%c[Lexora EMAIL OTP]', _emailLogStyle, 'Requesting OTP for:', email);
+
   fetch('/api/auth/sendcode', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ email, code: _otpCode, expiryMins })
   }).then(function(r){return r.json();})
     .then(function(res){
-      // Show fallback code if email was not sent (SMTP blocked on cloud / not configured)
+      // ── Browser console: full SMTP debug ──────────────────────────────
+      var g = res.debug || {};
+      if (res.emailSent) {
+        console.log('%c[Lexora EMAIL OTP] ✅ SENT', _emailLogStyle,
+          '| To:', email,
+          '| SMTP Host:', g.smtp_host || '?',
+          '| From:', g.smtp_from || '?',
+          '| User:', g.smtp_user || '?'
+        );
+      } else {
+        console.group('%c[Lexora EMAIL OTP] ❌ FAILED', 'background:#ef4444;color:white;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;');
+        console.log('To          :', email);
+        console.log('SMTP Host   :', g.smtp_host  || '⚠ NOT SET');
+        console.log('SMTP User   :', g.smtp_user  || '⚠ NOT SET');
+        console.log('SMTP From   :', g.smtp_from  || '⚠ NOT SET');
+        if (g.error)      console.error('Error       :', g.error);
+        if (g.error_type) console.error('Error Type  :', g.error_type);
+        if (g.traceback)  console.error('Traceback   :', g.traceback);
+        console.warn('Fallback OTP code is shown on screen (demo mode)');
+        console.groupEnd();
+      }
+      // Show fallback code if email was not sent
       if(!res.success || res.emailSent === false) _showDemoCode(_otpCode);
     })
-    .catch(function() { _showDemoCode(_otpCode); });
+    .catch(function(err) {
+      console.group('%c[Lexora EMAIL OTP] ❌ NETWORK ERROR', 'background:#ef4444;color:white;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;');
+      console.error('Could not reach /api/auth/sendcode:', err);
+      console.groupEnd();
+      _showDemoCode(_otpCode);
+    });
 
   authShowView('view-verify');
   _startOTPTimer(expiryMins);
@@ -595,18 +624,37 @@ function _startWhatsAppLoginOTP(user, onVerified) {
   authShowView('view-verify');
   _startOTPTimer(4);
 
+  var _waLogStyle = 'background:#25d366;color:white;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;';
+  console.log('%c[Lexora WHATSAPP OTP]', _waLogStyle, 'Sending OTP to WhatsApp: +91' + mobile);
+
   fetch('/api/whatsapp/send', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mobile: '91' + mobile, code: _waLoginCode })
   }).then(function(r){ return r.json(); })
     .then(function(res) {
-      if (!res.sent) {
+      var g = res.debug || {};
+      if (res.sent) {
+        console.log('%c[Lexora WHATSAPP OTP] ✅ SENT', _waLogStyle,
+          '| To: +91' + mobile,
+          '| SID:', g.sid || '?'
+        );
+      } else {
+        console.group('%c[Lexora WHATSAPP OTP] ❌ NOT SENT', 'background:#f59e0b;color:white;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;');
+        console.log('To            : +91' + mobile);
+        console.log('Reason        :', g.reason || res.error || 'see Render logs');
+        console.log('SID set       :', g.sid_set);
+        console.log('Token set     :', g.token_set);
+        console.log('Is placeholder:', g.is_placeholder);
+        if (g.error) console.error('Twilio Error  :', g.error);
+        console.warn('Fallback code shown on screen:', res.code || _waLoginCode);
+        console.groupEnd();
         if (demoBox)  demoBox.style.display  = 'block';
         if (demoCode) demoCode.textContent    = res.code || _waLoginCode;
-        console.info('%c[Lexora WhatsApp OTP] ' + (res.code || _waLoginCode),
-          'background:#25d366;color:white;padding:4px 8px;border-radius:4px;font-weight:bold;');
       }
-    }).catch(function() {
+    }).catch(function(err) {
+      console.group('%c[Lexora WHATSAPP OTP] ❌ NETWORK ERROR', 'background:#ef4444;color:white;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;');
+      console.error('Could not reach /api/whatsapp/send:', err);
+      console.groupEnd();
       if (demoBox)  demoBox.style.display  = 'block';
       if (demoCode) demoCode.textContent    = _waLoginCode;
     });
@@ -675,20 +723,34 @@ function sendMobileVerifyOTP() {
   if (errEl)   errEl.style.display   = 'none';
   if (demoBox) demoBox.style.display = 'none';
 
+  var _mobLogStyle = 'background:#25d366;color:white;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;';
+  console.log('%c[Lexora MOBILE VERIFY OTP]', _mobLogStyle, 'Sending to WhatsApp: +91' + mobile);
+
   fetch('/api/whatsapp/send', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ mobile: '91' + mobile, code: _mobileOTPCode })
   }).then(function(r){ return r.json(); })
     .then(function(res) {
-      if (!res.sent) {
+      var g = res.debug || {};
+      if (res.sent) {
+        console.log('%c[Lexora MOBILE VERIFY OTP] ✅ SENT', _mobLogStyle, '| To: +91' + mobile);
+      } else {
+        console.group('%c[Lexora MOBILE VERIFY OTP] ❌ NOT SENT', 'background:#f59e0b;color:white;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;');
+        console.log('To            : +91' + mobile);
+        console.log('Reason        :', g.reason || res.error || 'see Render logs');
+        console.log('Is placeholder:', g.is_placeholder);
+        if (g.error) console.error('Twilio Error  :', g.error);
+        console.warn('Fallback code:', res.code || _mobileOTPCode);
+        console.groupEnd();
         var demoCode = document.getElementById('mobileModalDemoCode');
         if (demoBox)  demoBox.style.display = 'block';
         if (demoCode) demoCode.textContent   = res.code || _mobileOTPCode;
-        console.info('%c[Lexora Mobile OTP] ' + (res.code || _mobileOTPCode),
-          'background:#25d366;color:white;padding:4px;border-radius:4px;font-weight:bold;');
       }
       _startMobileOTPTimer(4);
-    }).catch(function() {
+    }).catch(function(err) {
+      console.group('%c[Lexora MOBILE VERIFY OTP] ❌ NETWORK ERROR', 'background:#ef4444;color:white;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;');
+      console.error(err);
+      console.groupEnd();
       var demoBox2 = document.getElementById('mobileModalDemoBox');
       var demoCode2 = document.getElementById('mobileModalDemoCode');
       if (demoBox2)  demoBox2.style.display = 'block';

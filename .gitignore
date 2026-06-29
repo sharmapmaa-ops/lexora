@@ -1,5 +1,6 @@
 # API keys — never commit real credentials
 db/api_config.json
+db/smtp_config.json
 
 # Python cache
 __pycache__/

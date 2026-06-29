@@ -52,34 +52,40 @@ function savePaymentData() {
   });
 }
 
-// ── Load transactions from db/transaction_history.json ────────────────────
+// ── Load transactions — API costs + manual entries both included ──────────
 function loadTransactionData() {
   const user = getCurrentUser();
   if (!user) return;
+  currentUserEmail = user.email || '';
 
+  // Instant display from cache
   const cached = localStorage.getItem('lexora_txn_' + user.id);
   if (cached) {
-    const data = JSON.parse(cached);
-    currentTransactions = data.transactions || [];
-    currentSummary = data.summary || { totalCredit: 0, totalDebit: 0, balance: 0 };
-    updateSummary(); renderTransactions(currentTransactions);
+    try {
+      const data = JSON.parse(cached);
+      currentTransactions = data.transactions || [];
+      currentSummary = data.summary || { totalCredit: 0, totalDebit: 0, balance: 0 };
+      updateSummary(); renderTransactions(currentTransactions);
+    } catch(e) {}
   }
 
-  fetch('/db/transaction_history.json?_=' + Date.now())
+  // Fetch ALL transactions (API costs + manual) from server
+  fetch('/api/transactions/list?userId=' + encodeURIComponent(user.id) + '&_=' + Date.now())
     .then(function(r) { return r.ok ? r.json() : null; })
     .then(function(data) {
-      if (data) {
-        var userTxn = (data.user_transactions || {})[user.id] || { transactions: [], summary: { totalCredit:0, totalDebit:0, balance:0 } };
-        currentTransactions = userTxn.transactions || [];
-        currentSummary      = userTxn.summary || { totalCredit: 0, totalDebit: 0, balance: 0 };
-        localStorage.setItem('lexora_txn_' + user.id, JSON.stringify(userTxn));
+      if (data && data.transactions) {
+        currentTransactions = data.transactions;
+        var credit = currentTransactions.filter(function(t){ return t.type==='credit'; }).reduce(function(s,t){ return s+Number(t.amount||0); }, 0);
+        var debit  = currentTransactions.filter(function(t){ return t.type==='debit';  }).reduce(function(s,t){ return s+Number(t.amount||0); }, 0);
+        currentSummary = { totalCredit: credit, totalDebit: debit, balance: credit - debit };
+        localStorage.setItem('lexora_txn_' + user.id, JSON.stringify({ transactions: currentTransactions, summary: currentSummary }));
       }
       updateSummary();
       renderTransactions(currentTransactions);
       setDateDefaults();
     })
     .catch(function() {
-      console.warn('[Lexora] Could not load transaction_history.json');
+      console.warn('[Lexora] Could not load transaction history from server');
     });
 }
 
@@ -1036,19 +1042,27 @@ async function _callExtractAPI(system, userMsg, task, model) {
     : '';
   var creditStr = costUSD > 0 ? ' | 💰 $' + costUSD.toFixed(5) : '';
 
-  // Record API cost as transaction
+  // Record API cost as transaction (server + local UI)
   if (costUSD > 0) {
     var _u = typeof getCurrentUser === 'function' ? getCurrentUser() : null;
-    if (_u) fetch('/api/transactions/add', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
+    if (_u) {
+      var _txnBody = {
         date: new Date().toISOString(), userId: _u.id,
         userName: (_u.firstName||'') + ' ' + (_u.lastName||''),
         type: 'debit', status: 'completed',
         description: 'API: ' + (task||'extraction') + ' — ' + finalModel.split('/').pop(),
         amount: parseFloat(costUSD.toFixed(5))
-      })
-    }).catch(function(){});
+      };
+      // Save to server (flat list — readable by admin + /api/transactions/list)
+      fetch('/api/transactions/add', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(_txnBody)
+      }).catch(function(){});
+      // Also update local Payment History UI immediately
+      if (typeof addTransaction === 'function') {
+        addTransaction(_txnBody.description, 'debit', _txnBody.amount);
+      }
+    }
   }
 
   // ── Log: response ──
@@ -2267,40 +2281,56 @@ function updateFileTableTrans() {
     nameTd.textContent = file.name;
     tr.appendChild(nameTd);
 
+    // ── Scan Result — identical to lease abstraction ──────────────────────
     const scanTd = document.createElement('td');
-    let scanBadge = '';
     var scanPct = file.scanProgress || 0;
-    if (file.scanResult === 'Pass') {
-      scanBadge = '<span class="status-badge success">✓ Pass</span>';
+    var scanHtml = '';
+    if (!file.scanResult || file.scanResult === 'Pending') {
+      scanHtml = '<span style="color:#94a3b8;">—</span>';
+    } else if (file.scanResult === 'Scanning') {
+      scanHtml =
+        '<div style="min-width:100px;">' +
+        '<div style="font-size:0.72rem;color:#f59e0b;font-weight:700;margin-bottom:3px;">🔎 ' + scanPct + '%</div>' +
+        '<div style="width:100%;height:6px;background:#fef3c7;border-radius:3px;overflow:hidden;">' +
+        '<div style="width:' + scanPct + '%;height:6px;background:linear-gradient(90deg,#f59e0b,#fbbf24);border-radius:3px;transition:width 0.25s;"></div>' +
+        '</div></div>';
+    } else if (file.scanResult === 'Pass' || file.scanResult === 'Scanned') {
+      scanHtml =
+        '<div style="min-width:100px;">' +
+        '<div style="font-size:0.72rem;color:#16a34a;font-weight:700;margin-bottom:3px;">✓ 100%</div>' +
+        '<div style="width:100%;height:6px;background:#dcfce7;border-radius:3px;overflow:hidden;">' +
+        '<div style="width:100%;height:6px;background:#22c55e;border-radius:3px;"></div>' +
+        '</div></div>';
     } else if (file.scanResult === 'Failed') {
-      scanBadge = '<span class="status-badge failed">✗ Failed</span>';
-    } else if (file.scanResult === 'Scanning' || (file.scanResult === 'Processing' && scanPct > 0 && scanPct < 100)) {
-      // Show animated scan progress bar
-      scanBadge = '<div style="min-width:90px;">' +
-        '<div style="font-size:0.72rem;color:#f59e0b;font-weight:600;margin-bottom:2px;">🔎 Scanning ' + scanPct + '%</div>' +
-        '<div style="width:100%;height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;">' +
-        '<div style="width:' + scanPct + '%;height:6px;background:#f59e0b;border-radius:3px;transition:width 0.3s;"></div></div></div>';
-    } else if (file.scanResult === 'Processing') {
-      scanBadge = '<span class="status-badge processing">Processing...</span>';
+      scanHtml = '<span class="status-badge failed">✗ Failed</span>';
     } else {
-      scanBadge = '<span class="status-badge pending">Pending</span>';
+      scanHtml = '<span style="color:#94a3b8;">' + (file.scanResult || '—') + '</span>';
     }
-    scanTd.innerHTML = scanBadge;
+    scanTd.innerHTML = scanHtml;
     tr.appendChild(scanTd);
 
+    // ── Status — identical to lease abstraction ─────────────────────────
     const statusTd = document.createElement('td');
-    const progress = parseInt(file.status) || 0;
-    let barColor = 'processing';
-    if (file.scanResult === 'Failed') barColor = 'failed';
-    else if (file.action === 'Download') barColor = 'success';
-    else if (progress === 100) barColor = 'success';
-    
-    statusTd.innerHTML = `
-      <div>${file.status}</div>
-      <div class="progress-bar">
-        <div class="progress-fill ${barColor}" style="width: ${progress}%;"></div>
-      </div>
-    `;
+    const statusVal = file.status || '';
+    var statusHtml = '';
+    if (!statusVal) {
+      statusHtml = '<span style="color:#94a3b8;">—</span>';
+    } else if (statusVal === 'Failed') {
+      statusHtml = '<span class="status-badge failed">✗ Failed</span>';
+    } else {
+      const pct2     = parseInt(statusVal) || 0;
+      const barColor2 = pct2 === 100 ? '#22c55e' : '#6366f1';
+      const txtColor2 = pct2 === 100 ? '#16a34a' : '#6366f1';
+      const bgColor2  = pct2 === 100 ? '#dcfce7'  : '#e2e8f0';
+      const prefix2   = pct2 === 100 ? '✓ ' : '';
+      statusHtml =
+        '<div style="min-width:100px;">' +
+        '<div style="font-size:0.72rem;color:' + txtColor2 + ';font-weight:700;margin-bottom:3px;">' + prefix2 + pct2 + '%</div>' +
+        '<div style="width:100%;height:6px;background:' + bgColor2 + ';border-radius:3px;overflow:hidden;">' +
+        '<div style="width:' + pct2 + '%;height:6px;background:' + barColor2 + ';border-radius:3px;transition:width 0.25s;"></div>' +
+        '</div></div>';
+    }
+    statusTd.innerHTML = statusHtml;
     tr.appendChild(statusTd);
 
     const actionTd = document.createElement('td');
@@ -2408,96 +2438,124 @@ function processFileStagesTrans(fileIndex) {
 
   addLogTrans('📄 Processing: ' + fileName, 'info');
   _setActiveAgentTrans('foreman');
-  updateFileStatusTrans(fileIndex, 'Scanning', '0%', 'Scanning');
 
-  // ── Phase 1: Pre-scan (animated progress bar) ──
-  var scanProgress = 0;
-  var scanInterval = setInterval(function() {
-    if (isStoppedTrans) { clearInterval(scanInterval); return; }
-    scanProgress += 20;
-    updateFileStatusTrans(fileIndex, 'Scanning', scanProgress + '%', 'Scanning');
-    if (scanProgress >= 100) {
-      clearInterval(scanInterval);
-      updateFileStatusTrans(fileIndex, 'Scanned', '100%', 'Processing');
-      addLogTrans('Step 1 — Scan: ' + fileName + ' (' + (file.size/1024).toFixed(1) + ' KB) ✓', 'success');
+  // Set initial scan state
+  if (fileStatusesTrans[fileIndex]) {
+    fileStatusesTrans[fileIndex].scanProgress = 0;
+    fileStatusesTrans[fileIndex].scanResult   = 'Scanning';
+    fileStatusesTrans[fileIndex].status       = '0%';
+    fileStatusesTrans[fileIndex].action       = 'Scanning';
+  }
+  updateFileTableTrans();
 
-      // ── Phase 2: Read ──
-      _markAgentDoneTrans('foreman'); _setActiveAgentTrans('reader');
-      addLogTrans('Step 2 — Read: Extracting text...', 'info');
-      updateFileStatusTrans(fileIndex, 'Reading', '10%', 'Processing');
+  // ── Phase 1: Real pre-scan (magic bytes + size + type check) ──
+  var _scanAnim = 0;
+  var _scanTimer = setInterval(function() {
+    if (isStoppedTrans) { clearInterval(_scanTimer); return; }
+    _scanAnim = Math.min(_scanAnim + 12, 65);
+    if (fileStatusesTrans[fileIndex]) fileStatusesTrans[fileIndex].scanProgress = _scanAnim;
+    updateFileTableTrans();
+  }, 100);
 
-      _readFileTextTrans(file).then(function(text) {
-        if (!text || !text.trim()) {
+  _preScanFile(file).then(function(sr) {
+    clearInterval(_scanTimer);
+    if (isStoppedTrans) {
+      updateFileStatusTrans(fileIndex, 'Stopped', '0%', 'Stopped');
+      currentFileIndexTrans++; setTimeout(processNextFileTrans, 300); return;
+    }
+
+    if (!sr.passed) {
+      if (fileStatusesTrans[fileIndex]) { fileStatusesTrans[fileIndex].scanProgress = 100; fileStatusesTrans[fileIndex].errorMsg = sr.reason; }
+      updateFileStatusTrans(fileIndex, 'Failed', 'Failed', 'Error');
+      addLogTrans('❌ Scan Failed: ' + fileName + ' — ' + sr.reason, 'error');
+      currentFileIndexTrans++; setTimeout(processNextFileTrans, 400); return;
+    }
+
+    // Scan passed
+    if (fileStatusesTrans[fileIndex]) fileStatusesTrans[fileIndex].scanProgress = 100;
+    updateFileStatusTrans(fileIndex, 'Scanned', '0%', 'Processing');
+    addLogTrans('Step 1 — Scan: ' + fileName + ' (' + sr.sizeKB + ' KB) ✓ ' + sr.summary, 'success');
+
+    // ── Phase 2: Read ──
+    _markAgentDoneTrans('foreman'); _setActiveAgentTrans('reader');
+    addLogTrans('Step 2 — Read: Extracting text...', 'info');
+    updateFileStatusTrans(fileIndex, 'Scanned', '10%', 'Processing');
+
+    _readFileTextTrans(file).then(function(text) {
+      if (!text || !text.trim()) {
+        updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
+        addLogTrans('❌ Could not extract text', 'error');
+        currentFileIndexTrans++; setTimeout(processNextFileTrans, 500); return;
+      }
+      var maxChars  = 30000;
+      var useText   = text.length > maxChars ? text.substring(0, maxChars) : text;
+      var truncNote = text.length > maxChars ? ' (capped at 30K for speed)' : '';
+      addLogTrans('Step 2 — Read: ' + text.length.toLocaleString() + ' chars extracted' + truncNote, 'success');
+      updateFileStatusTrans(fileIndex, 'Scanned', '40%', 'Processing');
+
+      // ── Phase 3: Translate ──
+      _markAgentDoneTrans('reader'); _setActiveAgentTrans('translator');
+      addLogTrans('Step 3 — Translate: Calling AI → ' + targetLang + '...', 'info');
+
+      var sys = 'You are a professional document translator. Translate the following document to ' + targetLang +
+                '. Preserve original formatting, paragraph structure, and meaning exactly. Return ONLY the translated text, no preamble.';
+      var msg = 'Translate to ' + targetLang + ':\n\n' + useText;
+
+      return _callExtractAPIWithRetry(sys, msg, 'translation').then(function(translated) {
+        if (!translated || !translated.trim()) {
           updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
-          addLogTrans('❌ Could not extract text', 'error');
+          addLogTrans('❌ Empty translation result', 'error');
           currentFileIndexTrans++; setTimeout(processNextFileTrans, 500); return;
         }
-        var maxChars  = 30000;
-        var useText   = text.length > maxChars ? text.substring(0, maxChars) : text;
-        var truncNote = text.length > maxChars ? ' (capped at 30K for speed)' : '';
-        addLogTrans('Step 2 — Read: ' + text.length.toLocaleString() + ' chars extracted' + truncNote, 'success');
-        updateFileStatusTrans(fileIndex, 'Translating', '40%', 'Processing');
+        addLogTrans('Step 3 — Translate: ' + translated.length.toLocaleString() + ' chars → ' + targetLang, 'success');
+        updateFileStatusTrans(fileIndex, 'Scanned', '80%', 'Processing');
 
-        // ── Phase 3: Translate ──
-        _markAgentDoneTrans('reader'); _setActiveAgentTrans('translator');
-        addLogTrans('Step 3 — Translate: Calling AI → ' + targetLang + '...', 'info');
+        // ── Phase 4: Output ──
+        _markAgentDoneTrans('translator'); _setActiveAgentTrans('output');
+        addLogTrans('Step 4 — Output: Generating download...', 'info');
 
-        var sys = 'You are a professional document translator. Translate to ' + targetLang +
-                  '. Preserve formatting and meaning. Return ONLY the translated text.';
-        var msg = 'Translate to ' + targetLang + ':\n\n' + useText;
+        var baseName = fileName.replace(/\.[^.]+$/, '');
+        var outName  = baseName + '_' + targetLang.replace(/\s+/g,'_') + '.txt';
+        var blob     = new Blob([translated], {type:'text/plain;charset=utf-8'});
+        var blobUrl  = URL.createObjectURL(blob);
 
-        return _callExtractAPIWithRetry(sys, msg, 'translation').then(function(translated) {
-          if (!translated || !translated.trim()) {
-            updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
-            addLogTrans('❌ Empty translation result', 'error');
-            currentFileIndexTrans++; setTimeout(processNextFileTrans, 500); return;
-          }
-          addLogTrans('Step 3 — Translate: ' + translated.length.toLocaleString() + ' chars → ' + targetLang, 'success');
-          updateFileStatusTrans(fileIndex, 'Writing', '80%', 'Processing');
+        updateFileStatusTrans(fileIndex, 'Scanned', '100%', 'Download');
+        _markAgentDoneTrans('output');
 
-          // ── Phase 4: Output ──
-          _markAgentDoneTrans('translator'); _setActiveAgentTrans('output');
-          addLogTrans('Step 4 — Output: Generating download...', 'info');
+        // Store download URL for downloadFileTrans()
+        if (fileStatusesTrans[fileIndex]) {
+          fileStatusesTrans[fileIndex].downloadUrl  = blobUrl;
+          fileStatusesTrans[fileIndex].downloadName = outName;
+        }
+        updateFileTableTrans();
 
-          var baseName = fileName.replace(/\.[^.]+$/, '');
-          var outName  = baseName + '_' + targetLang.replace(/\s+/g,'_') + '.txt';
-          var blob     = new Blob([translated], {type:'text/plain;charset=utf-8'});
-          var blobUrl  = URL.createObjectURL(blob);
+        var dlAll = document.getElementById('btnDownloadAllTrans');
+        if (dlAll) dlAll.style.display = 'inline-flex';
 
-          updateFileStatusTrans(fileIndex, 'Complete', '100%', 'Download');
-          _markAgentDoneTrans('output');
+        // Dashboard count + cost tracking
+        var tc = parseInt(localStorage.getItem('lexora_trans_count')||'0') + 1;
+        localStorage.setItem('lexora_trans_count', tc);
+        if (typeof _updateDashboardCounts === 'function') _updateDashboardCounts();
 
-          var tbody = document.getElementById('fileTableBodyTrans');
-          if (tbody) {
-            var rows = tbody.querySelectorAll('tr');
-            if (rows[fileIndex]) {
-              var ac = rows[fileIndex].querySelector('td:last-child');
-              if (ac) ac.innerHTML = '<a href="' + blobUrl + '" download="' + outName + '" style="color:#3b82f6;font-weight:600;text-decoration:none;font-size:0.82rem;"><i class="fas fa-download"></i> Download</a>';
-            }
-          }
-          var dlAll = document.getElementById('btnDownloadAllTrans');
-          if (dlAll) dlAll.style.display = 'inline-flex';
+        addLogTrans('✅ ' + outName + ' ready!', 'success');
+        currentFileIndexTrans++; setTimeout(processNextFileTrans, 300);
 
-          // Track count
-          var tc = parseInt(localStorage.getItem('lexora_trans_count')||'0') + 1;
-          localStorage.setItem('lexora_trans_count', tc);
-          if (typeof _updateDashboardCounts === 'function') _updateDashboardCounts();
-
-          addLogTrans('✅ ' + outName + ' ready!', 'success');
-          currentFileIndexTrans++; setTimeout(processNextFileTrans, 300);
-
-        }).catch(function(err) {
-          updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
-          addLogTrans('❌ API error: ' + err.message, 'error');
-          currentFileIndexTrans++; setTimeout(processNextFileTrans, 500);
-        });
       }).catch(function(err) {
         updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
-        addLogTrans('❌ Read error: ' + err.message, 'error');
+        addLogTrans('❌ API error: ' + err.message, 'error');
         currentFileIndexTrans++; setTimeout(processNextFileTrans, 500);
       });
-    }
-  }, 120);
+    }).catch(function(err) {
+      updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
+      addLogTrans('❌ Read error: ' + err.message, 'error');
+      currentFileIndexTrans++; setTimeout(processNextFileTrans, 500);
+    });
+  }).catch(function(err) {
+    clearInterval(_scanTimer);
+    updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
+    addLogTrans('❌ Scan error: ' + err.message, 'error');
+    currentFileIndexTrans++; setTimeout(processNextFileTrans, 500);
+  });
 }
 
 function _readFileTextTrans(file) {
@@ -2612,18 +2670,24 @@ function clearAllTrans() {
 }
 
 function downloadFileTrans(index) {
-  const file = uploadedFilesTrans[index];
-  if (file) {
-    showModal('success', `📥 Downloading: ${file.name}`);
-    addLogTrans(`📥 Downloading ${file.name}`, 'info');
+  var fs = fileStatusesTrans[index];
+  if (fs && fs.downloadUrl) {
+    var a = document.createElement('a');
+    a.href = fs.downloadUrl;
+    a.download = fs.downloadName || (fs.name + '_translated.txt');
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    addLogTrans('📥 Downloaded: ' + (fs.downloadName || fs.name), 'info');
+  } else {
+    showModal('info', 'File not ready yet. Please wait for translation to complete.');
   }
 }
 
 function viewErrorTrans(index) {
-  const file = fileStatusesTrans[index];
-  showModal('error', `❌ Error processing file: ${file.name}\n\nPossible reasons:\n- File format not supported\n- Data extraction failed\n- Rule validation failed\n- System timeout`, {
-    title: 'File Error'
-  });
+  var file = fileStatusesTrans[index];
+  var errMsg = (file && file.errorMsg) ? file.errorMsg : 'File format not supported, extraction failed, or timeout.';
+  showModal('error', '❌ Error: ' + (file ? file.name : 'unknown') + '\n\n' + errMsg, { title: 'File Error' });
 }
 
 function viewStoppedTrans(index) {
@@ -2983,42 +3047,16 @@ function loadRules() {
 }
 
 function saveEmailSettings() {
-  const host     = (document.getElementById('smtpHost')?.value || '').trim();
-  const port     = parseInt(document.getElementById('smtpPort')?.value) || 587;
-  const username = (document.getElementById('smtpUsername')?.value || '').trim();
-  const password = (document.getElementById('smtpPassword')?.value || '').trim();
-  const sender   = (document.getElementById('smtpSender')?.value || '').trim();
-  const expiry   = parseInt(document.getElementById('smtpExpiry')?.value) || 4;
-  const tls      = document.getElementById('smtpTls')?.checked !== false;
-  const receiver = (document.getElementById('smtpReceiver')?.value || '').trim();
-
-  if (!host)     { showModal('warning', 'SMTP Host is required.'); return; }
-  if (!username) { showModal('warning', 'SMTP Username is required.'); return; }
-  if (!password) { showModal('warning', 'SMTP Password is required.'); return; }
-  if (!sender)   { showModal('warning', 'Sender Email is required.'); return; }
-
-  const settings = { host, port, username, password, sender_email: sender,
-                     use_tls: tls, expiry_minutes: expiry, receiver_email: receiver };
-
-  // Save to disk via API
-  fetch('/api/smtp/save', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(settings)
-  }).then(function(r) { return r.json(); })
-    .then(function(res) {
-      if (res.success) {
-        localStorage.setItem('lexora_smtp', JSON.stringify(settings));
-        showModal('success', 'Email Settings saved to smtp_config.json ✓', { onConfirm: function() {} });
-      } else {
-        showModal('warning', 'Save failed: ' + (res.error || 'Unknown error'));
-      }
-    })
-    .catch(function() {
-      // Server offline — save to localStorage only
-      localStorage.setItem('lexora_smtp', JSON.stringify(settings));
-      showModal('info', 'Saved to browser (start server to persist to file).', { onConfirm: function() {} });
-    });
+  // SMTP is managed via environment variables only — no file saving
+  showModal('info',
+    '⚙️ SMTP is managed via Render Environment Variables.\n\n' +
+    'To update SMTP settings:\n' +
+    '1. Open Render Dashboard\n' +
+    '2. Go to your service → Environment\n' +
+    '3. Update: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM, SMTP_RECEIVER\n' +
+    '4. Redeploy the service',
+    { onConfirm: function() {} }
+  );
 }
 
 function reloadSettings() {
@@ -3026,24 +3064,36 @@ function reloadSettings() {
 }
 
 function loadEmailSettings(showMsg) {
-  fetch('/db/smtp_config.json?_=' + Date.now())
+  // Load current SMTP config from env vars (via server)
+  fetch('/api/smtp?_=' + Date.now())
     .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(d) {
-      const data = d || JSON.parse(localStorage.getItem('lexora_smtp') || '{}');
-      const set  = function(id, val) { const el = document.getElementById(id); if (el) el.value = val != null ? val : ''; };
-      set('smtpHost',     data.host          || '');
-      set('smtpPort',     data.port          || '587');
-      set('smtpUsername', data.username      || '');
-      set('smtpPassword', data.password      || '');
-      set('smtpSender',   data.sender_email  || '');
+    .then(function(data) {
+      if (!data) return;
+      const set = function(id, val) { const el = document.getElementById(id); if (el) el.value = val != null ? val : ''; };
+      set('smtpHost',     data.host           || '');
+      set('smtpPort',     data.port           || '587');
+      set('smtpUsername', data.username       || '');
+      set('smtpPassword', data.password       || '');  // returns •••••••• masked
+      set('smtpSender',   data.sender_email   || '');
       set('smtpExpiry',   data.expiry_minutes || '4');
       set('smtpReceiver', data.receiver_email || '');
       const tlsEl = document.getElementById('smtpTls');
       if (tlsEl) tlsEl.checked = (data.use_tls !== false);
-      if (showMsg) showModal('info', 'Settings reloaded from smtp_config.json', { onConfirm: function() {} });
+      // Cache expiry_minutes for OTP timer
+      localStorage.setItem('lexora_smtp', JSON.stringify({ expiry_minutes: data.expiry_minutes || 4 }));
+      // Show status badge
+      var badge = document.getElementById('smtpEnvBadge');
+      if (badge) {
+        badge.textContent = data._configured ? '✓ Configured via Render Env Vars' : '⚠ SMTP_HOST not set in environment';
+        badge.style.color = data._configured ? '#16a34a' : '#dc2626';
+      }
+      if (showMsg) showModal('info', data._configured
+        ? '✓ SMTP active — Brevo/Render env vars loaded.'
+        : '⚠ SMTP not configured. Set SMTP_HOST in Render environment variables.',
+        { onConfirm: function() {} });
     })
     .catch(function() {
-      if (showMsg) showModal('warning', 'Could not load from file. Check server is running.');
+      if (showMsg) showModal('warning', 'Server not reachable. Check server is running.');
     });
 }
 
@@ -3103,19 +3153,11 @@ function saveRules() {
 let fileData = [
   {
     id: 1,
-    name: 'smtp_config.json',
+    name: 'company.json',
     type: 'json',
-    size: '2.4 KB',
+    size: '0.8 KB',
     modified: '2026-06-25 14:30:00',
-    content: {
-      "host": "smtp.gmail.com",
-      "port": 587,
-      "username": "himmat4f1@gmail.com",
-      "password": "rumkkjpvxicyaaeh",
-      "sender_email": "himmat4f1@gmail.com",
-      "use_tls": true,
-      "expiry_minutes": 4
-    }
+    content: { name: 'Lexora AI Solutions', website: 'https://lexora.ai' }
   },
   {
     id: 2,
@@ -4624,13 +4666,7 @@ function _updateFooterCopyright(c) {
 }
 
 function _injectSectionFooters() {
-  document.querySelectorAll('.content-section').forEach(function(sec) {
-    var existing = sec.querySelector('.section-copyright-bar');
-    if (existing) return;  // already injected
-    var bar = document.createElement('div');
-    bar.className = 'section-copyright-bar';
-    sec.appendChild(bar);
-  });
+  // Copyright now shown in fixed global footer only (not per-section)
 }
 
 function renderContactDetails() {
@@ -5301,9 +5337,7 @@ var JSON_SCHEMAS = {
   'payment_methods.json': {
     isDefault: { type:'boolean' }
   },
-  'smtp_config.json': {
-    use_tls: { type:'boolean' }
-  },
+
   'company.json': {},
   'temp_accounts.json': {
     lock: { type:'select', options:['yes','no'] }
@@ -6431,8 +6465,7 @@ var _waOTPExpiry  = null;
 var _waOTPTimer   = null;
 var _waMobile     = null;
 
-window.verifyWhatsAppOTP = verifyWhatsAppOTP;
-window.resendWhatsAppOTP = resendWhatsAppOTP;
+// verifyWhatsAppOTP handled by auth.js confirmMobileVerifyOTP()
 
 // ════════════════════════════════════════════════════════════
 // DASHBOARD COUNTS + BALANCE
