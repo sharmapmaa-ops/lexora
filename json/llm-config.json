@@ -1,0 +1,25 @@
+{
+  "provider": "openai",
+  "openai": {
+    "baseUrl": "https://api.openai.com/v1/chat/completions",
+    "keys": [
+      {
+        "label": "Primary",
+        "apiKey": "",
+        "model": "gpt-4o",
+        "primary": true
+      }
+    ]
+  },
+  "openrouter": {
+    "baseUrl": "https://openrouter.ai/api/v1/chat/completions",
+    "keys": [
+      {
+        "label": "Primary",
+        "apiKey": "",
+        "model": "openai/gpt-4o",
+        "primary": true
+      }
+    ]
+  }
+}

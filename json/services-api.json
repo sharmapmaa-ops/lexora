@@ -1,0 +1,32 @@
+{
+    "lease-abstraction": {
+        "label": "Lease Abstraction",
+        "icon": "📄",
+        "base": "/api/v1/lease-abstraction",
+        "get": {
+            "endpoint": "GET /api/v1/lease-abstraction/{id}",
+            "description": "Retrieve the abstracted data of a specific lease document.",
+            "example": "{\n  \"id\": \"LA-1042\",\n  \"fileName\": \"Office_Tower_Lease.pdf\",\n  \"status\": \"completed\",\n  \"leaseTerm\": { \"start\": \"2024-01-01\", \"end\": \"2029-12-31\" },\n  \"baseRent\": 45000,\n  \"currency\": \"USD\"\n}"
+        },
+        "post": {
+            "endpoint": "POST /api/v1/lease-abstraction",
+            "description": "Upload a new lease document for abstraction.",
+            "example": "{\n  \"fileName\": \"Retail_Space_Agreement.pdf\",\n  \"fileUrl\": \"https://files.techcorp.com/uploads/retail.pdf\",\n  \"priority\": \"normal\"\n}"
+        }
+    },
+    "translation": {
+        "label": "Translation",
+        "icon": "🌐",
+        "base": "/api/v1/translation",
+        "get": {
+            "endpoint": "GET /api/v1/translation/{id}",
+            "description": "Retrieve the status and result of a translation job.",
+            "example": "{\n  \"id\": \"TR-2089\",\n  \"sourceLanguage\": \"en\",\n  \"targetLanguage\": \"es\",\n  \"status\": \"completed\",\n  \"translatedFileUrl\": \"https://files.techcorp.com/translated/doc_es.pdf\"\n}"
+        },
+        "post": {
+            "endpoint": "POST /api/v1/translation",
+            "description": "Submit a new document for translation.",
+            "example": "{\n  \"fileUrl\": \"https://files.techcorp.com/uploads/contract.pdf\",\n  \"sourceLanguage\": \"en\",\n  \"targetLanguage\": \"fr\"\n}"
+        }
+    }
+}

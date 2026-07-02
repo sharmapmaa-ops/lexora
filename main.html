@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Company Menu System</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+    <!-- ===== AUTH SCREEN (login / register / forgot password / verify) ===== -->
+    <div id="authScreen" class="auth-screen"></div>
+
+    <!-- ===== MAIN APP SHELL (hidden until logged in) ===== -->
+    <div id="appShell" style="display:none;">
+
+    <!-- ===== TOP MENU BAR ===== -->
+    <div class="top-menu-bar" id="topMenuBar">
+        <div class="menu-left">
+            <div class="company-logo" id="companyLogo">🏢</div>
+            <div class="company-info">
+                <span class="company-name" id="companyName">
+                    TechCorp Solutions
+                    <span class="separator" id="separator">|</span>
+                </span>
+                <span class="current-menu-name" id="currentMenuLabel">
+                    <span id="currentMenuDisplay">Dashboard</span>
+                </span>
+            </div>
+        </div>
+
+        <div class="menu-wrapper" id="menuWrapper">
+            <ul class="menu" id="mainMenu"></ul>
+
+            <div class="user-profile" id="userProfile" onclick="toggleUserDropdown(event)">
+                <span class="user-name" id="userNameDisplay">John Doe</span>
+                <div class="user-avatar" id="userAvatar">
+                    <span id="avatarText">JD</span>
+                    <img id="avatarImg" src="" alt="" style="display:none;" />
+                </div>
+                <span class="user-dropdown-arrow" id="dropdownArrow">▼</span>
+
+                <div class="user-dropdown" id="userDropdown">
+                    <!-- User dropdown items will be generated from JSON -->
+                </div>
+            </div>
+        </div>
+
+        <button class="menu-toggle" id="menuToggle" onclick="toggleMenu()">☰</button>
+    </div>
+
+    <!-- ===== CENTER CONTENT ===== -->
+    <div class="center-content" id="centerContent">
+        <div class="content-area" id="contentArea">
+            <div id="contentBody"></div>
+        </div>
+    </div>
+
+    <!-- ===== FOOTER ===== -->
+    <div class="footer" id="footer">
+        &copy; 2026 <span id="footerCompany">TechCorp Solutions</span>. All rights reserved. | Version 1.0.0
+    </div>
+
+    </div> <!-- /#appShell -->
+
+    <!-- ===== MESSAGEBOX OVERLAY ===== -->
+    <div class="msg-overlay" id="messageOverlay">
+        <div class="msg-card">
+            <div class="msg-card-inner">
+                <button class="msg-close-btn" onclick="handleButtonClick('Close')" aria-label="Close">✕</button>
+                <div class="msg-title-bar">
+                    <span class="msg-title" id="msgTitle">Message</span>
+                </div>
+                <div class="msg-content">
+                    <div class="msg-text" id="msgText"></div>
+                    <div class="msg-buttons" id="msgButtons"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/app.js"></script>
+
+</body>
+</html>

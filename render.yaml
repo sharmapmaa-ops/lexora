@@ -1,11 +1,19 @@
+# Render Blueprint (https://render.com/docs/blueprint-spec).
+# In the Render dashboard: New -> Blueprint -> point it at this repo, and
+# it picks this file up automatically. Uses the Dockerfile (not Render's
+# native Python runtime) specifically so the tesseract-ocr system package
+# needed for scanned-PDF OCR actually gets installed - Render's native
+# Python build has no apt-get step.
+#
+# NOTE: Render's free tier has an ephemeral filesystem - anything written
+# to Users/ (profile photos, processed leases) is lost on redeploy/restart.
+# For that to persist, add a paid-plan persistent disk mounted at
+# /app/Users (see Render's "Disks" docs) - not included here since it
+# needs a paid plan.
 services:
   - type: web
-    name: lexora
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python3 py/server.py
-    envVars:
-      - key: OPENROUTER_API_KEY
-        sync: false
-      - key: OPENAI_API_KEY
-        sync: false
+    name: lexora-ai-solutions
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /main.html

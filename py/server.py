@@ -1,1325 +1,1318 @@
 #!/usr/bin/env python3
 """
-Lexora Development Server  v3.0
-Usage:
-  python3 py/server.py          # port 8080
-  python3 py/server.py 3000     # custom port
+Backend for the Lexora / TechCorp Solutions menu system (Python version).
+
+What this is for:
+Opening main.html as a plain static file (or serving it with a plain
+static server like `python3 -m http.server`) means the browser can
+fetch() the json/ files, but it can never write back to them - browsers
+are not allowed to touch the server's filesystem. This server adds the
+things a plain static server can't do:
+  - a couple of small JSON API routes that persist changes (payments,
+    profile edits, contact submissions, uploaded files, API keys, ...)
+    back to the real json/*.json files, so they survive a reload/restart
+  - profile photo upload (saved for real under Users/<id>/ProfilePhoto/)
+  - the real Lease Abstraction processing pipeline (text extraction,
+    field analysis, validation, Output.json/Output.pdf generation) - see
+    lease_engine.py
+  - sending the Contact Us acknowledgement email over SMTP
+
+Dependencies: see requirements.txt (pdfplumber, python-docx, reportlab).
+The JSON-persistence and photo-upload routes only need the standard
+library; only the Lease Abstraction pipeline routes need those packages.
+
+Run it with:
+    python3 py/server.py
+Then open:
+    http://localhost:8000/          (redirects to /main.html)
+
+(PORT=3000 python3 py/server.py to use a different port.)
 """
 
-import http.server, socketserver, os, sys, json, datetime, base64, smtplib
-from email.mime.multipart import MIMEMultipart
+import base64
+import datetime
+import json
+import mimetypes
+import os
+import re
+import shutil
+import smtplib
+import ssl
+import sys
+import threading
+import uuid
 from email.mime.text import MIMEText
-from urllib.parse import urlparse
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
-PORT     = int(os.environ.get("PORT", sys.argv[1] if len(sys.argv) > 1 else 8080))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lease_engine  # noqa: E402  (needs the sys.path tweak above)
+import auth_store  # noqa: E402
+
+PORT = int(os.environ.get("PORT", 8000))
+
+# server.py lives in py/, but it still needs to serve/read the project root
+# (main.html, css/, json/, Pictures/, Users/) - so ROOT_DIR is one level up
+# from this file, not the py/ folder itself.
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_DIR   = os.path.join(ROOT_DIR, "db")
-USER_DIR = os.path.join(ROOT_DIR, "user_directory")
+JSON_DIR = os.path.join(ROOT_DIR, "json")
+USERS_DIR = os.path.join(ROOT_DIR, "Users")
+TEMPLATE_DIR = os.path.join(ROOT_DIR, "Template", "LeaseAbstraction")
+DEFAULT_TEMPLATE_PATH = os.path.join(TEMPLATE_DIR, "Default.pdf")
 
-USERS_FILE = os.path.join(DB_DIR, "users.json")
-PAY_FILE   = os.path.join(DB_DIR, "payment_methods.json")
-TXN_FILE   = os.path.join(DB_DIR, "transaction_history.json")
+# Only these json/ files can be read/written through the /api/data/<name>
+# API - this is a hard allowlist so that route can never be used to read or
+# overwrite anything else on disk (app.js, server.py, smtp-config.json,
+# the Users/ folder, etc).
+# NOTE: "users" is intentionally NOT in this list. Now that real login
+# exists, users.json holds plaintext passwords and verification codes for
+# every account - it must never be readable/writable wholesale by an
+# unauthenticated visitor. All user data access goes through the
+# purpose-built /api/auth/* and /api/profile/* routes below instead, which
+# only ever touch one user record at a time.
+ALLOWED_RESOURCES = {
+    "payment-history",
+    "payment-methods",
+    "contact-submissions",
+    "api-keys",
+    "lease-files",
+    "translation-files",
+    "lease-activity-log",
+    "translation-activity-log",
+}
+
+# json files that must never be served as static files (contain secrets).
+PROTECTED_JSON_FILES = {"smtp-config.json", "llm-config.json", "users.json"}
+
+# Relative paths (from ROOT_DIR, forward slashes) the Admin File Manager
+# will never let you *view, edit, or download* the raw contents of, even
+# though it's still visible/manageable (e.g. deletable) in the listing.
+# Currently empty - users.json, smtp-config.json and llm-config.json are
+# all viewable/editable through this (Developer/Admin-only, authenticated)
+# panel per explicit request; they're still blocked from *direct*
+# unauthenticated static-file access (PROTECTED_JSON_FILES, below).
+ADMIN_DOWNLOAD_BLOCKLIST = set()
+
+MAX_BODY_BYTES = 30 * 1024 * 1024  # generous - lease PDFs / photos are base64
+
+# ============================================================
+# Background job store for /api/lease/extract-start + extract-status.
+# Text extraction (especially the OCR fallback for scanned PDFs) can take
+# well over a minute for a long document - long enough that a reverse
+# proxy/gateway in front of this server (e.g. a Codespace's forwarded-port
+# proxy) can kill the connection with a 504 before a single blocking HTTP
+# request finishes. Running it in a background thread and having the
+# client poll a few-KB status endpoint every couple of seconds means no
+# single request ever takes more than an instant, regardless of how long
+# the actual extraction takes server-side.
+# ============================================================
+_extract_jobs = {}
+_extract_jobs_lock = threading.Lock()
+_EXTRACT_JOB_MAX_AGE_SECONDS = 30 * 60  # stale-job cleanup
 
 
-# ── Email helper ─────────────────────────────────────────────────────────────
-def load_smtp():
-    """Load SMTP config from environment variables ONLY."""
-    host = os.environ.get("SMTP_HOST", "")
-    if not host:
-        return {}
-    return {
-        "host":           host,
-        "port":           int(os.environ.get("SMTP_PORT", "587")),
-        "username":       os.environ.get("SMTP_USER", os.environ.get("SMTP_EMAIL", "")),
-        "password":       os.environ.get("SMTP_PASSWORD", ""),
-        "sender_email":   os.environ.get("SMTP_FROM", os.environ.get("SMTP_EMAIL", "")),
-        "receiver_email": os.environ.get("SMTP_RECEIVER", ""),
-        "use_tls":        os.environ.get("SMTP_TLS", "true").lower() != "false",
-        "expiry_minutes": int(os.environ.get("SMTP_EXPIRY_MINS", "4"))
-    }
+def _set_job(job_id, **fields):
+    with _extract_jobs_lock:
+        job = _extract_jobs.setdefault(job_id, {})
+        job.update(fields)
+        job["updatedAt"] = datetime.datetime.now()
 
 
-def _smtp_send_attempt(host, port, username, password, sender, recipients, msg, use_tls=True):
-    """Single SMTP send attempt. Returns True on success, raises on failure."""
-    import ssl as _ssl, traceback as _tb
-    tls_mode = "SSL" if port == 465 else ("STARTTLS" if use_tls else "PLAIN")
-    print(f"[SMTP] Trying {host}:{port} ({tls_mode}) login={username}")
+def _get_job(job_id):
+    with _extract_jobs_lock:
+        return dict(_extract_jobs.get(job_id) or {})
+
+
+def _cleanup_stale_jobs():
+    cutoff = datetime.datetime.now() - datetime.timedelta(seconds=_EXTRACT_JOB_MAX_AGE_SECONDS)
+    with _extract_jobs_lock:
+        stale = [jid for jid, job in _extract_jobs.items() if job.get("updatedAt", cutoff) < cutoff]
+        for jid in stale:
+            _extract_jobs.pop(jid, None)
+
+
+def _run_extract_job(job_id, abs_path):
+    try:
+        def on_progress(done, total):
+            _set_job(job_id, status="running", pagesDone=done, pagesTotal=total)
+
+        text = lease_engine.extract_text(abs_path, on_progress=on_progress)
+        _set_job(job_id, status="done", text=text[:40000], textLength=len(text))
+    except Exception as err:
+        print(f"Extraction job {job_id} failed: {err}")
+        _set_job(job_id, status="error", error=str(err))
+
+
+# ============================================================
+# small shared helpers
+# ============================================================
+def _safe_id(raw, default="unknown"):
+    """Strips a value down to a safe path component (letters/digits/_/-)."""
+    cleaned = re.sub(r"[^A-Za-z0-9_\-]", "", str(raw or ""))
+    return cleaned or default
+
+
+def _safe_filename(raw, default="file"):
+    """Strips a value down to a safe file name (basename, no traversal)."""
+    name = os.path.basename(str(raw or "").strip())
+    name = re.sub(r"[^A-Za-z0-9_.\- ]", "_", name)
+    name = name.strip() or default
+    return name
+
+
+def _within(base_dir, path):
+    """True if the realpath of `path` is inside (or equal to) base_dir."""
+    base_real = os.path.realpath(base_dir)
+    target_real = os.path.realpath(path)
+    return target_real == base_real or target_real.startswith(base_real + os.sep)
+
+
+def _user_dir(user_id, *parts):
+    user_id = _safe_id(user_id)
+    path = os.path.join(USERS_DIR, user_id, *parts)
+    if not _within(USERS_DIR, path):
+        raise ValueError("Invalid path")
+    return path
+
+
+def _rel_to_root(abs_path):
+    return os.path.relpath(abs_path, ROOT_DIR).replace(os.sep, "/")
+
+
+# Folders the Admin File Manager should never touch - not because a
+# Developer/Admin can't be trusted with their own project, but because
+# deleting/replacing these while the server is running out of them tends
+# to just crash the running server instead of doing anything useful.
+ADMIN_HIDDEN_TOP_LEVEL = {".git"}
+
+
+def _safe_admin_path(rel_path):
+    """Resolves a client-supplied relative path (e.g. 'json/agents.json' or
+    '' for root) against ROOT_DIR, rejecting any attempt to escape it."""
+    rel_path = (rel_path or "").strip().strip("/")
+    if rel_path in ("", "."):
+        return ROOT_DIR
+    abs_path = os.path.normpath(os.path.join(ROOT_DIR, rel_path))
+    if not _within(ROOT_DIR, abs_path):
+        raise ValueError("Invalid path")
+    return abs_path
+
+
+def _human_size(num_bytes):
+    if num_bytes is None:
+        return None
+    step = 1024.0
+    for unit in ("B", "KB", "MB", "GB"):
+        if num_bytes < step:
+            return f"{num_bytes:.0f} {unit}" if unit == "B" else f"{num_bytes:.1f} {unit}"
+        num_bytes /= step
+    return f"{num_bytes:.1f} TB"
+
+
+def _get_primary(items):
+    """Returns the item flagged primary=true, or the first item if none is
+    flagged, or None if the list is empty - shared logic for picking which
+    SMTP account / LLM API key to actually use by default."""
+    if not items:
+        return None
+    for item in items:
+        if item.get("primary"):
+            return item
+    return items[0]
+
+
+def _read_smtp_config():
+    path = os.path.join(JSON_DIR, "smtp-config.json")
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _primary_smtp_account():
+    cfg = _read_smtp_config()
+    account = _get_primary(cfg.get("accounts") or [])
+    if not account:
+        raise ValueError("No SMTP account is configured in json/smtp-config.json")
+    return account
+
+
+def _load_smtp_expiry_minutes():
+    try:
+        cfg = _read_smtp_config()
+        return int(cfg.get("expiry_minutes", 10))
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return 10
+
+
+def _send_email(to_email, subject, body):
+    """Generic SMTP sender shared by the contact-us acknowledgement email
+    and every verification-code email (register/login/reset). Uses
+    whichever account in json/smtp-config.json's "accounts" list is
+    flagged primary (falls back to the first one). The account's password
+    is never required to live in the committed JSON file - SMTP_PASSWORD
+    (an env var / Codespace secret / git-ignored .env entry) takes
+    priority, and a literal "password" in the JSON is only used as a
+    last-resort fallback."""
+    account = _primary_smtp_account()
+    host = account["host"]
+    port = int(account.get("port", 465))
+    username = account.get("username")
+    password = os.environ.get("SMTP_PASSWORD") or account.get("password")
+    sender = account.get("sender_email", username)
+    use_tls = bool(account.get("use_tls", False))
+
+    mime_msg = MIMEText(body, "plain", "utf-8")
+    mime_msg["Subject"] = subject
+    mime_msg["From"] = sender
+    mime_msg["To"] = to_email
+
     if port == 465:
-        ctx = _ssl.create_default_context()
-        with smtplib.SMTP_SSL(host, port, context=ctx, timeout=25) as srv:
-            srv.login(username, password)
-            srv.sendmail(sender, recipients, msg.as_string())
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(host, port, context=context, timeout=6) as server:
+            if username and password:
+                server.login(username, password)
+            server.sendmail(sender, [to_email], mime_msg.as_string())
     else:
-        with smtplib.SMTP(host, port, timeout=25) as srv:
-            srv.ehlo()
+        with smtplib.SMTP(host, port, timeout=6) as server:
             if use_tls:
-                srv.starttls()
-                srv.ehlo()
-            srv.login(username, password)
-            srv.sendmail(sender, recipients, msg.as_string())
-    return True
+                server.starttls(context=ssl.create_default_context())
+            if username and password:
+                server.login(username, password)
+            server.sendmail(sender, [to_email], mime_msg.as_string())
 
 
-def send_email(to_list, subject, body_html, body_text=""):
-    import traceback as _tb
-    cfg      = load_smtp()
-    host     = cfg.get("host", "")
-    port     = int(cfg.get("port", 587))
-    username = cfg.get("username", "")
-    password = cfg.get("password", "")
-    sender   = cfg.get("sender_email", username)
-    use_tls  = cfg.get("use_tls", True)
-    to_str   = ", ".join(to_list) if isinstance(to_list, list) else to_list
-    recipients = to_list if isinstance(to_list, list) else [to_list]
-
-    tls_mode = "SSL/465" if port == 465 else ("STARTTLS/587" if use_tls else "PLAIN")
-    print(f"[SMTP] ══════════════════════════════════════════")
-    print(f"[SMTP] Host     : {host}:{port} ({tls_mode})")
-    print(f"[SMTP] Login    : {username}")
-    print(f"[SMTP] From     : {sender}")
-    print(f"[SMTP] To       : {to_str}")
-    print(f"[SMTP] Subject  : {subject}")
-    print(f"[SMTP] Password : {'SET (' + str(len(password)) + ' chars, starts=' + password[:6] + '...)' if password else 'NOT SET ⚠️'}")
-
-    if not host or not username or not password:
-        missing = [k for k,v in {"SMTP_HOST":host,"SMTP_USER":username,"SMTP_PASSWORD":password}.items() if not v]
-        err = f"SMTP missing env vars: {missing}"
-        print(f"[SMTP] ❌ {err}")
-        raise ValueError(err)
-
-    # Build message
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = sender
-    msg["To"]      = to_str
-    if body_text:
-        msg.attach(MIMEText(body_text, "plain"))
-    msg.attach(MIMEText(body_html, "html"))
-
-    # ── Strategy: try configured port first, then fallback ──────────────────
-    # On Render/cloud, port 587 (STARTTLS) often times out — port 465 (SSL) is more reliable
-    alt_port = 465 if port == 587 else 587
-    attempts  = [(port, use_tls), (alt_port, alt_port != 465)]
-
-    last_err = None
-    for try_port, try_tls in attempts:
-        try:
-            _smtp_send_attempt(host, try_port, username, password, sender, recipients, msg, try_tls)
-            print(f"[SMTP] ✅ Sent via port {try_port} → {to_str}")
-            return  # success
-        except smtplib.SMTPAuthenticationError as e:
-            print(f"[SMTP] ❌ AUTH FAILED port {try_port}: {e.smtp_code} {getattr(e,'smtp_error',str(e))}")
-            raise   # auth failure — don't retry, wrong credentials
-        except Exception as e:
-            print(f"[SMTP] ⚠ Port {try_port} failed ({type(e).__name__}): {e} — trying fallback...")
-            last_err = e
-
-    # All attempts failed
-    print(f"[SMTP] ❌ All ports failed. Last error: {last_err}")
-    print(f"[SMTP] Traceback: {_tb.format_exc()}")
-    raise last_err
+def _send_acknowledgement_email(to_email, user_name, msg_type, subject, message):
+    body = (
+        f"Hi {user_name},\n\n"
+        f"Thanks for reaching out. We've received your {msg_type.lower()} and "
+        f"our team will resolve it as soon as possible.\n\n"
+        f"Subject: {subject}\n"
+        f"Your message:\n{message}\n\n"
+        f"— Support Team"
+    )
+    _send_email(to_email, f"We've received your {msg_type.lower()}: {subject}", body)
 
 
-# ── Request Handler ──────────────────────────────────────────────────────────
-class LexoraHandler(http.server.SimpleHTTPRequestHandler):
+_VERIFICATION_PURPOSE_LABELS = {
+    "register": "complete your registration",
+    "login": "complete your login",
+    "reset": "reset your password",
+}
+
+
+def _send_verification_email(to_email, user_name, code, purpose, expiry_minutes):
+    label = _VERIFICATION_PURPOSE_LABELS.get(purpose, "verify your account")
+    body = (
+        f"Hi {user_name},\n\n"
+        f"Use this code to {label}:\n\n"
+        f"    {code}\n\n"
+        f"This code expires in {expiry_minutes} minute(s).\n\n"
+        f"If you didn't request this, you can safely ignore this email.\n\n"
+        f"— Lexora AI Solutions"
+    )
+    _send_email(to_email, f"Your verification code: {code}", body)
+
+
+# ============================================================
+# HTTP handler
+# ============================================================
+class Handler(SimpleHTTPRequestHandler):
+    """Serves main.html, css/, js/, json/, Pictures/, Users/ exactly like a
+    normal static file server would (except protected json files), plus
+    the /api/... routes below."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT_DIR, **kwargs)
 
-    def end_headers(self):
-        self.send_header("Access-Control-Allow-Origin",  "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-        super().end_headers()
-
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self.end_headers()
-
-    # ── GET ──────────────────────────────────────────────────────────────
-    def do_GET(self):
-        p = urlparse(self.path).path
-
-        if p == "/":
-            self.send_response(302)
-            self.send_header("Location", "/index.html")
-            self.end_headers()
-            return
-
-        routes = {
-            "/api/health": lambda: {"status": "ok",
-                                    "time": datetime.datetime.utcnow().isoformat(),
-                                    "server": "Lexora Dev Server v3.0"},
-            "/api/smtp/ping": lambda: self._smtp_ping(),
-            "/api/users":  lambda: self._read(USERS_FILE),
-            "/api/smtp":   lambda: {
-                "host":           os.environ.get("SMTP_HOST", ""),
-                "port":           int(os.environ.get("SMTP_PORT", "587")),
-                "username":       os.environ.get("SMTP_USER", os.environ.get("SMTP_EMAIL", "")),
-                "password":       "••••••••" if os.environ.get("SMTP_PASSWORD") else "",
-                "sender_email":   os.environ.get("SMTP_FROM", os.environ.get("SMTP_EMAIL", "")),
-                "receiver_email": os.environ.get("SMTP_RECEIVER", ""),
-                "use_tls":        os.environ.get("SMTP_TLS", "true").lower() != "false",
-                "expiry_minutes": int(os.environ.get("SMTP_EXPIRY_MINS", "4")),
-                "_source":        "environment_variables",
-                "_configured":    bool(os.environ.get("SMTP_HOST"))
-            },
-            "/api/admin/payment-accounts": lambda: self._read(
-                os.path.join(DB_DIR, "admin_payment_accounts.json")),
-            "/api/templates/scan": lambda: self._scan_templates(),
-        }
-        if p in routes:
-            self._json(routes[p]())
-            return
-
-        if p == "/api/files/list":
-            try:
-                SKIP = {'.git','__pycache__','node_modules','.devcontainer',
-                        '.env','venv','.venv','.DS_Store','lexora_production.zip'}
-
-                def scan_dir(directory, rel_prefix, depth=0, max_depth=6):
-                    results = []
-                    try:
-                        for entry in sorted(os.scandir(directory),
-                                            key=lambda e: (not e.is_dir(), e.name.lower())):
-                            if entry.name in SKIP or entry.name.startswith('.'):
-                                continue
-                            rel = (rel_prefix + '/' + entry.name) if rel_prefix else entry.name
-                            mt  = datetime.datetime.fromtimestamp(
-                                    entry.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
-                            if entry.is_dir():
-                                results.append({"name": entry.name, "path": rel,
-                                                "type": "folder", "ext": "",
-                                                "size": "—", "modified": mt})
-                                if depth < max_depth:
-                                    results.extend(scan_dir(entry.path, rel,
-                                                            depth + 1, max_depth))
-                            else:
-                                sz  = entry.stat().st_size
-                                ext = entry.name.rsplit('.',1)[-1].lower() if '.' in entry.name else ''
-                                sz_str = (str(round(sz/1024,1))+' KB') if sz>=1024 else (str(sz)+' B')
-                                results.append({"name": entry.name, "path": rel,
-                                                "type": "file", "ext": ext,
-                                                "size": sz_str, "modified": mt})
-                    except PermissionError:
-                        pass
-                    return results
-
-                files = scan_dir(ROOT_DIR, '')
-                self._json({"success": True, "files": files, "count": len(files)})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-        super().do_GET()
-
-    # ── POST ─────────────────────────────────────────────────────────────
-    def do_POST(self):
-        p    = urlparse(self.path).path
-        body = self._body()
-
-        # /api/users/save
-        if p == "/api/users/save":
-            try:
-                inc       = json.loads(body)
-                new_users = inc.get("users", [])
-                for u in new_users:
-                    u.pop("profile_photo_data", None)
-                existing = self._read(USERS_FILE)
-                if "error" in existing:
-                    existing = {"version": 2, "schema": "lexora_users",
-                                "resetCodes": [], "users": []}
-                existing["users"]      = new_users
-                existing["totalUsers"] = len(new_users)
-                existing["updatedAt"]  = datetime.datetime.utcnow().isoformat()
-                self._write(USERS_FILE, existing)
-                self._log(f"💾  users.json saved ({len(new_users)} user(s))")
-                self._json({"success": True, "count": len(new_users)})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-        # /api/smtp/save — disabled: SMTP managed via env vars only
-        if p == "/api/smtp/save":
-            self._json({"success": False, "error": "SMTP is managed via environment variables. Update in Render Dashboard.", "_env_only": True})
-            return
-
-        # /api/users/photo/save
-        if p == "/api/users/photo/save":
-            try:
-                data      = json.loads(body)
-                user_id   = data.get("userId", "unknown")
-                photo_b64 = data.get("photoData", "")
-                ext       = data.get("extension", "jpg").lower().lstrip(".")
-                if "," in photo_b64:
-                    photo_b64 = photo_b64.split(",", 1)[1]
-                img_bytes = base64.b64decode(photo_b64)
-                save_dir  = os.path.join(USER_DIR, user_id, "profile_photo")
-                os.makedirs(save_dir, exist_ok=True)
-                filename  = f"photo.{ext}"
-                full_path = os.path.join(save_dir, filename)
-                with open(full_path, "wb") as f:
-                    f.write(img_bytes)
-                rel_path = f"user_directory/{user_id}/profile_photo/{filename}"
-                self._log(f"🖼️  Photo saved: {rel_path} ({len(img_bytes)//1024}KB)")
-                self._json({"success": True, "path": rel_path})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-        # /api/payments/save
-        if p == "/api/payments/save":
-            try:
-                data    = json.loads(body)
-                uid     = data.get("userId", "")
-                methods = data.get("methods", [])
-                existing = self._read(PAY_FILE)
-                if "error" in existing:
-                    existing = {"version": 1, "schema": "lexora_payment_methods",
-                                "user_payments": {}}
-                if "user_payments" not in existing:
-                    existing["user_payments"] = {}
-                if uid not in existing["user_payments"]:
-                    existing["user_payments"][uid] = {"balance": 0, "methods": []}
-                existing["user_payments"][uid]["methods"] = methods
-                existing["updatedAt"] = datetime.datetime.utcnow().isoformat()
-                self._write(PAY_FILE, existing)
-                self._log(f"💳  payment_methods.json saved ({uid})")
-                self._json({"success": True})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-        # /api/transactions/save
-        if p == "/api/transactions/save":
-            try:
-                data    = json.loads(body)
-                uid     = data.get("userId", "")
-                txns    = data.get("transactions", [])
-                summary = data.get("summary", {})
-                existing = self._read(TXN_FILE)
-                if "error" in existing:
-                    existing = {"version": 2, "schema": "lexora_transactions",
-                                "user_transactions": {}}
-                if "user_transactions" not in existing:
-                    existing["user_transactions"] = {}
-                existing["user_transactions"][uid] = {
-                    "transactions": txns,
-                    "summary": summary
-                }
-                existing["updatedAt"] = datetime.datetime.utcnow().isoformat()
-                self._write(TXN_FILE, existing)
-                self._log(f"📊  transaction_history.json saved ({uid}, {len(txns)} txns)")
-                self._json({"success": True})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-        # /api/contact/send
-        if p == "/api/contact/send":
-            try:
-                data         = json.loads(body)
-                subject      = data.get("subject", "(No Subject)")
-                message      = data.get("message", "")
-                sender_email = data.get("senderEmail", "")
-                receiver     = load_smtp().get("receiver_email", "")
-                if not receiver:
-                    self._json({"success": False,
-                                "error": "No receiver_email set in Email Settings."})
-                    return
-                admin_html = (
-                    f"<h3>New Contact Message</h3>"
-                    f"<p><b>From:</b> {sender_email}</p>"
-                    f"<p><b>Subject:</b> {subject}</p><hr>"
-                    f"<p>{message.replace(chr(10), '<br>')}</p>"
-                )
-                send_email(receiver, f"[Lexora] {subject}", admin_html)
-                if sender_email:
-                    thanks_html = (
-                        f"<h3>Thank you for contacting Lexora!</h3>"
-                        f"<p>We received your message and will get back to you shortly.</p>"
-                        f"<hr><p><b>Your message:</b><br>"
-                        f"{message.replace(chr(10), '<br>')}</p>"
-                        f"<p style='color:#64748b;font-size:0.85em;'>— Lexora AI Solutions</p>"
-                    )
-                    send_email(sender_email, "We received your message — Lexora", thanks_html)
-                self._log(f"📧  Contact email sent → {receiver}")
-                self._json({"success": True})
-            except Exception as e:
-                self._log(f"⚠️  Contact email failed: {e}")
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-        # /api/email/test
-        if p == "/api/email/test":
-            try:
-                data = json.loads(body)
-                to   = data.get("to", "")
-                if not to:
-                    self._json({"success": False, "error": "No recipient."})
-                    return
-                html_body = (
-                    "<h3>Lexora — Test Email</h3>"
-                    "<p>Your SMTP configuration is working correctly!</p>"
-                    "<p style='color:#64748b;'>Sent from Lexora Dev Server v3.0</p>"
-                )
-                send_email(to, "Lexora — SMTP Test", html_body)
-                self._log(f"📧  Test email sent → {to}")
-                self._json({"success": True})
-            except Exception as e:
-                self._log(f"⚠️  Test email failed: {e}")
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-
-        # /api/plans/save
-        if p == "/api/plans/save":
-            try:
-                data  = json.loads(body)
-                plans = data.get("plans", [])
-                plans_file = os.path.join(DB_DIR, "plans.json")
-                existing   = self._read(plans_file)
-                if "error" in existing:
-                    existing = {"version":1,"schema":"lexora_plans","plans":[]}
-                existing["plans"]     = plans
-                existing["updatedAt"] = datetime.datetime.utcnow().isoformat()
-                self._write(plans_file, existing)
-                self._log(f"📋  plans.json saved ({len(plans)} plans)")
-                self._json({"success": True})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-        # /api/files/read
-        if p == "/api/files/read":
-            try:
-                data     = json.loads(body)
-                rel_path = data.get("path", "").replace("..","")
-                full     = os.path.join(ROOT_DIR, rel_path)
-                if not os.path.isfile(full):
-                    self._json({"success": False, "error": "File not found."})
-                    return
-                with open(full, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()  # Full file read
-                self._json({"success": True, "content": content})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-        # /api/files/delete — supports files AND folders
-        if p == "/api/files/delete":
-            try:
-                import shutil
-                data     = json.loads(body)
-                rel_path = data.get("path", "").replace("..","").lstrip("/")
-                PROTECTED = {"db/users.json","db/api_config.json",
-                             "py/server.py","index.html","db","py","js","css"}
-                if not rel_path or rel_path in PROTECTED:
-                    self._json({"success": False, "error": "This path is protected."})
-                    return
-                full = os.path.join(ROOT_DIR, rel_path)
-                if os.path.isfile(full):
-                    os.remove(full)
-                    self._log(f"🗑️  Deleted file: {rel_path}")
-                    self._json({"success": True})
-                elif os.path.isdir(full):
-                    shutil.rmtree(full)
-                    self._log(f"🗑️  Deleted folder: {rel_path}")
-                    self._json({"success": True})
-                else:
-                    self._json({"success": False, "error": f"Not found: {rel_path}"})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-
-        # /api/company/save
-        if p == "/api/company/save":
-            try:
-                data = json.loads(body)
-                company_file = os.path.join(DB_DIR, "company.json")
-                existing = self._read(company_file)
-                if "error" in existing:
-                    existing = {"version":1,"schema":"lexora_company","company":{},"scheduled_changes":[]}
-                existing["company"] = data.get("company", existing.get("company", {}))
-                existing["scheduled_changes"] = data.get("scheduled_changes", [])
-                existing["updatedAt"] = datetime.datetime.utcnow().isoformat()
-                self._write(company_file, existing)
-                self._log("🏢  company.json saved")
-                self._json({"success": True})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-
-        # /api/register/request — Save to temp_accounts.json + send verification email
-        if p == "/api/register/request":
-            try:
-                import random, string
-                data = json.loads(body)
-                temp_file = os.path.join(DB_DIR, "temp_accounts.json")
-                existing  = self._read(temp_file)
-                if "error" in existing: existing = {"version":1,"schema":"lexora_temp_accounts","pending":[]}
-                code    = ''.join(random.choices(string.digits, k=6))
-                expiry  = (datetime.datetime.utcnow() + datetime.timedelta(minutes=15)).isoformat()
-                pending = {**data, "verification_code": code, "code_expires": expiry,
-                           "requestedAt": datetime.datetime.utcnow().isoformat()}
-                existing.setdefault("pending", []).append(pending)
-                self._write(temp_file, existing)
-                # Try send email
-                try:
-                    html_body = f"<h3>Verify Your Lexora Account</h3><p>Code: <b>{code}</b></p><p>Expires in 15 minutes.</p>"
-                    send_email(data.get("email",""), "Lexora — Verify Your Account", html_body)
-                    self._json({"success": True, "emailSent": True})
-                except Exception:
-                    self._json({"success": True, "emailSent": False, "code": code})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-        # /api/register/approve — Move from temp to users.json
-        if p == "/api/register/approve":
-            try:
-                data = json.loads(body)
-                pidx = data.get("pendingIndex", -1)
-                temp_file  = os.path.join(DB_DIR, "temp_accounts.json")
-                temp_data  = self._read(temp_file)
-                pending    = temp_data.get("pending", [])
-                if pidx < 0 or pidx >= len(pending):
-                    self._json({"success": False, "error": "Invalid index"}); return
-                p_acc = pending.pop(pidx)
-                self._write(temp_file, {**temp_data, "pending": pending})
-                users_data = self._read(USERS_FILE)
-                new_user = {
-                    "id": "usr_" + str(int(datetime.datetime.utcnow().timestamp())),
-                    "firstName": p_acc.get("firstName",""), "lastName": p_acc.get("lastName",""),
-                    "gender": p_acc.get("gender",""), "dob": p_acc.get("dob",""),
-                    "mobile": p_acc.get("mobile",""), "email": p_acc.get("email",""),
-                    "passwordHash": p_acc.get("passwordHash",""), "role": "user",
-                    "account_type": "user", "plan": "Basic", "balance": 0.0,
-                    "apikey": "", "lock": "no", "status": "active", "session_status": "offline",
-                    "verification_code": "", "profile_photo": "", "profile_photo_data": "",
-                    "input_folder": "", "output_folder": "", "createdAt": datetime.datetime.utcnow().isoformat(),
-                    "lastLogin": None, "active": True,
-                    "system_setup": {"theme":"light","language":"en","timezone":"UTC","email_notifications":True}
-                }
-                users_data.setdefault("users", []).append(new_user)
-                users_data["totalUsers"] = len(users_data["users"])
-                self._write(USERS_FILE, users_data)
-                self._log(f"✅  Account approved: {new_user['email']}")
-                self._json({"success": True})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-        # /api/register/reject — Remove from temp_accounts.json
-        if p == "/api/register/reject":
-            try:
-                data = json.loads(body)
-                pidx = data.get("pendingIndex", -1)
-                temp_file = os.path.join(DB_DIR, "temp_accounts.json")
-                temp_data = self._read(temp_file)
-                pending   = temp_data.get("pending", [])
-                if 0 <= pidx < len(pending):
-                    pending.pop(pidx)
-                    self._write(temp_file, {**temp_data, "pending": pending})
-                self._json({"success": True})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-        # /api/files/write — Edit/save a file content
-        if p == "/api/files/write":
-            try:
-                data     = json.loads(body)
-                rel_path = data.get("path","").replace("..","")
-                new_content = data.get("content","")
-                PROTECTED = {"db/users.json","db/api_config.json","py/server.py"}
-                if rel_path in PROTECTED:
-                    self._json({"success":False,"error":"File is protected."}); return
-                full = os.path.join(ROOT_DIR, rel_path)
-                if not os.path.isfile(full):
-                    self._json({"success":False,"error":"File not found."}); return
-                with open(full, "w", encoding="utf-8") as f:
-                    f.write(new_content)
-                self._log(f"💾  File saved: {rel_path}")
-                self._json({"success":True})
-            except Exception as e:
-                self._json({"success":False,"error":str(e)},400)
-            return
-
-
-        # /api/auth/save-totp — Store TOTP secret in users.json
-        if p == "/api/auth/save-totp":
-            try:
-                data   = json.loads(body)
-                email  = data.get("email","").lower().strip()
-                secret = data.get("secret","").upper().strip()
-                if not email or not secret:
-                    self._json({"success":False,"error":"email and secret required"},400); return
-                users = self._read(USERS_FILE)
-                if isinstance(users,dict): users = []
-                found = False
-                for u in users:
-                    if u.get("email","").lower() == email:
-                        u["totp_secret"] = secret
-                        found = True; break
-                if found:
-                    self._write(USERS_FILE, users)
-                    self._log(f"🔐  TOTP secret saved for {email}")
-                    self._json({"success": True})
-                else:
-                    self._json({"success":False,"error":"User not found"},404)
-            except Exception as e:
-                self._json({"success":False,"error":str(e)},400)
-
-        # /api/user/save-file — Save user file to their folder
-        elif p == "/api/user/save-file":
-            try:
-                data      = json.loads(body)
-                user_id   = data.get("userId", "")
-                file_type = data.get("type", "")     # profile_photo | input | output | template
-                filename  = data.get("filename", "")
-                file_b64  = data.get("data", "")
-                if not all([user_id, file_type, filename, file_b64]):
-                    self._json({"success": False, "error": "Missing fields"}, 400); return
-                # Load user record
-                users_rec = self._read(USERS_FILE)
-                users_list = users_rec.get("users", users_rec) if isinstance(users_rec, dict) else users_rec
-                user = next((u for u in users_list if u.get("id") == user_id), None)
-                if not user:
-                    self._json({"success": False, "error": "User not found"}, 404); return
-                folder_map = {
-                    "profile_photo": user.get("profile_photo", f"user_directory/{user_id}/profile_photo"),
-                    "input":         user.get("input_folder",  f"user_directory/{user_id}/input"),
-                    "output":        user.get("output_folder", f"user_directory/{user_id}/output"),
-                    "template":      user.get("output_template", f"user_directory/{user_id}/output_template"),
-                }
-                rel_folder = folder_map.get(file_type, f"user_directory/{user_id}/{file_type}")
-                abs_folder = os.path.join(ROOT_DIR, rel_folder)
-                os.makedirs(abs_folder, exist_ok=True)
-                file_bytes = base64.b64decode(file_b64)
-                abs_path   = os.path.join(abs_folder, filename)
-                with open(abs_path, "wb") as f:
-                    f.write(file_bytes)
-                rel_path   = os.path.relpath(abs_path, ROOT_DIR)
-                self._log(f"💾  Saved {file_type} file: {rel_path}")
-                self._json({"success": True, "path": rel_path})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-
-        # /api/transactions/add — Record a transaction (API credit usage)
-        elif p == "/api/transactions/add":
-            try:
-                TXN_FILE = os.path.join(DB_DIR, "transaction_history.json")
-                txn  = json.loads(body)
-                data = self._read(TXN_FILE) if os.path.exists(TXN_FILE) else {}
-                if isinstance(data, list): data = {"transactions": data}
-                if "transactions" not in data: data["transactions"] = []
-                txn["id"] = "txn_" + datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
-                data["transactions"].insert(0, txn)  # newest first
-                data["transactions"] = data["transactions"][:1000]
-
-                # ALSO update per-user format so Payment History UI shows API costs
-                uid = txn.get("userId", "")
-                if uid:
-                    if "user_transactions" not in data:
-                        data["user_transactions"] = {}
-                    if uid not in data["user_transactions"]:
-                        data["user_transactions"][uid] = {"transactions": [], "summary": {}}
-                    data["user_transactions"][uid]["transactions"].insert(0, txn)
-                    data["user_transactions"][uid]["transactions"] = data["user_transactions"][uid]["transactions"][:500]
-                    utxns = data["user_transactions"][uid]["transactions"]
-                    credit = sum(float(t.get("amount", 0)) for t in utxns if t.get("type") == "credit")
-                    debit  = sum(float(t.get("amount", 0)) for t in utxns if t.get("type") == "debit")
-                    data["user_transactions"][uid]["summary"] = {
-                        "totalCredit": round(credit, 6),
-                        "totalDebit":  round(debit,  6),
-                        "balance":     round(credit - debit, 6)
-                    }
-
-                self._write(TXN_FILE, data)
-
-                # Update admin payment accounts
-                try:
-                    PAY_FILE = os.path.join(DB_DIR, "admin_payment_accounts.json")
-                    pay_data = self._read(PAY_FILE)
-                    if not pay_data.get("all_user_payments"):
-                        pay_data["all_user_payments"] = []
-                    pay_data["all_user_payments"].insert(0, txn)
-                    pay_data["all_user_payments"] = pay_data["all_user_payments"][:1000]
-                    self._write(PAY_FILE, pay_data)
-                except Exception:
-                    pass
-                self._json({"success": True, "id": txn["id"]})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-
-        # /api/transactions/list — Get transactions for a user
-        elif p == "/api/transactions/list":
-            try:
-                TXN_FILE = os.path.join(DB_DIR, "transaction_history.json")
-                data     = self._read(TXN_FILE) if os.path.exists(TXN_FILE) else {"transactions": []}
-                params   = dict(q.split('=') for q in urlparse(self.path).query.split('&') if '=' in q)
-                uid      = params.get('userId', '')
-                txns     = data.get("transactions", data if isinstance(data, list) else [])
-                if uid:
-                    txns = [t for t in txns if t.get('userId') == uid]
-                self._json({"success": True, "transactions": txns[:200]})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-
-        # /api/admin/payment-accounts/save
-        elif p == "/api/admin/payment-accounts/save":
-            try:
-                PAY_FILE = os.path.join(DB_DIR, "admin_payment_accounts.json")
-                self._write(PAY_FILE, json.loads(body))
-                self._json({"success": True})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-
-        # /api/whatsapp/send — Send OTP via WhatsApp (Twilio ContentSid template or plain text)
-        elif p == "/api/whatsapp/send":
-            try:
-                data   = json.loads(body)
-                mobile = str(data.get("mobile","")).strip().lstrip("+")
-                code   = str(data.get("code","")).strip()
-                if not mobile or not code:
-                    self._json({"success":False,"error":"mobile and code required"},400); return
-
-                # Read company WhatsApp from company.json (used as display context only;
-                # actual FROM is controlled by Twilio account)
-                company_wa = ""
-                try:
-                    with open(os.path.join(DB_DIR, "company.json")) as cf:
-                        company_wa = json.load(cf).get("company",{}).get("whatsapp_number","")
-                except Exception:
-                    pass
-
-                # Twilio credentials
-                sid         = os.environ.get("TWILIO_ACCOUNT_SID","")
-                token       = os.environ.get("TWILIO_AUTH_TOKEN","")
-                wa_from     = os.environ.get("TWILIO_WHATSAPP_FROM","whatsapp:+14155238886")
-                content_sid = os.environ.get("TWILIO_CONTENT_SID","")
-                to_         = "whatsapp:+" + mobile.lstrip("+")
-
-                # Detect placeholder token (common mistake)
-                is_placeholder = token in ("", "[AuthToken]", "your_auth_token", "xxxx")
-
-                print(f"[WHATSAPP] ══════════════════════════════════════════")
-                print(f"[WHATSAPP] To           : {to_}")
-                print(f"[WHATSAPP] From         : {wa_from}")
-                print(f"[WHATSAPP] Code         : {code}")
-                print(f"[WHATSAPP] Account SID  : {sid[:10] + '…' if sid else '⚠ NOT SET'}")
-                print(f"[WHATSAPP] Auth Token   : {'⚠ PLACEHOLDER [AuthToken]' if is_placeholder else 'SET (' + str(len(token)) + ' chars)' if token else '⚠ NOT SET'}")
-                print(f"[WHATSAPP] Content SID  : {content_sid if content_sid else '(not set — will use free-form)'}")
-
-                if sid and token and not is_placeholder:
-                    import urllib.request as _ur, urllib.parse as _up, base64 as _b64
-                    api_url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
-                    creds   = _b64.b64encode(f"{sid}:{token}".encode()).decode()
-                    headers = {
-                        "Authorization": f"Basic {creds}",
-                        "Content-Type":  "application/x-www-form-urlencoded"
-                    }
-
-                    if content_sid:
-                        # ── ContentSid template approach (recommended) ──────────
-                        # Template variable {{1}} = OTP code
-                        payload = _up.urlencode({
-                            "To":               to_,
-                            "From":             wa_from,
-                            "ContentSid":       content_sid,
-                            "ContentVariables": json.dumps({"1": code}),
-                        }).encode()
-                        self._log(f"📱 WhatsApp OTP (template) → {to_} | code={code}")
-                    else:
-                        # ── Free-form text (sandbox only) ──────────────────────
-                        msg = (
-                            f"Your *Lexora* verification code:\n\n"
-                            f"*{code}*\n\n"
-                            f"Expires in 4 minutes. Do not share."
-                        )
-                        payload = _up.urlencode({
-                            "To":   to_,
-                            "From": wa_from,
-                            "Body": msg,
-                        }).encode()
-                        self._log(f"📱 WhatsApp OTP (text) → {to_} | code={code}")
-
-                    req = _ur.Request(api_url, data=payload, headers=headers, method="POST")
-                    try:
-                        with _ur.urlopen(req, timeout=12) as r:
-                            resp   = json.loads(r.read())
-                            msg_id = resp.get("sid","")[:10]
-                        self._log(f"✅ Twilio accepted: {msg_id}… status={resp.get('status')}")
-                        self._json({"success": True, "sent": True, "from": wa_from, "sid": msg_id})
-                    except Exception as tw_err:
-                        err_str = str(tw_err)
-                        self._log(f"❌ Twilio error: {err_str}")
-                        print(f"[WHATSAPP] ❌ Twilio API error: {err_str}")
-                        self._json({"success": True, "sent": False, "code": code, "debug": {
-                            "error": err_str,
-                            "error_type": type(tw_err).__name__,
-                            "to": to_,
-                            "from": wa_from,
-                            "sid": sid[:10] + "…" if sid else "",
-                            "content_sid": content_sid
-                        }})
-                else:
-                    # No valid token — demo mode
-                    reason = "TWILIO_AUTH_TOKEN is placeholder [AuthToken] — set real token in Render env vars" if is_placeholder else "TWILIO_AUTH_TOKEN or TWILIO_ACCOUNT_SID not set in environment variables"
-                    self._log(f"⚠️  WhatsApp demo mode: {reason} | OTP for {mobile}: {code}")
-                    print(f"[WHATSAPP] ⚠ DEMO MODE — {reason}")
-                    self._json({"success": True, "sent": False, "code": code, "debug": {
-                        "reason": reason,
-                        "to": to_,
-                        "sid_set": bool(sid),
-                        "token_set": bool(token and not is_placeholder),
-                        "is_placeholder": is_placeholder
-                    }})
-            except Exception as e:
-                self._log(f"❌ WhatsApp send error: {e}")
-                self._json({"success": False, "error": str(e), "sent": False})
-
-        # /api/whatsapp/mark-verified — Save mobile_verified flag to user
-        elif p == "/api/whatsapp/mark-verified":
-            try:
-                data    = json.loads(body)
-                user_id = data.get("userId","")
-                mobile  = data.get("mobile","")
-                users_rec = self._read(USERS_FILE)
-                users_list = users_rec.get("users", users_rec) if isinstance(users_rec, dict) else users_rec
-                for u in users_list:
-                    if u.get("id") == user_id:
-                        u["mobile"]          = mobile
-                        u["mobile_verified"] = True
-                        break
-                if isinstance(users_rec, dict):
-                    users_rec["users"] = users_list
-                    self._write(USERS_FILE, users_rec)
-                else:
-                    self._write(USERS_FILE, users_list)
-                self._log(f"✅ Mobile verified for user {user_id}: {mobile}")
-                self._json({"success": True})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-
-            return
-
-        # /api/auth/sendcode — Send verification code email for login
-        if p == "/api/auth/sendcode":
-            try:
-                import traceback as _tb2
-                data     = json.loads(body)
-                to_email = data.get("email", "")
-                code     = data.get("code", "")
-                expiry   = data.get("expiryMins", 4)
-                html_body = (
-                    f"<h3>Lexora Login Verification</h3>"
-                    f"<p>Your verification code is: "
-                    f"<b style='font-size:1.4rem;letter-spacing:4px;'>{code}</b></p>"
-                    f"<p>This code expires in <b>{expiry} minutes</b>.</p>"
-                    f"<p style='color:#64748b;font-size:0.85em;'>If you did not request this, ignore this email.</p>"
-                )
-                smtp_debug = {
-                    "smtp_host":  os.environ.get("SMTP_HOST", "⚠ NOT SET"),
-                    "smtp_port":  os.environ.get("SMTP_PORT", "587"),
-                    "smtp_user":  os.environ.get("SMTP_USER", "⚠ NOT SET"),
-                    "smtp_from":  os.environ.get("SMTP_FROM", "⚠ NOT SET"),
-                    "smtp_recv":  os.environ.get("SMTP_RECEIVER", "(not needed for OTP)"),
-                    "to":         to_email,
-                }
-                try:
-                    send_email(to_email, "Lexora — Login Verification Code", html_body)
-                    self._log(f"✅ OTP email sent → {to_email}")
-                    self._json({"success": True, "emailSent": True, "debug": smtp_debug})
-                except Exception as smtp_err:
-                    err_str  = str(smtp_err)
-                    tb_str   = _tb2.format_exc().split("\n")[-3].strip()
-                    self._log(f"❌ SMTP sendcode failed → {to_email}: {err_str}")
-                    smtp_debug["error"]      = err_str
-                    smtp_debug["error_type"] = type(smtp_err).__name__
-                    smtp_debug["traceback"]  = tb_str
-                    self._json({"success": True, "emailSent": False, "code": code, "debug": smtp_debug})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-        # /api/templates/scan — Return list of saved templates
-        if p == "/api/templates/scan":
-            try:
-                tmpl_file = os.path.join(DB_DIR, "templates.json")
-                data      = self._read(tmpl_file)
-                templates = data.get("templates", []) if isinstance(data, dict) else []
-                self._json({"success": True, "templates": templates, "count": len(templates)})
-            except Exception as e:
-                self._json({"success": True, "templates": [], "count": 0})
-            return
-
-        # /api/templates/save — Save templates.json
-        if p == "/api/templates/save":
-            try:
-                data       = json.loads(body)
-                tmpl_file  = os.path.join(DB_DIR, "templates.json")
-                existing   = self._read(tmpl_file)
-                if "error" in existing: existing = {"version":1,"schema":"lexora_templates","templates":[]}
-                existing["templates"] = data.get("templates", [])
-                existing["updatedAt"] = datetime.datetime.utcnow().isoformat()
-                self._write(tmpl_file, existing)
-                self._json({"success": True})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-        # /api/templates/upload — Upload a template file + update templates.json
-        if p == "/api/templates/upload":
-            try:
-                data       = json.loads(body)
-                template   = data.get("template", {})
-                file_data  = data.get("fileData", "")
-                file_name  = data.get("fileName", "file")
-                folder_path = template.get("folder_path", "Template")
-                save_dir   = os.path.join(ROOT_DIR, folder_path)
-                os.makedirs(save_dir, exist_ok=True)
-                full_path  = os.path.join(save_dir, file_name)
-                with open(full_path, "wb") as f:
-                    f.write(base64.b64decode(file_data))
-                # Update templates.json
-                tmpl_file  = os.path.join(DB_DIR, "templates.json")
-                existing   = self._read(tmpl_file)
-                if "error" in existing: existing = {"version":1,"schema":"lexora_templates","templates":[]}
-                templates  = existing.get("templates", [])
-                template["id"] = max([t.get("id",0) for t in templates], default=0) + 1
-                templates.append(template)
-                existing["templates"] = templates
-                self._write(tmpl_file, existing)
-                self._log(f"📄  Template uploaded: {folder_path}/{file_name}")
-                self._json({"success": True})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-
-        # /api/files/download — Serve a file for download
-        if p.startswith("/api/files/download"):
-            from urllib.parse import parse_qs, unquote
-            qs       = urlparse(self.path).query
-            params   = parse_qs(qs)
-            raw_path = params.get('path', [''])[0]
-            rel_path = unquote(raw_path).replace('..', '').lstrip('/')
-            full     = os.path.join(ROOT_DIR, rel_path)
-            if not os.path.isfile(full):
-                self.send_response(404)
-                self.send_header('Content-Type', 'text/plain')
-                self.end_headers()
-                self.wfile.write(f"File not found: {rel_path}".encode())
-                return
-            with open(full, 'rb') as f:
-                data = f.read()
-            fname = os.path.basename(full)
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/octet-stream')
-            self.send_header('Content-Disposition', f'attachment; filename="{fname}"')
-            self.send_header('Content-Length', str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-            return
-
-        # /api/files/upload — Upload binary file via base64
-        if p == "/api/files/upload":
-            try:
-                data     = json.loads(body)
-                rel_path = data.get("path","").replace("..","")
-                file_b64 = data.get("fileData","")
-                full     = os.path.join(ROOT_DIR, rel_path)
-                os.makedirs(os.path.dirname(full), exist_ok=True)
-                with open(full, "wb") as f:
-                    f.write(base64.b64decode(file_b64))
-                self._log(f"📤  Uploaded: {rel_path}")
-                self._json({"success":True})
-            except Exception as e:
-                self._json({"success":False,"error":str(e)},400)
-            return
-
-        # /api/register/approve-direct — Moves user from temp to users.json by email
-        if p == "/api/register/approve-direct":
-            try:
-                data      = json.loads(body)
-                email     = data.get("email","")
-                temp_file = os.path.join(DB_DIR,"temp_accounts.json")
-                temp_data = self._read(temp_file)
-                pending   = temp_data.get("pending",[])
-                acc       = next((x for x in pending if x.get("email")==email), None)
-                if acc:
-                    pending = [x for x in pending if x.get("email")!=email]
-                    self._write(temp_file,{**temp_data,"pending":pending})
-                    users_data = self._read(USERS_FILE)
-                    users_data.setdefault("users",[]).append(acc)
-                    self._write(USERS_FILE,users_data)
-                self._json({"success":True})
-            except Exception as e:
-                self._json({"success":False,"error":str(e)},400)
-            return
-
-
-        # /api/files/mkdir — Create a directory
-        if p == "/api/files/mkdir":
-            try:
-                data     = json.loads(body)
-                rel_path = data.get("path","").replace("..","")
-                full     = os.path.join(ROOT_DIR, rel_path)
-                os.makedirs(full, exist_ok=True)
-                self._log(f"📁  Folder created: {rel_path}")
-                self._json({"success": True})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-
-        # /api/templates/scan — Scan Template/ folder and return structure
-        if p == "/api/templates/scan":
-            try:
-                base = os.path.join(ROOT_DIR, "Template", "Lease Abstraction")
-                result = {"folders": []}
-                if os.path.isdir(base):
-                    for folder in sorted(os.listdir(base)):
-                        fpath = os.path.join(base, folder)
-                        if not os.path.isdir(fpath): continue
-                        files = []
-                        for fname in sorted(os.listdir(fpath)):
-                            ffull = os.path.join(fpath, fname)
-                            if os.path.isfile(ffull):
-                                name_no_ext = os.path.splitext(fname)[0]
-                                rel_path = "Template/Lease Abstraction/" + folder + "/" + fname
-                                files.append({
-                                    "filename": fname,
-                                    "name": name_no_ext,
-                                    "path": rel_path,
-                                    "folder": folder,
-                                    "ext": os.path.splitext(fname)[1].lower()
-                                })
-                        result["folders"].append({ "name": folder, "files": files })
-                self._json({"success": True, "data": result})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, 400)
-            return
-
-
-        # /api/extract — Proxy to OpenRouter (Claude extraction)
-        if p == "/api/extract":
-            try:
-                import urllib.request as ureq
-                data       = json.loads(body)
-                messages   = data.get('messages', [])
-                system_msg = data.get('system', '')
-                max_tokens = data.get('max_tokens', 16000)
-                task       = data.get('task', 'extraction')
-                model      = data.get('model', 'anthropic/claude-sonnet-4-5')
-
-                # Model routing (same as old project)
-                MODEL_MAP = {
-                    'extraction':  'anthropic/claude-sonnet-4-5',
-                    'critique':    'anthropic/claude-opus-4.7',
-                    'validation':  'openai/gpt-4o-mini',
-                    'scoring':     'openai/gpt-4o-mini',
-                    'quick':       'openai/gpt-4o-mini',
-                    'translation': 'openai/gpt-4o-mini',
-                }
-                if not data.get('model'):
-                    model = MODEL_MAP.get(task, MODEL_MAP['extraction'])
-
-                # Load API key from db/api_config.json
-                cfg_file   = os.path.join(DB_DIR, 'api_config.json')
-                cfg        = self._read(cfg_file)
-                providers  = cfg.get('providers', [])
-                or_key     = next((p['api_key'] for p in providers if p.get('id') == 'openrouter'), '')
-
-                if not or_key:
-                    self._json({"error": "OpenRouter API key not configured in db/api_config.json"}, 400)
-                    return
-
-                # Trim system prompt if too large (max 25000 chars — covers full 20KB extraction_prompt.txt)
-                if system_msg and len(system_msg) > 25000:
-                    system_msg = system_msg[:25000]
-
-                # Trim user message if too large (max 70000 chars ~17500 tokens; safe for 200K context window)
-                for msg in messages:
-                    if isinstance(msg.get('content'), str) and len(msg['content']) > 70000:
-                        msg['content'] = msg['content'][:70000] + '\n[...TRUNCATED FOR TOKEN LIMIT...]'
-
-                or_messages = []
-                if system_msg:
-                    or_messages.append({"role": "system", "content": system_msg})
-                or_messages.extend(messages)
-
-                import urllib.request as _ul, urllib.error as _ule
-                _body = json.dumps({"model":model,"max_tokens":max_tokens,"temperature":0,"messages":or_messages}).encode()
-                _req  = _ul.Request("https://openrouter.ai/api/v1/chat/completions", data=_body, method="POST",
-                    headers={"Content-Type":"application/json","Authorization":"Bearer "+or_key,
-                             "HTTP-Referer":"https://lexora.ai","X-Title":"Lexora Lease Abstraction AI"})
-                try:
-                    with _ul.urlopen(_req, timeout=120) as _r:
-                        result = json.loads(_r.read().decode())
-                except _ule.HTTPError as _e:
-                    err_body = _e.read().decode(errors='replace')[:500]
-                    self._log(f"OpenRouter HTTP error {_e.code}: {err_body[:200]}")
-                    try:
-                        err_json = json.loads(err_body)
-                        err_msg  = err_json.get('error', {}).get('message', err_body[:200]) if isinstance(err_json.get('error'), dict) else str(err_json.get('error', err_body[:200]))
-                    except Exception:
-                        err_msg = err_body[:300]
-                    self._json({"error": f"OpenRouter error {_e.code}: {err_msg}"}, _e.code); return
-                except Exception as _e:
-                    self._log(f"Extract API exception: {_e}")
-                    self._json({"error": str(_e)}, 500); return
-
-                text   = result.get('choices', [{}])[0].get('message', {}).get('content', '')
-                usage  = result.get('usage', {})
-                self._json({
-                    "content": [{"type": "text", "text": text}],
-                    "usage": {
-                        "input_tokens":  usage.get('prompt_tokens', 0),
-                        "output_tokens": usage.get('completion_tokens', 0)
-                    },
-                    "_meta": {"model": model, "task": task}
-                })
-            except Exception as e:
-                self._json({"error": str(e)}, 500)
-            return
-
-        # /api/extract-text — Server-side PDF text extraction via pdfplumber
-        if p == "/api/extract-text":
-            try:
-                data      = json.loads(body)
-                file_b64  = data.get('fileData', '')
-                import base64 as b64
-                pdf_bytes = b64.b64decode(file_b64)
-
-                try:
-                    import pdfplumber
-                    import io
-                    pages_text = []
-                    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                        for page in pdf.pages:
-                            t = page.extract_text() or ''
-                            pages_text.append(t)
-                    text   = '\n\n'.join(pages_text)
-                    method = 'pdfplumber'
-                    self._log(f"📄  pdfplumber extracted {len(text)} chars from {len(pages_text)} pages")
-                except ImportError:
-                    self._json({"error": "pdfplumber not installed. Run: pip install pdfplumber --break-system-packages"}, 503)
-                    return
-
-                self._json({"success": True, "text": text, "pages": len(pages_text), "method": method, "chars": len(text)})
-            except Exception as e:
-                self._json({"error": str(e)}, 500)
-            return
-
-        # /api/critique — Critic Agent (Claude Opus 4.7 via OpenRouter)
-        if p == "/api/critique":
-            try:
-                data       = json.loads(body)
-                flags      = data.get('flags', [])
-                lease_text = data.get('lease_text', '')
-                extraction = data.get('extraction', {})
-                if not flags:
-                    self._json({"operations": [], "unresolved": [], "summary": {"reason": "no_flags"}})
-                    return
-
-                cfg_file  = os.path.join(DB_DIR, 'api_config.json')
-                cfg       = self._read(cfg_file)
-                providers = cfg.get('providers', [])
-                or_key    = next((pr['api_key'] for pr in providers if pr.get('id') == 'openrouter'), '')
-                if not or_key:
-                    self._json({"error": "OpenRouter API key not configured"}, 400)
-                    return
-
-                # Truncate lease text
-                if len(lease_text) > 80000:
-                    lease_text = lease_text[:60000] + " [TRUNCATED] " + lease_text[-20000:]
-
-                system_prompt = (
-                    "You are a senior commercial real estate lease abstractor and critic. "
-                    "Review the extraction and fix any flagged issues. "
-                    "Return JSON with: {operations:[{op,path,value,flagId,confidence,rationale}], unresolved:[{flagId,reason}]}. "
-                    "Only emit operations with confidence >= 0.70. JSON ONLY. No markdown fences."
-                )
-                user_msg = (
-                    "FLAGS (" + str(len(flags)) + "):\n" + json.dumps(flags[:20], indent=1) +
-                    "\n\nEXTRACTION:\n" + json.dumps(extraction, indent=1)[:4000] +
-                    "\n\nLEASE TEXT (" + str(len(lease_text)) + " chars):\n" + lease_text
-                )
-
-                import urllib.request as _ul2, urllib.error as _ule2
-                _body2 = json.dumps({"model":"anthropic/claude-opus-4.7","max_tokens":16000,"temperature":0,
-                    "messages":[{"role":"system","content":system_prompt},{"role":"user","content":user_msg}]}).encode()
-                _req2 = _ul2.Request("https://openrouter.ai/api/v1/chat/completions", data=_body2, method="POST",
-                    headers={"Content-Type":"application/json","Authorization":"Bearer "+or_key,"X-Title":"Lexora Critic Agent"})
-                try:
-                    with _ul2.urlopen(_req2, timeout=120) as _r2:
-                        result = json.loads(_r2.read().decode())
-                except Exception as _e2:
-                    self._json({"error": str(_e2)}, 500); return
-
-                text    = result.get('choices', [{}])[0].get('message', {}).get('content', '')
-                import re as re_mod
-                m       = re_mod.search(r'\{[\s\S]*\}', text)
-                parsed  = json.loads(m.group(0)) if m else {}
-                self._json({
-                    "operations": parsed.get('operations', []),
-                    "unresolved": parsed.get('unresolved', []),
-                    "summary":    {"flagsProcessed": len(flags)}
-                })
-            except Exception as e:
-                self._json({"error": str(e)}, 500)
-            return
-
-
-
-        self.send_response(404)
-        self.end_headers()
-
-    # ── Helpers ──────────────────────────────────────────────────────────
-    def _body(self):
-        return self.rfile.read(int(self.headers.get("Content-Length", 0)))
-
-    def _read(self, path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {"error": f"Not found: {path}"}
-        except json.JSONDecodeError as e:
-            return {"error": str(e)}
-
-    def _write(self, path, data):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-
-    def _json(self, data, status=200):
-        body = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+    def log_message(self, fmt, *args):
+        # Keep the console readable - default logging is very chatty.
+        sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+
+    def _send_json(self, status, payload):
+        body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type",   "application/json; charset=utf-8")
+        self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
-    def _smtp_ping(self):
-        """Test SMTP connectivity without sending email. Returns detailed debug."""
-        import socket as _sock
-        cfg   = load_smtp()
-        host  = cfg.get("host","")
-        port  = int(cfg.get("port",587))
-        user  = cfg.get("username","")
-        pwd   = cfg.get("password","")
-        frm   = cfg.get("sender_email","")
-        rcv   = cfg.get("receiver_email","")
-        results = []
-        if not host:
-            return {"configured": False, "error": "SMTP_HOST not set in environment variables",
-                    "env_vars": {"SMTP_HOST":"NOT SET","SMTP_PORT":os.environ.get("SMTP_PORT",""),"SMTP_USER":os.environ.get("SMTP_USER",""),"SMTP_FROM":os.environ.get("SMTP_FROM",""),"SMTP_RECEIVER":os.environ.get("SMTP_RECEIVER","")}}
-        for try_port in [port, (465 if port==587 else 587)]:
+    def _read_json_body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if length == 0:
+            return {}
+        if length > MAX_BODY_BYTES:
+            raise ValueError("Body too large")
+        raw = self.rfile.read(length)
+        return json.loads(raw.decode("utf-8"))
+
+    def _resource_name(self):
+        """Returns <name> if the request path is /api/data/<name>, else None."""
+        parts = urlparse(self.path).path.strip("/").split("/")
+        if len(parts) == 3 and parts[0] == "api" and parts[1] == "data" and parts[2]:
+            return parts[2]
+        return None
+
+    # ------------------------------------------------------------------
+    # GET
+    # ------------------------------------------------------------------
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        # Section 3: opening the bare forwarded port loads main.html
+        # automatically - no more typing "/main.html" every time.
+        if path == "/" or path == "":
+            self.send_response(302)
+            self.send_header("Location", "/main.html")
+            self.end_headers()
+            return
+
+        if path == "/api/admin/list":
+            return self._handle_admin_list(parse_qs(parsed.query))
+        if path == "/api/admin/download":
+            return self._handle_admin_download(parse_qs(parsed.query))
+        if path == "/api/admin/read":
+            return self._handle_admin_read(parse_qs(parsed.query))
+        if path == "/api/auth/me":
+            return self._handle_auth_me(parse_qs(parsed.query))
+        if path == "/api/lease/extract-status":
+            return self._handle_lease_extract_status(parse_qs(parsed.query))
+
+        # Never let smtp-config.json (SMTP credentials) be downloaded as a
+        # static file - it's only ever read server-side.
+        basename = os.path.basename(path)
+        if basename in PROTECTED_JSON_FILES:
+            return self._send_json(403, {"error": "Forbidden"})
+
+        name = self._resource_name()
+        if name is None:
+            return super().do_GET()
+
+        if name not in ALLOWED_RESOURCES:
+            return self._send_json(404, {"error": f'Unknown resource "{name}"'})
+
+        file_path = os.path.join(JSON_DIR, f"{name}.json")
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                raw = f.read()
+        except OSError:
+            return self._send_json(404, {"error": "Not found"})
+
+        body = raw.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    # ------------------------------------------------------------------
+    # PUT  (JSON persistence - /api/data/<name>)
+    # ------------------------------------------------------------------
+    def do_PUT(self):
+        name = self._resource_name()
+        if name is None:
+            return self._send_json(404, {"error": "Not found"})
+        if name not in ALLOWED_RESOURCES:
+            return self._send_json(404, {"error": f'Unknown resource "{name}"'})
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if length == 0:
+            return self._send_json(400, {"error": "Missing JSON body"})
+        if length > MAX_BODY_BYTES:
+            return self._send_json(413, {"error": "Body too large"})
+
+        raw_body = self.rfile.read(length)
+        try:
+            data = json.loads(raw_body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return self._send_json(400, {"error": "Missing JSON body"})
+
+        file_path = os.path.join(JSON_DIR, f"{name}.json")
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps(data, indent=4, ensure_ascii=False) + "\n")
+        except OSError as err:
+            print(f"Failed to write json/{name}.json: {err}")
+            return self._send_json(500, {"error": "Failed to save"})
+
+        self._send_json(200, {"ok": True})
+
+    # ------------------------------------------------------------------
+    # Admin File Manager - GET routes
+    # ------------------------------------------------------------------
+    def _handle_admin_list(self, query):
+        rel_path = (query.get("path", [""])[0])
+        try:
+            abs_path = _safe_admin_path(rel_path)
+        except ValueError:
+            return self._send_json(400, {"error": "Invalid path"})
+
+        if not os.path.isdir(abs_path):
+            return self._send_json(404, {"error": "Not a directory"})
+
+        entries = []
+        try:
+            names = sorted(os.listdir(abs_path), key=lambda n: n.lower())
+        except OSError as err:
+            return self._send_json(500, {"error": str(err)})
+
+        for name in names:
+            if name in ADMIN_HIDDEN_TOP_LEVEL and _rel_to_root(abs_path) == ".":
+                continue
+            full = os.path.join(abs_path, name)
+            is_dir = os.path.isdir(full)
             try:
-                s = _sock.create_connection((host, try_port), timeout=8)
-                s.close()
-                results.append({"port": try_port, "tcp": "OPEN ✅"})
-            except Exception as e:
-                results.append({"port": try_port, "tcp": f"BLOCKED/TIMEOUT ❌ — {e}"})
-        return {
-            "configured": bool(host and user and pwd),
-            "host": host, "port": port,
-            "user": user, "from": frm,
-            "receiver": rcv,
-            "password_set": bool(pwd),
-            "password_starts": pwd[:6] + "…" if pwd else "",
-            "port_tests": results,
-            "env_vars": {
-                "SMTP_HOST":     os.environ.get("SMTP_HOST","⚠ NOT SET"),
-                "SMTP_PORT":     os.environ.get("SMTP_PORT","587"),
-                "SMTP_USER":     os.environ.get("SMTP_USER","⚠ NOT SET"),
-                "SMTP_FROM":     os.environ.get("SMTP_FROM","⚠ NOT SET"),
-                "SMTP_RECEIVER": os.environ.get("SMTP_RECEIVER","⚠ NOT SET"),
-                "SMTP_PASSWORD": "SET" if os.environ.get("SMTP_PASSWORD") else "⚠ NOT SET"
-            }
+                stat = os.stat(full)
+                modified = datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+                size = None if is_dir else stat.st_size
+            except OSError:
+                modified, size = None, None
+
+            rel = _rel_to_root(full)
+            entries.append({
+                "name": name,
+                "path": rel,
+                "type": "dir" if is_dir else "file",
+                "typeLabel": "DIR" if is_dir else (os.path.splitext(name)[1][1:].upper() or "FILE"),
+                "size": size,
+                "sizeLabel": None if is_dir else _human_size(size),
+                "modified": modified,
+                "downloadBlocked": rel in ADMIN_DOWNLOAD_BLOCKLIST,
+            })
+
+        # Directories first, then files, both alphabetical.
+        entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower()))
+
+        current_rel = _rel_to_root(abs_path)
+        current_rel = "" if current_rel == "." else current_rel
+        return self._send_json(200, {"ok": True, "path": current_rel, "entries": entries})
+
+    def _handle_admin_download(self, query):
+        rel_path = (query.get("path", [""])[0])
+        try:
+            abs_path = _safe_admin_path(rel_path)
+        except ValueError:
+            return self._send_json(400, {"error": "Invalid path"})
+
+        rel = _rel_to_root(abs_path)
+        if rel in ADMIN_DOWNLOAD_BLOCKLIST:
+            return self._send_json(403, {"error": "This file is protected and cannot be downloaded."})
+        if not os.path.isfile(abs_path):
+            return self._send_json(404, {"error": "File not found"})
+
+        try:
+            with open(abs_path, "rb") as f:
+                data = f.read()
+        except OSError as err:
+            return self._send_json(500, {"error": str(err)})
+
+        mime_type = mimetypes.guess_type(abs_path)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", mime_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(abs_path)}"')
+        self.end_headers()
+        self.wfile.write(data)
+
+    # ------------------------------------------------------------------
+    # POST  (photo upload, SMTP email, lease-abstraction pipeline)
+    # ------------------------------------------------------------------
+    def do_POST(self):
+        path = urlparse(self.path).path
+
+        routes = {
+            "/api/upload-photo": self._handle_upload_photo,
+            "/api/send-acknowledgement": self._handle_send_acknowledgement,
+            "/api/lease/scan-template": self._handle_lease_scan_template,
+            "/api/lease/upload-template": self._handle_lease_upload_template,
+            "/api/lease/upload": self._handle_lease_upload,
+            "/api/lease/extract-start": self._handle_lease_extract_start,
+            "/api/lease/analyze": self._handle_lease_analyze,
+            "/api/lease/validate": self._handle_lease_validate,
+            "/api/lease/save-output": self._handle_lease_save_output,
+            "/api/lease/generate-pdf": self._handle_lease_generate_pdf,
+            "/api/admin/mkdir": self._handle_admin_mkdir,
+            "/api/admin/upload": self._handle_admin_upload,
+            "/api/admin/delete": self._handle_admin_delete,
+            "/api/admin/write": self._handle_admin_write,
+            "/api/auth/register": self._handle_auth_register,
+            "/api/auth/verify-register": self._handle_auth_verify_register,
+            "/api/auth/login": self._handle_auth_login,
+            "/api/auth/verify-login": self._handle_auth_verify_login,
+            "/api/auth/forgot-password": self._handle_auth_forgot_password,
+            "/api/auth/verify-reset-code": self._handle_auth_verify_reset_code,
+            "/api/auth/reset-password": self._handle_auth_reset_password,
+            "/api/auth/resend-code": self._handle_auth_resend_code,
+            "/api/profile/update": self._handle_profile_update,
         }
 
-    def _log(self, msg):
-        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}")
+        handler = routes.get(path)
+        if not handler:
+            return self._send_json(404, {"error": "Not found"})
 
-    def _scan_templates(self):
-        """Scan db/templates/ folder and user_directory for template files."""
-        tpl_dir = os.path.join(DB_DIR, "templates")
-        folders  = []
-        # Default templates folder
-        if os.path.isdir(tpl_dir):
-            files = []
-            for fn in sorted(os.listdir(tpl_dir)):
-                if fn.lower().endswith(('.json','.pdf','.docx','.doc')):
-                    files.append({"name": fn, "path": "db/templates/" + fn})
-            if files:
-                folders.append({"name": "Default Templates", "files": files})
-        # User template folders
-        ud = os.path.join(ROOT_DIR, "user_directory")
-        if os.path.isdir(ud):
-            for uid in sorted(os.listdir(ud)):
-                tdir = os.path.join(ud, uid, "output_template")
-                if os.path.isdir(tdir):
-                    files = []
-                    for fn in sorted(os.listdir(tdir)):
-                        if fn.lower().endswith(('.json','.pdf','.docx','.doc')):
-                            files.append({"name": fn,
-                                          "path": f"user_directory/{uid}/output_template/{fn}"})
-                    if files:
-                        folders.append({"name": f"User {uid}", "files": files})
-        return {"success": True, "data": {"folders": folders}}
-
-    def log_message(self, fmt, *args):
-        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {fmt % args}")
-
-
-# ── Main ─────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    os.chdir(ROOT_DIR)
-    os.makedirs(USER_DIR, exist_ok=True)
-
-    # ── Auto-generate api_config.json from env vars (Render / production) ──
-    api_cfg_path = os.path.join(DB_DIR, "api_config.json")
-    if not os.path.exists(api_cfg_path):
-        _or_key  = os.environ.get("OPENROUTER_API_KEY", "")
-        _oai_key = os.environ.get("OPENAI_API_KEY", "")
-        with open(api_cfg_path, "w") as _f:
-            json.dump({"providers": [
-                {"id": "openrouter", "api_key": _or_key},
-                {"id": "openai",     "api_key": _oai_key}
-            ]}, _f, indent=2)
-        if _or_key:
-            print(f"  ✅  api_config.json generated from environment variables")
-        else:
-            print(f"  ⚠️   api_config.json created but OPENROUTER_API_KEY env var is NOT SET!")
-            print(f"  ⚠️   Set OPENROUTER_API_KEY and OPENAI_API_KEY in Render Environment settings")
-    else:
-        print(f"  ✅  api_config.json found")
-
-    with socketserver.TCPServer(("", PORT), LexoraHandler) as httpd:
-        httpd.allow_reuse_address = True
-        print("=" * 58)
-        print("  ⚖️   Lexora Dev Server  v3.0")
-        print("=" * 58)
-        print(f"  Root   :  {ROOT_DIR}")
-        print(f"  App    :  http://localhost:{PORT}/index.html")
-        print(f"  Health :  http://localhost:{PORT}/api/health")
-        print(f"  Saves  :  POST /api/users/save")
-        print(f"            POST /api/smtp/save")
-        print(f"            POST /api/users/photo/save")
-        print(f"            POST /api/payments/save")
-        print(f"            POST /api/transactions/save")
-        print(f"            POST /api/contact/send")
-        print("  Ctrl+C to stop")
-        print("=" * 58)
         try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            print("\n  Server stopped.")
+            body = self._read_json_body()
+        except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as err:
+            return self._send_json(400, {"error": f"Invalid request body: {err}"})
+
+        try:
+            status, payload = handler(body)
+        except lease_engine.LeaseEngineError as err:
+            status, payload = 500, {"error": str(err)}
+        except ValueError as err:
+            status, payload = 400, {"error": str(err)}
+        except Exception as err:  # noqa: BLE001 - always answer the client
+            print(f"Unhandled error on {path}: {err}")
+            status, payload = 500, {"error": "Internal server error"}
+
+        self._send_json(status, payload)
+
+    # ---- Section 2: profile photo storage ----
+    def _handle_upload_photo(self, body):
+        user_id = _safe_id(body.get("userId"))
+        data_url = body.get("dataUrl") or ""
+        file_name = _safe_filename(body.get("fileName"), "photo")
+
+        m = re.match(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", data_url, re.DOTALL)
+        if not m:
+            raise ValueError("dataUrl must be a base64 image data URL")
+        mime_type, b64data = m.group(1), m.group(2)
+
+        ext = mimetypes.guess_extension(mime_type) or os.path.splitext(file_name)[1] or ".png"
+        if ext == ".jpe":
+            ext = ".jpg"
+        final_name = f"profile{ext}"
+
+        folder = _user_dir(user_id, "ProfilePhoto")
+        os.makedirs(folder, exist_ok=True)
+        # Remove any previous profile photo (different extension) so old
+        # files don't pile up.
+        for existing in os.listdir(folder):
+            if existing.startswith("profile."):
+                try:
+                    os.remove(os.path.join(folder, existing))
+                except OSError:
+                    pass
+
+        out_path = os.path.join(folder, final_name)
+        with open(out_path, "wb") as f:
+            f.write(base64.b64decode(b64data))
+
+        return 200, {"ok": True, "path": _rel_to_root(out_path)}
+
+    # ---- Section 9: contact-us acknowledgement email ----
+    def _handle_send_acknowledgement(self, body):
+        to_email = body.get("toEmail")
+        if not to_email:
+            raise ValueError("toEmail is required")
+        _send_acknowledgement_email(
+            to_email,
+            body.get("userName") or "there",
+            body.get("type") or "Query",
+            body.get("subject") or "(no subject)",
+            body.get("message") or "",
+        )
+        return 200, {"ok": True}
+
+    # ---- Section 14.1: output template scan (batch-level, not per file) ----
+    def _handle_lease_scan_template(self, body):
+        user_id = _safe_id(body.get("userId"))
+        template_name = body.get("templateName")
+
+        if template_name:
+            template_path = _user_dir(user_id, "LeaseAbstraction", "_templates",
+                                       _safe_filename(template_name))
+            if not os.path.isfile(template_path):
+                template_path = DEFAULT_TEMPLATE_PATH
+                template_name = "Default.pdf"
+        else:
+            template_path = DEFAULT_TEMPLATE_PATH
+            template_name = "Default.pdf"
+
+        pages = None
+        if lease_engine.pdfplumber and template_path.lower().endswith(".pdf"):
+            try:
+                with lease_engine.pdfplumber.open(template_path) as pdf:
+                    pages = len(pdf.pages)
+            except Exception:
+                pages = None
+
+        return 200, {"ok": True, "template": template_name, "pages": pages}
+
+    def _handle_lease_upload_template(self, body):
+        user_id = _safe_id(body.get("userId"))
+        file_name = _safe_filename(body.get("fileName"), "template.pdf")
+        data_b64 = body.get("dataBase64")
+        if not data_b64:
+            raise ValueError("dataBase64 is required")
+
+        folder = _user_dir(user_id, "LeaseAbstraction", "_templates")
+        os.makedirs(folder, exist_ok=True)
+        out_path = os.path.join(folder, file_name)
+        with open(out_path, "wb") as f:
+            f.write(base64.b64decode(data_b64))
+
+        return 200, {"ok": True, "templateName": file_name, "path": _rel_to_root(out_path)}
+
+    # ---- Section 14.2: input file upload/scanning ----
+    def _handle_lease_upload(self, body):
+        user_id = _safe_id(body.get("userId"))
+        original_name = _safe_filename(body.get("fileName"), "document.pdf")
+        data_b64 = body.get("dataBase64")
+        if not data_b64:
+            raise ValueError("dataBase64 is required")
+
+        folder = _user_dir(user_id, "LeaseAbstraction", "_staging")
+        os.makedirs(folder, exist_ok=True)
+        staged_name = f"{uuid.uuid4().hex}_{original_name}"
+        out_path = os.path.join(folder, staged_name)
+        with open(out_path, "wb") as f:
+            f.write(base64.b64decode(data_b64))
+
+        return 200, {
+            "ok": True,
+            "stagingPath": _rel_to_root(out_path),
+            "originalFileName": original_name,
+        }
+
+    def _resolve_staging_path(self, staging_path):
+        abs_path = os.path.join(ROOT_DIR, staging_path)
+        if not _within(USERS_DIR, abs_path) or not os.path.isfile(abs_path):
+            raise ValueError("Invalid or missing staged file")
+        return abs_path
+
+    # ---- Section 14.3 (20%): data extraction - runs in a background
+    # thread (see _run_extract_job) so a slow OCR pass never blocks a
+    # single HTTP request long enough to trip a gateway timeout. ----
+    def _handle_lease_extract_start(self, body):
+        staging_path = body.get("stagingPath")
+        abs_path = self._resolve_staging_path(staging_path)
+
+        _cleanup_stale_jobs()
+        job_id = uuid.uuid4().hex
+        _set_job(job_id, status="running", pagesDone=0, pagesTotal=None)
+        thread = threading.Thread(target=_run_extract_job, args=(job_id, abs_path), daemon=True)
+        thread.start()
+
+        return 200, {"ok": True, "jobId": job_id}
+
+    def _handle_lease_extract_status(self, query):
+        job_id = (query.get("jobId", [""])[0])
+        job = _get_job(job_id)
+        if not job:
+            return self._send_json(404, {"error": "Unknown or expired job"})
+        payload = {"ok": True, "status": job.get("status", "running")}
+        if job.get("status") == "running":
+            payload["pagesDone"] = job.get("pagesDone")
+            payload["pagesTotal"] = job.get("pagesTotal")
+        elif job.get("status") == "done":
+            payload["text"] = job.get("text", "")
+            payload["textLength"] = job.get("textLength", 0)
+        elif job.get("status") == "error":
+            payload["error"] = job.get("error", "Extraction failed")
+        return self._send_json(200, payload)
+
+    # ---- Section 14.3 (40%): "GPT prompt" analysis stand-in ----
+    def _handle_lease_analyze(self, body):
+        text = body.get("text") or ""
+        fallback_name = body.get("fallbackName") or "Lease"
+        result = lease_engine.analyze_lease(text, fallback_name=fallback_name)
+        return 200, {"ok": True, **result}
+
+    # ---- Section 14.3 (60%): document-type + duplicate validation ----
+    def _handle_lease_validate(self, body):
+        user_id = _safe_id(body.get("userId"))
+        doc_type = body.get("docType")
+        lease_name = lease_engine.sanitize_lease_name(body.get("leaseName"))
+
+        if doc_type == "Other":
+            return 200, {"ok": True, "valid": False, "reason": "invalid", "leaseName": lease_name}
+
+        output_json_path = _user_dir(user_id, "LeaseAbstraction", lease_name, "Output.json")
+        if os.path.isfile(output_json_path):
+            return 200, {"ok": True, "valid": False, "reason": "duplicate", "leaseName": lease_name}
+
+        return 200, {"ok": True, "valid": True, "leaseName": lease_name}
+
+    # ---- Section 14.3 (80%): Output.json + saved document + LeaseDocuments.json ----
+    def _handle_lease_save_output(self, body):
+        user_id = _safe_id(body.get("userId"))
+        lease_name = lease_engine.sanitize_lease_name(body.get("leaseName"))
+        doc_type = body.get("docType") or "Lease"
+        fields = body.get("fields") or {}
+        extraction_method = body.get("extractionMethod") or "heuristic"
+        accuracy = body.get("accuracy")
+        accuracy_method = body.get("accuracyMethod")
+        accuracy_summary = body.get("accuracySummary")
+        missing_fields = body.get("missingFields") or []
+        low_confidence_fields = body.get("lowConfidenceFields") or []
+        staging_path = body.get("stagingPath")
+        original_file_name = _safe_filename(body.get("originalFileName"), "document.pdf")
+
+        staged_abs = self._resolve_staging_path(staging_path)
+
+        lease_folder = _user_dir(user_id, "LeaseAbstraction", lease_name)
+        os.makedirs(lease_folder, exist_ok=True)
+
+        final_name = original_file_name
+        final_path = os.path.join(lease_folder, final_name)
+        if os.path.exists(final_path):
+            stem, ext = os.path.splitext(final_name)
+            final_name = f"{stem}_{uuid.uuid4().hex[:6]}{ext}"
+            final_path = os.path.join(lease_folder, final_name)
+        shutil.move(staged_abs, final_path)
+
+        now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+
+        output_json_path = os.path.join(lease_folder, "Output.json")
+        source_docs_rel = _rel_to_root(final_path)
+        output_data = {
+            "leaseName": lease_name,
+            "userId": user_id,
+            "docType": doc_type,
+            "extractionMethod": extraction_method,
+            "accuracy": accuracy,
+            "accuracyMethod": accuracy_method,
+            "accuracySummary": accuracy_summary,
+            "missingFields": missing_fields,
+            "lowConfidenceFields": low_confidence_fields,
+            "fields": fields,
+            "createdAt": now_iso,
+            "updatedAt": now_iso,
+            "sourceDocuments": [source_docs_rel],
+        }
+        if os.path.isfile(output_json_path):
+            try:
+                with open(output_json_path, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+                existing_docs = existing.get("sourceDocuments", [])
+                if source_docs_rel not in existing_docs:
+                    existing_docs.append(source_docs_rel)
+                existing.update({
+                    "docType": doc_type, "fields": fields, "extractionMethod": extraction_method,
+                    "accuracy": accuracy, "accuracyMethod": accuracy_method,
+                    "accuracySummary": accuracy_summary, "missingFields": missing_fields,
+                    "lowConfidenceFields": low_confidence_fields,
+                    "updatedAt": now_iso, "sourceDocuments": existing_docs,
+                })
+                output_data = existing
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        with open(output_json_path, "w", encoding="utf-8") as f:
+            json.dump(output_data, f, indent=4, ensure_ascii=False)
+
+        lease_docs_path = os.path.join(lease_folder, "LeaseDocuments.json")
+        docs_list = []
+        if os.path.isfile(lease_docs_path):
+            try:
+                with open(lease_docs_path, "r", encoding="utf-8") as f:
+                    docs_list = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                docs_list = []
+        docs_list.append({
+            "fileName": final_name,
+            "path": source_docs_rel,
+            "uploadedAt": now_iso,
+        })
+        with open(lease_docs_path, "w", encoding="utf-8") as f:
+            json.dump(docs_list, f, indent=4, ensure_ascii=False)
+
+        return 200, {
+            "ok": True,
+            "leaseFolder": _rel_to_root(lease_folder),
+            "savedDocument": source_docs_rel,
+        }
+
+    # ---- Section 14.3 (100%): Output.pdf generation ----
+    def _handle_lease_generate_pdf(self, body):
+        user_id = _safe_id(body.get("userId"))
+        lease_name = lease_engine.sanitize_lease_name(body.get("leaseName"))
+        template_name = body.get("templateName") or "Default.pdf"
+
+        lease_folder = _user_dir(user_id, "LeaseAbstraction", lease_name)
+        output_json_path = os.path.join(lease_folder, "Output.json")
+        if not os.path.isfile(output_json_path):
+            raise ValueError("Output.json not found - run save-output first")
+
+        pdf_path = os.path.join(lease_folder, "Output.pdf")
+        lease_engine.generate_output_pdf(output_json_path, pdf_path, template_name=template_name)
+
+        return 200, {"ok": True, "outputPdf": _rel_to_root(pdf_path)}
+
+    # ------------------------------------------------------------------
+    # Admin File Manager - POST routes
+    # ------------------------------------------------------------------
+    def _handle_admin_mkdir(self, body):
+        rel_path = body.get("path", "")
+        folder_name = _safe_filename(body.get("name"), "New Folder")
+        try:
+            parent = _safe_admin_path(rel_path)
+        except ValueError:
+            raise ValueError("Invalid path")
+
+        new_dir = os.path.join(parent, folder_name)
+        if not _within(ROOT_DIR, new_dir):
+            raise ValueError("Invalid path")
+        if os.path.exists(new_dir):
+            raise ValueError(f'"{folder_name}" already exists here')
+
+        os.makedirs(new_dir)
+        return 200, {"ok": True, "path": _rel_to_root(new_dir)}
+
+    def _handle_admin_upload(self, body):
+        rel_path = body.get("path", "")
+        file_name = _safe_filename(body.get("fileName"), "file")
+        data_b64 = body.get("dataBase64")
+        if not data_b64:
+            raise ValueError("dataBase64 is required")
+
+        try:
+            parent = _safe_admin_path(rel_path)
+        except ValueError:
+            raise ValueError("Invalid path")
+        if not os.path.isdir(parent):
+            raise ValueError("Target folder does not exist")
+
+        out_path = os.path.join(parent, file_name)
+        if not _within(ROOT_DIR, out_path):
+            raise ValueError("Invalid path")
+
+        with open(out_path, "wb") as f:
+            f.write(base64.b64decode(data_b64))
+
+        return 200, {"ok": True, "path": _rel_to_root(out_path)}
+
+    def _handle_admin_delete(self, body):
+        paths = body.get("paths") or []
+        if not isinstance(paths, list) or not paths:
+            raise ValueError("paths must be a non-empty list")
+
+        deleted, failed = [], []
+        for rel_path in paths:
+            try:
+                abs_path = _safe_admin_path(rel_path)
+            except ValueError:
+                failed.append({"path": rel_path, "error": "Invalid path"})
+                continue
+
+            if abs_path == ROOT_DIR:
+                failed.append({"path": rel_path, "error": "Cannot delete the project root"})
+                continue
+            if _rel_to_root(abs_path) in ADMIN_DOWNLOAD_BLOCKLIST:
+                failed.append({"path": rel_path, "error": "This file is protected"})
+                continue
+
+            try:
+                if os.path.isdir(abs_path):
+                    shutil.rmtree(abs_path)
+                elif os.path.isfile(abs_path):
+                    os.remove(abs_path)
+                else:
+                    failed.append({"path": rel_path, "error": "Not found"})
+                    continue
+                deleted.append(rel_path)
+            except OSError as err:
+                failed.append({"path": rel_path, "error": str(err)})
+
+        return 200, {"ok": True, "deleted": deleted, "failed": failed}
+
+    # ------------------------------------------------------------------
+    # Admin File Manager - view/edit a single file's content
+    # ------------------------------------------------------------------
+    def _handle_admin_read(self, query):
+        rel_path = (query.get("path", [""])[0])
+        try:
+            abs_path = _safe_admin_path(rel_path)
+        except ValueError:
+            return self._send_json(400, {"error": "Invalid path"})
+
+        rel = _rel_to_root(abs_path)
+        if rel in ADMIN_DOWNLOAD_BLOCKLIST:
+            return self._send_json(403, {"error": "This file is protected and cannot be viewed here."})
+        if not os.path.isfile(abs_path):
+            return self._send_json(404, {"error": "File not found"})
+
+        ext = os.path.splitext(abs_path)[1].lower()
+        text_extensions = {
+            ".txt", ".md", ".json", ".js", ".css", ".html", ".htm", ".py",
+            ".csv", ".log", ".yml", ".yaml", ".xml", ".ini", ".cfg", ".sh",
+        }
+        if ext not in text_extensions:
+            return self._send_json(415, {"error": "This file type can't be previewed - use Download instead."})
+
+        try:
+            with open(abs_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except UnicodeDecodeError:
+            return self._send_json(415, {"error": "This file isn't plain text - use Download instead."})
+        except OSError as err:
+            return self._send_json(500, {"error": str(err)})
+
+        is_json = False
+        json_kind = None
+        if ext == ".json":
+            try:
+                parsed = json.loads(content)
+                is_json = True
+                json_kind = "array" if isinstance(parsed, list) else "object"
+            except json.JSONDecodeError:
+                is_json = False
+
+        return self._send_json(200, {"ok": True, "path": rel, "content": content, "isJson": is_json, "jsonKind": json_kind})
+
+    def _handle_admin_write(self, body):
+        rel_path = body.get("path", "")
+        content = body.get("content")
+        if content is None:
+            raise ValueError("content is required")
+
+        try:
+            abs_path = _safe_admin_path(rel_path)
+        except ValueError:
+            raise ValueError("Invalid path")
+
+        rel = _rel_to_root(abs_path)
+        if rel in ADMIN_DOWNLOAD_BLOCKLIST:
+            raise ValueError("This file is protected and cannot be edited here.")
+        if not os.path.isfile(abs_path):
+            raise ValueError("File not found")
+
+        if abs_path.lower().endswith(".json"):
+            try:
+                json.loads(content)
+            except json.JSONDecodeError as err:
+                raise ValueError(f"Not valid JSON: {err}")
+
+        with open(abs_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        return 200, {"ok": True}
+
+    # ------------------------------------------------------------------
+    # Authentication - registration / login / 2FA / password reset
+    # All of these touch exactly one users.json record at a time; nothing
+    # here ever sends another account's password/verification code back
+    # to the browser (see auth_store.SENSITIVE_FIELDS).
+    # ------------------------------------------------------------------
+    def _handle_auth_me(self, query):
+        user_id = (query.get("userId", [""])[0])
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            return self._send_json(404, {"error": "Account not found"})
+        return self._send_json(200, {"ok": True, "user": user})
+
+    def _handle_auth_register(self, body):
+        first = (body.get("firstName") or "").strip()
+        last = (body.get("lastName") or "").strip()
+        gender = body.get("gender") or ""
+        birthdate = body.get("birthdate") or ""
+        mobile = (body.get("mobile") or "").strip()
+        email = (body.get("email") or "").strip().lower()
+        password = body.get("password") or ""
+
+        if not first or not last or not email or not password:
+            raise ValueError("Please fill in all required fields.")
+
+        users = auth_store.load_users()
+        expiry_minutes = _load_smtp_expiry_minutes()
+        existing = auth_store.find_user_by_email(users, email)
+
+        if existing:
+            if existing.get("emailVerified") == "Yes":
+                # A real, already-verified account owns this email - no
+                # second account allowed.
+                raise ValueError("An account with this email already exists.")
+
+            # Same email tried to register again before ever verifying the
+            # first attempt - don't create a second account for it. Just
+            # identify the existing pending account and resend its code.
+            code = auth_store.generate_code()
+            expires_at = auth_store.make_expiry(expiry_minutes)
+            existing["verificationCode"] = code
+            existing["verificationCodeExpiresAt"] = expires_at
+            existing["verificationPurpose"] = "register"
+            # Let a resend also pick up any edited details from this attempt.
+            existing["firstName"] = first or existing.get("firstName")
+            existing["lastName"] = last or existing.get("lastName")
+            existing["gender"] = gender or existing.get("gender")
+            existing["birthdate"] = birthdate or existing.get("birthdate")
+            existing["mobile"] = mobile or existing.get("mobile")
+            if password:
+                issues = auth_store.password_policy_issues(password)
+                if issues:
+                    raise ValueError("Password must contain " + ", ".join(issues) + ".")
+                existing["password"] = password
+            auth_store.save_users(users)
+
+            resp = {"ok": True, "userId": existing["id"], "email": email, "expiresInMinutes": expiry_minutes}
+            try:
+                _send_verification_email(email, existing["firstName"], code, "register", expiry_minutes)
+            except Exception as err:
+                print(f"Could not resend registration verification email: {err}")
+                resp["emailFailed"] = True
+                resp["code"] = code
+            return 200, resp
+
+        issues = auth_store.password_policy_issues(password)
+        if issues:
+            raise ValueError("Password must contain " + ", ".join(issues) + ".")
+
+        user_id = auth_store.next_user_id(users)
+        code = auth_store.generate_code()
+        expires_at = auth_store.make_expiry(expiry_minutes)
+
+        # Every newly self-registered account has 2FA on by default, and
+        # stays "InActive" (can't log in yet) until the email is verified.
+        new_user = {
+            "id": user_id, "photo": None, "firstName": first, "lastName": last,
+            "gender": gender, "birthdate": birthdate, "mobile": mobile, "email": email,
+            "password": password, "status": "InActive", "apiKey": None,
+            "verificationCode": code, "verificationCodeExpiresAt": expires_at,
+            "verificationPurpose": "register",
+            "sessionStatus": "Offline", "role": "User", "lock": "No",
+            "twoFactorAuth": "Yes", "emailVerified": "No", "mobileVerified": "No",
+            "sysConfig": "Desktop",
+        }
+        users.append(new_user)
+        auth_store.save_users(users)
+
+        resp = {"ok": True, "userId": user_id, "email": email, "expiresInMinutes": expiry_minutes}
+        try:
+            _send_verification_email(email, first, code, "register", expiry_minutes)
+        except Exception as err:
+            print(f"Could not send registration verification email: {err}")
+            resp["emailFailed"] = True
+            resp["code"] = code
+        return 200, resp
+
+    def _handle_auth_verify_register(self, body):
+        user_id = body.get("userId")
+        code = (body.get("code") or "").strip()
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            raise ValueError("Account not found.")
+        if user.get("verificationPurpose") != "register":
+            raise ValueError("No pending registration verification for this account.")
+        if auth_store.is_expired(user.get("verificationCodeExpiresAt")):
+            raise ValueError("This code has expired. Please request a new one.")
+        if code != str(user.get("verificationCode") or ""):
+            raise ValueError("Incorrect verification code.")
+
+        user["emailVerified"] = "Yes"
+        user["status"] = "Active"
+        user["verificationCode"] = None
+        user["verificationCodeExpiresAt"] = None
+        user["verificationPurpose"] = None
+        auth_store.save_users(users)
+        return 200, {"ok": True}
+
+    def _handle_auth_login(self, body):
+        email = (body.get("email") or "").strip().lower()
+        password = body.get("password") or ""
+        if not email or not password:
+            raise ValueError("Please enter both email and password.")
+
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_email(users, email)
+        if not user or user.get("password") != password:
+            raise ValueError("Invalid email or password.")
+        if user.get("lock") == "Yes":
+            raise ValueError("This account is locked. Please contact support.")
+        if user.get("emailVerified") == "No" or user.get("status") == "InActive":
+            raise ValueError("Please verify your account first - check your email for the verification code, or use Create Account again to get a new one.")
+
+        if user.get("twoFactorAuth") == "Yes":
+            code = auth_store.generate_code()
+            expiry_minutes = _load_smtp_expiry_minutes()
+            expires_at = auth_store.make_expiry(expiry_minutes)
+            user["verificationCode"] = code
+            user["verificationCodeExpiresAt"] = expires_at
+            user["verificationPurpose"] = "login"
+            auth_store.save_users(users)
+
+            resp = {
+                "ok": True, "requires2FA": True, "userId": user["id"],
+                "email": user["email"], "expiresInMinutes": expiry_minutes,
+            }
+            try:
+                _send_verification_email(user["email"], user["firstName"], code, "login", expiry_minutes)
+            except Exception as err:
+                print(f"Could not send login verification email: {err}")
+                resp["emailFailed"] = True
+                resp["code"] = code
+            return 200, resp
+
+        user["sessionStatus"] = "Online"
+        auth_store.save_users(users)
+        return 200, {"ok": True, "requires2FA": False, "userId": user["id"]}
+
+    def _handle_auth_verify_login(self, body):
+        user_id = body.get("userId")
+        code = (body.get("code") or "").strip()
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            raise ValueError("Account not found.")
+        if user.get("verificationPurpose") != "login":
+            raise ValueError("No pending login verification for this account.")
+        if auth_store.is_expired(user.get("verificationCodeExpiresAt")):
+            raise ValueError("This code has expired. Please request a new one.")
+        if code != str(user.get("verificationCode") or ""):
+            raise ValueError("Incorrect verification code.")
+
+        user["verificationCode"] = None
+        user["verificationCodeExpiresAt"] = None
+        user["verificationPurpose"] = None
+        user["sessionStatus"] = "Online"
+        auth_store.save_users(users)
+        return 200, {"ok": True, "userId": user_id}
+
+    def _handle_auth_forgot_password(self, body):
+        email = (body.get("email") or "").strip().lower()
+        if not email:
+            raise ValueError("Please enter your email address.")
+
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_email(users, email)
+        if not user:
+            raise ValueError("No account found with this email.")
+
+        code = auth_store.generate_code()
+        expiry_minutes = _load_smtp_expiry_minutes()
+        expires_at = auth_store.make_expiry(expiry_minutes)
+        user["verificationCode"] = code
+        user["verificationCodeExpiresAt"] = expires_at
+        user["verificationPurpose"] = "reset"
+        auth_store.save_users(users)
+
+        resp = {
+            "ok": True, "userId": user["id"], "email": user["email"],
+            "expiresInMinutes": expiry_minutes,
+        }
+        try:
+            _send_verification_email(user["email"], user["firstName"], code, "reset", expiry_minutes)
+        except Exception as err:
+            print(f"Could not send password reset email: {err}")
+            resp["emailFailed"] = True
+            resp["code"] = code
+        return 200, resp
+
+    def _handle_auth_verify_reset_code(self, body):
+        # Checks validity without consuming the code - lets the frontend
+        # move on to the "set new password" step. reset-password below
+        # re-validates it for real before actually changing anything.
+        user_id = body.get("userId")
+        code = (body.get("code") or "").strip()
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            raise ValueError("Account not found.")
+        if user.get("verificationPurpose") != "reset":
+            raise ValueError("No pending password reset for this account.")
+        if auth_store.is_expired(user.get("verificationCodeExpiresAt")):
+            raise ValueError("This code has expired. Please request a new one.")
+        if code != str(user.get("verificationCode") or ""):
+            raise ValueError("Incorrect verification code.")
+        return 200, {"ok": True}
+
+    def _handle_auth_reset_password(self, body):
+        user_id = body.get("userId")
+        code = (body.get("code") or "").strip()
+        new_password = body.get("newPassword") or ""
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            raise ValueError("Account not found.")
+        if user.get("verificationPurpose") != "reset":
+            raise ValueError("No pending password reset for this account.")
+        if auth_store.is_expired(user.get("verificationCodeExpiresAt")):
+            raise ValueError("This code has expired. Please request a new one.")
+        if code != str(user.get("verificationCode") or ""):
+            raise ValueError("Incorrect verification code.")
+
+        issues = auth_store.password_policy_issues(new_password)
+        if issues:
+            raise ValueError("Password must contain " + ", ".join(issues) + ".")
+
+        user["password"] = new_password
+        user["verificationCode"] = None
+        user["verificationCodeExpiresAt"] = None
+        user["verificationPurpose"] = None
+        auth_store.save_users(users)
+        return 200, {"ok": True}
+
+    def _handle_auth_resend_code(self, body):
+        user_id = body.get("userId")
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            raise ValueError("Account not found.")
+        purpose = user.get("verificationPurpose")
+        if not purpose:
+            raise ValueError("No pending verification for this account.")
+
+        code = auth_store.generate_code()
+        expiry_minutes = _load_smtp_expiry_minutes()
+        expires_at = auth_store.make_expiry(expiry_minutes)
+        user["verificationCode"] = code
+        user["verificationCodeExpiresAt"] = expires_at
+        auth_store.save_users(users)
+
+        resp = {"ok": True, "expiresInMinutes": expiry_minutes}
+        try:
+            _send_verification_email(user["email"], user["firstName"], code, purpose, expiry_minutes)
+        except Exception as err:
+            print(f"Could not resend verification email: {err}")
+            resp["emailFailed"] = True
+            resp["code"] = code
+        return 200, resp
+
+    # ------------------------------------------------------------------
+    # Profile - patches exactly one user's own record (replaces the old
+    # blanket PUT /api/data/users, which is no longer exposed at all).
+    # ------------------------------------------------------------------
+    def _handle_profile_update(self, body):
+        user_id = body.get("userId")
+        fields = body.get("fields") or {}
+        if not user_id:
+            raise ValueError("userId is required")
+
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            raise ValueError("Account not found.")
+
+        if "password" in fields and fields["password"]:
+            issues = auth_store.password_policy_issues(fields["password"])
+            if issues:
+                raise ValueError("Password must contain " + ", ".join(issues) + ".")
+
+        # Never let a profile-update request touch auth/security bookkeeping
+        # fields - those are only ever written by the auth handlers above.
+        for blocked in ("id", "role", "lock", "verificationCode", "verificationCodeExpiresAt",
+                         "verificationPurpose", "emailVerified", "status"):
+            fields.pop(blocked, None)
+
+        user.update(fields)
+        auth_store.save_users(users)
+        return 200, {"ok": True, "user": user}
+
+
+def main():
+    os.makedirs(USERS_DIR, exist_ok=True)
+    os.makedirs(TEMPLATE_DIR, exist_ok=True)
+    if not os.path.isfile(DEFAULT_TEMPLATE_PATH) and lease_engine.REPORTLAB_OK:
+        lease_engine.build_default_template_pdf(DEFAULT_TEMPLATE_PATH)
+
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    print(f"✅ Server running — open http://localhost:{PORT}/  (auto-redirects to main.html)")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.shutdown()
+
+
+if __name__ == "__main__":
+    main()

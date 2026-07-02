@@ -1,0 +1,43 @@
+{
+    "lease-abstraction": [
+        { "id": "agent-core-lease-extractor", "name": "Core Lease Extractor", "icon": "📜", "phase": "scan", "apiKey": null },
+        { "id": "agent-rent-schedule-extractor", "name": "Rent Schedule Extractor", "icon": "💵", "phase": "scan", "apiKey": null },
+        { "id": "agent-renewal-options-extractor", "name": "Renewal Options Extractor", "icon": "🔁", "phase": "scan", "apiKey": null },
+        { "id": "agent-contact-resolver", "name": "Contact Resolver", "icon": "📇", "phase": "scan", "apiKey": null },
+        { "id": "agent-citation-enforcer", "name": "Citation Enforcer", "icon": "🔗", "phase": "process", "apiKey": null },
+        { "id": "agent-blank-field-governance", "name": "Blank Field Governance", "icon": "🚧", "phase": "process", "apiKey": null },
+        { "id": "agent-template-integrity", "name": "Template Integrity", "icon": "🧬", "phase": "process", "apiKey": null },
+        { "id": "agent-final-qa-validator", "name": "Final QA + Validator", "icon": "✅", "phase": "process", "apiKey": null },
+        { "id": "agent-assumptions-surfacing", "name": "Assumptions Surfacing", "icon": "💡", "phase": "process", "apiKey": null }
+    ],
+    "translation": [
+        { "id": "t-agent-input-file-scanning", "name": "Input File Scanning", "icon": "🔍", "phase": "scan", "apiKey": null },
+        { "id": "t-agent-extracting-text", "name": "Extracting Text Content", "icon": "🧩", "phase": "process", "apiKey": null },
+        { "id": "t-agent-translating-content", "name": "Translating Content", "icon": "🌐", "phase": "process", "apiKey": null },
+        { "id": "t-agent-applying-formatting-rules", "name": "Applying Formatting Rules", "icon": "⚖️", "phase": "process", "apiKey": null },
+        { "id": "t-agent-prepare-output-file", "name": "Prepare Output File", "icon": "📦", "phase": "process", "apiKey": null },
+        { "id": "t-agent-create-download-link", "name": "Create Download Link", "icon": "🔗", "phase": "process", "apiKey": null }
+    ],
+    "llmProviders": {
+        "note": "Actual API keys are NEVER stored here (this file is loaded by the browser). Real keys live server-side only, in json/llm-config.json, which is blocked from static serving. This section is just non-secret metadata describing which providers/models the Lease Abstraction 'analyze' step (see py/lease_engine.py) can use.",
+        "activeProvider": "openai",
+        "options": [
+            {
+                "id": "openai",
+                "label": "OpenAI",
+                "model": "gpt-4o",
+                "endpoint": "https://api.openai.com/v1/chat/completions",
+                "configFile": "json/llm-config.json"
+            },
+            {
+                "id": "openrouter",
+                "label": "OpenRouter",
+                "model": "openai/gpt-4o",
+                "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+                "configFile": "json/llm-config.json"
+            }
+        ],
+        "usedFor": "Lease Abstraction Sec. 14.3 (40%) analysis step - see json/extraction_prompt.txt and json/rules.json",
+        "fallback": "heuristic regex engine in py/lease_engine.py if no API key is configured"
+    }
+}

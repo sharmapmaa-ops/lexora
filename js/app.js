@@ -1,6495 +1,4532 @@
-// ============================================
-// PAYMENT & TRANSACTION DATA (loaded from JSON)
-// ============================================
-
-// Runtime cache — populated by loadPaymentData() and loadTransactionData()
-let paymentMethods = [];
-let currentTransactions = [];
-let currentSummary = { totalCredit: 0, totalDebit: 0, balance: 0 };
-let currentUserEmail = '';
-
-// ── Load payment methods from db/payment_methods.json ────────────────────
-function loadPaymentData() {
-  const user = getCurrentUser();
-  if (!user) return;
-  currentUserEmail = user.email;
-
-  // Try localStorage cache first, then fetch from disk
-  const cached = localStorage.getItem('lexora_payments_' + user.id);
-  if (cached) {
-    const data = JSON.parse(cached);
-    paymentMethods = data.methods || [];
-    renderPaymentMethods();
-  }
-
-  fetch('/db/payment_methods.json?_=' + Date.now())
-    .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(data) {
-      if (data) {
-        var userPay = (data.user_payments || {})[user.id] || { methods: [], balance: 0 };
-        paymentMethods = userPay.methods || [];
-        localStorage.setItem('lexora_payments_' + user.id, JSON.stringify(userPay));
-      }
-      renderPaymentMethods();
-    })
-    .catch(function() {
-      renderPaymentMethods(); // render with cached data
-    });
-}
-
-// ── Save payment methods to disk ──────────────────────────────────────────
-function savePaymentData() {
-  const user = getCurrentUser();
-  if (!user) return;
-  const payload = { userId: user.id, methods: paymentMethods };
-  localStorage.setItem('lexora_payments_' + user.id, JSON.stringify({ methods: paymentMethods }));
-  fetch('/api/payments/save', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  }).catch(function() {
-    console.warn('[Lexora] Payment disk save skipped (server offline)');
-  });
-}
-
-// ── Load transactions — API costs + manual entries both included ──────────
-function loadTransactionData() {
-  const user = getCurrentUser();
-  if (!user) return;
-  currentUserEmail = user.email || '';
-
-  // Instant display from cache
-  const cached = localStorage.getItem('lexora_txn_' + user.id);
-  if (cached) {
-    try {
-      const data = JSON.parse(cached);
-      currentTransactions = data.transactions || [];
-      currentSummary = data.summary || { totalCredit: 0, totalDebit: 0, balance: 0 };
-      updateSummary(); renderTransactions(currentTransactions);
-    } catch(e) {}
-  }
-
-  // Fetch ALL transactions (API costs + manual) from server
-  fetch('/api/transactions/list?userId=' + encodeURIComponent(user.id) + '&_=' + Date.now())
-    .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(data) {
-      if (data && data.transactions) {
-        currentTransactions = data.transactions;
-        var credit = currentTransactions.filter(function(t){ return t.type==='credit'; }).reduce(function(s,t){ return s+Number(t.amount||0); }, 0);
-        var debit  = currentTransactions.filter(function(t){ return t.type==='debit';  }).reduce(function(s,t){ return s+Number(t.amount||0); }, 0);
-        currentSummary = { totalCredit: credit, totalDebit: debit, balance: credit - debit };
-        localStorage.setItem('lexora_txn_' + user.id, JSON.stringify({ transactions: currentTransactions, summary: currentSummary }));
-      }
-      updateSummary();
-      renderTransactions(currentTransactions);
-      setDateDefaults();
-    })
-    .catch(function() {
-      console.warn('[Lexora] Could not load transaction history from server');
-    });
-}
-
-// ── Save transactions to disk ─────────────────────────────────────────────
-function saveTransactionData() {
-  const user = getCurrentUser();
-  if (!user) return;
-  const payload = { userId: user.id, transactions: currentTransactions, summary: currentSummary };
-  localStorage.setItem('lexora_txn_' + user.id, JSON.stringify({ transactions: currentTransactions, summary: currentSummary }));
-  fetch('/api/transactions/save', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  }).catch(function() {
-    console.warn('[Lexora] Transaction disk save skipped (server offline)');
-  });
-}
-
-function setDateDefaults() {
-  const today    = new Date();
-  const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
-  const fromEl   = document.getElementById('fromDate');
-  const toEl     = document.getElementById('toDate');
-  if (fromEl) fromEl.value = firstDay.toISOString().split('T')[0];
-  if (toEl)   toEl.value   = today.toISOString().split('T')[0];
-}
-
-// ============================================
-// TRANSACTION HISTORY FUNCTIONS
-// ============================================
-
-
-
-
-
-function loadTransactions() {
-  loadTransactionData();
-}
-
-function updateSummary() {
-  const totalCredit = currentSummary.totalCredit || 
-    currentTransactions
-      .filter(t => t.type === 'credit')
-      .reduce((sum, t) => sum + t.amount, 0);
-  
-  const totalDebit = currentSummary.totalDebit || 
-    currentTransactions
-      .filter(t => t.type === 'debit')
-      .reduce((sum, t) => sum + t.amount, 0);
-  
-  const balance = totalCredit - totalDebit;
-  
-  const totalCreditEl = document.getElementById('totalCredit');
-  const totalDebitEl = document.getElementById('totalDebit');
-  const currentBalanceEl = document.getElementById('currentBalance');
-  
-  if (totalCreditEl) totalCreditEl.textContent = `$${totalCredit.toFixed(2)}`;
-  if (totalDebitEl) totalDebitEl.textContent = `$${totalDebit.toFixed(2)}`;
-  if (currentBalanceEl) currentBalanceEl.textContent = `$${balance.toFixed(2)}`;
-}
-
-function renderTransactions(transactions) {
-  const list = document.getElementById('transactionList');
-  if (!list) return;
-  
-  list.innerHTML = '';
-  
-  if (transactions.length === 0) {
-    list.innerHTML = '<div style="text-align:center; color:#94a3b8; padding:2rem 0;">No transactions found for this user</div>';
-    return;
-  }
-  
-  const sorted = [...transactions].sort((a, b) => new Date(b.date) - new Date(a.date));
-  
-  sorted.forEach(txn => {
-    const div = document.createElement('div');
-    div.className = 'transaction-item';
-    
-    const date = new Date(txn.date);
-    const dateStr = date.toLocaleDateString('en-US', { 
-      day: '2-digit', 
-      month: 'short', 
-      year: 'numeric' 
-    });
-    const timeStr = date.toLocaleTimeString('en-US', { 
-      hour: '2-digit', 
-      minute: '2-digit' 
-    });
-    
-    const amountClass = txn.type === 'credit' ? 'credit' : 'debit';
-    const amountPrefix = txn.type === 'credit' ? '+' : '-';
-    
-    div.innerHTML = `
-      <div class="txn-info">
-        <span class="txn-desc">${txn.description}</span>
-        <span class="txn-meta">${txn.id} • ${dateStr}, ${timeStr}</span>
-      </div>
-      <span class="txn-amount ${amountClass}">${amountPrefix}$${txn.amount.toFixed(2)}</span>
-    `;
-    list.appendChild(div);
-  });
-}
-
-function addTransaction(description, type, amount) {
-  const newTxn = {
-    id: `TXN-${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`,
-    date: new Date().toISOString(),
-    description: description,
-    type: type,
-    amount: amount,
-    balance: 0
-  };
-  
-  const totalCredit = currentTransactions
-    .filter(t => t.type === 'credit')
-    .reduce((sum, t) => sum + t.amount, 0);
-  const totalDebit = currentTransactions
-    .filter(t => t.type === 'debit')
-    .reduce((sum, t) => sum + t.amount, 0);
-  
-  if (type === 'credit') {
-    newTxn.balance = totalCredit + amount - totalDebit;
-  } else {
-    newTxn.balance = totalCredit - (totalDebit + amount);
-  }
-  
-  currentTransactions.push(newTxn);
-  // Recalculate summary
-  currentSummary.totalCredit = currentTransactions.filter(function(t){ return t.type==='credit'; }).reduce(function(s,t){ return s+t.amount; }, 0);
-  currentSummary.totalDebit  = currentTransactions.filter(function(t){ return t.type==='debit';  }).reduce(function(s,t){ return s+t.amount; }, 0);
-  currentSummary.balance     = currentSummary.totalCredit - currentSummary.totalDebit;
-
-  updateSummary();
-  renderTransactions(currentTransactions);
-  saveTransactionData();
-
-  return newTxn;
-}
-
-// ============================================
-// MODAL MESSAGE SYSTEM
-// ============================================
-
-function showModal(type, message, options = {}) {
-  const defaults = {
-    success: { icon: '✅', title: 'Success' },
-    error: { icon: '❌', title: 'Error' },
-    warning: { icon: '⚠️', title: 'Warning' },
-    info: { icon: 'ℹ️', title: 'Information' },
-    confirm: { icon: '❓', title: 'Confirm' }
-  };
-
-  const config = defaults[type] || defaults.info;
-  const icon = options.icon || config.icon;
-  const title = options.title || config.title;
-  const closeOnBackdrop = options.closeOnBackdrop !== undefined ? options.closeOnBackdrop : (type !== 'confirm');
-
-  const overlay = document.getElementById('modalOverlay');
-  if (!overlay) return;
-
-  document.getElementById('modalIcon').textContent = icon;
-  document.getElementById('modalTitle').textContent = title;
-  document.getElementById('modalMessage').innerHTML = message;
-
-  const modalBox = document.getElementById('modalBox');
-  modalBox.className = 'modal-box';
-  if (type === 'success') modalBox.classList.add('success');
-  else if (type === 'error') modalBox.classList.add('error');
-  else if (type === 'warning') modalBox.classList.add('warning');
-  else if (type === 'confirm') modalBox.classList.add('confirm');
-  else modalBox.classList.add('info');
-
-  const actionsContainer = document.getElementById('modalActions');
-  actionsContainer.innerHTML = '';
-
-  if (options.buttons && options.buttons.length > 0) {
-    options.buttons.forEach(btn => {
-      const button = document.createElement('button');
-      button.className = btn.class || 'btn-primary';
-      button.textContent = btn.label;
-      button.onclick = function() {
-        if (btn.callback) btn.callback();
-        closeModal();
-      };
-      actionsContainer.appendChild(button);
-    });
-  } else if (type === 'confirm') {
-    const yesBtn = document.createElement('button');
-    yesBtn.className = 'btn-success';
-    yesBtn.textContent = 'Yes';
-    yesBtn.onclick = function() {
-      if (options.onConfirm) options.onConfirm();
-      closeModal();
-    };
-    actionsContainer.appendChild(yesBtn);
-
-    const noBtn = document.createElement('button');
-    noBtn.className = 'btn-danger';
-    noBtn.textContent = 'No';
-    noBtn.onclick = function() {
-      if (options.onCancel) options.onCancel();
-      closeModal();
-    };
-    actionsContainer.appendChild(noBtn);
-  } else {
-    const okBtn = document.createElement('button');
-    okBtn.className = 'btn-primary';
-    okBtn.textContent = 'OK';
-    okBtn.onclick = function() {
-      if (options.onConfirm) options.onConfirm();
-      closeModal();
-    };
-    actionsContainer.appendChild(okBtn);
-  }
-
-  overlay.dataset.closeOnBackdrop = closeOnBackdrop;
-  overlay.classList.add('active');
-  document.body.style.overflow = 'hidden';
-}
-
-function closeModal() {
-  const overlay = document.getElementById('modalOverlay');
-  if (overlay) {
-    overlay.classList.remove('active');
-    document.body.style.overflow = '';
-  }
-}
-
-function closeModalOnBackdrop(event) {
-  const overlay = document.getElementById('modalOverlay');
-  if (!overlay) return;
-  const closeOnBackdrop = overlay.dataset.closeOnBackdrop === 'true';
-  if (event.target === overlay && closeOnBackdrop) {
-    closeModal();
-  }
-}
-
-// ============================================
-// PAYMENT FUNCTIONS
-// ============================================
-
-function renderPaymentMethods() {
-  const list = document.getElementById('paymentMethodsList');
-  if (!list) return;
-  
-  list.innerHTML = '';
-  paymentMethods.forEach((method, index) => {
-    const li = document.createElement('li');
-    li.innerHTML = `
-      <div class="method-info">
-        <span class="method-icon"><i class="fas ${method.icon}"></i></span>
-        <div class="method-details">
-          <span class="method-name">${method.name}</span>
-          <span class="method-number">${method.details}</span>
-        </div>
-      </div>
-      <div class="method-actions">
-        ${method.isDefault ? '<span class="default-badge">Default</span>' : `<a href="#" class="set-default" onclick="setDefault(${index}); return false;">Set Default</a>`}
-        <a href="#" class="remove-method" onclick="removeMethod(${index}); return false;">Remove</a>
-      </div>
-    `;
-    list.appendChild(li);
-  });
-}
-
-function setDefault(index) {
-  paymentMethods.forEach(function(m, i) { m.isDefault = (i === index); });
-  renderPaymentMethods();
-  savePaymentData();
-  showModal('success', 'Default payment method updated!', { onConfirm: function(){} });
-}
-
-function removeMethod(index) {
-  const user = getCurrentUser();
-  const lock = user ? user.lock : 'no';
-  if (lock === 'no') {
-    showModal('warning', 'This user is locked (No). Enable lock (Yes) to allow deletions.');
-    return;
-  }
-  if (paymentMethods[index] && paymentMethods[index].isDefault) {
-    showModal('warning', 'Cannot remove default payment method. Set another as default first.');
-    return;
-  }
-  paymentMethods.splice(index, 1);
-  renderPaymentMethods();
-  savePaymentData();
-  showModal('info', 'Payment method removed.', { onConfirm: function(){} });
-}
-
-function showAddPayment() {
-  const modalHTML = `
-    <div style="text-align: left; font-size: 0.9rem;">
-      <div class="payment-form">
-        <div class="form-group">
-          <label>Card Number</label>
-          <input type="text" id="cardNumber" placeholder="1234 5678 9012 3456" style="width:100%; padding:0.6rem 1rem; border:2px solid #e2e8f0; border-radius:10px; font-size:0.9rem;" />
-        </div>
-        <div class="form-group">
-          <label>Cardholder Name</label>
-          <input type="text" id="cardName" placeholder="John Doe" style="width:100%; padding:0.6rem 1rem; border:2px solid #e2e8f0; border-radius:10px; font-size:0.9rem;" />
-        </div>
-        <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-          <div>
-            <label>Expiry Date</label>
-            <input type="text" id="cardExpiry" placeholder="MM/YY" style="width:100%; padding:0.6rem 1rem; border:2px solid #e2e8f0; border-radius:10px; font-size:0.9rem;" />
-          </div>
-          <div>
-            <label>CVV</label>
-            <input type="text" id="cardCVV" placeholder="123" style="width:100%; padding:0.6rem 1rem; border:2px solid #e2e8f0; border-radius:10px; font-size:0.9rem;" />
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
-
-  showModal('info', modalHTML, {
-    title: '💳 Add Payment Method',
-    icon: '💳',
-    closeOnBackdrop: false,
-    buttons: [
-      { label: 'Add Card', class: 'btn-success', callback: function() {
-        const number = document.getElementById('cardNumber').value;
-        const name = document.getElementById('cardName').value;
-        if (!number || !name) {
-          showModal('warning', 'Please fill in all fields.');
-          return;
-        }
-        const last4 = number.slice(-4);
-        const newMethod = {
-          id: paymentMethods.length,
-          name: `Card •••• ${last4}`,
-          details: `Cardholder: ${name}`,
-          icon: 'fa-credit-card',
-          isDefault: false
-        };
-        paymentMethods.push(newMethod);
-        renderPaymentMethods();
-        savePaymentData();
-        closeModal();
-        showModal('success', 'Payment method added!', { onConfirm: function(){} });
-      }},
-      { label: 'Cancel', class: 'btn-secondary', callback: function() { closeModal(); } }
-    ]
-  });
-}
-
-function showAddAmount() {
-  const modalHTML = `
-    <div style="text-align: left; font-size: 0.9rem;">
-      <div class="payment-form">
-        <div class="form-group">
-          <label>Payment Method</label>
-          <select id="paymentMethodSelect" style="width:100%; padding:0.6rem 1rem; border:2px solid #e2e8f0; border-radius:10px; font-size:0.9rem;">
-            ${paymentMethods.map((m, i) => `<option value="${i}" ${m.isDefault ? 'selected' : ''}>${m.name}</option>`).join('')}
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Amount ($)</label>
-          <input type="number" id="amountValue" placeholder="0.00" step="0.01" min="0.01" style="width:100%; padding:0.6rem 1rem; border:2px solid #e2e8f0; border-radius:10px; font-size:0.9rem;" />
-        </div>
-        <div class="form-group">
-          <label>Description</label>
-          <input type="text" id="amountDesc" placeholder="Payment description" style="width:100%; padding:0.6rem 1rem; border:2px solid #e2e8f0; border-radius:10px; font-size:0.9rem;" />
-        </div>
-      </div>
-    </div>
-  `;
-
-  showModal('info', modalHTML, {
-    title: '💰 Add Amount',
-    icon: '💰',
-    closeOnBackdrop: false,
-    buttons: [
-      { label: 'Process Payment', class: 'btn-success', callback: function() {
-        const amount = document.getElementById('amountValue').value;
-        const desc   = (document.getElementById('amountDesc').value || 'Payment').trim();
-        const method = document.getElementById('paymentMethodSelect');
-        const methodName = method ? method.options[method.selectedIndex]?.text : 'Default';
-        if (!amount || parseFloat(amount) <= 0) {
-          showModal('warning', 'Please enter a valid amount.');
-          return;
-        }
-        const amt = parseFloat(amount);
-        closeModal();
-        try {
-          addTransaction(desc + ' via ' + methodName, 'debit', amt);
-          showModal('success', '💵 Payment of $' + amt.toFixed(2) + ' processed!\n' + desc, { onConfirm: function(){} });
-        } catch(err) {
-          showModal('error', 'Transaction failed: ' + err.message, { onConfirm: function(){} });
-        }
-      }},
-      { label: 'Cancel', class: 'btn-secondary', callback: function() { closeModal(); } }
-    ]
-  });
-}
-
-function filterTransactions() {
-  const fromDate = document.getElementById('fromDate').value;
-  const toDate   = document.getElementById('toDate').value;
-
-  if (!fromDate || !toDate) {
-    showModal('warning', 'Please select both from and to dates.');
-    return;
-  }
-
-  const from = new Date(fromDate); from.setHours(0, 0, 0, 0);
-  const to   = new Date(toDate);   to.setHours(23, 59, 59, 999);
-
-  // Use the in-memory currentTransactions (loaded from JSON)
-  const user    = getCurrentUser();
-  const cached  = user ? localStorage.getItem('lexora_txn_' + user.id) : null;
-  const allTxns = cached ? JSON.parse(cached).transactions || [] : currentTransactions;
-
-  const filtered = allTxns.filter(function(txn) {
-    const d = new Date(txn.date);
-    return d >= from && d <= to;
-  });
-
-  renderTransactions(filtered);
-
-  // Recalculate summary for filtered set
-  const credit  = filtered.filter(function(t){ return t.type === 'credit'; }).reduce(function(s,t){ return s+t.amount; }, 0);
-  const debit   = filtered.filter(function(t){ return t.type === 'debit';  }).reduce(function(s,t){ return s+t.amount; }, 0);
-  const totalCreditEl   = document.getElementById('totalCredit');
-  const totalDebitEl    = document.getElementById('totalDebit');
-  const currentBalanceEl = document.getElementById('currentBalance');
-  if (totalCreditEl)    totalCreditEl.textContent    = '$' + credit.toFixed(2);
-  if (totalDebitEl)     totalDebitEl.textContent     = '$' + debit.toFixed(2);
-  if (currentBalanceEl) currentBalanceEl.textContent = '$' + (credit - debit).toFixed(2);
-
-  showModal('info', 'Showing ' + filtered.length + ' transactions from ' + fromDate + ' to ' + toDate, { onConfirm: function(){} });
-}
-
-// ============================================
-// LEASE ABSTRACTION FUNCTIONS
-// ============================================
-
-let uploadedFiles = [];
-let fileStatuses = [];
-let isRunning = false;
-let isPaused = false;
-let isStopped = false;
-let currentFileIndex = 0;
-let totalFiles = 0;
-
-function addLog(message, type = 'info') {
-  const time = new Date().toLocaleTimeString();
-  const log = document.getElementById('activityLog');
-  if (!log) return;
-  
-  const entry = document.createElement('div');
-  entry.className = `log-entry log-${type}`;
-  entry.innerHTML = `<span class="log-time">[${time}]</span> ${message}`;
-  log.appendChild(entry);
-  log.scrollTop = log.scrollHeight;
-}
-
-function handleFileSelect(event) {
-  const files = event.target.files;
-  if (files.length > 0) {
-    for (let i = 0; i < files.length; i++) {
-      uploadedFiles.push(files[i]);
-      fileStatuses.push({
-        name: files[i].name,
-        scanResult: '',
-        status: '',
-        action: '',
-        progress: 0,
-        scanProgress: 0,
-        downloadUrl: null,
-        downloadName: '',
-        errorMsg: '',
-        scanErrorMsg: ''
-      });
-    }
-    updateFileTable();
-    // Update file count badge
-    var countEl = document.getElementById('uploadFileCount');
-    if (countEl) {
-      countEl.textContent = uploadedFiles.length + (uploadedFiles.length === 1 ? ' file selected' : ' files selected');
-      countEl.style.display = 'inline-block';
-    }
-  }
-  event.target.value = '';
-}
-
-function updateFileTable() {
-  const tbody = document.getElementById('fileTableBody');
-  if (!tbody) return;
-
-  if (fileStatuses.length === 0) {
-    tbody.innerHTML = `
-      <tr>
-        <td colspan="4" style="text-align: center; color: #94a3b8; padding: 2rem 0;">
-          <i class="fas fa-upload" style="font-size: 1.5rem; display: block; margin-bottom: 0.5rem;"></i>
-          No files uploaded yet
-        </td>
-      </tr>
-    `;
-    return;
-  }
-
-  tbody.innerHTML = '';
-  fileStatuses.forEach((file, index) => {
-    const tr = document.createElement('tr');
-
-    // ── File Name ──────────────────────────────────────────────────────
-    const nameTd = document.createElement('td');
-    nameTd.textContent = file.name;
-    tr.appendChild(nameTd);
-
-    // ── Scan Result column ─────────────────────────────────────────────
-    // blank → orange 0→100% bar → ✓ Pass or ✗ Failed badge
-    const scanTd = document.createElement('td');
-    const scanPct = file.scanProgress || 0;
-    let scanHtml = '';
-    if (!file.scanResult) {
-      scanHtml = '<span style="color:#94a3b8;">—</span>';
-    } else if (file.scanResult === 'Scanning') {
-      scanHtml =
-        '<div style="min-width:100px;">' +
-        '<div style="font-size:0.72rem;color:#f59e0b;font-weight:700;margin-bottom:3px;">🔎 ' + scanPct + '%</div>' +
-        '<div style="width:100%;height:6px;background:#fef3c7;border-radius:3px;overflow:hidden;">' +
-        '<div style="width:' + scanPct + '%;height:6px;background:linear-gradient(90deg,#f59e0b,#fbbf24);border-radius:3px;transition:width 0.25s;"></div>' +
-        '</div></div>';
-    } else if (file.scanResult === 'Pass') {
-      // Keep the bar at 100% — green (don't replace with a badge)
-      scanHtml =
-        '<div style="min-width:100px;">' +
-        '<div style="font-size:0.72rem;color:#16a34a;font-weight:700;margin-bottom:3px;">✓ 100%</div>' +
-        '<div style="width:100%;height:6px;background:#dcfce7;border-radius:3px;overflow:hidden;">' +
-        '<div style="width:100%;height:6px;background:#22c55e;border-radius:3px;"></div>' +
-        '</div></div>';
-    } else if (file.scanResult === 'Failed') {
-      scanHtml = '<span class="status-badge failed">✗ Failed</span>';
-    }
-    scanTd.innerHTML = scanHtml;
-    tr.appendChild(scanTd);
-
-    // ── Status column ──────────────────────────────────────────────────
-    // blank → purple 0→100% bar → ✗ Failed badge
-    const statusTd = document.createElement('td');
-    const statusVal = file.status || '';
-    let statusHtml = '';
-    if (!statusVal) {
-      statusHtml = '<span style="color:#94a3b8;">—</span>';
-    } else if (statusVal === 'Failed') {
-      statusHtml = '<span class="status-badge failed">✗ Failed</span>';
-    } else {
-      const pct      = parseInt(statusVal) || 0;
-      const barColor = pct === 100 ? '#22c55e' : '#6366f1';
-      const txtColor = pct === 100 ? '#16a34a' : '#6366f1';
-      const bgColor  = pct === 100 ? '#dcfce7'  : '#e2e8f0';
-      const prefix   = pct === 100 ? '✓ ' : '';
-      statusHtml =
-        '<div style="min-width:100px;">' +
-        '<div style="font-size:0.72rem;color:' + txtColor + ';font-weight:700;margin-bottom:3px;">' + prefix + pct + '%</div>' +
-        '<div style="width:100%;height:6px;background:' + bgColor + ';border-radius:3px;overflow:hidden;">' +
-        '<div style="width:' + pct + '%;height:6px;background:' + barColor + ';border-radius:3px;transition:width 0.25s;"></div>' +
-        '</div></div>';
-    }
-    statusTd.innerHTML = statusHtml;
-    tr.appendChild(statusTd);
-
-    // ── Action column ──────────────────────────────────────────────────
-    // blank → Processing spinner → Download link | Error link
-    const actionTd = document.createElement('td');
-    const act = file.action || '';
-    let actHtml = '';
-    if (!act) {
-      actHtml = '<span style="color:#94a3b8;">—</span>';
-    } else if (act === 'Download') {
-      actHtml = '<a href="#" class="action-link" onclick="downloadFile(' + index + '); return false;"><i class="fas fa-download"></i> Download</a>';
-    } else if (act === 'Error') {
-      actHtml = '<a href="#" class="action-link error" onclick="viewError(' + index + '); return false;"><i class="fas fa-exclamation-triangle"></i> Error</a>';
-    } else if (act === 'ScanError') {
-      actHtml = '<a href="#" class="action-link error" onclick="viewScanError(' + index + '); return false;"><i class="fas fa-exclamation-triangle"></i> Error</a>';
-    } else if (act === 'Paused') {
-      actHtml = '<span class="action-link paused"><i class="fas fa-pause"></i> Paused</span>';
-    } else if (act === 'Stopped') {
-      actHtml = '<a href="#" class="action-link stopped" onclick="viewStopped(' + index + '); return false;"><i class="fas fa-stop"></i> Stopped</a>';
-    } else if (act === 'Processing') {
-      actHtml = '<span class="action-link processing"><i class="fas fa-spinner fa-spin"></i> Processing</span>';
-    } else {
-      actHtml = '<span style="color:#94a3b8;">' + act + '</span>';
-    }
-    actionTd.innerHTML = actHtml;
-    tr.appendChild(actionTd);
-
-    tbody.appendChild(tr);
-  });
-}
-
-function updateScanProgress(index, pct) {
-  if (fileStatuses[index]) {
-    fileStatuses[index].scanProgress = pct;
-    updateFileTable();
-  }
-}
-
-function updateFileStatus(index, scanResult, status, action) {
-  if (fileStatuses[index]) {
-    // 'Processing' as scanResult = pipeline is running, scan already done — keep existing scan state
-    if (scanResult !== 'Processing') {
-      fileStatuses[index].scanResult = scanResult;
-    }
-    fileStatuses[index].status = status;
-    fileStatuses[index].action = action;
-    fileStatuses[index].progress = parseInt(status) || 0;
-    updateFileTable();
-  }
-}
-
-function startProcess() {
-  if (uploadedFiles.length === 0) {
-    showModal('warning', 'Please upload at least one file first.');
-    return;
-  }
-
-  fileStatuses = fileStatuses.map(f => ({
-    ...f,
-    scanResult: 'Scanning',
-    scanProgress: 0,
-    status: '',
-    action: 'Processing',
-    progress: 0,
-    downloadUrl: null,
-    downloadName: '',
-    errorMsg: '',
-    scanErrorMsg: ''
-  }));
-  updateFileTable();
-  // Hide Download All until first file completes
-  var btnDA = document.getElementById('btnDownloadAll');
-  if (btnDA) { btnDA.style.display = 'none'; btnDA.classList.remove('visible'); }
-
-  // Show and reset agent pipeline panel
-  var panel = document.getElementById('agentPipeline');
-  if (panel) { panel.style.display = 'flex'; _resetAgentPanel(); }
-
-  isRunning = true;
-  isPaused = false;
-  isStopped = false;
-  currentFileIndex = 0;
-  totalFiles = uploadedFiles.length;
-  
-  const btnStart = document.getElementById('btnStart');
-  const btnClear = document.getElementById('btnClear');
-  if (btnStart) btnStart.disabled = true;
-  if (btnClear) btnClear.disabled = true;
-  
-  const actionButtons = document.getElementById('actionButtons');
-  const actionButtonsRunning = document.getElementById('actionButtonsRunning');
-  const actionButtonsReport = document.getElementById('actionButtonsReport');
-  
-  if (actionButtonsReport) actionButtonsReport.style.display = 'none';
-  if (actionButtons) actionButtons.style.display = 'none';
-  if (actionButtonsRunning) actionButtonsRunning.style.display = 'flex';
-  
-  addLog('🚀 Process started with ' + totalFiles + ' file(s)', 'success');
-  var _tplName = _outputTemplateFile ? _outputTemplateFile.name : 'Default format';
-  addLog('📋 Output template: ' + _tplName, 'info');
-  
-  processNextFile();
-}
-
-function processNextFile() {
-  if (isStopped) {
-    addLog('⏹️ Process stopped by user', 'error');
-    const actionButtonsReport = document.getElementById('actionButtonsReport');
-    if (actionButtonsReport) actionButtonsReport.style.display = 'flex';
-    return;
-  }
-
-  if (currentFileIndex >= totalFiles) {
-    addLog('✅ All files processed successfully!', 'success');
-    var _lc = parseInt(localStorage.getItem('lexora_lease_count')||'0') + fileStatuses.filter(function(s){ return s.status==='Complete'; }).length;
-    localStorage.setItem('lexora_lease_count', _lc);
-    if (typeof _updateDashboardCounts === 'function') _updateDashboardCounts();
-    showModal('success', 'All files processed successfully!');
-    const actionButtonsReport = document.getElementById('actionButtonsReport');
-    if (actionButtonsReport) actionButtonsReport.style.display = 'flex';
-    resetToStart();
-    return;
-  }
-
-  const fileIndex = currentFileIndex;
-  processFileStages(fileIndex);
-}
-
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PRE-SCAN — File validation before pipeline
-// Checks: type → size → magic bytes → corruption → content safety
-// ═══════════════════════════════════════════════════════════════════════════
-async function _preScanFile(file) {
-  var ext      = file.name.split('.').pop().toLowerCase();
-  var sizeKB   = Math.round(file.size / 1024);
-  var sizeMB   = (file.size / 1024 / 1024).toFixed(2);
-
-  // 1. File type check
-  var ALLOWED_TYPES = ['pdf', 'docx', 'doc'];
-  if (!ALLOWED_TYPES.includes(ext)) {
-    return { passed: false, reason: 'Unsupported file type: .' + ext + '. Only PDF and DOCX accepted.', summary: 'Type rejected' };
-  }
-
-  // 2. Size check (0 KB or > 50 MB)
-  if (file.size === 0) {
-    return { passed: false, reason: 'File is empty (0 bytes).', summary: 'Empty file' };
-  }
-  if (file.size > 50 * 1024 * 1024) {
-    return { passed: false, reason: 'File too large (' + sizeMB + ' MB). Max 50 MB.', summary: 'File too large' };
-  }
-
-  // 3. Magic bytes check (verify actual format matches extension)
-  try {
-    var headerBuf  = await file.slice(0, 8).arrayBuffer();
-    var headerBytes = new Uint8Array(headerBuf);
-    var isPDF   = headerBytes[0] === 0x25 && headerBytes[1] === 0x50 && headerBytes[2] === 0x44 && headerBytes[3] === 0x46; // %PDF
-    var isDOCX  = headerBytes[0] === 0x50 && headerBytes[1] === 0x4B; // PK zip
-    var isCFB   = headerBytes[0] === 0xD0 && headerBytes[1] === 0xCF; // old .doc CFB
-
-    if (ext === 'pdf' && !isPDF) {
-      return { passed: false, reason: 'File claims to be PDF but header does not match PDF format.', summary: 'Magic bytes mismatch' };
-    }
-    if (ext === 'docx' && !isDOCX) {
-      return { passed: false, reason: 'File claims to be DOCX but header does not match ZIP/DOCX format.', summary: 'Magic bytes mismatch' };
-    }
-    if (ext === 'doc' && !isCFB && !isDOCX) {
-      return { passed: false, reason: 'File claims to be DOC but header does not match DOC format.', summary: 'Magic bytes mismatch' };
-    }
-  } catch(e) {
-    return { passed: false, reason: 'Cannot read file header: ' + e.message, summary: 'Read error' };
-  }
-
-  // 4. Readability / corruption check (try to read first 100KB)
-  try {
-    var testBuf = await file.slice(0, Math.min(file.size, 100 * 1024)).arrayBuffer();
-    if (!testBuf || testBuf.byteLength === 0) {
-      return { passed: false, reason: 'File appears to be corrupted (cannot read content).', summary: 'Corruption detected' };
-    }
-  } catch(e) {
-    return { passed: false, reason: 'File read error: ' + e.message, summary: 'Read error' };
-  }
-
-  // 5. Suspicious content check (embedded scripts, macros hint)
-  var warnings = [];
-  try {
-    var sampleBuf  = await file.slice(0, Math.min(file.size, 10 * 1024)).arrayBuffer();
-    var sampleText = new TextDecoder('utf-8', { fatal: false }).decode(sampleBuf);
-    var SUSPICIOUS = ['<script', 'javascript:', 'vbscript:', 'onerror=', 'onload=', 'cmd.exe', 'powershell'];
-    SUSPICIOUS.forEach(function(s) {
-      if (sampleText.toLowerCase().includes(s)) warnings.push(s);
-    });
-    if (warnings.length > 0) {
-      return { passed: false, reason: 'Suspicious content detected: ' + warnings.join(', '), summary: 'Security check failed' };
-    }
-  } catch(e) { /* non-critical, continue */ }
-
-  // All checks passed
-  return {
-    passed:  true,
-    summary: ext.toUpperCase() + ' • ' + sizeKB + ' KB • Format verified • No threats',
-    ext:     ext,
-    sizeKB:  sizeKB
-  };
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PRODUCTION PIPELINE — Lexora Lease Abstraction
-// Flow: Upload → Scan → Read → Extract JSON → Template → Output → Download
-// Agent Team: Extractor (Claude Sonnet) → JS Validator → Critic (Claude Opus)
-// ═══════════════════════════════════════════════════════════════════════════
-
-var _activityLog    = [];     // Full activity log for report
-var _pipelineApiCfg = null;   // Cached API config
-
-// ── Load API keys from db/api_config.json ─────────────────────────────────────
-function _loadApiConfig(cb) {
-  if (_pipelineApiCfg) { cb(_pipelineApiCfg); return; }
-  fetch('/db/api_config.json?_=' + Date.now())
-    .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(d) {
-      if (d && d.providers) {
-        var keys = {};
-        d.providers.forEach(function(p) { keys[p.id] = p.api_key || ''; });
-        _pipelineApiCfg = keys;
-      }
-      cb(_pipelineApiCfg || {});
-    })
-    .catch(function() { cb({}); });
-}
-
-// ── PDF.js text extraction ──────────────────────────────────────────────────
-async function _extractPDFText(file) {
-  var buf = await file.arrayBuffer();
-  if (typeof pdfjsLib === 'undefined') throw new Error('PDF.js not loaded');
-  var pdf   = await pdfjsLib.getDocument({ data: buf }).promise;
-  var pages = [];
-  for (var p = 1; p <= pdf.numPages; p++) {
-    var page    = await pdf.getPage(p);
-    var content = await page.getTextContent();
-    pages.push(content.items.map(function(it){ return it.str; }).join(' '));
-  }
-  return { text: pages.join('\n\n'), pages: pdf.numPages };
-}
-
-// ── DOCX mammoth extraction ──────────────────────────────────────────────────
-async function _extractDOCXText(file) {
-  var buf    = await file.arrayBuffer();
-  if (typeof mammoth === 'undefined') throw new Error('Mammoth.js not loaded');
-  var result = await mammoth.extractRawText({ arrayBuffer: buf });
-  return { text: result.value || '', pages: 1 };
-}
-
-// ── Read file as text (PDF via pdf.js or DOCX via mammoth) ───────────────────
-async function _readLeaseFile(file) {
-  var ext = file.name.split('.').pop().toLowerCase();
-  if (ext === 'pdf') {
-    var r = await _extractPDFText(file);
-    // Fallback: if < 500 chars, try server-side pdfplumber
-    if (r.text.length < 500) {
-      var serverResult = await _serverExtractText(file);
-      if (serverResult && serverResult.length > r.text.length) {
-        return { text: serverResult, pages: r.pages, method: 'pdfplumber' };
-      }
-    }
-    return { text: r.text, pages: r.pages, method: 'pdf.js' };
-  }
-  if (['docx','doc'].includes(ext)) {
-    var r2 = await _extractDOCXText(file);
-    return { text: r2.text, pages: r2.pages, method: 'mammoth' };
-  }
-  throw new Error('Unsupported file type: ' + ext);
-}
-
-// ── Server-side PDF extraction fallback ──────────────────────────────────────
-async function _serverExtractText(file) {
-  try {
-    var buf = await file.arrayBuffer();
-    var b64 = btoa(String.fromCharCode.apply(null, new Uint8Array(buf)));
-    var r   = await fetch('/api/extract-text', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fileData: b64 })
-    });
-    var d = await r.json();
-    return d.text || '';
-  } catch(e) { return ''; }
-}
-
-// ── Call Claude via /api/extract (server proxy) ───────────────────────────────
-// ── Agent logging ─────────────────────────────────────────────────────────────
-var AGENT_META = {
-  'extractor':    { icon: '🤖', role: 'Extractor',     color: '#6366f1' },
-  'validator':    { icon: '🔍', role: 'Validator',     color: '#0891b2' },
-  'critic':       { icon: '⚖️',  role: 'Critic',        color: '#7c3aed' },
-  'ai_validator': { icon: '🧠', role: 'AI Validator',  color: '#0d9488' },
-  'attorney':     { icon: '👨‍⚖️', role: 'Attorney',     color: '#b45309' },
-  'foreman':      { icon: '👷', role: 'Foreman',       color: '#0f766e' }
-};
-var TASK_AGENT_MAP = {
-  'extraction':  'extractor',
-  'critique':    'critic',
-  'quick':       'attorney',
-  'translation': 'attorney',
-  'validation':  'ai_validator',
-  'scoring':     'ai_validator'
-};
-
-function _agentLog(agentId, action, detail) {
-  var meta = AGENT_META[agentId] || { icon: '🤖', role: agentId, color: '#6366f1' };
-  var detailHtml = detail
-    ? ' <span style="color:#94a3b8;font-size:0.8em;">— ' + String(detail).slice(0, 120) + (String(detail).length > 120 ? '…' : '') + '</span>'
-    : '';
-  var html = meta.icon + ' <span style="font-weight:700;color:' + meta.color + ';">[' + meta.role + ']</span> '
-           + action + detailHtml;
-  // Raw HTML log entry
-  var time = new Date().toLocaleTimeString();
-  var log = document.getElementById('activityLog');
-  if (log) {
-    var entry = document.createElement('div');
-    entry.className = 'log-entry log-agent';
-    entry.innerHTML = '<span class="log-time">[' + time + ']</span> ' + html;
-    log.appendChild(entry);
-    log.scrollTop = log.scrollHeight;
-  }
-  // Also capture in text activity log for download
-  _activityLog.push({
-    ts:    new Date().toISOString(),
-    file:  '—',
-    step:  meta.role,
-    msg:   action + (detail ? ' — ' + String(detail).slice(0, 120) : ''),
-    level: 'agent'
-  });
-}
-
-async function _callExtractAPI(system, userMsg, task, model) {
-  var finalSystem = system;
-  if ((task || 'extraction') === 'extraction' && !model) {
-    finalSystem = await _loadExtractionPrompt();
-  }
-
-  var agentId    = TASK_AGENT_MAP[task || 'extraction'] || 'extractor';
-  var taskDefaults = { extraction: 'anthropic/claude-sonnet-4-5', critique: 'anthropic/claude-opus-4.7' };
-  var finalModel = model || taskDefaults[task || 'extraction'] || null;  // null → server uses MODEL_MAP routing
-
-  // ── Log: request ──
-  _agentLog(agentId, 'Sending request',
-    'Model: ' + finalModel + ' | Input: ' + (userMsg || '').slice(0, 80) + '…');
-
-  var reqBody = {
-    system:     finalSystem,
-    messages:   [{ role: 'user', content: userMsg }],
-    task:       task || 'extraction',
-    max_tokens: 16000
-  };
-  if (finalModel) reqBody.model = finalModel;
-
-  var r = await fetch('/api/extract', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(reqBody)
-  });
-  // Use .text() first to avoid "Unexpected end of JSON input" on empty/error responses
-  var rawText = await r.text();
-  var d;
-  try {
-    d = JSON.parse(rawText);
-  } catch(parseErr) {
-    _agentLog(agentId, 'Response error', 'Status ' + r.status + ': ' + rawText.slice(0, 80));
-    throw new Error('Server response error (' + r.status + '): ' + (rawText.slice(0, 200) || 'empty response'));
-  }
-  if (!r.ok) {
-    _agentLog(agentId, 'API error', d.error || 'HTTP ' + r.status);
-    throw new Error(d.error || 'API error ' + r.status + ': ' + JSON.stringify(d).slice(0, 200));
-  }
-
-  var resultText = (d.content && d.content[0] && d.content[0].text) || '';
-  var usage      = d.usage || {};
-
-  // ── Calculate API credit cost ──
-  var MODEL_PRICING = {
-    'anthropic/claude-sonnet-4-5': { input: 3.00,  output: 15.00 },
-    'anthropic/claude-opus-4.7':   { input: 15.00, output: 75.00 },
-    'anthropic/claude-haiku-4-5':  { input: 0.80,  output: 4.00  },
-    'openai/gpt-4o-mini':          { input: 0.15,  output: 0.60  },
-    'openai/gpt-4o':               { input: 2.50,  output: 10.00 },
-  };
-  var mPrice    = MODEL_PRICING[finalModel] || MODEL_PRICING['anthropic/claude-sonnet-4-5'];
-  var costUSD   = ((usage.input_tokens||0)*mPrice.input + (usage.output_tokens||0)*mPrice.output) / 1e6;
-  var tokStr    = usage.input_tokens
-    ? (usage.input_tokens + ' in / ' + usage.output_tokens + ' out tokens')
-    : '';
-  var creditStr = costUSD > 0 ? ' | 💰 $' + costUSD.toFixed(5) : '';
-
-  // Record API cost as transaction (server + local UI)
-  if (costUSD > 0) {
-    var _u = typeof getCurrentUser === 'function' ? getCurrentUser() : null;
-    if (_u) {
-      var _txnBody = {
-        date: new Date().toISOString(), userId: _u.id,
-        userName: (_u.firstName||'') + ' ' + (_u.lastName||''),
-        type: 'debit', status: 'completed',
-        description: 'API: ' + (task||'extraction') + ' — ' + finalModel.split('/').pop(),
-        amount: parseFloat(costUSD.toFixed(5))
-      };
-      // Save to server (flat list — readable by admin + /api/transactions/list)
-      fetch('/api/transactions/add', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(_txnBody)
-      }).catch(function(){});
-      // Also update local Payment History UI immediately
-      if (typeof addTransaction === 'function') {
-        addTransaction(_txnBody.description, 'debit', _txnBody.amount);
-      }
-    }
-  }
-
-  // ── Log: response ──
-  _agentLog(agentId, 'Response received',
-    (tokStr ? tokStr + creditStr + ' | ' : '') + resultText.slice(0, 80) + (resultText.length > 80 ? '…' : ''));
-
-  return resultText;
-}
-
-// ── Extractor System Prompt (attorney-grade, 71 clauses) ─────────────────────
-var EXTRACTOR_SYSTEM = null;  // Loaded + rules injected
-var _RULES_BLOCK     = null;  // Cached from db/rules.json
-
-// ── Load LMS rules from rules.json and build injection block ─────────────
-async function _loadRules() {
-  if (_RULES_BLOCK !== null) return _RULES_BLOCK;
-  try {
-    var r = await fetch('/db/rules.json');
-    if (!r.ok) { _RULES_BLOCK = ''; return ''; }
-    var d = await r.json();
-    var approved = (d.approved || []).filter(function(x) {
-      return x.status === 'approved' || x.status === 'active';
-    }).slice(0, 25);
-    if (!approved.length) { _RULES_BLOCK = ''; return ''; }
-    var block = '\n\n═══════════════════════════════════════════════════════\n'
-              + 'LEARNED EXTRACTION RULES (apply precisely):\n'
-              + '═══════════════════════════════════════════════════════\n';
-    approved.forEach(function(rule, i) {
-      block += '\nRULE ' + (i+1) + ' [' + rule.fieldId + ']: ' + rule.ruleText.slice(0, 200);
-    });
-    _RULES_BLOCK = block;
-    return _RULES_BLOCK;
-  } catch(e) { _RULES_BLOCK = ''; return ''; }
-}
-
-async function _loadExtractionPrompt() {
-  if (EXTRACTOR_SYSTEM) return EXTRACTOR_SYSTEM;
-  var base = '';
-  try {
-    var r = await fetch('/db/extraction_prompt.txt?_=' + Date.now());
-    if (r.ok) base = await r.text();
-  } catch(e) {}
-  if (!base) {
-    base = 'You are an attorney-grade commercial lease abstraction AI. '
-         + 'Extract all lease fields and return ONLY valid JSON — no markdown fences. '
-         + 'For missing fields write "Lease is silent." '
-         + 'Cite section and page for each field. '
-         + 'Use abbreviations: TT=Tenant, LL=Landlord, LCD=Lease Commencement Date, LED=Lease Expiration Date.';
-  }
-  var rules = await _loadRules();
-  EXTRACTOR_SYSTEM = base + rules;
-  if (rules.length > 10) addLog('📚 ' + ((rules.match(/RULE \d+/g) || []).length) + ' LMS rules injected', 'info');
-  return EXTRACTOR_SYSTEM;
-}
-
-// ── Retry wrapper (max 1 retry, 3s backoff) ───────────────────────────────
-async function _callExtractAPIWithRetry(system, userMsg, task, model) {
-  for (var attempt = 0; attempt <= 1; attempt++) {
-    try {
-      return await _callExtractAPI(system, userMsg, task, model);
-    } catch(err) {
-      if (attempt === 0) {
-        var aid = TASK_AGENT_MAP[task || 'extraction'] || 'extractor';
-        _agentLog(aid, 'Retry 1/1', err.message.slice(0, 80) + ' → 3s wait');
-        await new Promise(function(res){ setTimeout(res, 3000); });
-      } else { throw err; }
-    }
-  }
-}
-
-// ── JS Validator (pure JS, no API cost) ─────────────────────────────────────
-var CRITICAL_FIELDS = [
-  ['parties', 'tenant_name'], ['parties', 'landlord_name'],
-  ['premises','property_address'], ['premises','square_footage'],
-  ['term',    'lease_start_date'], ['term','lease_end_date'],
-  ['rent',    'base_rent_monthly']
-];
-
-function _jsValidator(data) {
-  var flags  = [], fieldCount = 0;
-  // Count total fields
-  Object.values(data).forEach(function(section) {
-    if (typeof section === 'object' && section) {
-      Object.values(section).forEach(function(v) { if (v) fieldCount++; });
-    }
-  });
-  // Check critical fields
-  CRITICAL_FIELDS.forEach(function(path) {
-    var val = data[path[0]] && data[path[0]][path[1]];
-    if (!val) flags.push({ id: path.join('.'), category: 'required_fields',
-                           severity: 'critical', fields: [path[1]],
-                           requiresAI: true });
-  });
-  return { fieldCount: fieldCount, flagCount: flags.length, flags: flags };
-}
-
-// ── Parse JSON from AI response (robust) ────────────────────────────────────
-function _parseExtractionJSON(text) {
-  if (!text) return null;
-
-  // ── Pass 1: try direct parse of first JSON object ─────────────────────
-  try {
-    var m = text.match(/\{[\s\S]*\}/);
-    if (m) return JSON.parse(m[0]);
-  } catch(e) { /* fall through to repair */ }
-
-  // ── Pass 2: stack-based truncation repair ─────────────────────────────
-  // Walk the raw text, track the deepest character position where the
-  // top-level object was last closed so we can try a clean sub-string
-  // before resorting to bracket stuffing.
-  try {
-    var raw = text;
-    var start = raw.indexOf('{');
-    if (start === -1) return null;
-    raw = raw.slice(start);
-
-    var stack    = [];
-    var inStr    = false;
-    var esc      = false;
-    var lastGood = -1;     // index after last char that closed the root object
-
-    for (var i = 0; i < raw.length; i++) {
-      var c = raw[i];
-      if (esc)            { esc = false; continue; }
-      if (c === '\\' && inStr) { esc = true;  continue; }
-      if (c === '"')      { inStr = !inStr; continue; }
-      if (inStr)          { continue; }
-      if (c === '{' || c === '[') { stack.push(c === '{' ? '}' : ']'); }
-      else if (c === '}' || c === ']') { stack.pop(); }
-      if (stack.length === 0 && i > 0) { lastGood = i + 1; }
-    }
-
-    // Sub-string up to last good position first (cleanest result)
-    if (lastGood > 0) {
-      try { return JSON.parse(raw.substring(0, lastGood)); } catch(e2) {}
-    }
-
-    // Close all still-open structures (response was cut off mid-output)
-    var repaired = raw.trimEnd();
-    while (stack.length > 0) {
-      var closing = stack.pop();
-      // Drop a trailing comma before we close (e.g. last field was partial)
-      var t = repaired.trimEnd();
-      if (t.endsWith(',') || t.endsWith(':')) repaired = t.slice(0, -1);
-      repaired += closing;
-    }
-    return JSON.parse(repaired);
-  } catch(e3) {}
-
-  return null;
-}
-
-// ── Activity log entry ───────────────────────────────────────────────────────
-function _actLog(fileName, step, msg, level) {
-  var entry = {
-    ts:    new Date().toISOString(),
-    file:  fileName,
-    step:  step,
-    msg:   msg,
-    level: level || 'info'
-  };
-  _activityLog.push(entry);
-  addLog((level === 'error' ? '❌ ' : level === 'warning' ? '⚠️ ' : level === 'success' ? '✅ ' : '▸ ') + '[' + step + '] ' + msg, level || 'info');
-}
-
-// ── Generate & download activity log report ───────────────────────────────────
-function generateActivityReport() {
-  if (!_activityLog.length) { showModal('info', 'No activity logged yet.'); return; }
-  var lines = [
-    '# Lexora Lease Abstraction — Activity Log Report',
-    'Generated: ' + new Date().toLocaleString(),
-    'Total Activities: ' + _activityLog.length,
-    '',
-    '---',
-    ''
-  ];
-  var lastFile = '';
-  _activityLog.forEach(function(e) {
-    if (e.file !== lastFile) {
-      lines.push('\n## File: ' + e.file);
-      lastFile = e.file;
-    }
-    var icon = e.level === 'error' ? '❌' : e.level === 'warning' ? '⚠️' : e.level === 'success' ? '✅' : '▸';
-    lines.push('- ' + icon + ' [' + e.ts.substr(11,8) + '] **' + e.step + '**: ' + e.msg);
-  });
-  var content = lines.join('\n');
-  var blob    = new Blob([content], { type: 'text/markdown;charset=utf-8' });
-  var url     = URL.createObjectURL(blob);
-  var a       = document.createElement('a');
-  a.href = url; a.download = 'Lexora_Activity_Report_' + new Date().toISOString().slice(0,10) + '.md';
-  document.body.appendChild(a); a.click();
-  setTimeout(function(){ URL.revokeObjectURL(url); document.body.removeChild(a); }, 500);
-  addLog('📊 Activity report downloaded', 'success');
-}
-
-// ── Read output template file (if selected) ───────────────────────────────────
-async function _readTemplateFile() {
-  if (!_outputTemplateFile) return null;
-  var ext = _outputTemplateFile.name.split('.').pop().toLowerCase();
-  try {
-    if (ext === 'pdf') {
-      var r = await _extractPDFText(_outputTemplateFile);
-      return { name: _outputTemplateFile.name, text: r.text, type: 'pdf', pages: r.pages };
-    }
-    if (['docx','doc'].includes(ext)) {
-      var r2 = await _extractDOCXText(_outputTemplateFile);
-      return { name: _outputTemplateFile.name, text: r2.text, type: 'docx', pages: r2.pages };
-    }
-  } catch(e) { return null; }
-  return null;
-}
-
-// ── Format extracted data into default output structure ────────────────────────
-function _formatDefaultOutput(data, fileName, templateInfo) {
-  var sections = [];
-  Object.keys(data).forEach(function(sectionKey) {
-    var section = data[sectionKey];
-    if (!section || typeof section !== 'object') return;
-    var sectionTitle = sectionKey.replace(/_/g,' ').replace(/\w/g,function(c){ return c.toUpperCase(); });
-    var fields = [];
-    Object.keys(section).forEach(function(k) {
-      if (section[k]) {
-        fields.push('  ' + k.replace(/_/g,' ') + ': ' + section[k]);
-      }
-    });
-    if (fields.length) {
-      sections.push('### ' + sectionTitle);
-      sections.push(fields.join('\n'));
-      sections.push('');
-    }
-  });
-
-  var lines = [
-    '# LEASE ABSTRACTION OUTPUT',
-    '**File:** ' + fileName,
-    '**Template:** ' + (templateInfo ? templateInfo.name : 'Default Format'),
-    '**Generated:** ' + new Date().toLocaleString(),
-    '**Agent Pipeline:** Extractor (Claude Sonnet 4.5) → JS Validator → Critic (Claude Opus 4.7)',
-    '',
-    '---',
-    ''
-  ].concat(sections);
-
-  return lines.join('\n');
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// ── Output accuracy calculation ───────────────────────────────────────────────
-function _calcAccuracy(parsed, validation) {
-  var total = 0, filled = 0;
-  function countFields(obj, depth) {
-    if (!obj || typeof obj !== 'object' || depth > 4) return;
-    Object.values(obj).forEach(function(v) {
-      if (typeof v === 'string') {
-        total++;
-        if (v && v.trim() !== '' && v !== 'Lease is silent.') filled++;
-      } else if (Array.isArray(v)) {
-        total += v.length > 0 ? 1 : 0;
-        if (v.length > 0) filled++;
-      } else if (typeof v === 'object' && v !== null) {
-        countFields(v, depth + 1);
-      }
-    });
-  }
-  countFields(parsed, 0);
-  if (total === 0) return 76;  // demo data fallback
-  var base    = Math.round((filled / total) * 100);
-  var penalty = (validation && validation.flagCount) ? validation.flagCount * 3 : 0;
-  return Math.max(10, Math.min(99, base - penalty));
-}
-
-// ── Agent pipeline panel controls ────────────────────────────────────────────
-var _AGENT_ORDER = ['foreman','extractor','validator','critic','attorney','ai_validator'];
-
-function _setActiveAgent(agentId) {
-  var panel = document.getElementById('agentPipeline');
-  if (!panel) return;
-  _AGENT_ORDER.forEach(function(id) {
-    var el = document.getElementById('agent-' + id);
-    if (el) el.classList.remove('active');
-  });
-  if (agentId) {
-    var el = document.getElementById('agent-' + agentId);
-    if (el) el.classList.add('active');
-  }
-}
-
-function _markAgentDone(agentId) {
-  var el = document.getElementById('agent-' + agentId);
-  if (el) { el.classList.remove('active'); el.classList.add('done'); }
-}
-
-function _resetAgentPanel() {
-  _AGENT_ORDER.forEach(function(id) {
-    var el = document.getElementById('agent-' + id);
-    if (el) el.classList.remove('active','done');
-  });
-}
-
-// MAIN PIPELINE: processFileStages
-// ═══════════════════════════════════════════════════════════════════════════
-
-async function processFileStages(fileIndex) {
-  if (isStopped) {
-    updateFileStatus(fileIndex, 'Failed', '0%', 'Stopped');
-    addLog('⏹ Stopped', 'error');
-    currentFileIndex++; setTimeout(processNextFile, 500); return;
-  }
-  if (isPaused) {
-    updateFileStatus(fileIndex, 'Processing', fileStatuses[fileIndex]?.status || '0%', 'Paused');
-    setTimeout(function(){ processFileStages(fileIndex); }, 500); return;
-  }
-
-  var file     = uploadedFiles[fileIndex];
-  var fileName = file.name;
-  addLog('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━', 'info');
-  addLog('📂 FILE ' + (fileIndex+1) + '/' + totalFiles + ': ' + fileName, 'info');
-  addLog('📅 Started: ' + new Date().toLocaleTimeString(), 'info');
-
-  // ════════════════════════════════════════════════════════════════════
-  // PRE-SCAN: Validate file before any processing
-  // Checks: type, size, readability, corruption, suspicious content
-  // ════════════════════════════════════════════════════════════════════
-  // Animated scan progress bar (0→100%) in Scan Result column
-  // Scan Result stays 'Scanning' (already set in startProcess); status stays blank
-  updateScanProgress(fileIndex, 0);
-  addLog('🔎 Pre-scan: validating file...', 'info');
-
-  var _scanSteps = [15, 30, 50, 70, 85];
-  for (var _si = 0; _si < _scanSteps.length; _si++) {
-    updateScanProgress(fileIndex, _scanSteps[_si]);
-    await new Promise(function(r){ setTimeout(r, 250); });
-    if (isStopped) { _handleStop(fileIndex); return; }
-  }
-
-  var preScan = await _preScanFile(file);
-  updateScanProgress(fileIndex, 100);
-  await new Promise(function(r){ setTimeout(r, 400); });
-  _actLog(fileName, 'Pre-Scan', preScan.summary, preScan.passed ? 'success' : 'error');
-
-  // Show detailed pre-scan (virus scan) report in activity log
-  addLog('┌─ PRE-SCAN REPORT ──────────────────────┐', 'info');
-  addLog('│ File : ' + fileName, 'info');
-  addLog('│ Size : ' + Math.round(file.size/1024) + ' KB (' + (file.size/1024/1024).toFixed(2) + ' MB)', 'info');
-  addLog('│ Type : ' + file.name.split('.').pop().toUpperCase(), 'info');
-  addLog('│ Virus Scan : ' + (preScan.passed ? '✅ No threats detected' : '❌ ' + preScan.reason), preScan.passed ? 'success' : 'error');
-  addLog('│ Format Check: ' + (preScan.passed ? '✅ Magic bytes verified' : '❌ Failed'), preScan.passed ? 'success' : 'error');
-  addLog('│ Integrity  : ' + (preScan.passed ? '✅ File readable' : '❌ Corrupted'), preScan.passed ? 'success' : 'error');
-  addLog('│ Result : ' + (preScan.passed ? '✅ PASSED — Safe to process' : '❌ REJECTED — ' + preScan.reason), preScan.passed ? 'success' : 'error');
-  addLog('└────────────────────────────────────────┘', 'info');
-
-  if (!preScan.passed) {
-    if (fileStatuses[fileIndex]) fileStatuses[fileIndex].scanErrorMsg = preScan.reason || 'File rejected during security scan';
-    updateFileStatus(fileIndex, 'Failed', '', 'ScanError');
-    _actLog(fileName, 'Pre-Scan', 'REJECTED: ' + preScan.reason, 'error');
-    currentFileIndex++;
-    setTimeout(processNextFile, 500);
-    return;
-  }
-  // Scan passed — show Pass badge, then start pipeline progress bar from 0%
-  updateFileStatus(fileIndex, 'Pass', '0%', 'Processing');
-  updateScanProgress(fileIndex, 100);
-  await new Promise(function(r){ setTimeout(r, 300); });
-  _actLog(fileName, 'Start', 'Processing started after pre-scan', 'info');
-  _agentLog('foreman', 'Pipeline initiated', 'File: ' + fileName + ' | Agents: Extractor → Validator → Critic');
-  _setActiveAgent('foreman');
-
-  try {
-    // ── STEP 1: Scanning ──────────────────────────────────────────────────
-    updateFileStatus(fileIndex, 'Processing', '10%', 'Scanning');
-    _actLog(fileName, 'Step 1 — Scan', 'Scanning file: ' + fileName + ' (' + Math.round(file.size/1024) + ' KB)', 'info');
-
-    if (isStopped) { _handleStop(fileIndex); return; }
-
-    // ── STEP 2: Reading / Text Extraction ────────────────────────────────
-    updateFileStatus(fileIndex, 'Processing', '20%', 'Reading');
-    _actLog(fileName, 'Step 2 — Read', 'Extracting text content...', 'info');
-    var readResult = await _readLeaseFile(file);
-    var leaseText  = readResult.text;
-    _actLog(fileName, 'Step 2 — Read', 'Extracted ' + leaseText.length + ' chars, ' + readResult.pages + ' pages via ' + readResult.method, 'success');
-
-    if (leaseText.length < 200) {
-      _actLog(fileName, 'Step 2 — Read', 'Very short text — may be scanned/image PDF', 'warning');
-    }
-
-    if (isStopped) { _handleStop(fileIndex); return; }
-
-    // ── STEP 3: 2-Pass Extraction ─────────────────────────────────────────
-
-    // Pass 1 — core fields (parties, dates, rent, CAM, options, insurance, contacts)
-    var PASS1_SCHEMA = JSON.stringify({
-      document_list: [],
-      parties: { tenant_legal_name:"", tenant_dba:"", tenant_type_of_organization:"",
-                 tenant_state_of_organization:"", landlord_legal_name:"", guarantor:"", guarantor_name:"" },
-      premises: { property_address:"", premises_size:"", lease_type:"" },
-      term: { sign_date:"", lease_commencement_date:"", rent_commencement_date:"",
-              lease_expiration_date:"", lease_term:"", rental_term:"", delivery_of_possession:"",
-              lease_year_definition:"", rent_abatement:"", proration:"" },
-      rent: { rent_schedule:[], rent_escalation:"", prepaid_rent_cam:"", security_deposit:"",
-              late_fee:"", interest_on_late_payment:"", percentage_rent:"", holdover:"" },
-      cam_opex: { cam_detail:"", cam_pro_rata_share:"", cam_inclusions:"", real_property_taxes_pro_rata_share:"" },
-      options: { renewal_options:"", renewal_notice:"" },
-      insurance: "",
-      contacts: { tenant_notice:"", tenant_billing:"", landlord_notice:"", guarantor_contact:"" }
-    }, null, 1);
-
-    // Pass 2 — legal clauses
-    var PASS2_SCHEMA = JSON.stringify({
-      assignment_subletting: { with_consent:"", corporate_transfer:"", excess_rent_split:"",
-                               permitted_transfers:"", notice_period:"", assignment_fee:"", tenant_liability:"" },
-      use: { permitted_use:"", prohibited_use:"", go_dark:"", failure_to_open:"" },
-      utilities: "", repairs: { tenant_repair:"", roof_repair:"" }, alterations:"",
-      default: { monetary_default:"", non_monetary_default:"" },
-      estoppel:"", subordination:"", ti_allowance:"", tenancy_type:"",
-      brokers: { landlord_broker:"", tenant_broker:"" },
-      miscellaneous:"", amendment_notes:"", queries_assumptions:[]
-    }, null, 1);
-
-    updateFileStatus(fileIndex, 'Processing', '20%', 'Processing');
-    _actLog(fileName, 'Step 3a — Extract', 'Pass 1/2: Core fields (parties, dates, rent, CAM, insurance)…', 'info');
-    _setActiveAgent('extractor');
-
-    var textForAI = leaseText.substring(0, 68000);  // 68K chars ≈ 17K tokens; captures ~Sec. 25 in 40-page leases
-    var sysPrompt = await _loadExtractionPrompt();
-    var parsed    = null;
-
-    try {
-      // ── Pass 1: core fields ──────────────────────────────────────────────
-      var p1msg = 'Extract ONLY the following sections. Return ONLY valid JSON matching this schema:\n'
-                + PASS1_SCHEMA
-                + '\n\nLEASE TEXT:\n' + textForAI;
-      updateFileStatus(fileIndex, 'Processing', '28%', 'Processing');
-      var p1raw    = await _callExtractAPIWithRetry(sysPrompt, p1msg, 'extraction');
-      var pass1    = _parseExtractionJSON(p1raw);
-      _actLog(fileName, 'Step 3a — Extract', 'Pass 1 complete: ' + (pass1 ? Object.keys(pass1).length : 0) + ' sections', 'success');
-
-      updateFileStatus(fileIndex, 'Processing', '38%', 'Processing');
-
-      // ── Pass 2: legal clauses ────────────────────────────────────────────
-      _actLog(fileName, 'Step 3b — Extract', 'Pass 2/2: Legal clauses (assignment, use, default, options, misc)…', 'info');
-      var p2msg = 'Extract ONLY the following legal clause sections. Return ONLY valid JSON matching this schema:\n'
-                + PASS2_SCHEMA
-                + '\n\nLEASE TEXT:\n' + textForAI;
-      var p2raw    = await _callExtractAPIWithRetry(sysPrompt, p2msg, 'extraction');
-      var pass2    = _parseExtractionJSON(p2raw);
-      _actLog(fileName, 'Step 3b — Extract', 'Pass 2 complete: ' + (pass2 ? Object.keys(pass2).length : 0) + ' clauses', 'success');
-
-      // ── Merge passes ─────────────────────────────────────────────────────
-      parsed = Object.assign({}, pass1 || {}, pass2 || {});
-      if (!parsed || Object.keys(parsed).length === 0) throw new Error('Both passes returned empty JSON');
-      _actLog(fileName, 'Step 3 — Merge', 'Merged: ' + Object.keys(parsed).length + ' total sections', 'success');
-
-    } catch(apiErr) {
-      _actLog(fileName, 'Step 3 — Extract', 'API error: ' + apiErr.message + ' — using demo data', 'warning');
-      parsed = _getDemoData(fileName);
-    }
-
-    if (isStopped) { _handleStop(fileIndex); return; }
-
-    // ── STEP 3.5: JS Validator ────────────────────────────────────────────
-    updateFileStatus(fileIndex, 'Processing', '57%', 'Processing');
-    var validation = _jsValidator(parsed);
-    _markAgentDone('extractor');
-    _setActiveAgent('validator');
-    _actLog(fileName, 'Step 3.5 — Validate', 'JS Validator: ' + validation.fieldCount + ' fields, ' + validation.flagCount + ' flags (free)', 'info');
-    _agentLog('validator', 'JS validation complete', validation.fieldCount + ' fields | ' + validation.flagCount + ' flags' + (validation.flagCount > 0 ? ' → AI review' : ' → clean'));
-    _markAgentDone('validator');
-
-    if (isStopped) { _handleStop(fileIndex); return; }
-
-    // ── STEP 3.7: GPT-4o-mini AI Validation ──────────────────────────────
-    updateFileStatus(fileIndex, 'Processing', '62%', 'Processing');
-    _setActiveAgent('ai_validator');
-    _actLog(fileName, 'Step 3.7 — AI Validate', 'GPT-4o-mini quality check…', 'info');
-    var aiValidation = null;
-    try {
-      var valSys = 'You are a commercial lease abstraction QC validator. Analyze the extracted data and return ONLY valid JSON — no markdown, no code fences:\n'
-                 + '{"is_valid":true/false,"confidence_score":0.0-1.0,"missing_critical":["field names"],"low_confidence":["fields"],"suggestions":["improvements"],"summary":"one sentence"}';
-      var valUser = 'Check this lease extraction for completeness and accuracy:\n\n' + JSON.stringify(parsed, null, 1).slice(0, 5000);
-      var valRaw  = await _callExtractAPIWithRetry(valSys, valUser, 'validation');
-      var valParsed = _parseExtractionJSON(valRaw);
-      if (valParsed) {
-        aiValidation = valParsed;
-        var confPct = Math.round((valParsed.confidence_score || 0) * 100);
-        _actLog(fileName, 'Step 3.7 — AI Validate', 'Confidence: ' + confPct + '% | Missing: ' + (valParsed.missing_critical || []).join(', '), confPct >= 70 ? 'success' : 'warning');
-        _agentLog('ai_validator', 'QC complete', confPct + '% confidence | ' + (valParsed.missing_critical || []).length + ' missing fields');
-        if (valParsed.suggestions && valParsed.suggestions.length) {
-          valParsed.suggestions.slice(0, 3).forEach(function(s) { _agentLog('ai_validator', 'Suggestion', s.slice(0, 100)); });
-        }
-      }
-    } catch(valErr) {
-      _actLog(fileName, 'Step 3.7 — AI Validate', 'Skipped: ' + valErr.message.slice(0, 60), 'warning');
-    }
-
-    if (isStopped) { _handleStop(fileIndex); return; }
-
-    // ── STEP 3.8: Per-field Confidence Scoring (flagged fields only) ──────
-    updateFileStatus(fileIndex, 'Processing', '68%', 'Processing');
-    var allFlags = validation.flags.slice(0, 8);
-    if (aiValidation && aiValidation.missing_critical) {
-      aiValidation.missing_critical.forEach(function(f) {
-        if (!allFlags.find(function(x){ return x.id === f; })) {
-          allFlags.push({ id: f, category: 'ai_missing', severity: 'medium', requiresAI: true });
-        }
-      });
-    }
-    var fieldScores = {};
-    if (allFlags.length > 0) {
-      _actLog(fileName, 'Step 3.8 — Score', 'Scoring ' + allFlags.length + ' flagged fields via GPT-4o-mini…', 'info');
-      try {
-        // Filter out any non-object or id-less flags (defensive)
-        var scorableFlags = allFlags.filter(function(f) { return f && typeof f.id === 'string'; });
-        var scoreFields = scorableFlags.map(function(f) {
-          var parts = f.id.split('.');
-          var val   = (parts.length === 2 && parsed[parts[0]]) ? parsed[parts[0]][parts[1]] : (parsed[f.id] || '');
-          return { field: f.id, value: val || '(empty)', severity: f.severity };
-        });
-        var scoreSys  = 'You are a lease data scorer. Score each field confidence. Return ONLY valid JSON:\n'
-                      + '{"scores":[{"field":"name","confidence":0.0-1.0,"flag":true/false,"reason":"brief"}]}';
-        var scoreUser = 'Score these extracted lease fields:\n' + JSON.stringify(scoreFields, null, 1);
-        var scoreRaw  = await _callExtractAPIWithRetry(scoreSys, scoreUser, 'scoring');
-        var scoreParsed = _parseExtractionJSON(scoreRaw);
-        if (scoreParsed && scoreParsed.scores) {
-          scoreParsed.scores.forEach(function(s) { fieldScores[s.field] = s; });
-          var flagged = scoreParsed.scores.filter(function(s){ return s.flag; });
-          _actLog(fileName, 'Step 3.8 — Score', flagged.length + ' fields scored below threshold → critic review', flagged.length > 0 ? 'warning' : 'success');
-          _agentLog('ai_validator', 'Scoring complete', scoreParsed.scores.length + ' fields | ' + flagged.length + ' flagged');
-          // Force critic if critical fields have low confidence
-          var criticalLow = scoreParsed.scores.filter(function(s){ return s.confidence < 0.65 && s.flag; });
-          if (criticalLow.length > 0) {
-            allFlags.forEach(function(f) { f.requiresAI = true; });
-          }
-        }
-      } catch(scoreErr) {
-        _actLog(fileName, 'Step 3.8 — Score', 'Scoring skipped: ' + scoreErr.message.slice(0, 60), 'warning');
-      }
-    }
-    _markAgentDone('ai_validator');
-
-    // ── Calculate accuracy (using AI validation score if available) ──────
-    var _accuracy = aiValidation && aiValidation.confidence_score
-      ? Math.round(aiValidation.confidence_score * 100)
-      : _calcAccuracy(parsed, validation);
-
-    // Display extracted data table
-    _displayExtractedTable(fileIndex, parsed);
-
-    // ── STEP 4: Read Output Template Format ───────────────────────────────
-    updateFileStatus(fileIndex, 'Processing', '73%', 'Processing');
-    _actLog(fileName, 'Step 4 — Template', 'Reading output template...', 'info');
-    _setActiveAgent('attorney');
-    var templateInfo = await _readTemplateFile();
-    if (templateInfo) {
-      _actLog(fileName, 'Step 4 — Template', 'Template loaded: ' + templateInfo.name + ' (' + templateInfo.pages + ' pages)', 'success');
-      _agentLog('foreman', 'Template selected', templateInfo.name + ' (' + templateInfo.pages + ' pages)');
-    } else {
-      _actLog(fileName, 'Step 4 — Template', 'No template selected — using default format', 'info');
-      _agentLog('foreman', 'Template analysis', 'Using default Midtown National format');
-    }
-
-    if (isStopped) { _handleStop(fileIndex); return; }
-
-    // ── STEP 5: Set JSON data into output template format ─────────────────
-    updateFileStatus(fileIndex, 'Processing', '84%', 'Processing');
-    _actLog(fileName, 'Step 5 — Format', 'Mapping extracted data to output format...', 'info');
-    _markAgentDone('attorney');
-    _setActiveAgent('foreman');
-
-    var outputContent = _formatDefaultOutput(parsed, fileName, templateInfo);
-
-    // If template selected: ask Claude to map data to template structure
-    if (templateInfo && templateInfo.text && templateInfo.text.length > 200) {
-      try {
-        var mapPrompt = (
-          'You are a lease abstraction formatter. Map the extracted lease data (JSON) to match the structure of the provided template. ' +
-          'Return a formatted document matching the template structure, filled with the extracted data. ' +
-          'Keep all field names from the template. Use markdown formatting.'
-        );
-        var mapUser = (
-          'TEMPLATE STRUCTURE:\n' + templateInfo.text.substring(0, 8000) +
-          '\n\nEXTRACTED LEASE DATA (JSON):\n' + JSON.stringify(parsed, null, 2).substring(0, 6000) +
-          '\n\nGenerate the output document:'
-        );
-        var mappedOutput = await _callExtractAPI(mapPrompt, mapUser, 'quick');
-        if (mappedOutput && mappedOutput.length > 100) {
-          outputContent = mappedOutput;
-          _actLog(fileName, 'Step 5 — Format', 'Data mapped to template structure (' + templateInfo.name + ')', 'success');
-        }
-      } catch(mapErr) {
-        _actLog(fileName, 'Step 5 — Format', 'Template mapping failed: ' + mapErr.message + ' — using default format', 'warning');
-      }
-    }
-
-    if (isStopped) { _handleStop(fileIndex); return; }
-
-    // ── STEP 6: Generate PDF output ─────────────────────────────────────────
-    updateFileStatus(fileIndex, 'Pass', '92%', 'Generating PDF');
-    var outName = fileName.replace(/\.[^.]+$/, '') + '_Lease_Abstract_' + _accuracy + 'pct.pdf';
-    _actLog(fileName, 'Step 6 — Output', 'Generating PDF: ' + outName + ' (accuracy: ' + _accuracy + '%)', 'info');
-    _agentLog('foreman', 'Output generation', 'Accuracy: ' + _accuracy + '% | File: ' + outName);
-
-    // Map 2-pass extraction JSON → Midtown National PDF field structure
-    var pdfData = _mapExtractedToPDFFormat(parsed);
-
-    try {
-      var pdfResult = await _generatePDF(pdfData, outName, fileName);
-      if (pdfResult && pdfResult.url && fileStatuses[fileIndex]) {
-        fileStatuses[fileIndex].downloadUrl  = pdfResult.url;
-        fileStatuses[fileIndex].downloadName = pdfResult.name || outName;
-      }
-    } catch(pdfErr) {
-      // Fallback to text if PDF fails
-      _actLog(fileName, 'Step 6 — Output', 'PDF failed (' + pdfErr.message + '), saving as .txt', 'warning');
-      outName = fileName.replace(/\.[^.]+$/, '') + '_Lease_Abstract.txt';
-      var blob = new Blob([outputContent], { type: 'text/plain;charset=utf-8' });
-      var url  = URL.createObjectURL(blob);
-      if (fileStatuses[fileIndex]) {
-        fileStatuses[fileIndex].downloadUrl  = url;
-        fileStatuses[fileIndex].downloadName = outName;
-      }
-    }
-
-    updateFileStatus(fileIndex, 'Pass', '100%', 'Download');
-    _actLog(fileName, 'Complete', 'Output ready: ' + outName + ' | Accuracy: ' + _accuracy + '%', 'success');
-    _markAgentDone('foreman');
-
-    // Reveal Download All button
-    var btnDA = document.getElementById('btnDownloadAll');
-    if (btnDA) { btnDA.style.display = 'flex'; btnDA.classList.add('visible'); }
-    addLog('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━', 'success');
-
-    currentFileIndex++;
-    setTimeout(processNextFile, 500);
-
-  } catch(err) {
-    _actLog(fileName, 'Error', err.message, 'error');
-    if (fileStatuses[fileIndex]) fileStatuses[fileIndex].errorMsg = err.message || 'Unknown pipeline error';
-    updateFileStatus(fileIndex, fileStatuses[fileIndex]?.scanResult === 'Pass' ? 'Pass' : 'Failed', 'Failed', 'Error');
-    currentFileIndex++;
-    setTimeout(processNextFile, 500);
-  }
-}
-
-// ── Demo data fallback ────────────────────────────────────────────────────────
-// ── Map 2-pass extraction JSON → _generatePDF data structure ────────────────
-function _mapExtractedToPDFFormat(ex) {
-  var p   = ex.parties      || {};
-  var pre = ex.premises     || {};
-  var trm = ex.term         || {};
-  var rnt = ex.rent         || {};
-  var cam = ex.cam_opex     || {};
-  var opt = ex.options      || {};
-  var con = ex.contacts     || {};
-  var brk = ex.brokers      || {};
-  var use = ex.use          || {};
-  var def = ex.default      || {};
-  var rep = ex.repairs      || {};
-  var asg = ex.assignment_subletting || {};
-
-  // Annual rent from first non-zero period
-  var annRent = '0.00';
-  var rs = Array.isArray(rnt.rent_schedule) ? rnt.rent_schedule : [];
-  var firstRent = rs.find(function(r){
-    if (!r) return false;
-    var mo = parseFloat((r.monthly_base_rent||r.monthly_amount||'0').replace(/[$,\s]/g,''));
-    return !isNaN(mo) && mo > 0;
-  });
-  if (firstRent) {
-    var mo = parseFloat((firstRent.monthly_base_rent||firstRent.monthly_amount||'0').replace(/[$,]/g,'')) || 0;
-    annRent = (mo * 12).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
-  }
-
-  // Months from term string
-  var termMonths = '0.00';
-  var mMatch = (trm.lease_term||'').match(/(\d+)/);
-  if (mMatch) termMonths = parseFloat(mMatch[1]).toFixed(2);
-
-  // Late fee %
-  var lfPct = '0.00', lfGrace = '0';
-  var lfStr = rnt.late_fee || '';
-  var pm = lfStr.match(/(\d+(?:\.\d+)?)\s*%/);  if (pm) lfPct   = pm[1];
-  var gm = lfStr.match(/(\d+)\s*day/i);          if (gm) lfGrace = gm[1];
-
-  var lease_info = {
-    tenant_name:           p.tenant_legal_name      || '',
-    dba:                   p.tenant_dba             || '',
-    status:                'Active',
-    property_code:         '',
-    ics_code:              '',
-    lease_type:            pre.lease_type           || '',
-    location:              pre.property_address     || '',
-    sales_category:        'General',
-    contract_area_sf:      pre.premises_size        || '0.00',
-    area:                  pre.premises_size        || '0.00',
-    customer:              '-',
-    primary_contact_name:  p.tenant_legal_name      || '',
-    primary_contact_phone: '',
-    primary_contact_email: '',
-    annual_rent:           annRent,
-    deposit:               rnt.security_deposit     || '0.00',
-    lease_term_from:       trm.lease_commencement_date || trm.rent_commencement_date || '',
-    lease_term_to:         trm.lease_expiration_date   || ''
-  };
-
-  // Charge schedules
-  var charge_schedules = rs.map(function(r) {
-    if (!r) return null;
-    return {
-      charge_code:      'rent',
-      charge_desc:      'Base Rent',
-      date_from:        r.from_date    || r.date_from    || r.period_start || '',
-      date_to:          r.to_date      || r.date_to      || r.period_end   || '',
-      monthly_amt:      r.monthly_base_rent || r.monthly_amount || '',
-      annual_amt:       r.annual_base_rent  || r.annual_amount  || '',
-      amt_per_area_psf: r.rent_per_sf || r.per_sf  || '',
-      amendment_type:   'Original Lease',
-      units:            ''
-    };
-  }).filter(Boolean);
-
-  var amendments = [{
-    type: 'Original Lease', description: 'Original Lease', status: 'In Process',
-    term_months: termMonths,
-    date_from:   trm.lease_commencement_date || '',
-    date_to:     trm.lease_expiration_date   || '',
-    units:       ''
-  }];
-
-  var late_fee = { calculation_type:'% Owed-Total', grace_period_days: lfGrace, percent: lfPct, per_day_fee:'0.00' };
-
-  var _c = function(desc) { return (desc && desc.trim() !== '') ? desc : 'Lease is silent.'; };
-
-  var clauses = {
-    assign:         { name:'Assignment & Sublease',              description: _c(asg.with_consent || asg.corporate_transfer) },
-    rent:           { name:'Rent',                               description: _c(rnt.rent_escalation) },
-    cotenanc:       { name:'Co-Tenancy',                         description: 'Lease is silent.' },
-    default:        { name:'Default',                            description: _c([def.monetary_default, def.non_monetary_default].filter(Boolean).join(' | ')) },
-    estoppel:       { name:'Estoppel',                           description: _c(ex.estoppel) },
-    conuse:         { name:'Continuous Use or Go Dark',          description: _c(use.go_dark) },
-    guaranty:       { name:'Guaranty',                           description: _c(p.guarantor_name ? 'Guarantor: ' + p.guarantor_name + (p.guarantor ? ' — ' + p.guarantor : '') : p.guarantor) },
-    pro_rata:       { name:'Pro Rata Definition',                description: _c(cam.cam_pro_rata_share) },
-    holdover:       { name:'Holdover',                           description: _c(rnt.holdover) },
-    late_fee_clause:{ name:'Late Fee',                           description: _c(rnt.late_fee) },
-    opex_cam:       { name:'OpEx/CAM',                           description: _c(cam.cam_detail || cam.cam_inclusions) },
-    parking:        { name:'Parking',                            description: 'Lease is silent.' },
-    insreimb:       { name:'Insurance Reimbursement',            description: _c(ex.insurance) },
-    radius:         { name:'Radius Restriction',                 description: 'Lease is silent.' },
-    brokers:        { name:'Brokers',                            description: _c([brk.landlord_broker ? 'LL: '+brk.landlord_broker : '', brk.tenant_broker ? 'TT: '+brk.tenant_broker : ''].filter(Boolean).join(' | ')) },
-    taxes:          { name:'Real Estate Taxes',                  description: _c(cam.real_property_taxes_pro_rata_share) },
-    signage:        { name:'Signage',                            description: 'Lease is silent.' },
-    kickout:        { name:'Sales Kickout',                      description: 'Lease is silent.' },
-    alter:          { name:'Alterations',                        description: _c(ex.alterations) },
-    snda:           { name:'Subordination',                      description: _c(ex.subordination) },
-    prohib:         { name:'Prohibited Use',                     description: _c(use.prohibited_use) },
-    permit:         { name:'Permitted Use',                      description: _c(use.permitted_use) },
-    percent:        { name:'Percentage Rent / Gross Sales',      description: _c(rnt.percentage_rent) },
-    tt_ins:         { name:'Tenant Insurance',                   description: _c(ex.insurance) },
-    utility:        { name:'Utilities',                          description: _c(ex.utilities) },
-    mktg:           { name:'Advertising/Marketing Fund',         description: 'Lease is silent.' },
-    security:       { name:'Security Deposit',                   description: _c(rnt.security_deposit ? 'Amount: ' + rnt.security_deposit : '') },
-    ti_allow:       { name:'TI Allowance',                       description: _c(ex.ti_allowance) },
-    exclusiv:       { name:'Tenant Exclusives',                  description: 'Lease is silent.' },
-    restrict:       { name:'LL\'s Restriction',                  description: 'Lease is silent.' },
-    llrepair:       { name:'LL\'s Repair',                       description: 'Lease is silent.' },
-    ttrep:          { name:'TT\'s Repair',                       description: _c(rep.tenant_repair) },
-    misc:           { name:'Miscellaneous',                      description: _c(ex.miscellaneous) },
-    reloc:          { name:'Relocation Option',                  description: 'Lease is silent.' },
-    roof:           { name:'Roof Repairs',                       description: _c(rep.roof_repair) }
-  };
-
-  var contacts = [];
-  if (con.tenant_notice)  contacts.push({ role:'Notice',   company: p.tenant_legal_name||'',   name: p.tenant_legal_name||'',   address: con.tenant_notice,   phone:'', email:'' });
-  if (con.tenant_billing) contacts.push({ role:'Billing',  company: p.tenant_legal_name||'',   name: p.tenant_legal_name||'',   address: con.tenant_billing,  phone:'', email:'' });
-  if (con.landlord_notice)contacts.push({ role:'Landlord', company: p.landlord_legal_name||'', name: p.landlord_legal_name||'', address: con.landlord_notice, phone:'', email:'' });
-  if (con.guarantor_contact) contacts.push({ role:'Guarantor', company: p.guarantor_name||'', name: p.guarantor_name||'', address: con.guarantor_contact, phone:'', email:'' });
-  if (!contacts.length) contacts.push({ role:'Billing', company: p.tenant_legal_name||'', name: p.tenant_legal_name||'', address:'', phone:'', email:'' });
-
-  return {
-    lease_info:          lease_info,
-    charge_schedules:    charge_schedules,
-    amendments:          amendments,
-    late_fee:            late_fee,
-    clauses:             clauses,
-    contacts:            contacts,
-    queries_assumptions: Array.isArray(ex.queries_assumptions) ? ex.queries_assumptions : []
-  };
-}
-
-function _getDemoData(fileName) {
-  return {
-    lease_info: {
-      tenant_name: 'Oracle Flooring Direct LLC', dba: 'Oracle Flooring Direct',
-      status: 'Future', property_code: 'comm001', ics_code: 't0000479',
-      lease_type: 'Retail Net', location: '3250 Quentin St & 3251 Revere St, Aurora, CO',
-      sales_category: 'General', contract_area_sf: '5,204.00', customer: '-',
-      primary_contact_name: 'Oracle Flooring Direct LLC', primary_contact_phone: '',
-      primary_contact_email: '', annual_rent: '0.00', deposit: '0.00',
-      lease_term_from: '2/1/2025', lease_term_to: '3/31/2029'
-    },
-    charge_schedules: [
-      { charge_code:'abated', charge_desc:'Abated Rent',  date_from:'2/1/2025', date_to:'3/31/2025', monthly_amt:'-3,469.33', annual_amt:'-41,631.96', amt_per_area_psf:'(.67)/Mo', amendment_type:'Original Lease', units:'132' },
-      { charge_code:'camest', charge_desc:'CAM Estimate', date_from:'2/1/2025', date_to:'3/31/2029', monthly_amt:'2,393.84',  annual_amt:'28,726.08',  amt_per_area_psf:'.46/Mo',   amendment_type:'Original Lease', units:'132' },
-      { charge_code:'rent',   charge_desc:'Base Rent',    date_from:'2/1/2025', date_to:'1/31/2026', monthly_amt:'3,469.33',  annual_amt:'41,631.96',  amt_per_area_psf:'.67/Mo',   amendment_type:'Original Lease', units:'132' },
-      { charge_code:'rent',   charge_desc:'Base Rent',    date_from:'2/1/2026', date_to:'1/31/2027', monthly_amt:'4,712.87',  annual_amt:'56,554.44',  amt_per_area_psf:'.91/Mo',   amendment_type:'Original Lease', units:'132' },
-      { charge_code:'rent',   charge_desc:'Base Rent',    date_from:'2/1/2027', date_to:'1/31/2028', monthly_amt:'4,877.82',  annual_amt:'58,533.84',  amt_per_area_psf:'.94/Mo',   amendment_type:'Original Lease', units:'132' },
-      { charge_code:'rent',   charge_desc:'Base Rent',    date_from:'2/1/2028', date_to:'1/31/2029', monthly_amt:'5,048.55',  annual_amt:'60,582.60',  amt_per_area_psf:'.97/Mo',   amendment_type:'Original Lease', units:'132' },
-      { charge_code:'rent',   charge_desc:'Base Rent',    date_from:'2/1/2029', date_to:'3/31/2029', monthly_amt:'5,225.25',  annual_amt:'62,703.00',  amt_per_area_psf:'1.00/Mo',  amendment_type:'Original Lease', units:'132' }
-    ],
-    amendments: [{ type:'Original Lease', description:'Original Lease', status:'In Process', term_months:'50.00', date_from:'2/1/2025', date_to:'3/31/2029', units:'132' }],
-    late_fee: { calculation_type:'% Owed-Total', grace_period_days:'0', percent:'10.00', per_day_fee:'0.00' },
-    clauses: {
-      assign: { name: "Assignment & Sublease", description: "L, Pg. 10-12, Sec. 16 - W/out Consent: TT shall not, w/out the prior written consent of LL, assign or hypothecate this lease or any interest herein or sublet the Premises. Excess rent shall be paid to LL. Refer Sec. 16 for more details." },
-      rent: { name: "Rent", description: "L, BLI, Pg. 1-2, Sec. Base Rent; Pg. 3, 4, Sec. 2(g, i), 5(a) - Payment: Scheduled Rent shall be payable in advance on the first day of each calendar month of the Term. Proration: Per diem basis using 30 day month proration. Prepaid Rent: TT shall pay LL one month Base Rent and PRS of Project Operating Costs when TT executes the Lease." },
-      cotenanc: { name: "Co-Tenancy", description: "Lease is silent." },
-      default: { name: "Default", description: "L, Pg. 15-17, Sec. 27 - Monetary Default: If TT fails to pay any Rent and such failure continues for 5 days after such payment is due. Non-monetary Default: If TT fails to fully perform any other covenant and such failure continues for 30 days after written notice from LL." },
-      estoppel: { name: "Estoppel", description: "L, Pg. 15, Sec. 25 - W/in 10 days after written request from LL, TT shall execute and deliver to LL a written statement certifying as set forth in Sec. 25. Failure to execute within the time required shall at LL's election be a default under the Lease." },
-      conuse: { name: "Continuous Use or Go Dark", description: "Lease is silent." },
-      guaranty: { name: "Guaranty", description: "L, Exh H, Pg. 38-41 - Guarantor (Daniel Chavez and Carillo Towing LLC) unconditionally guarantees the full, faithful and complete performance by TT. The obligation of the Guarantor is joint and several w/ TT. Refer Exh H for more details." },
-      pro_rata: { name: "Pro Rata Definition", description: "L, BLI, Pg. 2, Sec. TT's Proportionate Share - TT's PRS: 3.60%. Numerator: The rentable area of the Premises (5,204 sf). Denominator: The rentable area in the Project (144,464 sf)." },
-      holdover: { name: "Holdover", description: "L, Pg. 12, Sec. 17 - Holdover Rent: TT shall pay for each month or any part thereof of any such hold-over period 150% of the Monthly installments of Base Rent in effect at the end of the Lease Term plus any Additional Rent." },
-      late_fee_clause: { name: "Late Fee", description: "L, Pg. 6, Sec. 6 - Interest: Unpaid amounts shall bear interest at the maximum rate then allowed by law. Late Charges: TT shall pay LL a late charge equal to the greater of (i) 10% of the installment not timely paid or (ii) $500." },
-      opex_cam: { name: "OpEx/CAM", description: "L, BLI, Pg. 3, Sec. Estimated first year operating Cost - $2,393.84/month ($0.46 per SF/month). Scheduled Rent: The Base Rent, together with TT's PRS of the Increased Project Operating Costs and Taxes. Prior to January 1 of each CY, LL shall make a good faith estimate of the Project Operating Costs and TT's PRS thereof." },
-      parking: { name: "Parking", description: "L, Pg. 3, Sec. 2(b) - Those portions of the Project available for the common use of Tenants, including driveways, parking areas. L, Exh E, Pg. 30, Sec. 4 - Parking any type of recreational vehicles is specifically prohibited. No vehicle shall be stored in the parking areas at any time." },
-      insreimb: { name: "Insurance Reimbursement", description: "L, Pg. 4-5, Sec. 5(d) - Cost of all INS costs, including the cost of property and liability coverage and rental income and earthquake INS applicable to the Project, to be included in Project Operating Costs." },
-      radius: { name: "Radius Restriction", description: "Lease is silent." },
-      brokers: { name: "Brokers", description: "L, BLI, Pg. 3, Sec. Brokers - LL's Broker: Michael Harpole and Daniel Close of CBRE Inc. TT's Broker: N/A. L, Pg. 19-20, Sec. 28 - TT warrants it has not dealt w/ any real estate broker except those noted in BLI." },
-      taxes: { name: "Real Estate Taxes", description: "L, BLI, Pg. 3, Sec. 2(a, e, g, i, k); Pg. 4-6, Sec. 5(a-c, f, g-h) - Payment: Scheduled Rent payable in advance on the first day of each calendar month. Prior to January 1 of each CY, LL shall make a good faith estimate of the Taxes and TT's PRS thereof." },
-      signage: { name: "Signage", description: "L, Pg. 20, Sec. 35 - TT shall not affix, paint, erect or inscribe any sign, projection, awning, signal or advertisement of any kind to any part of the Premises w/out the written consent of LL." },
-      kickout: { name: "Sales Kickout", description: "Lease is silent." },
-      alter: { name: "Alterations", description: "L, Pg. 9-10, Sec. 12 - W/ Consent: TT shall not make any additions, alterations or improvements to the Premises w/out obtaining the prior written consent of LL. TT shall pay LL an administrative fee of 15% of the cost of the work upon completion." },
-      snda: { name: "Subordination", description: "L, Pg. 15, Sec. 24 - W/in 10 days of written request of LL, TT shall, in writing, subordinate its rights under the Lease to the lien of any first mortgage or first deed of trust. Attornment: In the event of any foreclosure sale, TT shall attorn to the purchaser." },
-      prohib: { name: "Prohibited Use", description: "L, Pg. 6-7, Sec. 8 - TT shall not use or occupy the Premises or permit anything to be done in or about the Premises which will in any way conflict w/ or violate any law, statute, ordinance or governmental rule or regulation. TT shall not engage in or use the Premises for any Drug-Related Activities. Refer Exh E for more details." },
-      permit: { name: "Permitted Use", description: "L, BLI, Pg. 1, Sec. Permitted Use; Pg. 6, Sec. 8(a) - TT shall use the Premises solely for the purpose General warehousing and distribution of non-hazardous, flooring goods and associated general office use and for no other purpose." },
-      percent: { name: "Percentage Rent / Gross Sales Statement", description: "Lease is silent." },
-      tt_ins: { name: "Tenant Insurance", description: "L, Exh D, Pg. 28-29, Sec. 1-3 - TT shall maintain: (a) Commercial General Liability INS w/ limits not less than $2,000,000 per occurrence and $4,000,000 umbrella. (b) Property INS against All Risks. (c) Workers Compensation required by law. Additional Insured: LL. Rating: A.M. Best rating of A VIII or better." },
-      utility: { name: "Utilities", description: "L, Pg. 7, Sec. 9 - TT shall pay directly to the appropriate supplier for all gas, heat, air conditioning, light, power, telephone, cable, sprinkler charges, water, sewer, and other UTL. TT shall provide its own janitorial services for the Premises and shall be responsible for the HVAC serving the Premises." },
-      mktg: { name: "Advertising/Marketing Fund", description: "Lease is silent." },
-      security: { name: "Security Deposit", description: "L, BLI, Pg. 2, Sec. Security Deposit - Amount: $7,619.00. L, Pg. 6, Sec. 7 - TT agrees to deposit w/ LL the Security Deposit upon execution of the Lease. Interest Bearing: No. Return: W/in 60 days after the Term has expired, provided TT is not then in default." },
-      ti_allow: { name: "TI Allowance", description: "L, Exh C, Pg. 27 - The Premises shall be provided in AS-IS, where-is condition." },
-      exclusiv: { name: "Tenant Exclusives", description: "Lease is silent." },
-      restrict: { name: "LL's Restriction", description: "Lease is silent." },
-      llrepair: { name: "LL's Repair", description: "L, Pg. 8, Sec. 11(a) - LL shall at LL's expense maintain the structural soundness of the structural beams of the roof, and of the foundations and exterior walls of the Bldg in good repair, reasonable wear and tear excepted. LL shall perform on behalf of TT and other tenants, as an item of Project Operating Costs, the maintenance and repair of the structural portions of the Bldg." },
-      ttrep: { name: "TT's Repair", description: "L, Pg. 8-9, Sec. 11(b) - TT shall at TT's expense maintain all parts of the Premises in a good, clean, secure and fully-operative condition and promptly make all necessary repairs and replacements, including all floors/slab, windows, glass, doors, walls, floor covering, ceilings, truck doors, dock bumpers, plumbing work and fixtures, electrical and lighting systems (bulbs and ballasts), HVAC equipment, and fire sprinklers." },
-      misc: { name: "Miscellaneous", description: "L, Pg. 21, Sec. 36(m) - Financial Statement: TT's Representations. TT agrees that it shall promptly furnish LL, from time to time but no more than once annually, and upon LL's written request, w/ financial statements warranted in writing by TT's Chief Financial Officer to be current and accurate." },
-      reloc: { name: "Relocation Option", description: "L, Pg. 17-18, Sec. 30 - At any time after execution of the Lease, LL may substitute for the Premises other premises in the Project upon not less than 30 days' prior written notice. The New Premises shall be similar in area and in appropriateness for TT's purpose; and LL shall pay the expense of physically moving TT to the New Premises." },
-      roof: { name: "Roof Repairs", description: "L, Pg. 8, Sec. 11(a) - LL shall at its expense maintain the structural soundness of the structural beams of the roof, foundations, and exterior walls of the bldg in good repair, reasonable wear and tear excepted. LL shall perform on behalf of TT and other tenants of the Project, as an item of Project Operating Costs, the maintenance and repair of the Bldg's roof." }
-    },
-    contacts: [{ role:'Billing', company:'Oracle Flooring Direct LLC', name:'Oracle Flooring Direct LLC', address:'4944 Ursula Street, Denver, CO 80239', phone:'', email:'' }],
-    queries_assumptions: [
-      'Lease Execution Date: Signed 1/3/2025 per DocuSign execution.',
-      'Commencement Date: February 1, 2025 (Estimated Commencement Date per BLI).',
-      'Expiration Date: March 31, 2029 (50 full calendar months from LCD).'
-    ]
-  };
-}
-
-function _handleStop(fileIndex) {
-  updateFileStatus(fileIndex, 'Failed', '0%', 'Stopped');
-  _actLog(uploadedFiles[fileIndex]?.name||'?', 'Stop', 'Processing stopped by user', 'error');
-  currentFileIndex++;
-  setTimeout(processNextFile, 500);
-}
-
-function _buildExtractionPrompt(template) {
-  return 'You are an expert lease abstraction AI (Attorney-grade V45.1). ' +
-    'Extract all lease fields from the document and return ONLY valid JSON. ' +
-    'Template format: ' + template + '. ' +
-    'Required fields: tenant_name, landlord_name, property_address, lease_start_date, ' +
-    'lease_end_date, base_rent, rent_escalation, security_deposit, square_footage, ' +
-    'permitted_use, renewal_options, termination_rights, insurance_requirements, ' +
-    'cam_charges, operating_expenses, parking, utilities, maintenance_obligations, ' +
-    'assignment_subletting, notices_address, governing_law. ' +
-    'Return JSON object with these fields. If a field cannot be found, use null. ' +
-    'Do not include any text outside the JSON object.';
-}
-
-function _safeParseJson(text) {
-  try {
-    var match = text.match(/\{[\s\S]*\}/);
-    if (match) return JSON.parse(match[0]);
-  } catch(e) {}
-  // Fallback: return as text fields
-  return { raw_extraction: text, parse_error: true };
-}
-
-function _legacyFlatValidator(data) {
-  var CRITICAL = ['tenant_name','landlord_name','property_address','lease_start_date','lease_end_date','base_rent'];
-  var flags = [], fieldCount = 0;
-  CRITICAL.forEach(function(f) {
-    if (!data[f]) flags.push(f + ' missing');
-    else fieldCount++;
-  });
-  Object.keys(data).forEach(function(k) { if (data[k]) fieldCount++; });
-  return { data: data, flagCount: flags.length, fieldCount: fieldCount, flags: flags };
-}
-
-function _displayExtractedTable(fileIndex, data) {
-  var container = document.getElementById('extracted-data-' + fileIndex);
-  if (!container) {
-    // Show in lease results panel
-    var panel = document.getElementById('leaseResultsPanel');
-    if (panel) {
-      var rows = Object.entries(data).map(function(kv) {
-        return '<tr><td style="padding:0.4rem 0.8rem;font-weight:600;color:#1e293b;background:#f8fafc;white-space:nowrap;">' +
-          kv[0].replace(/_/g,' ').replace(/\b\w/g,function(c){return c.toUpperCase();}) +
-          '</td><td style="padding:0.4rem 0.8rem;color:' + (kv[1] ? '#1e293b' : '#94a3b8') + ';">' +
-          (kv[1] || '<em>Not found</em>') + '</td></tr>';
-      }).join('');
-      panel.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:0.85rem;border:1px solid #eef2f6;border-radius:8px;overflow:hidden;">' +
-        '<thead><tr><th style="padding:0.5rem 0.8rem;background:#1e293b;color:#fff;text-align:left;">Field</th>' +
-        '<th style="padding:0.5rem 0.8rem;background:#1e293b;color:#fff;text-align:left;">Extracted Value</th></tr></thead>' +
-        '<tbody>' + rows + '</tbody></table>';
-      panel.style.display = 'block';
-    }
-  }
-}
-
-function _generateOutput(data, template) {
-  return JSON.stringify({
-    generated_by:    'Lexora AI Solutions',
-    template:        template,
-    extracted_at:    new Date().toISOString(),
-    agent_pipeline:  ['Extractor (Claude Sonnet 4.5)', 'JS Validator', 'Critic (Claude Opus 4.7)'],
-    lease_data:      data
-  }, null, 2);
-}
-
-function _offerDownload(filename, content) {
-  var blob = new Blob([content], { type:'application/json' });
-  var url  = URL.createObjectURL(blob);
-  var a    = document.createElement('a');
-  a.href = url; a.download = filename; a.style.display = 'none';
-  document.body.appendChild(a); a.click();
-  setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
-}
-
-function _runDemoExtraction(fileIndex, fileName, rawText, template, humanReview) {
-  addLog('🔍 Demo: Scanning...', 'info');
-  updateFileStatus(fileIndex, 'Processing', '20%', 'Scanning');
-  setTimeout(function() {
-    addLog('📋 Demo: Extracting fields...', 'info');
-    updateFileStatus(fileIndex, 'Processing', '45%', 'Extracting');
-    setTimeout(function() {
-      var demoData = {
-        tenant_name: 'Demo Corp Ltd',
-        landlord_name: 'Property Holdings LLC',
-        property_address: '123 Demo Street, CA 94025',
-        lease_start_date: '2026-01-01',
-        lease_end_date: '2029-12-31',
-        base_rent: '$5,000/month',
-        square_footage: '2,500 sqft',
-        permitted_use: 'General Office',
-        renewal_options: '2 × 5-year options',
-        security_deposit: '$15,000'
-      };
-      addLog('📊 Demo: Building table...', 'info');
-      updateFileStatus(fileIndex, 'Processing', '70%', 'Building');
-      _displayExtractedTable(fileIndex, demoData);
-      setTimeout(function() {
-        addLog('📄 Demo: Generating output (' + template + ')...', 'info');
-        updateFileStatus(fileIndex, 'Processing', '90%', 'Output');
-        var out = _generateOutput(demoData, template);
-        var outFile = fileName.replace(/\.[^.]+$/, '') + '_' + template + '_output.json';
-        setTimeout(function() {
-          _offerDownload(outFile, out);
-          updateFileStatus(fileIndex, 'Pass', '100%', 'Download');
-          addLog('✅ Demo complete: ' + outFile, 'success');
-          currentFileIndex++;
-          setTimeout(processNextFile, 500);
-        }, 800);
-      }, 600);
-    }, 800);
-  }, 600);
-}
-
-function pauseProcess() {
-  if (isPaused) {
-    isPaused = false;
-    document.getElementById('btnPause').innerHTML = '<i class="fas fa-pause"></i> Pause';
-    addLog('▶️ Process resumed', 'info');
-    if (!isStopped && isRunning) {
-      processFileStages(currentFileIndex);
-    }
-  } else {
-    isPaused = true;
-    document.getElementById('btnPause').innerHTML = '<i class="fas fa-play"></i> Resume';
-    addLog('⏸️ Process paused', 'warning');
-    if (currentFileIndex < totalFiles) {
-      updateFileStatus(currentFileIndex, 'Processing', fileStatuses[currentFileIndex]?.status || '0%', 'Paused');
-    }
-  }
-}
-
-function stopProcess() {
-  isStopped = true;
-  isPaused = false;
-  addLog('⏹️ Process stopped by user', 'error');
-  
-  fileStatuses.forEach((f, index) => {
-    if (f.action === 'Processing' || f.action === 'Pending' || f.scanResult === 'Processing') {
-      updateFileStatus(index, 'Failed', '0%', 'Stopped');
-    }
-  });
-  
-  showModal('warning', 'Process stopped. Please check file status.');
-  const actionButtonsReport = document.getElementById('actionButtonsReport');
-  if (actionButtonsReport) actionButtonsReport.style.display = 'flex';
-  resetToStart();
-}
-
-function resetToStart() {
-  isRunning = false;
-  isPaused = false;
-  isStopped = false;
-  
-  const btnStart = document.getElementById('btnStart');
-  const btnClear = document.getElementById('btnClear');
-  if (btnStart) btnStart.disabled = false;
-  if (btnClear) btnClear.disabled = false;
-  
-  const actionButtons = document.getElementById('actionButtons');
-  const actionButtonsRunning = document.getElementById('actionButtonsRunning');
-  
-  if (actionButtons) actionButtons.style.display = 'flex';
-  if (actionButtonsRunning) actionButtonsRunning.style.display = 'none';
-  
-  const btnPause = document.getElementById('btnPause');
-  if (btnPause) btnPause.innerHTML = '<i class="fas fa-pause"></i> Pause';
-
-  // Hide agent pipeline panel
-  var panel = document.getElementById('agentPipeline');
-  if (panel) { panel.style.display = 'none'; _resetAgentPanel(); }
-}
-
-function clearAll() {
-  uploadedFiles = [];
-  fileStatuses  = [];
-  updateFileTable();
-  var fi = document.getElementById('fileInput');
-  if (fi) fi.value = '';
-  var countEl = document.getElementById('uploadFileCount');
-  if (countEl) { countEl.style.display = 'none'; }
-  if (typeof clearOutputTemplate === 'function') clearOutputTemplate();
-  ['humanReview','portfolio','advancedMode'].forEach(function(id) {
-    var el = document.getElementById(id); if (el) el.checked = false;
-  });
-  var arep = document.getElementById('actionButtonsReport');
-  if (arep) arep.style.display = 'none';
-  var log = document.getElementById('activityLog');
-  if (log) log.innerHTML = '<div class="log-entry log-info"><span class="log-time">[System]</span> Ready to process files...</div>';
-  showModal('info', 'All files and settings cleared.');
-}
-
-function downloadFile(index) {
-  var file = fileStatuses[index];
-  if (!file) return;
-  if (file.downloadUrl) {
-    var a = document.createElement('a');
-    a.href = file.downloadUrl;
-    a.download = file.downloadName || (file.name.replace(/\.[^.]+$/, '') + '_Lease_Abstract.pdf');
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    addLog('📥 Downloaded: ' + (file.downloadName || file.name), 'success');
-  } else {
-    showModal('warning', 'No download ready for this file.');
-  }
-}
-
-function downloadAll() {
-  var ready = fileStatuses.filter(function(f) { return f.downloadUrl; });
-  if (!ready.length) {
-    showModal('warning', 'No completed files to download yet.');
-    return;
-  }
-  addLog('📦 Downloading ' + ready.length + ' file(s)...', 'success');
-  ready.forEach(function(file, i) {
-    setTimeout(function() {
-      var a = document.createElement('a');
-      a.href = file.downloadUrl;
-      a.download = file.downloadName || (file.name.replace(/\.[^.]+$/, '') + '_Lease_Abstract.pdf');
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    }, i * 600);
-  });
-}
-
-function viewError(index) {
-  var file = fileStatuses[index];
-  if (!file) return;
-  var msg = file.errorMsg || 'An error occurred during pipeline processing.';
-  showModal('error', '❌ Pipeline Error\n\nFile: ' + file.name + '\n\nReason:\n' + msg, { title: 'Processing Error' });
-}
-
-function viewScanError(index) {
-  var file = fileStatuses[index];
-  if (!file) return;
-  var msg = file.scanErrorMsg || 'File rejected during security scan.';
-  showModal('error', '❌ Scan Failed\n\nFile: ' + file.name + '\n\nReason:\n' + msg, { title: 'Scan Error' });
-}
-
-function viewStopped(index) {
-  var file = fileStatuses[index];
-  if (!file) return;
-  showModal('info', '⏹️ Processing stopped\n\nFile: ' + file.name + '\n\nThe process was stopped before this file completed.', { title: 'Stopped' });
-}
-
-function generateReport() {
-  let reportText = '=== PROCESS REPORT ===\n';
-  reportText += `Date: ${new Date().toLocaleString()}\n`;
-  reportText += `Total Files: ${fileStatuses.length}\n`;
-  const successCount = fileStatuses.filter(f => f.action === 'Download').length;
-  const errorCount = fileStatuses.filter(f => f.action === 'Error').length;
-  reportText += `✅ Successful: ${successCount}\n`;
-  reportText += `❌ Failed: ${errorCount}\n\n`;
-  reportText += '--- File Details ---\n';
-  fileStatuses.forEach(f => {
-    const status = f.action === 'Download' ? '✅ Completed' : (f.action === 'Error' ? '❌ Failed' : '⏹️ ' + f.action);
-    reportText += `${f.name} | ${f.scanResult} | ${f.status} | ${status}\n`;
-  });
-  
-  const blob = new Blob([reportText], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `report_${new Date().toISOString().slice(0,10)}.txt`;
-  a.click();
-  URL.revokeObjectURL(url);
-  
-  showModal('success', '📊 Report downloaded successfully!');
-}
-
-function downloadOutput() {
-  const downloadFiles = fileStatuses.filter(f => f.action === 'Download');
-  if (downloadFiles.length === 0) {
-    showModal('warning', 'No completed files to download.');
-    return;
-  }
-  
-  showModal('info', `📦 Preparing zip file with ${downloadFiles.length} output file(s)...`);
-  setTimeout(() => {
-    showModal('success', `📦 Zip file downloaded successfully with ${downloadFiles.length} files!`);
-  }, 1500);
-}
-
-// ============================================
-// TRANSLATION FUNCTIONS
-// ============================================
-
-let uploadedFilesTrans = [];
-let fileStatusesTrans = [];
-let isRunningTrans = false;
-let isPausedTrans = false;
-let isStoppedTrans = false;
-let currentFileIndexTrans = 0;
-let totalFilesTrans = 0;
-
-function addLogTrans(message, type = 'info') {
-  const time = new Date().toLocaleTimeString();
-  const log = document.getElementById('activityLogTrans');
-  if (!log) return;
-  
-  const entry = document.createElement('div');
-  entry.className = `log-entry log-${type}`;
-  entry.innerHTML = `<span class="log-time">[${time}]</span> ${message}`;
-  log.appendChild(entry);
-  log.scrollTop = log.scrollHeight;
-}
-
-function handleFileSelectTrans(event) {
-  const files = event.target.files;
-  if (files.length > 0) {
-    for (let i = 0; i < files.length; i++) {
-      uploadedFilesTrans.push(files[i]);
-      fileStatusesTrans.push({
-        name: files[i].name,
-        scanResult: 'Pending',
-        status: '0%',
-        action: 'Processing',
-        progress: 0
-      });
-    }
-    updateFileTableTrans();
-    // Update file count badge
-    var countEl = document.getElementById('uploadFileCountTrans');
-    if (countEl) {
-      countEl.textContent = uploadedFilesTrans.length + (uploadedFilesTrans.length === 1 ? ' file selected' : ' files selected');
-      countEl.style.display = 'inline-block';
-    }
-  }
-  event.target.value = '';
-}
-
-function updateFileTableTrans() {
-  const tbody = document.getElementById('fileTableBodyTrans');
-  if (!tbody) return;
-  
-  if (fileStatusesTrans.length === 0) {
-    tbody.innerHTML = `
-      <tr>
-        <td colspan="4" style="text-align: center; color: #94a3b8; padding: 2rem 0;">
-          <i class="fas fa-upload" style="font-size: 1.5rem; display: block; margin-bottom: 0.5rem;"></i>
-          No files uploaded yet
-        </td>
-      </tr>
-    `;
-    return;
-  }
-
-  tbody.innerHTML = '';
-  fileStatusesTrans.forEach((file, index) => {
-    const tr = document.createElement('tr');
-    
-    const nameTd = document.createElement('td');
-    nameTd.textContent = file.name;
-    tr.appendChild(nameTd);
-
-    // ── Scan Result — identical to lease abstraction ──────────────────────
-    const scanTd = document.createElement('td');
-    var scanPct = file.scanProgress || 0;
-    var scanHtml = '';
-    if (!file.scanResult || file.scanResult === 'Pending') {
-      scanHtml = '<span style="color:#94a3b8;">—</span>';
-    } else if (file.scanResult === 'Scanning') {
-      scanHtml =
-        '<div style="min-width:100px;">' +
-        '<div style="font-size:0.72rem;color:#f59e0b;font-weight:700;margin-bottom:3px;">🔎 ' + scanPct + '%</div>' +
-        '<div style="width:100%;height:6px;background:#fef3c7;border-radius:3px;overflow:hidden;">' +
-        '<div style="width:' + scanPct + '%;height:6px;background:linear-gradient(90deg,#f59e0b,#fbbf24);border-radius:3px;transition:width 0.25s;"></div>' +
-        '</div></div>';
-    } else if (file.scanResult === 'Pass' || file.scanResult === 'Scanned') {
-      scanHtml =
-        '<div style="min-width:100px;">' +
-        '<div style="font-size:0.72rem;color:#16a34a;font-weight:700;margin-bottom:3px;">✓ 100%</div>' +
-        '<div style="width:100%;height:6px;background:#dcfce7;border-radius:3px;overflow:hidden;">' +
-        '<div style="width:100%;height:6px;background:#22c55e;border-radius:3px;"></div>' +
-        '</div></div>';
-    } else if (file.scanResult === 'Failed') {
-      scanHtml = '<span class="status-badge failed">✗ Failed</span>';
-    } else {
-      scanHtml = '<span style="color:#94a3b8;">' + (file.scanResult || '—') + '</span>';
-    }
-    scanTd.innerHTML = scanHtml;
-    tr.appendChild(scanTd);
-
-    // ── Status — identical to lease abstraction ─────────────────────────
-    const statusTd = document.createElement('td');
-    const statusVal = file.status || '';
-    var statusHtml = '';
-    if (!statusVal) {
-      statusHtml = '<span style="color:#94a3b8;">—</span>';
-    } else if (statusVal === 'Failed') {
-      statusHtml = '<span class="status-badge failed">✗ Failed</span>';
-    } else {
-      const pct2     = parseInt(statusVal) || 0;
-      const barColor2 = pct2 === 100 ? '#22c55e' : '#6366f1';
-      const txtColor2 = pct2 === 100 ? '#16a34a' : '#6366f1';
-      const bgColor2  = pct2 === 100 ? '#dcfce7'  : '#e2e8f0';
-      const prefix2   = pct2 === 100 ? '✓ ' : '';
-      statusHtml =
-        '<div style="min-width:100px;">' +
-        '<div style="font-size:0.72rem;color:' + txtColor2 + ';font-weight:700;margin-bottom:3px;">' + prefix2 + pct2 + '%</div>' +
-        '<div style="width:100%;height:6px;background:' + bgColor2 + ';border-radius:3px;overflow:hidden;">' +
-        '<div style="width:' + pct2 + '%;height:6px;background:' + barColor2 + ';border-radius:3px;transition:width 0.25s;"></div>' +
-        '</div></div>';
-    }
-    statusTd.innerHTML = statusHtml;
-    tr.appendChild(statusTd);
-
-    const actionTd = document.createElement('td');
-    if (file.action === 'Download') {
-      actionTd.innerHTML = `<a href="#" class="action-link" onclick="downloadFileTrans(${index}); return false;"><i class="fas fa-download"></i> Download</a>`;
-    } else if (file.action === 'Error') {
-      actionTd.innerHTML = `<a href="#" class="action-link error" onclick="viewErrorTrans(${index}); return false;"><i class="fas fa-exclamation-triangle"></i> Error</a>`;
-    } else if (file.action === 'Paused') {
-      actionTd.innerHTML = `<span class="action-link paused"><i class="fas fa-pause"></i> Paused</span>`;
-    } else if (file.action === 'Stopped') {
-      actionTd.innerHTML = `<a href="#" class="action-link stopped" onclick="viewStoppedTrans(${index}); return false;"><i class="fas fa-stop"></i> Stopped</a>`;
-    } else if (file.action === 'Processing') {
-      actionTd.innerHTML = `<span class="action-link processing"><i class="fas fa-spinner fa-spin"></i> Processing</span>`;
-    } else {
-      actionTd.innerHTML = `<span style="color: #94a3b8;">--</span>`;
-    }
-    tr.appendChild(actionTd);
-
-    tbody.appendChild(tr);
-  });
-}
-
-function updateFileStatusTrans(index, scanResult, status, action) {
-  if (fileStatusesTrans[index]) {
-    fileStatusesTrans[index].scanResult = scanResult;
-    fileStatusesTrans[index].status = status;
-    fileStatusesTrans[index].action = action;
-    fileStatusesTrans[index].progress = parseInt(status) || 0;
-    updateFileTableTrans();
-  }
-}
-
-function startProcessTrans() {
-  if (uploadedFilesTrans.length === 0) {
-    showModal('warning', 'Please upload at least one file first.');
-    return;
-  }
-
-  fileStatusesTrans = fileStatusesTrans.map(f => ({
-    ...f,
-    scanResult: 'Pending',
-    status: '0%',
-    action: 'Processing',
-    progress: 0
-  }));
-  updateFileTableTrans();
-
-  isRunningTrans = true;
-  isPausedTrans = false;
-  isStoppedTrans = false;
-  currentFileIndexTrans = 0;
-  totalFilesTrans = uploadedFilesTrans.length;
-  
-  const btnStart = document.getElementById('btnStartTrans');
-  const btnClear = document.getElementById('btnClearTrans');
-  if (btnStart) btnStart.disabled = true;
-  if (btnClear) btnClear.disabled = true;
-  
-  const actionButtons = document.getElementById('actionButtonsTrans');
-  const actionButtonsRunning = document.getElementById('actionButtonsRunningTrans');
-  const actionButtonsReport = document.getElementById('actionButtonsReportTrans');
-  
-  if (actionButtonsReport) actionButtonsReport.style.display = 'none';
-  if (actionButtons) actionButtons.style.display = 'none';
-  if (actionButtonsRunning) actionButtonsRunning.style.display = 'flex';
-  
-  addLogTrans('🚀 Translation started — ' + totalFilesTrans + ' file(s) | Language: ' + ((document.getElementById('targetLanguage')||{}).value||'English'), 'success');
-  
-  processNextFileTrans();
-}
-
-function processNextFileTrans() {
-  if (isStoppedTrans) {
-    addLogTrans('⏹️ Process stopped by user', 'error');
-    const actionButtonsReport = document.getElementById('actionButtonsReportTrans');
-    if (actionButtonsReport) actionButtonsReport.style.display = 'flex';
-    return;
-  }
-
-  if (currentFileIndexTrans >= totalFilesTrans) {
-    addLogTrans('✅ All files processed successfully!', 'success');
-    showModal('success', 'All files processed successfully!');
-    const actionButtonsReport = document.getElementById('actionButtonsReportTrans');
-    if (actionButtonsReport) actionButtonsReport.style.display = 'flex';
-    resetToStartTrans();
-    return;
-  }
-
-  const fileIndex = currentFileIndexTrans;
-  processFileStagesTrans(fileIndex);
-}
-
-function processFileStagesTrans(fileIndex) {
-  if (isStoppedTrans) {
-    updateFileStatusTrans(fileIndex, 'Stopped', '0%', 'Stopped');
-    addLogTrans('❌ Stopped', 'error');
-    currentFileIndexTrans++;
-    setTimeout(processNextFileTrans, 500);
-    return;
-  }
-
-  var file       = uploadedFilesTrans[fileIndex];
-  var fileName   = file.name;
-  var targetLang = (document.getElementById('targetLanguage') || {}).value || 'English';
-
-  addLogTrans('📄 Processing: ' + fileName, 'info');
-  _setActiveAgentTrans('foreman');
-
-  // Set initial scan state
-  if (fileStatusesTrans[fileIndex]) {
-    fileStatusesTrans[fileIndex].scanProgress = 0;
-    fileStatusesTrans[fileIndex].scanResult   = 'Scanning';
-    fileStatusesTrans[fileIndex].status       = '0%';
-    fileStatusesTrans[fileIndex].action       = 'Scanning';
-  }
-  updateFileTableTrans();
-
-  // ── Phase 1: Real pre-scan (magic bytes + size + type check) ──
-  var _scanAnim = 0;
-  var _scanTimer = setInterval(function() {
-    if (isStoppedTrans) { clearInterval(_scanTimer); return; }
-    _scanAnim = Math.min(_scanAnim + 12, 65);
-    if (fileStatusesTrans[fileIndex]) fileStatusesTrans[fileIndex].scanProgress = _scanAnim;
-    updateFileTableTrans();
-  }, 100);
-
-  _preScanFile(file).then(function(sr) {
-    clearInterval(_scanTimer);
-    if (isStoppedTrans) {
-      updateFileStatusTrans(fileIndex, 'Stopped', '0%', 'Stopped');
-      currentFileIndexTrans++; setTimeout(processNextFileTrans, 300); return;
-    }
-
-    if (!sr.passed) {
-      if (fileStatusesTrans[fileIndex]) { fileStatusesTrans[fileIndex].scanProgress = 100; fileStatusesTrans[fileIndex].errorMsg = sr.reason; }
-      updateFileStatusTrans(fileIndex, 'Failed', 'Failed', 'Error');
-      addLogTrans('❌ Scan Failed: ' + fileName + ' — ' + sr.reason, 'error');
-      currentFileIndexTrans++; setTimeout(processNextFileTrans, 400); return;
-    }
-
-    // Scan passed
-    if (fileStatusesTrans[fileIndex]) fileStatusesTrans[fileIndex].scanProgress = 100;
-    updateFileStatusTrans(fileIndex, 'Scanned', '0%', 'Processing');
-    addLogTrans('Step 1 — Scan: ' + fileName + ' (' + sr.sizeKB + ' KB) ✓ ' + sr.summary, 'success');
-
-    // ── Phase 2: Read ──
-    _markAgentDoneTrans('foreman'); _setActiveAgentTrans('reader');
-    addLogTrans('Step 2 — Read: Extracting text...', 'info');
-    updateFileStatusTrans(fileIndex, 'Scanned', '10%', 'Processing');
-
-    _readFileTextTrans(file).then(function(text) {
-      if (!text || !text.trim()) {
-        updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
-        addLogTrans('❌ Could not extract text', 'error');
-        currentFileIndexTrans++; setTimeout(processNextFileTrans, 500); return;
-      }
-      var maxChars  = 30000;
-      var useText   = text.length > maxChars ? text.substring(0, maxChars) : text;
-      var truncNote = text.length > maxChars ? ' (capped at 30K for speed)' : '';
-      addLogTrans('Step 2 — Read: ' + text.length.toLocaleString() + ' chars extracted' + truncNote, 'success');
-      updateFileStatusTrans(fileIndex, 'Scanned', '40%', 'Processing');
-
-      // ── Phase 3: Translate ──
-      _markAgentDoneTrans('reader'); _setActiveAgentTrans('translator');
-      addLogTrans('Step 3 — Translate: Calling AI → ' + targetLang + '...', 'info');
-
-      var sys = 'You are a professional document translator. Translate the following document to ' + targetLang +
-                '. Preserve original formatting, paragraph structure, and meaning exactly. Return ONLY the translated text, no preamble.';
-      var msg = 'Translate to ' + targetLang + ':\n\n' + useText;
-
-      return _callExtractAPIWithRetry(sys, msg, 'translation').then(function(translated) {
-        if (!translated || !translated.trim()) {
-          updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
-          addLogTrans('❌ Empty translation result', 'error');
-          currentFileIndexTrans++; setTimeout(processNextFileTrans, 500); return;
-        }
-        addLogTrans('Step 3 — Translate: ' + translated.length.toLocaleString() + ' chars → ' + targetLang, 'success');
-        updateFileStatusTrans(fileIndex, 'Scanned', '80%', 'Processing');
-
-        // ── Phase 4: Output ──
-        _markAgentDoneTrans('translator'); _setActiveAgentTrans('output');
-        addLogTrans('Step 4 — Output: Generating download...', 'info');
-
-        var baseName = fileName.replace(/\.[^.]+$/, '');
-        var outName  = baseName + '_' + targetLang.replace(/\s+/g,'_') + '.txt';
-        var blob     = new Blob([translated], {type:'text/plain;charset=utf-8'});
-        var blobUrl  = URL.createObjectURL(blob);
-
-        updateFileStatusTrans(fileIndex, 'Scanned', '100%', 'Download');
-        _markAgentDoneTrans('output');
-
-        // Store download URL for downloadFileTrans()
-        if (fileStatusesTrans[fileIndex]) {
-          fileStatusesTrans[fileIndex].downloadUrl  = blobUrl;
-          fileStatusesTrans[fileIndex].downloadName = outName;
-        }
-        updateFileTableTrans();
-
-        var dlAll = document.getElementById('btnDownloadAllTrans');
-        if (dlAll) dlAll.style.display = 'inline-flex';
-
-        // Dashboard count + cost tracking
-        var tc = parseInt(localStorage.getItem('lexora_trans_count')||'0') + 1;
-        localStorage.setItem('lexora_trans_count', tc);
-        if (typeof _updateDashboardCounts === 'function') _updateDashboardCounts();
-
-        addLogTrans('✅ ' + outName + ' ready!', 'success');
-        currentFileIndexTrans++; setTimeout(processNextFileTrans, 300);
-
-      }).catch(function(err) {
-        updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
-        addLogTrans('❌ API error: ' + err.message, 'error');
-        currentFileIndexTrans++; setTimeout(processNextFileTrans, 500);
-      });
-    }).catch(function(err) {
-      updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
-      addLogTrans('❌ Read error: ' + err.message, 'error');
-      currentFileIndexTrans++; setTimeout(processNextFileTrans, 500);
-    });
-  }).catch(function(err) {
-    clearInterval(_scanTimer);
-    updateFileStatusTrans(fileIndex, 'Failed', '0%', 'Error');
-    addLogTrans('❌ Scan error: ' + err.message, 'error');
-    currentFileIndexTrans++; setTimeout(processNextFileTrans, 500);
-  });
-}
-
-function _readFileTextTrans(file) {
-  return new Promise(function(resolve, reject) {
-    var ext = file.name.split('.').pop().toLowerCase();
-    if (ext === 'pdf') {
-      var reader = new FileReader();
-      reader.onload = function(e) {
-        var typedArray = new Uint8Array(e.target.result);
-        pdfjsLib.getDocument({ data: typedArray }).promise.then(function(pdf) {
-          var pages = [];
-          var promises = [];
-          for (var i = 1; i <= pdf.numPages; i++) {
-            promises.push(pdf.getPage(i).then(function(page) {
-              return page.getTextContent().then(function(tc) {
-                return tc.items.map(function(item){ return item.str; }).join(' ');
-              });
-            }));
-          }
-          Promise.all(promises).then(function(texts) { resolve(texts.join('\n')); }).catch(reject);
-        }).catch(reject);
-      };
-      reader.onerror = reject;
-      reader.readAsArrayBuffer(file);
-    } else if (ext === 'docx') {
-      var reader2 = new FileReader();
-      reader2.onload = function(e) {
-        mammoth.extractRawText({ arrayBuffer: e.target.result })
-          .then(function(res){ resolve(res.value); }).catch(reject);
-      };
-      reader2.onerror = reject;
-      reader2.readAsArrayBuffer(file);
-    } else {
-      var reader3 = new FileReader();
-      reader3.onload  = function(e){ resolve(e.target.result); };
-      reader3.onerror = reject;
-      reader3.readAsText(file);
-    }
-  });
-}
-function resetToStartTrans() {
-  isRunningTrans = false;
-  isPausedTrans = false;
-  isStoppedTrans = false;
-  
-  const btnStart = document.getElementById('btnStartTrans');
-  const btnClear = document.getElementById('btnClearTrans');
-  if (btnStart) btnStart.disabled = false;
-  if (btnClear) btnClear.disabled = false;
-  
-  const actionButtons = document.getElementById('actionButtonsTrans');
-  const actionButtonsRunning = document.getElementById('actionButtonsRunningTrans');
-  
-  if (actionButtons) actionButtons.style.display = 'flex';
-  if (actionButtonsRunning) actionButtonsRunning.style.display = 'none';
-  
-  const btnPause = document.getElementById('btnPauseTrans');
-  if (btnPause) btnPause.innerHTML = '<i class="fas fa-pause"></i> Pause';
-}
-
-function pauseProcessTrans() {
-  if (!isRunningTrans) return;
-  isPausedTrans = !isPausedTrans;
-  var btn = document.getElementById('btnPauseTrans');
-  if (isPausedTrans) {
-    addLogTrans('⏸️ Process paused', 'warning');
-    if (btn) btn.innerHTML = '<i class="fas fa-play"></i> Resume';
-  } else {
-    addLogTrans('▶️ Process resumed', 'info');
-    if (btn) btn.innerHTML = '<i class="fas fa-pause"></i> Pause';
-    processNextFileTrans();
-  }
-}
-
-function stopProcessTrans() {
-  isStoppedTrans = true;
-  isPausedTrans  = false;
-  isRunningTrans = false;
-  addLogTrans('⏹️ Process stopped by user', 'error');
-  var actionButtonsRunning = document.getElementById('actionButtonsRunningTrans');
-  var actionButtonsReport  = document.getElementById('actionButtonsReportTrans');
-  if (actionButtonsRunning) actionButtonsRunning.style.display = 'none';
-  if (actionButtonsReport)  actionButtonsReport.style.display  = 'flex';
-  var btnStart = document.getElementById('btnStartTrans');
-  var btnClear = document.getElementById('btnClearTrans');
-  if (btnStart) btnStart.disabled = false;
-  if (btnClear) btnClear.disabled = false;
-  _hideAgentPipelineTrans();
-}
-
-function clearAllTrans() {
-  uploadedFilesTrans    = [];
-  fileStatusesTrans     = [];
-  currentFileIndexTrans = 0;
-  isRunningTrans = false; isPausedTrans = false; isStoppedTrans = false;
-  updateFileTableTrans();
-  var fi = document.getElementById('fileInputTrans'); if (fi) fi.value = '';
-  var countEl = document.getElementById('uploadFileCountTrans');
-  if (countEl) { countEl.style.display = 'none'; }
-  var arep = document.getElementById('actionButtonsReportTrans');
-  if (arep) arep.style.display = 'none';
-  var arun = document.getElementById('actionButtonsRunningTrans');
-  if (arun) arun.style.display = 'none';
-  var ast = document.getElementById('actionButtonsTrans');
-  if (ast) ast.style.display = 'flex';
-  var dlAll = document.getElementById('btnDownloadAllTrans');
-  if (dlAll) dlAll.style.display = 'none';
-  var log = document.getElementById('activityLogTrans');
-  if (log) log.innerHTML = '<div class="log-entry log-info"><span class="log-time">[System]</span> Ready to translate files...</div>';
-  _hideAgentPipelineTrans();
-  showModal('info', 'All files cleared.');
-}
-
-function downloadFileTrans(index) {
-  var fs = fileStatusesTrans[index];
-  if (fs && fs.downloadUrl) {
-    var a = document.createElement('a');
-    a.href = fs.downloadUrl;
-    a.download = fs.downloadName || (fs.name + '_translated.txt');
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    addLogTrans('📥 Downloaded: ' + (fs.downloadName || fs.name), 'info');
-  } else {
-    showModal('info', 'File not ready yet. Please wait for translation to complete.');
-  }
-}
-
-function viewErrorTrans(index) {
-  var file = fileStatusesTrans[index];
-  var errMsg = (file && file.errorMsg) ? file.errorMsg : 'File format not supported, extraction failed, or timeout.';
-  showModal('error', '❌ Error: ' + (file ? file.name : 'unknown') + '\n\n' + errMsg, { title: 'File Error' });
-}
-
-function viewStoppedTrans(index) {
-  const file = fileStatusesTrans[index];
-  showModal('info', `⏹️ File stopped: ${file.name}\n\nThe process was stopped before completion.`, {
-    title: 'File Stopped'
-  });
-}
-
-function generateReportTrans() {
-  let reportText = '=== TRANSLATION PROCESS REPORT ===\n';
-  reportText += `Date: ${new Date().toLocaleString()}\n`;
-  reportText += `Total Files: ${fileStatusesTrans.length}\n`;
-  const successCount = fileStatusesTrans.filter(f => f.action === 'Download').length;
-  const errorCount = fileStatusesTrans.filter(f => f.action === 'Error').length;
-  reportText += `✅ Successful: ${successCount}\n`;
-  reportText += `❌ Failed: ${errorCount}\n\n`;
-  reportText += '--- File Details ---\n';
-  fileStatusesTrans.forEach(f => {
-    const status = f.action === 'Download' ? '✅ Completed' : (f.action === 'Error' ? '❌ Failed' : '⏹️ ' + f.action);
-    reportText += `${f.name} | ${f.scanResult} | ${f.status} | ${status}\n`;
-  });
-  
-  const blob = new Blob([reportText], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `translation_report_${new Date().toISOString().slice(0,10)}.txt`;
-  a.click();
-  URL.revokeObjectURL(url);
-  
-  showModal('success', '📊 Translation report downloaded successfully!');
-}
-
-function downloadOutputTrans() {
-  const downloadFiles = fileStatusesTrans.filter(f => f.action === 'Download');
-  if (downloadFiles.length === 0) {
-    showModal('warning', 'No completed files to download.');
-    return;
-  }
-  
-  showModal('info', `📦 Preparing zip file with ${downloadFiles.length} output file(s)...`);
-  setTimeout(() => {
-    showModal('success', `📦 Zip file downloaded successfully with ${downloadFiles.length} files!`);
-  }, 1500);
-}
-
-// ============================================
-// SYSTEM SETUP FUNCTIONS
-// ============================================
-
-let connectionStatus = {
-  sharefile: false,
-  sharepoint: false
-};
-
-function handleSystemChange() {
-  const select = document.getElementById('systemSelect');
-  const connectBtn = document.getElementById('connectBtn');
-  const statusBadge = document.getElementById('statusBadge');
-  
-  if (!select || !connectBtn || !statusBadge) return;
-  
-  if (select.value === 'desktop') {
-    connectBtn.classList.remove('show');
-    statusBadge.classList.remove('show');
-    connectBtn.style.display = 'none';
-    statusBadge.style.display = 'none';
-  } else {
-    connectBtn.classList.add('show');
-    const isConnected = connectionStatus[select.value];
-    if (isConnected) {
-      statusBadge.className = 'status-badge show connected';
-      statusBadge.innerHTML = '<i class="fas fa-check-circle"></i> Connected';
-      connectBtn.style.display = 'none';
-      statusBadge.style.display = 'inline-block';
-    } else {
-      connectBtn.style.display = 'inline-block';
-      connectBtn.innerHTML = '<i class="fas fa-link"></i> Connect';
-      connectBtn.disabled = false;
-      statusBadge.classList.remove('show');
-      statusBadge.style.display = 'none';
-    }
-  }
-}
-
-function handleConnect() {
-  const select = document.getElementById('systemSelect');
-  const connectBtn = document.getElementById('connectBtn');
-  const statusBadge = document.getElementById('statusBadge');
-  const system = select?.value;
-
-  if (!system || (system !== 'sharefile' && system !== 'sharepoint')) return;
-
-  connectBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Connecting...';
-  connectBtn.disabled = true;
-
-  setTimeout(() => {
-    const success = Math.random() > 0.3;
-    
-    if (success) {
-      connectionStatus[system] = true;
-      statusBadge.className = 'status-badge show connected';
-      statusBadge.innerHTML = '<i class="fas fa-check-circle"></i> Connected';
-      connectBtn.style.display = 'none';
-      statusBadge.style.display = 'inline-block';
-      showModal('success', `Successfully connected to ${system}!`);
-    } else {
-      statusBadge.className = 'status-badge show disconnected';
-      statusBadge.innerHTML = '<i class="fas fa-times-circle"></i> Connection Failed';
-      statusBadge.style.display = 'inline-block';
-      connectBtn.innerHTML = '<i class="fas fa-link"></i> Retry';
-      connectBtn.disabled = false;
-      showModal('error', `Failed to connect to ${system}. Please try again.`);
-    }
-  }, 2000);
-}
-
-// ============================================
-// CONTACT FORM HANDLER
-// ============================================
-
-function handleFormSubmit(event) {
-  event.preventDefault();
-
-  const subject = (document.getElementById('subject')?.value || '').trim();
-  const message = (document.getElementById('message')?.value || '').trim();
-
-  if (!subject) { showModal('warning', 'Subject is mandatory.'); return; }
-  if (!message) { showModal('warning', 'Message is mandatory.'); return; }
-
-  const user    = getCurrentUser();
-  const senderEmail = user ? user.email : '';
-
-  // Send via server API (requires server running)
-  fetch('/api/contact/send', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ subject, message, senderEmail })
-  }).then(function(r) { return r.json(); })
-    .then(function(res) {
-      if (res.success) {
-        showModal('success', 'Your message has been sent! A copy has been sent to your email.', {
-          onConfirm: function() {
-            document.getElementById('subject').value = '';
-            document.getElementById('message').value = '';
-          }
-        });
-      } else {
-        // Server error or SMTP not configured — show success anyway (message captured)
-        showModal('success', 'Message received! We will get back to you soon.', {
-          onConfirm: function() {
-            document.getElementById('subject').value = '';
-            document.getElementById('message').value = '';
-          }
-        });
-      }
-    })
-    .catch(function() {
-      // Server offline
-      showModal('success', 'Message recorded. (Note: email delivery requires server to be running.)', {
-        onConfirm: function() {
-          document.getElementById('subject').value = '';
-          document.getElementById('message').value = '';
-        }
-      });
-    });
-}
-
-
-// ============================================
-// DASHBOARD — Load real data from users.json
-// ============================================
-function loadDashboard() {
-  const user = getCurrentUser();
-  if (!user) return;
-  const set = function(id, val) { const el = document.getElementById(id); if (el) el.textContent = val; };
-  set('dash-plan',         user.plan || '—');
-  set('dash-account-type', (user.account_type || user.role || 'user').charAt(0).toUpperCase() + (user.account_type || user.role || 'user').slice(1));
-  set('dash-balance',      '$' + (parseFloat(user.balance) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-  // Lease/Translation counts stored in localStorage session
-  const counts = JSON.parse(localStorage.getItem('lexora_session_counts') || '{"leases":0,"translations":0}');
-  set('dash-leases',       counts.leases);
-  set('dash-translations', counts.translations);
-}
-
-// ============================================
-// NAVIGATION FUNCTIONS
-// ============================================
-
-function toggleMenu(menuId) {
-  const menu = document.getElementById(menuId);
-  if (menu) {
-    menu.classList.toggle('open');
-    const allMenus = ['subMenu', 'userSubMenu'];
-    allMenus.forEach(id => {
-      if (id !== menuId) {
-        const otherMenu = document.getElementById(id);
-        if (otherMenu) otherMenu.classList.remove('open');
-      }
-    });
-  }
-}
-
-function closeAllMenus(event) {
-  if (event) {
-    const servicesMenu = document.getElementById('services-menu');
-    const userProfileWrapper = document.querySelector('.user-profile-wrapper');
-    if (servicesMenu?.contains(event.target) || userProfileWrapper?.contains(event.target)) {
-      return;
-    }
-  }
-  const subMenu = document.getElementById('subMenu');
-  const userSubMenu = document.getElementById('userSubMenu');
-  if (subMenu) subMenu.classList.remove('open');
-  if (userSubMenu) userSubMenu.classList.remove('open');
-}
-
-const SECTION_LABELS = {
-  dashboard:   'Dashboard',
-  lease:       'Services / Lease Abstraction',
-  translation: 'Services / Translation',
-  payments:    'Payments',
-  contact:     'Contact Us',
-  plans:       'Plan and Offer',
-  api:         'API',
-  admin:       'Admin',
-  profile:     'Profile'
-};
-
-function showSection(sectionId) {
-  document.querySelectorAll('.content-section').forEach(function(s) {
-    s.classList.remove('active');
-  });
-
-  const target = document.getElementById('section-' + sectionId);
-  if (target) {
-    target.classList.add('active');
-    if (sectionId === 'admin') {
-      showAdminTab('files');
-    }
-    if (sectionId === 'profile') {
-      loadProfile();
-    }
-    if (sectionId === 'plans') {
-      loadPlans(function() { renderPlansSection(); });
-    }
-    if (sectionId === 'lease' || sectionId === 'translation') {
-      loadTemplateDropdown();
-    }
-    if (sectionId === 'payments') {
-      loadPaymentData();
-      loadTransactions();
-    }
-  }
-
-  // Update header subtext
-  const label = document.getElementById('headerSectionLabel');
-  if (label) {
-    label.textContent = SECTION_LABELS[sectionId] || sectionId;
-  }
-
-  closeAllMenus();
-  const mainContent = document.querySelector('.main-content');
-  if (mainContent) mainContent.scrollTop = 0;
-}
-
-// ============================================
-// ADMIN FUNCTIONS
-// ============================================
-
-function showAdminTab(tab) {
-  loadAdminFiles();
-}
-
-function loadRules() {
-  const rulesData = {
-    version: 3,
-    exportedAt: "2026-06-22T14:13:26.989Z",
-    schema: "lexora_master_rules",
-    pending: [
-      {
-        id: "pending_field_1",
-        fieldId: "tenant_name",
-        ruleType: "mapping",
-        ruleText: "Extract tenant name from the lease document (pending review).",
-        confidence: 0.85,
-        status: "pending"
-      },
-      {
-        id: "pending_field_2",
-        fieldId: "lease_term_years",
-        ruleType: "logic",
-        ruleText: "Extract lease term in years (pending review).",
-        confidence: 0.78,
-        status: "pending"
-      }
-    ],
-    approved: [
-      {
-        id: "approved_field_1",
-        fieldId: "base_rent",
-        ruleType: "format",
-        ruleText: "Extract base rent from the lease document.",
-        confidence: 0.95,
-        status: "approved"
-      },
-      {
-        id: "approved_field_2",
-        fieldId: "commencement_date",
-        ruleType: "format",
-        ruleText: "Extract lease commencement date.",
-        confidence: 0.92,
-        status: "approved"
-      },
-      {
-        id: "approved_field_3",
-        fieldId: "expiry_date",
-        ruleType: "format",
-        ruleText: "Extract lease expiry date.",
-        confidence: 0.91,
-        status: "approved"
-      }
-    ],
-    totalRules: 5
-  };
-
-  const allRules = [...rulesData.pending, ...rulesData.approved];
-  const tbody = document.getElementById('rulesTableBody');
-  if (!tbody) return;
-  
-  tbody.innerHTML = '';
-  
-  allRules.forEach(rule => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td style="padding:0.6rem 1rem; border-bottom:1px solid #f1f5f9; color:#1e293b; font-weight:500;">${rule.id}</td>
-      <td style="padding:0.6rem 1rem; border-bottom:1px solid #f1f5f9;"><input type="text" value="${rule.fieldId}" style="border:1px solid #e2e8f0; border-radius:6px; padding:0.3rem 0.6rem; width:100%; font-size:0.85rem;" /></td>
-      <td style="padding:0.6rem 1rem; border-bottom:1px solid #f1f5f9;">
-        <select style="border:1px solid #e2e8f0; border-radius:6px; padding:0.3rem 0.6rem; font-size:0.85rem; width:100%;">
-          <option value="format" ${rule.ruleType === 'format' ? 'selected' : ''}>format</option>
-          <option value="mapping" ${rule.ruleType === 'mapping' ? 'selected' : ''}>mapping</option>
-          <option value="logic" ${rule.ruleType === 'logic' ? 'selected' : ''}>logic</option>
-        </select>
-      </td>
-      <td style="padding:0.6rem 1rem; border-bottom:1px solid #f1f5f9;"><input type="text" value="${rule.ruleText}" style="border:1px solid #e2e8f0; border-radius:6px; padding:0.3rem 0.6rem; width:100%; font-size:0.85rem;" /></td>
-      <td style="padding:0.6rem 1rem; border-bottom:1px solid #f1f5f9;"><input type="number" value="${rule.confidence}" step="0.01" min="0" max="1" style="border:1px solid #e2e8f0; border-radius:6px; padding:0.3rem 0.6rem; width:80px; font-size:0.85rem;" /></td>
-      <td style="padding:0.6rem 1rem; border-bottom:1px solid #f1f5f9;">
-        <select style="border:1px solid #e2e8f0; border-radius:6px; padding:0.3rem 0.6rem; font-size:0.85rem;">
-          <option value="pending" ${rule.status === 'pending' ? 'selected' : ''}>pending</option>
-          <option value="approved" ${rule.status === 'approved' ? 'selected' : ''}>approved</option>
-        </select>
-      </td>
-    `;
-    tbody.appendChild(tr);
-  });
-}
-
-function saveEmailSettings() {
-  // SMTP is managed via environment variables only — no file saving
-  showModal('info',
-    '⚙️ SMTP is managed via Render Environment Variables.\n\n' +
-    'To update SMTP settings:\n' +
-    '1. Open Render Dashboard\n' +
-    '2. Go to your service → Environment\n' +
-    '3. Update: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM, SMTP_RECEIVER\n' +
-    '4. Redeploy the service',
-    { onConfirm: function() {} }
-  );
-}
-
-function reloadSettings() {
-  loadEmailSettings(true);
-}
-
-function loadEmailSettings(showMsg) {
-  // Load current SMTP config from env vars (via server)
-  fetch('/api/smtp?_=' + Date.now())
-    .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(data) {
-      if (!data) return;
-      const set = function(id, val) { const el = document.getElementById(id); if (el) el.value = val != null ? val : ''; };
-      set('smtpHost',     data.host           || '');
-      set('smtpPort',     data.port           || '587');
-      set('smtpUsername', data.username       || '');
-      set('smtpPassword', data.password       || '');  // returns •••••••• masked
-      set('smtpSender',   data.sender_email   || '');
-      set('smtpExpiry',   data.expiry_minutes || '4');
-      set('smtpReceiver', data.receiver_email || '');
-      const tlsEl = document.getElementById('smtpTls');
-      if (tlsEl) tlsEl.checked = (data.use_tls !== false);
-      // Cache expiry_minutes for OTP timer
-      localStorage.setItem('lexora_smtp', JSON.stringify({ expiry_minutes: data.expiry_minutes || 4 }));
-      // Show status badge
-      var badge = document.getElementById('smtpEnvBadge');
-      if (badge) {
-        badge.textContent = data._configured ? '✓ Configured via Render Env Vars' : '⚠ SMTP_HOST not set in environment';
-        badge.style.color = data._configured ? '#16a34a' : '#dc2626';
-      }
-      if (showMsg) showModal('info', data._configured
-        ? '✓ SMTP active — Brevo/Render env vars loaded.'
-        : '⚠ SMTP not configured. Set SMTP_HOST in Render environment variables.',
-        { onConfirm: function() {} });
-    })
-    .catch(function() {
-      if (showMsg) showModal('warning', 'Server not reachable. Check server is running.');
-    });
-}
-
-function sendTestEmail() {
-  const email = (document.getElementById('testEmail')?.value || '').trim();
-  if (!email) { showModal('warning', 'Please enter a test email address.'); return; }
-
-  fetch('/api/email/test', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ to: email })
-  }).then(function(r) { return r.json(); })
-    .then(function(res) {
-      if (res.success) {
-        showModal('success', 'Test email sent to ' + email + ' ✓', { onConfirm: function() {} });
-      } else {
-        showModal('warning', 'Failed: ' + (res.error || 'Check SMTP settings.'));
-      }
-    })
-    .catch(function() {
-      showModal('warning', 'Server is not running. Start server to send emails.');
-    });
-}
-
-function toggleSmtpPwd() {
-  const inp  = document.getElementById('smtpPassword');
-  const icon = document.getElementById('smtpPwdEye');
-  if (!inp) return;
-  inp.type   = inp.type === 'password' ? 'text' : 'password';
-  if (icon)  icon.className = inp.type === 'password' ? 'fas fa-eye' : 'fas fa-eye-slash';
-}
-
-function saveRules() {
-  const rows = document.querySelectorAll('#rulesTableBody tr');
-  const rules = [];
-  rows.forEach(row => {
-    const inputs = row.querySelectorAll('input, select');
-    if (inputs.length >= 5) {
-      rules.push({
-        fieldId: inputs[0].value,
-        ruleType: inputs[1].value,
-        ruleText: inputs[2].value,
-        confidence: parseFloat(inputs[3].value),
-        status: inputs[4].value
-      });
-    }
-  });
-  
-  console.log('Rules saved:', rules);
-  showModal('success', 'Rules saved successfully!');
-}
-
-// ============================================
-// FILES AND FOLDER FUNCTIONS
-// ============================================
-
-let fileData = [
-  {
-    id: 1,
-    name: 'company.json',
-    type: 'json',
-    size: '0.8 KB',
-    modified: '2026-06-25 14:30:00',
-    content: { name: 'Lexora AI Solutions', website: 'https://lexora.ai' }
-  },
-  {
-    id: 2,
-    name: 'rules.json',
-    type: 'json',
-    size: '3.8 KB',
-    modified: '2026-06-24 10:15:00',
-    content: {
-      version: 3,
-      exportedAt: "2026-06-22T14:13:26.989Z",
-      schema: "lexora_master_rules",
-      totalRules: 5
-    }
-  },
-  {
-    id: 3,
-    name: 'transaction_history.json',
-    type: 'json',
-    size: '5.2 KB',
-    modified: '2026-06-23 16:45:00',
-    content: {
-      users: [
-        { email: "himmat4f1@gmail.com", transactions: [] }
-      ]
-    }
-  },
-  {
-    id: 4,
-    name: 'document_001.pdf',
-    type: 'pdf',
-    size: '1.8 MB',
-    modified: '2026-06-22 09:00:00'
-  },
-  {
-    id: 5,
-    name: 'lease_abstraction_template.docx',
-    type: 'docx',
-    size: '456 KB',
-    modified: '2026-06-21 11:20:00'
-  },
-  {
-    id: 6,
-    name: 'translation_export.xlsx',
-    type: 'xlsx',
-    size: '234 KB',
-    modified: '2026-06-20 15:00:00'
-  },
-  {
-    id: 7,
-    name: 'backup_20260619.zip',
-    type: 'zip',
-    size: '12.5 MB',
-    modified: '2026-06-19 13:30:00'
-  }
-];
-
-let selectedFiles = new Set();
-let currentFileId = fileData.length + 1;
-
-function loadFiles() {
-  const tbody = document.getElementById('filesTableBody');
-  if (!tbody) return;
-  
-  tbody.innerHTML = '';
-  
-  fileData.forEach(file => {
-    const tr = document.createElement('tr');
-    const isSelected = selectedFiles.has(file.id);
-    
-    let actionsHTML = `
-      <button onclick="viewFile(${file.id})" style="padding:0.2rem 0.6rem; background:#3b82f6; color:white; border:none; border-radius:4px; font-size:0.75rem; cursor:pointer; margin-right:0.3rem;"><i class="fas fa-eye"></i></button>
-      <button onclick="editFile(${file.id})" style="padding:0.2rem 0.6rem; background:#f59e0b; color:white; border:none; border-radius:4px; font-size:0.75rem; cursor:pointer; margin-right:0.3rem;"><i class="fas fa-edit"></i></button>
-      <button onclick="downloadFileById(${file.id})" style="padding:0.2rem 0.6rem; background:#22c55e; color:white; border:none; border-radius:4px; font-size:0.75rem; cursor:pointer; margin-right:0.3rem;"><i class="fas fa-download"></i></button>
-    `;
-    
-    if (file.type === 'json' && file.content) {
-      actionsHTML += `<button onclick="showJsonContent(${file.id})" style="padding:0.2rem 0.6rem; background:#8b5cf6; color:white; border:none; border-radius:4px; font-size:0.75rem; cursor:pointer;"><i class="fas fa-table"></i></button>`;
-    }
-    
-    tr.innerHTML = `
-      <td style="padding:0.6rem 1rem; border-bottom:1px solid #f1f5f9; text-align:center;">
-        <input type="checkbox" class="file-checkbox" data-id="${file.id}" ${isSelected ? 'checked' : ''} onchange="toggleFile(${file.id})" />
-      </td>
-      <td style="padding:0.6rem 1rem; border-bottom:1px solid #f1f5f9; color:#1e293b;">
-        <i class="fas ${getFileIcon(file.type)}" style="margin-right:0.5rem; color:#64748b;"></i>
-        ${file.name}
-      </td>
-      <td style="padding:0.6rem 1rem; border-bottom:1px solid #f1f5f9; color:#475569;">${file.type.toUpperCase()}</td>
-      <td style="padding:0.6rem 1rem; border-bottom:1px solid #f1f5f9; color:#475569;">${file.size}</td>
-      <td style="padding:0.6rem 1rem; border-bottom:1px solid #f1f5f9; color:#475569;">${file.modified}</td>
-      <td style="padding:0.6rem 1rem; border-bottom:1px solid #f1f5f9;">${actionsHTML}</td>
-    `;
-    tbody.appendChild(tr);
-  });
-}
-
-function getFileIcon(type) {
-  const icons = {
-    'json': 'fa-code',
-    'pdf': 'fa-file-pdf',
-    'docx': 'fa-file-word',
-    'xlsx': 'fa-file-excel',
-    'zip': 'fa-file-archive',
-    'txt': 'fa-file-alt',
-    'jpg': 'fa-file-image',
-    'png': 'fa-file-image'
-  };
-  return icons[type] || 'fa-file';
-}
-
-function toggleFile(id) {
-  if (selectedFiles.has(id)) {
-    selectedFiles.delete(id);
-  } else {
-    selectedFiles.add(id);
-  }
-  updateSelectAllState();
-}
-
-function toggleAllCheckboxes() {
-  const selectAll = document.getElementById('selectAll');
-  const checkboxes = document.querySelectorAll('.file-checkbox');
-  checkboxes.forEach(cb => {
-    cb.checked = selectAll.checked;
-    const id = parseInt(cb.dataset.id);
-    if (selectAll.checked) {
-      selectedFiles.add(id);
-    } else {
-      selectedFiles.delete(id);
-    }
-  });
-}
-
-function updateSelectAllState() {
-  const checkboxes = document.querySelectorAll('.file-checkbox');
-  const selectAll = document.getElementById('selectAll');
-  if (!selectAll) return;
-  const checkedCount = document.querySelectorAll('.file-checkbox:checked').length;
-  selectAll.checked = checkedCount === checkboxes.length && checkboxes.length > 0;
-}
-
-function addFile() {
-  const modalHTML = `
-    <div style="text-align: left; font-size: 0.9rem;">
-      <div style="display: flex; flex-direction: column; gap: 1rem;">
-        <div style="display: flex; flex-direction: column; gap: 0.3rem;">
-          <label style="font-weight: 600; font-size: 0.85rem; color: #1e293b;">File Name</label>
-          <input type="text" id="newFileName" placeholder="Enter file name..." style="width:100%; padding:0.6rem 1rem; border:2px solid #e2e8f0; border-radius:10px; font-size:0.9rem;" />
-        </div>
-        <div style="display: flex; flex-direction: column; gap: 0.3rem;">
-          <label style="font-weight: 600; font-size: 0.85rem; color: #1e293b;">File Type</label>
-          <select id="newFileType" style="width:100%; padding:0.6rem 1rem; border:2px solid #e2e8f0; border-radius:10px; font-size:0.9rem;">
-            <option value="json">JSON</option>
-            <option value="txt">TXT</option>
-            <option value="pdf">PDF</option>
-            <option value="docx">DOCX</option>
-            <option value="xlsx">XLSX</option>
-            <option value="zip">ZIP</option>
-          </select>
-        </div>
-        <div style="display: flex; flex-direction: column; gap: 0.3rem;">
-          <label style="font-weight: 600; font-size: 0.85rem; color: #1e293b;">Content (for JSON files)</label>
-          <textarea id="newFileContent" placeholder="Enter JSON content..." style="width:100%; padding:0.6rem 1rem; border:2px solid #e2e8f0; border-radius:10px; font-size:0.9rem; min-height:100px; font-family:monospace;"></textarea>
-        </div>
-      </div>
-    </div>
-  `;
-
-  showModal('info', modalHTML, {
-    title: '📁 Add New File',
-    icon: '📁',
-    closeOnBackdrop: false,
-    buttons: [
-      { label: 'Create', class: 'btn-success', callback: function() {
-        const name = document.getElementById('newFileName').value.trim();
-        const type = document.getElementById('newFileType').value;
-        const content = document.getElementById('newFileContent').value.trim();
-        
-        if (!name) {
-          showModal('warning', 'Please enter a file name.');
-          return;
-        }
-        
-        const newFile = {
-          id: currentFileId++,
-          name: name.includes('.') ? name : `${name}.${type}`,
-          type: type,
-          size: '0 KB',
-          modified: new Date().toLocaleString('en-US', { 
-            year: 'numeric', 
-            month: '2-digit', 
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit'
-          }).replace(/\//g, '-')
-        };
-        
-        if (type === 'json' && content) {
-          try {
-            newFile.content = JSON.parse(content);
-          } catch(e) {
-            showModal('warning', 'Invalid JSON content. Please check your JSON format.');
-            return;
-          }
-        } else if (type === 'json') {
-          newFile.content = {};
-        }
-        
-        fileData.push(newFile);
-        loadFiles();
-        closeModal();
-        showModal('success', `File "${newFile.name}" created successfully!`);
-      }},
-      { label: 'Cancel', class: 'btn-secondary', callback: function() { closeModal(); } }
-    ]
-  });
-}
-
-function deleteSelected() {
-  if (selectedFiles.size === 0) {
-    showModal('warning', 'Please select at least one file to delete.');
-    return;
-  }
-  
-  showModal('confirm', `Are you sure you want to delete ${selectedFiles.size} file(s)?`, {
-    onConfirm: function() {
-      fileData = fileData.filter(f => !selectedFiles.has(f.id));
-      selectedFiles.clear();
-      loadFiles();
-      showModal('success', 'Selected files deleted successfully!');
-    },
-    onCancel: function() {
-      // Do nothing
-    }
-  });
-}
-
-function downloadSelected() {
-  if (selectedFiles.size === 0) {
-    showModal('warning', 'Please select at least one file to download.');
-    return;
-  }
-  
-  const selected = fileData.filter(f => selectedFiles.has(f.id));
-  const names = selected.map(f => f.name).join(', ');
-  showModal('success', `📥 Downloading ${selected.length} file(s):\n${names}`);
-}
-
-function showFile() {
-  if (selectedFiles.size === 0) {
-    showModal('warning', 'Please select a file to view.');
-    return;
-  }
-  
-  if (selectedFiles.size > 1) {
-    showModal('warning', 'Please select only one file to view.');
-    return;
-  }
-  
-  const fileId = Array.from(selectedFiles)[0];
-  const file = fileData.find(f => f.id === fileId);
-  
-  if (file) {
-    showFileDetails(file);
-  }
-}
-
-function showFileDetails(file) {
-  let contentHTML = `
-    <div style="text-align: left; font-size: 0.9rem;">
-      <p><strong>Name:</strong> ${file.name}</p>
-      <p><strong>Type:</strong> ${file.type.toUpperCase()}</p>
-      <p><strong>Size:</strong> ${file.size}</p>
-      <p><strong>Modified:</strong> ${file.modified}</p>
-    </div>
-  `;
-  
-  if (file.type === 'json' && file.content) {
-    contentHTML += `
-      <div style="margin-top: 1rem; border-top: 1px solid #eef2f6; padding-top: 1rem;">
-        <p><strong>Content:</strong></p>
-        <pre style="background: #f8fafc; padding: 1rem; border-radius: 8px; overflow-x: auto; font-size: 0.8rem; max-height: 300px; overflow-y: auto;">${JSON.stringify(file.content, null, 2)}</pre>
-      </div>
-    `;
-  }
-  
-  showModal('info', contentHTML, {
-    title: `📄 ${file.name}`,
-    icon: '📄',
-    closeOnBackdrop: true
-  });
-}
-
-function viewFile(id) {
-  const file = fileData.find(f => f.id === id);
-  if (file) {
-    showFileDetails(file);
-  }
-}
-
-function editFile(id) {
-  const file = fileData.find(f => f.id === id);
-  if (!file) return;
-  
-  const modalHTML = `
-    <div style="text-align: left; font-size: 0.9rem;">
-      <div style="display: flex; flex-direction: column; gap: 1rem;">
-        <div style="display: flex; flex-direction: column; gap: 0.3rem;">
-          <label style="font-weight: 600; font-size: 0.85rem; color: #1e293b;">File Name</label>
-          <input type="text" id="editFileName" value="${file.name}" style="width:100%; padding:0.6rem 1rem; border:2px solid #e2e8f0; border-radius:10px; font-size:0.9rem;" />
-        </div>
-        ${file.type === 'json' ? `
-        <div style="display: flex; flex-direction: column; gap: 0.3rem;">
-          <label style="font-weight: 600; font-size: 0.85rem; color: #1e293b;">Content (JSON)</label>
-          <textarea id="editFileContent" style="width:100%; padding:0.6rem 1rem; border:2px solid #e2e8f0; border-radius:10px; font-size:0.9rem; min-height:100px; font-family:monospace;">${file.content ? JSON.stringify(file.content, null, 2) : ''}</textarea>
-        </div>
-        ` : ''}
-      </div>
-    </div>
-  `;
-
-  showModal('info', modalHTML, {
-    title: `✏️ Edit ${file.name}`,
-    icon: '✏️',
-    closeOnBackdrop: false,
-    buttons: [
-      { label: 'Save', class: 'btn-success', callback: function() {
-        const newName = document.getElementById('editFileName').value.trim();
-        if (!newName) {
-          showModal('warning', 'Please enter a file name.');
-          return;
-        }
-        
-        file.name = newName;
-        
-        if (file.type === 'json') {
-          const content = document.getElementById('editFileContent').value.trim();
-          if (content) {
-            try {
-              file.content = JSON.parse(content);
-            } catch(e) {
-              showModal('warning', 'Invalid JSON content. Please check your JSON format.');
-              return;
+(function() {
+            "use strict";
+
+            // ============================================================
+            // 1. JSON CONFIGURATION
+            // ============================================================
+            let MENU_CONFIG = null;
+
+            // ============================================================
+            // 2. SERVICE FILES DATA
+            // ============================================================
+            let leaseFiles = [];
+            let translationFiles = [];
+            let nextLeaseFileId = 1;
+            let nextTranslationFileId = 1;
+
+            // ============================================================
+            // 3. PAYMENT METHODS DATA
+            // ============================================================
+            let paymentMethods = [];
+            let nextPaymentId = 5;
+
+            // ============================================================
+            // 4. PAYMENT HISTORY DATA
+            // ============================================================
+            let paymentHistory = [];
+            let nextTransactionId = 11;
+
+            // ============================================================
+            // 5. API KEYS DATA
+            // ============================================================
+            let apiKeys = [];
+            let nextApiKeyId = 1;
+
+            // ============================================================
+            // 6. SERVICES API REFERENCE DATA
+            // ============================================================
+            let SERVICES_API_DATA = null;
+
+            // ============================================================
+            // 6b. COMPANY DETAILS (logo, name, address, contact info, ...)
+            // ============================================================
+            let COMPANY_INFO = null;
+
+            // ============================================================
+            // 7. CONTACT FORM SUBMISSIONS DATA
+            // ============================================================
+            let contactSubmissions = [];
+
+            // ============================================================
+            // 8. USER / PROFILE DATA
+            // ============================================================
+            // There is no more wholesale "USERS" array loaded client-side -
+            // users.json holds plaintext passwords and verification codes,
+            // so it's blocked from static serving and from the generic
+            // /api/data/<name> API entirely (see py/server.py). The only
+            // user record the browser ever sees is the CURRENTLY
+            // authenticated one, fetched fresh via GET /api/auth/me after
+            // login - see the AUTH section further down.
+            let CURRENT_USER_ID = null;
+            let profileData = null;
+
+            // Simulated server-side storage layout per the project's folder
+            // convention:
+            //   Users/{userId}/Profile/
+            //   Users/{userId}/Clients/Default/                 <- input files
+            //   Users/{userId}/Clients/Default/Template/        <- output templates
+            // A static front-end can't actually write to the filesystem, so
+            // these paths are used as descriptive labels (Activity Log entries,
+            // tooltips) ready to be wired to a real backend later.
+            function getUserClientFilePath(userId, fileName) {
+                return `Users/${userId}/Clients/Default/${fileName}`;
             }
-          }
-        }
-        
-        file.modified = new Date().toLocaleString('en-US', { 
-          year: 'numeric', 
-          month: '2-digit', 
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit'
-        }).replace(/\//g, '-');
-        
-        loadFiles();
-        closeModal();
-        showModal('success', `File "${file.name}" updated successfully!`);
-      }},
-      { label: 'Cancel', class: 'btn-secondary', callback: function() { closeModal(); } }
-    ]
-  });
-}
-
-function downloadFileById(id) {
-  const file = fileData.find(f => f.id === id);
-  if (file) {
-    showModal('success', `📥 Downloading: ${file.name}`);
-  }
-}
-
-function showJsonContent(id) {
-  const file = fileData.find(f => f.id === id);
-  if (!file || !file.content) {
-    showModal('warning', 'No JSON content available for this file.');
-    return;
-  }
-  
-  let tableHTML = `
-    <div style="max-height: 400px; overflow-y: auto; font-size: 0.85rem;">
-      <table style="width:100%; border-collapse:collapse; border:1px solid #eef2f6;">
-        <thead style="background:#f1f5f9; position:sticky; top:0; z-index:10;">
-          <tr>
-            <th style="padding:0.5rem 0.8rem; text-align:left; border-bottom:2px solid #e2e8f0;">Key</th>
-            <th style="padding:0.5rem 0.8rem; text-align:left; border-bottom:2px solid #e2e8f0;">Value</th>
-          </tr>
-        </thead>
-        <tbody>
-  `;
-  
-  function renderObject(obj, prefix = '') {
-    for (const key in obj) {
-      if (typeof obj[key] === 'object' && obj[key] !== null) {
-        tableHTML += `
-          <tr>
-            <td style="padding:0.4rem 0.8rem; border-bottom:1px solid #f1f5f9; font-weight:600; color:#1e293b;">${prefix}${key}</td>
-            <td style="padding:0.4rem 0.8rem; border-bottom:1px solid #f1f5f9; color:#475569;">{...}</td>
-          </tr>
-        `;
-        renderObject(obj[key], `${prefix}${key}.`);
-      } else {
-        const value = typeof obj[key] === 'string' ? obj[key] : JSON.stringify(obj[key]);
-        tableHTML += `
-          <tr>
-            <td style="padding:0.4rem 0.8rem; border-bottom:1px solid #f1f5f9; color:#1e293b;">${prefix}${key}</td>
-            <td style="padding:0.4rem 0.8rem; border-bottom:1px solid #f1f5f9; color:#475569; word-break:break-all;">${value}</td>
-          </tr>
-        `;
-      }
-    }
-  }
-  
-  renderObject(file.content);
-  
-  tableHTML += `
-        </tbody>
-      </table>
-    </div>
-    <div style="margin-top: 0.5rem; font-size: 0.8rem; color: #94a3b8; text-align: right;">
-      <button onclick="editJsonContent(${file.id})" style="padding:0.3rem 1rem; background:#f59e0b; color:white; border:none; border-radius:6px; cursor:pointer; font-size:0.8rem;"><i class="fas fa-edit"></i> Edit JSON</button>
-    </div>
-  `;
-  
-  showModal('info', tableHTML, {
-    title: `📊 ${file.name} - JSON Content`,
-    icon: '📊',
-    closeOnBackdrop: true
-  });
-}
-
-function editJsonContent(id) {
-  const file = fileData.find(f => f.id === id);
-  if (!file) return;
-  
-  const modalHTML = `
-    <div style="text-align: left; font-size: 0.9rem;">
-      <div style="display: flex; flex-direction: column; gap: 1rem;">
-        <div style="display: flex; flex-direction: column; gap: 0.3rem;">
-          <label style="font-weight: 600; font-size: 0.85rem; color: #1e293b;">Edit JSON Content</label>
-          <textarea id="editJsonContentText" style="width:100%; padding:0.6rem 1rem; border:2px solid #e2e8f0; border-radius:10px; font-size:0.9rem; min-height:200px; font-family:monospace;">${file.content ? JSON.stringify(file.content, null, 2) : ''}</textarea>
-        </div>
-      </div>
-    </div>
-  `;
-
-  showModal('info', modalHTML, {
-    title: `✏️ Edit JSON - ${file.name}`,
-    icon: '✏️',
-    closeOnBackdrop: false,
-    buttons: [
-      { label: 'Save JSON', class: 'btn-success', callback: function() {
-        const content = document.getElementById('editJsonContentText').value.trim();
-        if (!content) {
-          showModal('warning', 'Please enter valid JSON content.');
-          return;
-        }
-        try {
-          file.content = JSON.parse(content);
-          file.modified = new Date().toLocaleString('en-US', { 
-            year: 'numeric', 
-            month: '2-digit', 
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit'
-          }).replace(/\//g, '-');
-          loadFiles();
-          closeModal();
-          showModal('success', 'JSON content updated successfully!');
-        } catch(e) {
-          showModal('warning', 'Invalid JSON format. Please check your JSON.');
-        }
-      }},
-      { label: 'Cancel', class: 'btn-secondary', callback: function() { closeModal(); } }
-    ]
-  });
-}
-
-// ============================================
-// PROFILE & USER DB FUNCTIONS
-// ============================================
-
-const PROFILE_LOG_KEY = 'lexora_profile_log';
-
-// ── Get current user object from localStorage DB ──
-function getCurrentUser() {
-  const session = (typeof getSession === 'function') ? getSession() : null;
-  const users = JSON.parse(localStorage.getItem('lexora_users') || '[]');
-  if (session) return users.find(u => u.id === session.userId) || null;
-  return users[0] || null;
-}
-
-// ── Save updates back to the localStorage DB ──
-function persistUserUpdate(updates) {
-  const session = (typeof getSession === 'function') ? getSession() : null;
-  const users   = JSON.parse(localStorage.getItem('lexora_users') || '[]');
-  const idx     = session ? users.findIndex(u => u.id === session.userId) : 0;
-  if (idx === -1) return null;
-  const oldUser = JSON.parse(JSON.stringify(users[idx]));
-  users[idx] = Object.assign({}, users[idx], updates);
-  // 1. Instant update in browser
-  localStorage.setItem('lexora_users', JSON.stringify(users));
-  // 2. Persist to users.json on disk (async, fire-and-forget)
-  saveUsersToDisk(users);
-  return { oldUser, newUser: users[idx] };
-}
-
-// ── Write users array to disk via server API ──────────────────────────────
-function saveUsersToDisk(users) {
-  // Strip profile_photo_data (base64 blob) — too large for disk JSON
-  const forDisk = users.map(function(u) {
-    const copy = Object.assign({}, u);
-    delete copy.profile_photo_data;
-    return copy;
-  });
-  fetch('/api/users/save', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ users: forDisk })
-  }).then(function(r) {
-    if (r.ok) console.log('[Lexora] users.json saved to disk ✓');
-  }).catch(function(err) {
-    console.warn('[Lexora] Disk sync skipped (server offline):', err.message);
-  });
-}
-
-// ── On app start: pull latest users.json from disk into localStorage ─────────
-// This ensures any server-side edits are picked up on next page load
-function syncUsersFromDisk() {
-  return fetch('/db/users.json?_=' + Date.now())
-    .then(function(r) { return r.ok ? r.json() : Promise.reject('not ok'); })
-    .then(function(data) {
-      if (!data || !Array.isArray(data.users) || data.users.length === 0) return;
-      const localUsers = JSON.parse(localStorage.getItem('lexora_users') || '[]');
-      // Disk = source of truth for fields; localStorage keeps photo blob
-      const merged = data.users.map(function(du) {
-        const lu = localUsers.find(function(u) { return u.id === du.id; });
-        return Object.assign({}, du, {
-          profile_photo_data: lu ? (lu.profile_photo_data || '') : ''
-        });
-      });
-      localStorage.setItem('lexora_users', JSON.stringify(merged));
-      console.log('[Lexora] Synced from disk: ' + merged.length + ' user(s)');
-    })
-    .catch(function() {
-      console.warn('[Lexora] Using localStorage (server not reachable).');
-    });
-}
-
-// ── Activity log ──────────────────────────────────
-function addActivityLog(changes) {
-  const session = (typeof getSession === 'function') ? getSession() : {};
-  const log = JSON.parse(localStorage.getItem(PROFILE_LOG_KEY) || '[]');
-  const now = new Date().toISOString();
-  changes.forEach(function(c) {
-    log.unshift({
-      id:        'log_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
-      userId:    session ? session.userId : 'unknown',
-      timestamp: now,
-      field:     c.field,
-      oldValue:  c.oldValue,
-      newValue:  c.newValue
-    });
-  });
-  localStorage.setItem(PROFILE_LOG_KEY, JSON.stringify(log.slice(0, 100)));
-  renderActivityLog();
-}
-
-function maskValue(field, val) {
-  if (!val && val !== 0) return '—';
-  const f = (field || '').toLowerCase();
-  if (f.includes('password') || f.includes('apikey') || f.includes('api key')) return '••••••••';
-  if (f.includes('photo')) return val ? '[photo]' : '[removed]';
-  return String(val);
-}
-
-function renderActivityLog() {
-  const tbody = document.getElementById('activityLogBody');
-  if (!tbody) return;
-  const log = JSON.parse(localStorage.getItem(PROFILE_LOG_KEY) || '[]');
-  if (log.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:1.5rem 0;">No changes recorded yet.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = log.map(function(e) {
-    const ts = new Date(e.timestamp).toLocaleString('en-IN', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit' });
-    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
-      '<td style="padding:0.5rem 1rem;white-space:nowrap;font-size:0.82rem;color:#64748b;">' + ts + '</td>' +
-      '<td style="padding:0.5rem 1rem;font-weight:600;color:#1e293b;">' + (e.field || '') + '</td>' +
-      '<td style="padding:0.5rem 1rem;color:#ef4444;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + maskValue(e.field, e.oldValue) + '</td>' +
-      '<td style="padding:0.5rem 1rem;color:#22c55e;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + maskValue(e.field, e.newValue) + '</td>' +
-    '</tr>';
-  }).join('');
-}
-
-function clearActivityLog() {
-  localStorage.removeItem(PROFILE_LOG_KEY);
-  renderActivityLog();
-}
-
-// ── Header avatar real-time update ───────────────
-function syncHeaderAvatar(base64) {
-  const circle  = document.getElementById('headerAvatarCircle');
-  const icon    = document.getElementById('headerAvatarIcon');
-  const img     = document.getElementById('headerAvatarImg');
-  if (!circle) return;
-  if (base64) {
-    if (icon) icon.style.display = 'none';
-    if (img)  { img.src = base64; img.style.display = 'block'; }
-  } else {
-    if (img)  { img.src = ''; img.style.display = 'none'; }
-    if (icon) icon.style.display = '';
-  }
-}
-
-// ── Photo upload — real-time sync + save to disk ────────────────
-function handlePhotoUpload(event) {
-  const file = event.target.files[0];
-  if (!file) return;
-  if (file.size > 5 * 1024 * 1024) {
-    showModal('warning', 'Photo size must be under 5MB.');
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = function(e) {
-    const base64 = e.target.result;
-
-    // 1. Update profile card immediately
-    const img = document.getElementById('profilePhotoImg');
-    const ph  = document.getElementById('profilePhotoPlaceholder');
-    if (img) { img.src = base64; img.style.display = 'block'; }
-    if (ph)  ph.style.display = 'none';
-
-    // 2. REAL-TIME header sync
-    syncHeaderAvatar(base64);
-
-    // 3. Save base64 to localStorage (for display between sessions)
-    const user   = getCurrentUser();
-    const oldVal = user ? (user.profile_photo_data ? '[photo]' : '') : '';
-    persistUserUpdate({ profile_photo_data: base64 });
-
-    // 4. Save actual image file to disk via server API
-    if (user) {
-      const ext = file.name.split('.').pop() || 'jpg';
-      fetch('/api/users/photo/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.id, photoData: base64, extension: ext })
-      }).then(function(r) { return r.json(); })
-        .then(function(res) {
-          if (res.success) {
-            // Update profile_photo path in user record
-            persistUserUpdate({ profile_photo: res.path });
-            console.log('[Lexora] Photo saved to disk:', res.path);
-          }
-        })
-        .catch(function() {
-          console.warn('[Lexora] Photo disk save skipped (server offline)');
-        });
-    }
-
-    addActivityLog([{ field: 'Profile Photo', oldValue: oldVal, newValue: '[photo]' }]);
-  };
-  reader.readAsDataURL(file);
-}
-
-function removePhoto() {
-  const img   = document.getElementById('profilePhotoImg');
-  const ph    = document.getElementById('profilePhotoPlaceholder');
-  const input = document.getElementById('profilePhotoInput');
-  if (img)   { img.src = ''; img.style.display = 'none'; }
-  if (ph)    ph.style.display = 'block';
-  if (input) input.value = '';
-  syncHeaderAvatar(null);
-  persistUserUpdate({ profile_photo_data: '' });
-  addActivityLog([{ field: 'Profile Photo', oldValue: '[photo]', newValue: '' }]);
-}
-
-// ── Password toggle (reused for profile fields) ──
-function togglePassword(fieldId) {
-  const field = document.getElementById(fieldId);
-  const icon  = document.getElementById(fieldId + 'Icon');
-  if (!field || !icon) return;
-  if (field.type === 'password') {
-    field.type = 'text';
-    icon.className = 'fas fa-eye-slash';
-  } else {
-    field.type = 'password';
-    icon.className = 'fas fa-eye';
-  }
-}
-
-// ── Update profile — validates & saves ───────────
-function updateProfile(event) {
-  event.preventDefault();
-
-  const firstName = (document.getElementById('firstName')?.value || '').trim();
-  const lastName  = (document.getElementById('lastName')?.value  || '').trim();
-  const gender    = document.getElementById('gender')?.value     || '';
-  const dob       = document.getElementById('dob')?.value        || '';
-  const phone     = (document.getElementById('phone')?.value     || '').trim();
-  const password  = document.getElementById('password')?.value   || '';
-  const confPw    = document.getElementById('confirmPassword')?.value || '';
-  const lock      = document.getElementById('profileLock')?.value || 'no';
-
-  // All mandatory (except email + password optional)
-  if (!firstName)                         { showModal('warning', 'First Name is mandatory.'); return; }
-  if (!lastName)                          { showModal('warning', 'Last Name is mandatory.'); return; }
-  if (!gender)                            { showModal('warning', 'Gender is mandatory.'); return; }
-  if (!dob)                               { showModal('warning', 'Date of Birth is mandatory.'); return; }
-  if (!phone || !/^\d{10}$/.test(phone))  { showModal('warning', 'Enter a valid 10-digit mobile number.'); return; }
-
-  if (password) {
-    if (password.length < 6)  { showModal('warning', 'Password must be at least 6 characters.'); return; }
-    if (password !== confPw)  { showModal('warning', 'Passwords do not match.'); return; }
-  }
-
-  const user = getCurrentUser();
-  if (!user) { showModal('warning', 'User session not found. Please login again.'); return; }
-
-  const changes = [];
-  const updates = {};
-
-  function track(field, oldVal, newVal) {
-    if (String(oldVal || '') !== String(newVal || '')) {
-      changes.push({ field, oldValue: oldVal, newValue: newVal });
-      return true;
-    }
-    return false;
-  }
-
-  if (track('First Name',   user.firstName, firstName)) updates.firstName = firstName;
-  if (track('Last Name',    user.lastName,  lastName))  updates.lastName  = lastName;
-  if (track('Gender',       user.gender,   gender))     updates.gender    = gender;
-  if (track('Date of Birth', user.dob,     dob))        updates.dob       = dob;
-  if (track('Mobile',       user.mobile,   phone))      updates.mobile    = phone;
-  if (track('Lock',         user.lock,     lock))       updates.lock      = lock;
-
-  // Save OTP delivery preference
-  var waRadEl   = document.getElementById('profileOTPWA');
-  var newMethod = (waRadEl && waRadEl.checked && !waRadEl.disabled) ? 'whatsapp' : 'email';
-  if (track('OTP Method', user.otp_method || 'email', newMethod)) updates.otp_method = newMethod;
-
-  var twoFaCheckbox = document.getElementById('profile2FA');
-  var newTwoFA      = twoFaCheckbox ? twoFaCheckbox.checked : true;
-  if (track('2FA', String(user.two_factor_auth !== false), String(newTwoFA)))  updates.two_factor_auth = newTwoFA;
-
-  if (password) {
-    // Use hashPassword from auth.js (loaded before app.js)
-    if (typeof hashPassword === 'function') {
-      updates.passwordHash = hashPassword(password);
-    }
-    changes.push({ field: 'Password', oldValue: '••••••••', newValue: '••••••••' });
-  }
-
-  if (changes.length === 0) {
-    showModal('info', 'No changes detected.');
-    return;
-  }
-
-  persistUserUpdate(updates);
-  addActivityLog(changes);
-
-  // Update session + header name in real-time
-  const newFirst = updates.firstName || user.firstName;
-  const newLast  = updates.lastName  || user.lastName;
-  document.querySelectorAll('.user-name').forEach(function(el) {
-    el.textContent = newFirst + ' ' + newLast;
-  });
-
-  // Update session cache
-  if (typeof getSession === 'function') {
-    const s = getSession();
-    if (s) {
-      s.firstName = newFirst;
-      s.lastName  = newLast;
-      localStorage.setItem('lexora_auth', JSON.stringify(s));
-    }
-  }
-
-  showModal('success', 'Profile updated successfully!');
-}
-
-// ── Load profile from DB into the form ───────────
-function loadProfile() {
-  const user = getCurrentUser();
-  if (!user) return;
-
-  const set = function(id, val) {
-    const el = document.getElementById(id);
-    if (el) el.value = (val !== undefined && val !== null) ? val : '';
-  };
-
-  set('firstName',  user.firstName);
-  set('lastName',   user.lastName);
-  set('gender',     user.gender);
-  set('dob',        user.dob);
-  set('phone',      user.mobile);
-  set('profileEmail', user.email);
-  // Read-only info fields
-  const setTxt = function(id, val) { const el = document.getElementById(id); if (el) el.textContent = val || '—'; };
-  setTxt('profileAccountType', user.account_type || user.role);
-  setTxt('profileStatus',      user.status || 'active');
-
-  // Load WhatsApp verification status + badges
-  var _verified  = !!user.mobile_verified;
-  var _badge     = document.getElementById('mobileVerifiedBadge');
-  var _unbadge   = document.getElementById('mobileUnverifiedBadge');
-  var _vbtn      = document.getElementById('btnVerifyMobile');
-  if (_badge)   _badge.style.display   = _verified ? 'inline' : 'none';
-  if (_unbadge) _unbadge.style.display = _verified ? 'none'   : 'inline';
-  if (_vbtn)    _vbtn.style.display    = _verified ? 'none'   : '';
-
-  // Load OTP delivery preference
-  var otpMethod = user.otp_method || 'email';
-  var emailRad  = document.getElementById('profileOTPEmail');
-  var waRad     = document.getElementById('profileOTPWA');
-  var waHint    = document.getElementById('waOTPMethodHint');
-  if (emailRad) emailRad.checked = (otpMethod !== 'whatsapp');
-  if (waRad)    waRad.checked    = (otpMethod === 'whatsapp');
-  // Disable WhatsApp option if not verified
-  if (waRad)    waRad.disabled   = !user.mobile_verified;
-  if (waHint)   waHint.style.display = user.mobile_verified ? 'none' : 'inline';
-
-  // 2FA toggle
-  var twoFaEl     = document.getElementById('profile2FA');
-  var twoFaStatus = document.getElementById('twoFAStatus');
-  var twoFaOn     = user.two_factor_auth !== false;
-  if (twoFaEl) {
-    twoFaEl.checked = twoFaOn;
-    twoFaEl.onchange = function() {
-      var on = twoFaEl.checked;
-      if (twoFaStatus) {
-        twoFaStatus.textContent = on ? 'ON' : 'OFF';
-        twoFaStatus.style.background = on ? '#dcfce7' : '#fee2e2';
-        twoFaStatus.style.color      = on ? '#16a34a' : '#dc2626';
-      }
-    };
-    if (twoFaStatus) {
-      twoFaStatus.textContent = twoFaOn ? 'ON' : 'OFF';
-      twoFaStatus.style.background = twoFaOn ? '#dcfce7' : '#fee2e2';
-      twoFaStatus.style.color      = twoFaOn ? '#16a34a' : '#dc2626';
-    }
-  }
-
-  // Photo
-  if (user.profile_photo_data) {
-    const img = document.getElementById('profilePhotoImg');
-    const ph  = document.getElementById('profilePhotoPlaceholder');
-    if (img) { img.src = user.profile_photo_data; img.style.display = 'block'; }
-    if (ph)  ph.style.display = 'none';
-    syncHeaderAvatar(user.profile_photo_data);
-  }
-
-  // Header name
-  const name = ((user.firstName || '') + ' ' + (user.lastName || '')).trim();
-  document.querySelectorAll('.user-name').forEach(function(el) { el.textContent = name; });
-
-  // Activity log
-  renderActivityLog();
-
-  // API key section
-  loadApiSection();
-}
-
-// ============================================
-// API KEY FUNCTIONS
-// ============================================
-
-function loadApiSection() {
-  const user = getCurrentUser();
-  if (!user) return;
-  const el = document.getElementById('userApiKey');
-  if (el) el.value = user.apikey || '';
-  updateApiKeyStatus();
-}
-
-function updateApiKeyStatus() {
-  const user   = getCurrentUser();
-  const el     = document.getElementById('apiKeyStatus');
-  if (!el) return;
-  if (user && user.apikey) {
-    const masked = user.apikey.substring(0, 8) + '••••••••••••••••••••' + user.apikey.slice(-4);
-    el.innerHTML = '<span style="color:#22c55e;"><i class="fas fa-check-circle"></i> API Key is set</span> &nbsp;·&nbsp; <span style="color:#94a3b8;">Key: ' + masked + '</span>';
-  } else {
-    el.innerHTML = '<span style="color:#f59e0b;"><i class="fas fa-exclamation-circle"></i> No API key set.</span>';
-  }
-}
-
-function toggleApiKeyVisibility() {
-  const inp  = document.getElementById('userApiKey');
-  const icon = document.getElementById('apiKeyEyeIcon');
-  if (!inp) return;
-  if (inp.type === 'password') {
-    inp.type = 'text';
-    if (icon) icon.className = 'fas fa-eye-slash';
-  } else {
-    inp.type = 'password';
-    if (icon) icon.className = 'fas fa-eye';
-  }
-}
-
-function generateApiKey() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  const rand  = Array.from({ length: 40 }, function() { return chars[Math.floor(Math.random() * chars.length)]; }).join('');
-  const key   = 'lxr_' + rand;
-  const inp   = document.getElementById('userApiKey');
-  if (inp) { inp.value = key; inp.type = 'text'; }
-  const icon = document.getElementById('apiKeyEyeIcon');
-  if (icon) icon.className = 'fas fa-eye-slash';
-}
-
-function copyApiKey() {
-  const key = document.getElementById('userApiKey')?.value || '';
-  if (!key) { showModal('warning', 'No API key to copy. Generate or enter one first.'); return; }
-  navigator.clipboard.writeText(key).then(function() {
-    showModal('success', 'API Key copied to clipboard!', { onConfirm: function() {} });
-  }).catch(function() {
-    showModal('warning', 'Could not copy automatically. Please copy manually from the field.');
-  });
-}
-
-function saveApiKey() {
-  const key    = (document.getElementById('userApiKey')?.value || '').trim();
-  const user   = getCurrentUser();
-  if (!user) return;
-  const oldKey = user.apikey || '';
-  persistUserUpdate({ apikey: key });
-  addActivityLog([{ field: 'API Key', oldValue: oldKey ? '••••••••' : '', newValue: key ? '••••••••' : '' }]);
-  updateApiKeyStatus();
-  showModal('success', key ? 'API Key saved successfully!' : 'API Key cleared.', { onConfirm: function() {} });
-}
-
-function revokeApiKey() {
-  showModal('confirm', 'Are you sure you want to revoke your API Key? Any integrations using this key will stop working.', {
-    onConfirm: function() {
-      const inp = document.getElementById('userApiKey');
-      if (inp) inp.value = '';
-      const user = getCurrentUser();
-      const old  = user ? user.apikey : '';
-      persistUserUpdate({ apikey: '' });
-      addActivityLog([{ field: 'API Key', oldValue: old ? '••••••••' : '', newValue: '[revoked]' }]);
-      updateApiKeyStatus();
-      showModal('success', 'API Key revoked.', { onConfirm: function() {} });
-    },
-    onCancel: function() {}
-  });
-}
-
-// ============================================
-// LOGOUT HANDLER
-// ============================================
-
-function handleLogout() {
-  showModal('confirm', 'Are you sure you want to logout?', {
-    onConfirm: function() {
-      showModal('success', 'You have been logged out successfully!', {
-        onConfirm: function() {}
-      });
-    },
-    onCancel: function() {
-      showModal('info', 'Logout cancelled.', {
-        onConfirm: function() {}
-      });
-    }
-  });
-  
-  const userSubMenu = document.getElementById('userSubMenu');
-  if (userSubMenu) userSubMenu.classList.remove('open');
-}
-
-
-
-
-
-// ============================================
-// TEMPLATE MANAGEMENT
-// ============================================
-
-let allTemplates = [];
-
-function loadAdminTemplates() {
-  fetch('/db/templates.json?_=' + Date.now())
-    .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(data) {
-      if (data && data.templates) {
-        allTemplates = data.templates;
-        localStorage.setItem('lexora_templates', JSON.stringify(allTemplates));
-      } else {
-        allTemplates = JSON.parse(localStorage.getItem('lexora_templates') || '[]');
-      }
-      renderAdminTemplatesTable();
-    })
-    .catch(function() {
-      allTemplates = JSON.parse(localStorage.getItem('lexora_templates') || '[]');
-      renderAdminTemplatesTable();
-    });
-}
-
-function saveAdminTemplates() {
-  localStorage.setItem('lexora_templates', JSON.stringify(allTemplates));
-  fetch('/api/templates/save', { method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ templates: allTemplates }) })
-  .catch(function() {});
-}
-
-function renderAdminTemplatesTable() {
-  const tbody = document.getElementById('adminTemplatesBody');
-  if (!tbody) return;
-  if (!allTemplates.length) {
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#94a3b8;padding:1.5rem;">No templates. Upload one to get started.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = allTemplates.map(function(t, i) {
-    const locked = t.lock === 'Yes';
-    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
-      '<td style="padding:0.45rem 0.7rem;">' + t.id + '</td>' +
-      '<td style="padding:0.45rem 0.7rem;font-weight:600;">' + (t.template_name||'') + '</td>' +
-      '<td style="padding:0.45rem 0.7rem;font-size:0.8rem;color:#64748b;">' + (t.category||'') + '</td>' +
-      '<td style="padding:0.45rem 0.7rem;font-size:0.8rem;">' + (t.folder_name||'') + '</td>' +
-      '<td style="padding:0.45rem 0.7rem;font-size:0.8rem;color:#64748b;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + (t.file_path||'') + '">' + (t.file_name||'') + '</td>' +
-      '<td style="padding:0.45rem 0.7rem;"><span style="padding:0.15rem 0.5rem;border-radius:5px;font-size:0.75rem;font-weight:600;background:' + (t.status==='Active'?'#dcfce7':'#fee2e2') + ';color:' + (t.status==='Active'?'#16a34a':'#dc2626') + ';">' + (t.status||'Active') + '</span></td>' +
-      '<td style="padding:0.45rem 0.7rem;">' + (locked ? '🔒' : '🔓') + '</td>' +
-      '<td style="padding:0.45rem 0.7rem;white-space:nowrap;">' +
-        '<button data-ti="' + i + '" onclick="toggleTemplateStatus(this.dataset.ti)" title="Toggle Status" style="border:none;background:none;cursor:pointer;font-size:0.9rem;">🔄</button>' +
-        (!locked ? '<button data-ti="' + i + '" onclick="deleteTemplate(this.dataset.ti)" title="Delete" style="border:none;background:none;cursor:pointer;font-size:0.9rem;">🗑️</button>' : '<span style="color:#94a3b8;font-size:0.75rem;">Locked</span>') +
-      '</td></tr>';
-  }).join('');
-  // Refresh template dropdown in Lease Abstraction
-  loadTemplateDropdown();
-}
-
-function _folderSelChange(sel) {
-  var nf = document.getElementById('tNewFolder');
-  if (nf) nf.style.display = sel.value === '__new__' ? 'block' : 'none';
-}
-
-function toggleTemplateStatus(idxStr) {
-  const i = parseInt(idxStr);
-  allTemplates[i].status = allTemplates[i].status === 'Active' ? 'Inactive' : 'Active';
-  saveAdminTemplates();
-  renderAdminTemplatesTable();
-}
-
-function deleteTemplate(idxStr) {
-  const i = parseInt(idxStr);
-  if (allTemplates[i].lock === 'Yes') { showModal('warning', 'This template is locked.'); return; }
-  showModal('confirm', 'Delete template "' + allTemplates[i].template_name + '"?', {
-    onConfirm: function() {
-      allTemplates.splice(i, 1);
-      saveAdminTemplates();
-      renderAdminTemplatesTable();
-      showModal('success', 'Template deleted.', { onConfirm: function(){} });
-    }, onCancel: function() {}
-  });
-}
-
-function showTemplateUpload() {
-  // Get existing folders from templates
-  const existingFolders = [...new Set(allTemplates.map(function(t){ return t.folder_name; }).filter(Boolean))];
-  const folderOptions   = existingFolders.map(function(f){ return '<option value="' + f + '">' + f + '</option>'; }).join('');
-
-  const categories = ['Lease Abstraction', 'Translation', 'Other'];
-  const catOptions = categories.map(function(c){ return '<option value="' + c + '">' + c + '</option>'; }).join('');
-
-  const S = 'width:100%;padding:0.5rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.88rem;';
-  const form = '<div style="display:flex;flex-direction:column;gap:0.75rem;font-size:0.88rem;">' +
-    '<div><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Category *</label>' +
-      '<select id="tCat" style="' + S + '">' + catOptions + '</select></div>' +
-    '<div><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Template Name *</label>' +
-      '<input id="tName" placeholder="e.g. MRI Standard" style="' + S + '" /></div>' +
-    '<div><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Folder</label>' +
-      '<div style="display:flex;gap:0.5rem;">' +
-        '<select id="tFolderSel" style="' + S + 'flex:1;" onchange="_folderSelChange(this)">' +
-          '<option value="">-- Select existing --</option>' + folderOptions +
-          '<option value="__new__">+ Create new folder</option>' +
-        '</select>' +
-      '</div>' +
-      '<input id="tNewFolder" placeholder="New folder name" style="' + S + 'margin-top:0.4rem;display:none;" /></div>' +
-    '<div><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Upload File *</label>' +
-      '<input type="file" id="tFile" accept=".pdf,.docx,.doc,.xlsx,.xls,.txt" style="width:100%;padding:0.4rem;" /></div>' +
-    '<div style="display:flex;gap:0.75rem;">' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Status</label>' +
-        '<select id="tStatus" style="' + S + '"><option>Active</option><option>Inactive</option></select></div>' +
-      '<div style="flex:1;display:flex;align-items:flex-end;gap:0.5rem;padding-bottom:0.2rem;">' +
-        '<input type="checkbox" id="tLock" style="width:15px;height:15px;accent-color:#3b82f6;">' +
-        '<label for="tLock" style="font-weight:600;font-size:0.85rem;">Lock (protected)</label></div>' +
-    '</div>' +
-  '</div>';
-
-  showModal('info', form, {
-    title: '📤 Upload Template',
-    closeOnBackdrop: false,
-    buttons: [
-      { label: 'Upload', class: 'btn-success', callback: function() {
-        const cat    = document.getElementById('tCat').value;
-        const name   = (document.getElementById('tName').value||'').trim();
-        const folSel = document.getElementById('tFolderSel').value;
-        const folNew = (document.getElementById('tNewFolder').value||'').trim();
-        const folder = folSel === '__new__' ? folNew : folSel;
-        const fileEl = document.getElementById('tFile');
-        const status = document.getElementById('tStatus').value;
-        const locked = document.getElementById('tLock').checked;
-
-        if (!name) { showModal('warning', 'Template name is required.'); return; }
-        if (!fileEl.files.length) { showModal('warning', 'Please select a file.'); return; }
-
-        const file     = fileEl.files[0];
-        const reader   = new FileReader();
-        reader.onload  = function(ev) {
-          const b64  = ev.target.result.split(',')[1];
-          const folPath = 'Template/' + cat + '/' + (folder || name);
-          const newT  = {
-            id:           allTemplates.length + 1,
-            lock:         locked ? 'Yes' : 'No',
-            category:     cat,
-            file_name:    file.name,
-            folder_path:  folPath,
-            folder_name:  folder || name,
-            file_path:    folPath + '/' + file.name,
-            template_name: name,
-            status:        status
-          };
-          // Save file to disk via server
-          fetch('/api/templates/upload', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ template: newT, fileData: b64, fileName: file.name })
-          }).then(function(r){ return r.json(); })
-            .then(function(res) {
-              allTemplates.push(newT);
-              saveAdminTemplates();
-              renderAdminTemplatesTable();
-              closeModal();
-              showModal('success', 'Template "' + name + '" uploaded!', { onConfirm: function(){} });
-            })
-            .catch(function() {
-              // Offline — save metadata only
-              allTemplates.push(newT);
-              saveAdminTemplates();
-              renderAdminTemplatesTable();
-              closeModal();
-              showModal('info', 'Template added (file saved locally only — start server to save to disk).', { onConfirm: function(){} });
+
+            function getUserTemplateFilePath(userId, fileName) {
+                return `Users/${userId}/Clients/Default/Template/${fileName}`;
+            }
+
+            // payment-history.json and contact-submissions.json now carry a
+            // userId on every record (multiple users' data can live in the
+            // same file) - these helpers scope the lists down to whichever
+            // user is currently logged in, the same way a real per-user
+            // backend query would.
+            function getMyPaymentHistory() {
+                return paymentHistory.filter(t => t.userId === CURRENT_USER_ID);
+            }
+
+            function getMyPaymentMethods() {
+                return paymentMethods.filter(m => m.userId === CURRENT_USER_ID);
+            }
+
+            function getMyContactSubmissions() {
+                return contactSubmissions.filter(c => c.userId === CURRENT_USER_ID);
+            }
+
+            // ============================================================
+            // 9. AGENTS DATA (each agent = one processing stage, per service)
+            // ============================================================
+            let AGENTS_BY_SERVICE = {};
+            let activeAgentId = null;
+
+            function getAgents(serviceId) {
+                return AGENTS_BY_SERVICE[serviceId] || [];
+            }
+
+            // System Configuration options are fixed (no system-configs.json
+            // anymore) - the *default* selection comes from the logged-in
+            // user's "sysConfig" field in users.json instead.
+            const SYSTEM_CONFIGS = ['Desktop', 'Sharefile', 'Sharepoint'];
+            let currentSystemConfig = 'Desktop';
+            let connectionStatus = 'idle'; // 'idle', 'connected', 'disconnected'
+
+            // ============================================================
+            // 10. PROCESS STATE
+            // ============================================================
+            let processState = {
+                isRunning: false,
+                isPaused: false,
+                isComplete: false,
+                stopped: false
+            };
+
+            // ============================================================
+            // 11. PERSISTED ACTIVITY LOG (per service)
+            // ============================================================
+            let leaseActivityLog = [];
+            let translationActivityLog = [];
+
+            function addActivity(serviceId, activity, result) {
+                const now = new Date();
+                const timeStr = now.toISOString().replace('T', ' ').slice(0, 16);
+                const entry = { time: timeStr, activity: activity, result: result, userId: CURRENT_USER_ID };
+                if (serviceId === 'translation') {
+                    translationActivityLog.unshift(entry);
+                } else {
+                    leaseActivityLog.unshift(entry);
+                }
+            }
+
+            // ============================================================
+            // 12. SERVICE PAGE - REUSABLE PIECE BUILDERS
+            //     (shared by the initial full render AND the live, in-place
+            //      DOM updates used while a process is running, so nothing
+            //      ever needs to be torn down and rebuilt mid-process)
+            // ============================================================
+            function buildFileTableRows(files) {
+                return files.map(file => {
+                    const scanIsNumeric = /^\d+$/.test(String(file.scanResult));
+                    const progressIsNumeric = /^\d+$/.test(String(file.progress));
+                    const scanProgress = scanIsNumeric ? parseInt(file.scanResult) || 0 : 0;
+                    const processProgress = progressIsNumeric ? parseInt(file.progress) || 0 : 0;
+                    const statusClass = file.status === 'completed' ? 'completed' :
+                        file.status === 'error' ? 'error' :
+                        file.status === 'processing' ? 'processing' : 'pending';
+
+                    const actionLabel = file.status === 'error' ? (file.errorLabel || 'Error') : null;
+                    const actionLink = file.status === 'completed' ?
+                        `<a class="file-action-link" onclick="downloadFile('${file.name}')">Download</a>` :
+                        file.status === 'error' ?
+                        `<a class="file-action-link error-link" onclick="retryFile('${file.id}')">${actionLabel}</a>` :
+                        `<span class="file-action-link disabled">${file.status === 'processing' ? 'Processing' : 'Pending'}</span>`;
+
+                    const scanCell = scanIsNumeric ? `
+                        <div class="progress-bar-container">
+                            <div class="progress-bar-track">
+                                <div class="progress-bar-fill ${statusClass}" style="width:${scanProgress}%;"></div>
+                            </div>
+                            <span class="progress-label">${scanProgress}%</span>
+                        </div>` : `<span class="scan-result-text ${statusClass}">${file.scanResult}</span>`;
+
+                    const progressCell = progressIsNumeric ? `
+                        <div class="progress-bar-container">
+                            <div class="progress-bar-track">
+                                <div class="progress-bar-fill ${statusClass}" style="width:${processProgress}%;"></div>
+                            </div>
+                            <span class="progress-label">${processProgress}%</span>
+                        </div>` : `<span class="scan-result-text ${statusClass}">${file.progress || '-'}</span>`;
+
+                    return `
+                        <tr>
+                            <td class="file-name">${file.name}</td>
+                            <td>${scanCell}</td>
+                            <td>${progressCell}</td>
+                            <td>${actionLink}</td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            function buildActivityLogRows(activityLog) {
+                return activityLog.map(log => {
+                    const resultClass = log.result === 'Completed' ? 'completed' :
+                        log.result === 'Error' ? 'error' :
+                        log.result === 'Processing' ? 'processing' : 'pending';
+                    return `
+                        <tr>
+                            <td>${log.time}</td>
+                            <td>${log.activity}</td>
+                            <td><span class="activity-result ${resultClass}">${log.result}</span></td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            // Agent strip shown at the top of the Activity Log - highlights only the currently running agent
+            function buildAgentPillsHTML(serviceId) {
+                return getAgents(serviceId).map(agent => `
+                    <div class="agent-pill ${agent.id === activeAgentId ? 'active' : ''}" title="${agent.step ? agent.step + ' ' : ''}${agent.name}">
+                        <span class="agent-pill-icon">${agent.icon}</span>
+                        <span class="agent-pill-name">${agent.name}</span>
+                    </div>
+                `).join('');
+            }
+
+            // Connection status badge - intentionally renders nothing while idle (no "Idle" tag)
+            function buildConnectionStatusHTML() {
+                if (connectionStatus === 'idle') return '';
+                const statusText = connectionStatus === 'connected' ? '● Connected' : '● Not Connected';
+                const statusClass = connectionStatus === 'connected' ? 'connected' : 'disconnected';
+                return `<span class="connection-status ${statusClass}">${statusText}</span>`;
+            }
+
+            // Process control buttons (Start/Clear, or Pause/Resume/Stop while running)
+            function buildControlButtonsHTML(serviceId, hasFiles) {
+                if (processState.isRunning && !processState.isComplete) {
+                    const pauseLabel = processState.isPaused ? '▶️ Resume' : '⏸️ Pause';
+                    const pauseClass = processState.isPaused ? 'resume-btn' : 'pause-btn';
+                    return `
+                        <button class="process-btn ${pauseClass}" onclick="togglePause()">${pauseLabel}</button>
+                        <button class="process-btn stop-btn" onclick="stopProcess()">⏹️ Stop</button>
+                    `;
+                }
+                return `
+                    <button class="process-btn start-btn" onclick="startProcess('${serviceId}')" ${!hasFiles ? 'disabled' : ''}>▶️ Start</button>
+                    <button class="process-btn clear-btn" onclick="clearFiles('${serviceId}')">🗑️ Clear Files</button>
+                `;
+            }
+
+            // ============================================================
+            // 13. BUILD SERVICE UPLOAD HTML (full page render)
+            // ============================================================
+            function buildServiceUploadHTML(serviceId, serviceLabel, icon) {
+                const isTranslation = serviceId === 'translation';
+                const files = isTranslation ? translationFiles : leaseFiles;
+                const activityLog = isTranslation ? translationActivityLog : leaseActivityLog;
+
+                const fileRows = buildFileTableRows(files);
+                const activityRows = buildActivityLogRows(activityLog);
+                const agentPills = buildAgentPillsHTML(serviceId);
+                const controlButtons = buildControlButtonsHTML(serviceId, files.length > 0);
+
+                // File count text for drop zone
+                const fileCountText = files.length > 0 ?
+                    `${files.length} file(s) uploaded` :
+                    'No files uploaded yet';
+
+                // Output Template (lease-abstraction) OR Output Language (translation) - shown in Setup card
+                const outputFieldHTML = isTranslation ? `
+                    <div class="setup-group">
+                        <label>Output Language</label>
+                        <select id="translationLangSelect">
+                            <option value="English" selected>English</option>
+                            <option value="Spanish">Spanish</option>
+                            <option value="French">French</option>
+                            <option value="German">German</option>
+                            <option value="Chinese">Chinese</option>
+                            <option value="Japanese">Japanese</option>
+                            <option value="Arabic">Arabic</option>
+                            <option value="Hindi">Hindi</option>
+                        </select>
+                    </div>
+                ` : `
+                    <div class="setup-group">
+                        <label>Output Template</label>
+                        <div class="template-select-row">
+                            <button class="select-btn" onclick="document.getElementById('templateFileInput').click()">Select</button>
+                            <a class="template-file-link" id="templateFileName" href="#" onclick="return false;">${selectedTemplateFile || 'default.pdf'}</a>
+                        </div>
+                        <input type="file" id="templateFileInput" style="display:none;" accept=".json,.xml,.pdf,.docx" onchange="selectTemplateFile(event)" />
+                    </div>
+                `;
+
+                // System config
+                let systemOptions = SYSTEM_CONFIGS.map(config => `
+                    <option value="${config}" ${config === currentSystemConfig ? 'selected' : ''}>${config}</option>
+                `).join('');
+
+                return `
+                    <div>
+                        <div class="service-upload-layout">
+                            <!-- Left: Upload Card -->
+                            <div class="service-card">
+                                <h3>📤 Upload File(s)</h3>
+                                <div class="card-body">
+                                    <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+                                        <div class="drop-icon">📤</div>
+                                        <div class="drop-text">Drag & drop files here</div>
+                                        <div class="drop-sub">or click to browse (Docx, PDF)</div>
+                                        <div class="file-count-text" id="fileCountText">${fileCountText}</div>
+                                    </div>
+                                    <input type="file" id="fileInput" multiple style="display:none;" accept=".pdf,.docx" onchange="handleFileUpload(event, '${serviceId}')" />
+                                </div>
+                            </div>
+
+                            <!-- Right: Setup Card -->
+                            <div class="service-card">
+                                <h3>⚙️ Setup</h3>
+                                <div class="card-body">
+                                    ${outputFieldHTML}
+
+                                    <div class="setup-group">
+                                        <label>System Configuration</label>
+                                        <div class="system-config-row">
+                                            <select id="systemConfigSelect" onchange="verifySystemConnection()">
+                                                ${systemOptions}
+                                            </select>
+                                            <span id="connectionStatusWrap">${buildConnectionStatusHTML()}</span>
+                                        </div>
+                                    </div>
+
+                                    <div class="setup-group" style="margin-top:8px;">
+                                        <div class="process-controls" id="processControls">
+                                            ${controlButtons}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- File List Card (Separate) -->
+                        <div class="file-list-card">
+                            <h3>📁 Uploaded Files</h3>
+                            <div class="card-body">
+                                <div class="file-table-wrapper">
+                                    <table class="file-table file-table-files">
+                                        <colgroup>
+                                            <col style="width:46%;"><col style="width:18%;"><col style="width:18%;"><col style="width:18%;">
+                                        </colgroup>
+                                        <thead>
+                                            <tr>
+                                                <th>File Name</th>
+                                                <th>Scan Result</th>
+                                                <th>Progress</th>
+                                                <th>Action</th>
+                                            </tr>
+                                        </thead>
+                                    </table>
+                                    <div class="file-table-scroll">
+                                        <table class="file-table file-table-files">
+                                            <colgroup>
+                                                <col style="width:46%;"><col style="width:18%;"><col style="width:18%;"><col style="width:18%;">
+                                            </colgroup>
+                                            <tbody id="fileTableBody">
+                                                ${fileRows || '<tr><td colspan="4" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No files uploaded yet.</td></tr>'}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Activity Log below (with active agent strip on top) -->
+                        <div class="activity-log-section">
+                            <div class="activity-log-card">
+                                <div class="agents-top-row" id="agentsTopRow">
+                                    ${agentPills}
+                                </div>
+                                <div class="log-header">
+                                    <h3>📋 Activity Log</h3>
+                                    <div class="log-actions">
+                                        <button onclick="downloadActivityLog()">⬇️ Download Log</button>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <div class="file-table-wrapper">
+                                        <table class="file-table file-table-activity">
+                                            <colgroup>
+                                                <col style="width:20%;"><col style="width:62%;"><col style="width:18%;">
+                                            </colgroup>
+                                            <thead>
+                                                <tr>
+                                                    <th>Date &amp; Time</th>
+                                                    <th>Activity</th>
+                                                    <th>Status</th>
+                                                </tr>
+                                            </thead>
+                                        </table>
+                                        <div class="file-table-scroll">
+                                            <table class="file-table file-table-activity">
+                                                <colgroup>
+                                                    <col style="width:20%;"><col style="width:62%;"><col style="width:18%;">
+                                                </colgroup>
+                                                <tbody id="activityList">
+                                                    ${activityRows || '<tr><td colspan="3" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No activities recorded.</td></tr>'}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            let selectedTemplateFile = null;
+
+            // ============================================================
+            // 13. TEMPLATE FILE SELECTION
+            // ============================================================
+            window.selectTemplateFile = function(event) {
+                const file = event.target.files[0];
+                if (!file) { event.target.value = ''; return; }
+
+                const reader = new FileReader();
+                reader.onload = async function(e) {
+                    const dataBase64 = e.target.result.split(',')[1];
+                    try {
+                        await postJSON('/api/lease/upload-template', {
+                            userId: CURRENT_USER_ID,
+                            fileName: file.name,
+                            dataBase64: dataBase64
+                        });
+                        selectedTemplateFile = file.name;
+                        document.getElementById('templateFileName').textContent = file.name;
+                        const templatePath = getUserTemplateFilePath(CURRENT_USER_ID, file.name);
+                        addActivity('lease-abstraction', `Output Template "${file.name}" saved to ${templatePath}`, 'Completed');
+                        refreshServicePage('lease-abstraction');
+                        persistServiceFiles('lease-abstraction');
+                        showMessage('✅ Template Selected', `Template "${file.name}" selected and saved to ${templatePath}.`, ['OK']);
+                    } catch (err) {
+                        console.warn('Template upload failed:', err);
+                        showWarning('Could not save the template to the server. Make sure py/server.py is running.');
+                    }
+                };
+                reader.readAsDataURL(file);
+                event.target.value = '';
+            };
+
+            // ============================================================
+            // 14. FILE DOWNLOAD / RETRY
+            // ============================================================
+            window.downloadFile = function(fileName) {
+                showMessage('⬇️ Download', `Downloading "${fileName}"...`, ['OK']);
+            };
+
+            window.retryFile = function(fileId) {
+                const serviceId = activeSubItemId === 'translation' ? 'translation' : 'lease-abstraction';
+                const files = serviceId === 'translation' ? translationFiles : leaseFiles;
+                const file = files.find(f => String(f.id) === String(fileId));
+                const reason = (file && file.errorReason) ? file.errorReason :
+                    'This file could not be processed. Click "Start" to try again.';
+                showMessage('❌ Error', reason, ['OK']);
+            };
+
+            // ============================================================
+            // 15. PROCESS CONTROL (sequential, one file at a time)
+            // ============================================================
+            function getCurrentBalance() {
+                let totalCredit = 0,
+                    totalDebit = 0;
+                getMyPaymentHistory().forEach(t => { totalCredit += t.credit;
+                    totalDebit += t.debit; });
+                return totalCredit - totalDebit;
+            }
+
+            // ------------------------------------------------------------
+            // Lease Abstraction real-processing helpers (section 14)
+            // ------------------------------------------------------------
+            // Uploaded File objects for lease-abstraction files, keyed by
+            // file.id - JSON can't store real file bytes, so these live
+            // only in memory for the lifetime of this browser tab/session.
+            // If the page is reloaded, a "pending" file entry restored from
+            // lease-files.json will have no blob here and Start will ask
+            // the user to re-upload it (see processLeaseFileAt below).
+            let leaseFileBlobs = {};
+
+            function sleep(ms) {
+                return new Promise(resolve => setTimeout(resolve, ms));
+            }
+
+            function waitIfPausedAsync(serviceId) {
+                return new Promise(resolve => waitIfPaused(serviceId, resolve));
+            }
+
+            function readFileAsDataURL(blob) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = () => reject(reader.error || new Error('Could not read file'));
+                    reader.readAsDataURL(blob);
+                });
+            }
+
+            async function postJSON(url, payload) {
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                let data;
+                try { data = await res.json(); } catch (e) { data = {}; }
+                if (!res.ok) throw new Error(data.error || ('Request to ' + url + ' failed'));
+                return data;
+            }
+
+            // Starts a background text-extraction job and polls its status
+            // every couple of seconds until it's done. Extraction (real OCR
+            // for scanned PDFs especially) can take well over a minute for a
+            // long document - long enough to trip a reverse-proxy/gateway
+            // timeout if it sat inside one single HTTP request/response, so
+            // the server just kicks it off and this polls a tiny status
+            // endpoint instead (see /api/lease/extract-start + -status).
+            async function runExtractJob(stagingPath, onProgress) {
+                const startRes = await postJSON('/api/lease/extract-start', { stagingPath });
+                const jobId = startRes.jobId;
+
+                while (true) {
+                    await sleep(2000);
+                    const res = await fetch('/api/lease/extract-status?jobId=' + encodeURIComponent(jobId));
+                    let status;
+                    try { status = await res.json(); } catch (e) { status = {}; }
+                    if (!res.ok) throw new Error(status.error || 'Could not check extraction status');
+
+                    if (status.status === 'done') {
+                        return { text: status.text, textLength: status.textLength };
+                    }
+                    if (status.status === 'error') {
+                        throw new Error(status.error || 'Extraction failed');
+                    }
+                    if (typeof onProgress === 'function') {
+                        onProgress(status.pagesDone, status.pagesTotal);
+                    }
+                }
+            }
+
+            // Uses XMLHttpRequest (not fetch) specifically so the real byte
+            // upload progress can drive the Scan Result column/progress bar.
+            function uploadWithProgress(url, payload, onProgress) {
+                return new Promise((resolve, reject) => {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('POST', url);
+                    xhr.setRequestHeader('Content-Type', 'application/json');
+                    xhr.upload.onprogress = function(e) {
+                        if (e.lengthComputable && typeof onProgress === 'function') {
+                            onProgress(Math.round((e.loaded / e.total) * 100));
+                        }
+                    };
+                    xhr.onload = function() {
+                        let data;
+                        try { data = JSON.parse(xhr.responseText); } catch (e) { data = {}; }
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            resolve(data);
+                        } else {
+                            reject(new Error(data.error || ('Upload failed with status ' + xhr.status)));
+                        }
+                    };
+                    xhr.onerror = function() { reject(new Error('Network error while uploading')); };
+                    xhr.send(JSON.stringify(payload));
+                });
+            }
+
+            window.startProcess = function(serviceId) {
+                const files = serviceId === 'translation' ? translationFiles : leaseFiles;
+                if (files.length === 0) {
+                    showWarning('No files to process. Please upload files first.');
+                    return;
+                }
+
+                processState.isRunning = true;
+                processState.isPaused = false;
+                processState.isComplete = false;
+                processState.stopped = false;
+
+                addActivity(serviceId, 'Process Started', 'Processing');
+                refreshServicePage(serviceId);
+
+                if (serviceId === 'lease-abstraction') {
+                    setTimeout(() => runLeaseAbstractionPipeline(), 500);
+                } else {
+                    // -1 = "balance not checked yet for this file" - see processNextFile
+                    setTimeout(() => processNextFile(serviceId, 0, -1), 500);
+                }
+            };
+
+            function waitIfPaused(serviceId, cb) {
+                if (processState.stopped) return;
+                if (processState.isPaused) {
+                    setTimeout(() => waitIfPaused(serviceId, cb), 400);
+                    return;
+                }
+                cb();
+            }
+
+            // stageIndex meaning, per file:
+            //   -1            -> not started: run the real $1 minimum-balance check first
+            //   0..N-1        -> running named agent N (the visible pipeline + progress bars)
+            //   N (out of AGENTS.length) -> agents finished: deduct $1, record the transaction, mark completed
+            function processNextFile(serviceId, fileIndex, stageIndex) {
+                if (processState.stopped) return;
+
+                const files = serviceId === 'translation' ? translationFiles : leaseFiles;
+                const AGENTS = getAgents(serviceId);
+
+                if (fileIndex >= files.length) {
+                    // All files processed (one by one) - some may have failed individually
+                    const hasErrors = files.some(f => f.status === 'error');
+                    activeAgentId = null;
+                    processState.isRunning = false;
+                    processState.isComplete = true;
+                    addActivity(serviceId, hasErrors ? 'Processing finished with errors' : 'All files processed successfully',
+                        hasErrors ? 'Error' : 'Completed');
+                    refreshServicePage(serviceId);
+                    persistServiceFiles(serviceId);
+                    showMessage(hasErrors ? '⚠️ Finished with Errors' : '✅ Complete',
+                        hasErrors ?
+                        'Processing finished, but one or more files could not be completed. Check the Action column for details.' :
+                        'All files have been processed successfully!', ['OK']);
+                    return;
+                }
+
+                const file = files[fileIndex];
+
+                // ---- Step 0: minimum $1 balance check (real, checked against the live balance) ----
+                if (stageIndex === -1) {
+                    waitIfPaused(serviceId, () => {
+                        activeAgentId = null;
+                        file.status = 'processing';
+                        refreshServicePage(serviceId);
+
+                        setTimeout(() => {
+                            if (processState.stopped) return;
+
+                            if (getCurrentBalance() < 1) {
+                                file.status = 'error';
+                                file.errorReason = 'Insufficient balance. A minimum of $1 is required to process this file. Please add balance, then click Start again.';
+                                addActivity(serviceId, `${file.name} > Checking Balance`, 'Error');
+                                refreshServicePage(serviceId);
+                                persistServiceFiles(serviceId);
+                                setTimeout(() => waitIfPaused(serviceId, () => processNextFile(serviceId, fileIndex + 1, -1)), 400);
+                                return;
+                            }
+
+                            addActivity(serviceId, `${file.name} > Checking Balance`, 'Completed');
+                            refreshServicePage(serviceId);
+                            setTimeout(() => waitIfPaused(serviceId, () => processNextFile(serviceId, fileIndex, 0)), 250);
+                        }, 500);
+                    });
+                    return;
+                }
+
+                // ---- Final step: agent pipeline finished - deduct $1 + record the transaction ----
+                if (stageIndex >= AGENTS.length) {
+                    waitIfPaused(serviceId, () => {
+                        activeAgentId = null;
+                        refreshServicePage(serviceId);
+
+                        setTimeout(() => {
+                            if (processState.stopped) return;
+
+                            const now = new Date();
+                            const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                            paymentHistory.push({
+                                id: txnId,
+                                date: now.toISOString().split('T')[0],
+                                time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                                userId: CURRENT_USER_ID,
+                                paymentType: 'Service Fee',
+                                paymentMode: 'Wallet Balance',
+                                description: `${serviceId === 'translation' ? 'Translation' : 'Lease Abstraction'} - ${file.name}`,
+                                credit: 0,
+                                debit: 1
+                            });
+
+                            file.status = 'completed';
+                            file.scanResult = '100';
+                            file.progress = '100';
+                            addActivity(serviceId, `${file.name} > Deduct $1 Balance (${txnId})`, 'Completed');
+                            refreshServicePage(serviceId);
+                            persistPaymentHistory();
+                            persistServiceFiles(serviceId);
+                            setTimeout(() => waitIfPaused(serviceId, () => processNextFile(serviceId, fileIndex + 1, -1)), 400);
+                        }, 500);
+                    });
+                    return;
+                }
+
+                // ---- Named agent stages (Core Lease Extractor, Rent Schedule Extractor, ...) ----
+                const stage = AGENTS[stageIndex];
+                const scanStages = AGENTS.filter(a => a.phase === 'scan');
+                const processStages = AGENTS.filter(a => a.phase !== 'scan');
+
+                waitIfPaused(serviceId, () => {
+                    activeAgentId = stage.id;
+                    file.status = 'processing';
+                    refreshServicePage(serviceId);
+
+                    setTimeout(() => {
+                        if (processState.stopped) return;
+
+                        // Scan Result fills first (0% -> 100%); only once it is 100% does
+                        // Progress start moving from 0%.
+                        if (stage.phase === 'scan') {
+                            const doneCount = scanStages.findIndex(s => s.id === stage.id) + 1;
+                            file.scanResult = String(Math.round((doneCount / scanStages.length) * 100));
+                            file.progress = '0';
+                        } else {
+                            file.scanResult = '100';
+                            const doneCount = processStages.findIndex(s => s.id === stage.id) + 1;
+                            file.progress = String(Math.round((doneCount / processStages.length) * 100));
+                        }
+
+                        addActivity(serviceId, `${file.name} > ${stage.name}`, 'Completed');
+                        refreshServicePage(serviceId);
+                        setTimeout(() => waitIfPaused(serviceId, () => processNextFile(serviceId, fileIndex, stageIndex + 1)), 300);
+                    }, 800);
+                });
+            }
+
+            // ============================================================
+            // 15b. LEASE ABSTRACTION - REAL PROCESSING PIPELINE (section 14)
+            // Backed by the /api/lease/* routes in py/server.py. Progress
+            // follows the fixed checkpoints from the spec: 0/20/40/60/80/100.
+            // Translation keeps the original simulated pipeline above.
+            // ============================================================
+            async function runLeaseAbstractionPipeline() {
+                if (processState.stopped) return;
+
+                // 14.1 - scan the output template ONCE for the whole batch;
+                // deliberately not tied to any file's Progress column.
+                try {
+                    const scanAgent = getAgents('lease-abstraction').find(a => a.phase === 'scan');
+                    activeAgentId = scanAgent ? scanAgent.id : null;
+                    refreshServicePage('lease-abstraction');
+                    const result = await postJSON('/api/lease/scan-template', {
+                        userId: CURRENT_USER_ID,
+                        templateName: selectedTemplateFile || null
+                    });
+                    addActivity('lease-abstraction', `Output Template "${result.template}" scanned`, 'Completed');
+                } catch (err) {
+                    addActivity('lease-abstraction', 'Output Template scan failed - continuing with Default.pdf', 'Error');
+                }
+                activeAgentId = null;
+                refreshServicePage('lease-abstraction');
+
+                processLeaseFileAt(0);
+            }
+
+            async function processLeaseFileAt(fileIndex) {
+                if (processState.stopped) return;
+
+                if (fileIndex >= leaseFiles.length) {
+                    const hasErrors = leaseFiles.some(f => f.status === 'error');
+                    activeAgentId = null;
+                    processState.isRunning = false;
+                    processState.isComplete = true;
+                    addActivity('lease-abstraction',
+                        hasErrors ? 'Processing finished with errors' : 'All files processed successfully',
+                        hasErrors ? 'Error' : 'Completed');
+                    refreshServicePage('lease-abstraction');
+                    persistServiceFiles('lease-abstraction');
+                    showMessage(hasErrors ? '⚠️ Finished with Errors' : '✅ Complete',
+                        hasErrors ?
+                        'Processing finished, but one or more files could not be completed. Check the Action column for details.' :
+                        'All files have been processed successfully!', ['OK']);
+                    return;
+                }
+
+                await waitIfPausedAsync('lease-abstraction');
+                if (processState.stopped) return;
+
+                const file = leaseFiles[fileIndex];
+
+                if (file.status === 'completed') {
+                    return processLeaseFileAt(fileIndex + 1);
+                }
+
+                file.status = 'processing';
+                refreshServicePage('lease-abstraction');
+                await sleep(400);
+                if (processState.stopped) return;
+
+                // ---- Step 0: minimum $1 balance check (real, live balance) ----
+                if (getCurrentBalance() < 1) {
+                    file.status = 'error';
+                    file.errorLabel = 'Error';
+                    file.errorReason = 'Insufficient balance. A minimum of $1 is required to process this file. Please add balance, then click Start again.';
+                    addActivity('lease-abstraction', `${file.name} > Checking Balance`, 'Error');
+                    refreshServicePage('lease-abstraction');
+                    persistServiceFiles('lease-abstraction');
+                    await sleep(300);
+                    return processLeaseFileAt(fileIndex + 1);
+                }
+                addActivity('lease-abstraction', `${file.name} > Checking Balance`, 'Completed');
+                refreshServicePage('lease-abstraction');
+
+                const blob = leaseFileBlobs[file.id];
+                if (!blob) {
+                    file.status = 'error';
+                    file.errorLabel = 'Missing';
+                    file.scanResult = 'File Not Available';
+                    file.errorReason = 'The original file is no longer available in this browser session (this can happen after a page reload). Please remove and re-upload this file, then click Start again.';
+                    addActivity('lease-abstraction', `${file.name} > File not available for processing`, 'Error');
+                    refreshServicePage('lease-abstraction');
+                    persistServiceFiles('lease-abstraction');
+                    await sleep(300);
+                    return processLeaseFileAt(fileIndex + 1);
+                }
+
+                const processAgents = getAgents('lease-abstraction').filter(a => a.phase !== 'scan');
+
+                try {
+                    // ---- 14.2: Input File Scanning - real upload, real progress ----
+                    activeAgentId = null;
+                    const dataUrl = await readFileAsDataURL(blob);
+                    const dataBase64 = dataUrl.split(',')[1];
+
+                    const uploadResult = await uploadWithProgress('/api/lease/upload',
+                        { userId: CURRENT_USER_ID, fileName: file.name, dataBase64: dataBase64 },
+                        (pct) => { file.scanResult = String(pct); refreshServicePage('lease-abstraction'); }
+                    );
+                    file.scanResult = '100';
+                    file.progress = '0';
+                    addActivity('lease-abstraction', `${file.name} > Input File Scanning`, 'Completed');
+                    refreshServicePage('lease-abstraction');
+
+                    const stagingPath = uploadResult.stagingPath;
+                    const originalFileName = uploadResult.originalFileName;
+
+                    await waitIfPausedAsync('lease-abstraction');
+                    if (processState.stopped) return;
+
+                    // ---- 20%: data extraction (async job + polling - a
+                    // slow OCR pass can take well over a minute, so this
+                    // never sits inside one single HTTP request, which is
+                    // what was tripping a gateway/proxy timeout before) ----
+                    activeAgentId = processAgents[0] ? processAgents[0].id : null;
+                    refreshServicePage('lease-abstraction');
+                    const extractRes = await runExtractJob(stagingPath, (pagesDone, pagesTotal) => {
+                        if (pagesTotal) {
+                            file.scanResult = `OCR ${pagesDone}/${pagesTotal}`;
+                            refreshServicePage('lease-abstraction');
+                        }
+                    });
+                    file.scanResult = '100';
+                    file.progress = '20';
+                    addActivity('lease-abstraction', `${file.name} > Data extracted from document`, 'Completed');
+                    refreshServicePage('lease-abstraction');
+
+                    await waitIfPausedAsync('lease-abstraction');
+                    if (processState.stopped) return;
+
+                    // ---- 40%: analysis - real OpenAI/OpenRouter call when
+                    // json/llm-config.json has a key configured (using
+                    // json/extraction_prompt.txt + json/rules.json), else
+                    // the heuristic engine - see py/lease_engine.py ----
+                    activeAgentId = processAgents[1] ? processAgents[1].id : null;
+                    refreshServicePage('lease-abstraction');
+                    const analyzeRes = await postJSON('/api/lease/analyze', {
+                        text: extractRes.text,
+                        fallbackName: originalFileName.replace(/\.[^.]+$/, '')
+                    });
+                    file.progress = '40';
+                    const methodLabel = analyzeRes.extractionMethod === 'llm-openai' ? 'OpenAI' :
+                        analyzeRes.extractionMethod === 'llm-openrouter' ? 'OpenRouter' : 'heuristic engine';
+                    addActivity('lease-abstraction', `${file.name} > Data analyzed and interpreted (${methodLabel})`, 'Completed');
+                    const accuracyLabel = analyzeRes.accuracyMethod === 'llm-validation' ? 'QC validated' : 'heuristic estimate';
+                    addActivity('lease-abstraction', `${file.name} > Accuracy: ${analyzeRes.accuracy}% (${accuracyLabel})`, 'Completed');
+                    file.accuracy = analyzeRes.accuracy;
+                    refreshServicePage('lease-abstraction');
+
+                    await waitIfPausedAsync('lease-abstraction');
+                    if (processState.stopped) return;
+
+                    // ---- 60%: document-type + duplicate validation ----
+                    activeAgentId = processAgents[2] ? processAgents[2].id : null;
+                    refreshServicePage('lease-abstraction');
+                    const validateRes = await postJSON('/api/lease/validate', {
+                        userId: CURRENT_USER_ID,
+                        docType: analyzeRes.docType,
+                        leaseName: analyzeRes.leaseName
+                    });
+
+                    if (!validateRes.valid) {
+                        file.status = 'error';
+                        file.progress = '0';
+                        if (validateRes.reason === 'duplicate') {
+                            file.scanResult = 'Already Processed';
+                            file.errorLabel = 'Duplicate';
+                            file.errorReason = `A lease named "${validateRes.leaseName}" has already been processed for your account.`;
+                            addActivity('lease-abstraction', `${file.name} > Already Processed`, 'Error');
+                        } else {
+                            file.scanResult = 'Invalid Document';
+                            file.errorLabel = 'Invalid';
+                            file.errorReason = 'This document does not appear to be a Lease or Amendment.';
+                            addActivity('lease-abstraction', `${file.name} > Invalid Document`, 'Error');
+                        }
+                        activeAgentId = null;
+                        refreshServicePage('lease-abstraction');
+                        persistServiceFiles('lease-abstraction');
+                        await sleep(300);
+                        return processLeaseFileAt(fileIndex + 1);
+                    }
+
+                    file.progress = '60';
+                    addActivity('lease-abstraction', `${file.name} > Validation completed (document type + duplicate check)`, 'Completed');
+                    refreshServicePage('lease-abstraction');
+
+                    await waitIfPausedAsync('lease-abstraction');
+                    if (processState.stopped) return;
+
+                    // ---- 80%: Output.json + saved document + LeaseDocuments.json ----
+                    activeAgentId = processAgents[3] ? processAgents[3].id : null;
+                    refreshServicePage('lease-abstraction');
+                    const saveRes = await postJSON('/api/lease/save-output', {
+                        userId: CURRENT_USER_ID,
+                        leaseName: validateRes.leaseName,
+                        docType: analyzeRes.docType,
+                        fields: analyzeRes.fields,
+                        extractionMethod: analyzeRes.extractionMethod,
+                        accuracy: analyzeRes.accuracy,
+                        accuracyMethod: analyzeRes.accuracyMethod,
+                        accuracySummary: analyzeRes.accuracySummary,
+                        missingFields: analyzeRes.missingFields,
+                        lowConfidenceFields: analyzeRes.lowConfidenceFields,
+                        stagingPath: stagingPath,
+                        originalFileName: originalFileName
+                    });
+                    file.progress = '80';
+                    addActivity('lease-abstraction',
+                        `${file.name} > Output.json created, document saved to ${saveRes.leaseFolder}`, 'Completed');
+                    refreshServicePage('lease-abstraction');
+
+                    await waitIfPausedAsync('lease-abstraction');
+                    if (processState.stopped) return;
+
+                    // ---- 100%: Output.pdf generation ----
+                    activeAgentId = processAgents[4] ? processAgents[4].id : null;
+                    refreshServicePage('lease-abstraction');
+                    const pdfRes = await postJSON('/api/lease/generate-pdf', {
+                        userId: CURRENT_USER_ID,
+                        leaseName: validateRes.leaseName,
+                        templateName: selectedTemplateFile || 'Default.pdf'
+                    });
+                    file.progress = '100';
+                    addActivity('lease-abstraction', `${file.name} > ${pdfRes.outputPdf} generated successfully`, 'Completed');
+
+                    // ---- $1 processing fee (kept from the original simulation) ----
+                    const now = new Date();
+                    const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                    paymentHistory.push({
+                        id: txnId,
+                        date: now.toISOString().split('T')[0],
+                        time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                        userId: CURRENT_USER_ID,
+                        paymentType: 'Service Fee',
+                        paymentMode: 'Wallet Balance',
+                        description: `Lease Abstraction - ${file.name}`,
+                        credit: 0,
+                        debit: 1
+                    });
+                    addActivity('lease-abstraction', `${file.name} > Deduct $1 Balance (${txnId})`, 'Completed');
+
+                    file.status = 'completed';
+                    activeAgentId = null;
+                    delete leaseFileBlobs[file.id];
+                    refreshServicePage('lease-abstraction');
+                    persistPaymentHistory();
+                    persistServiceFiles('lease-abstraction');
+
+                } catch (err) {
+                    console.error('Lease processing error:', err);
+                    file.status = 'error';
+                    file.errorLabel = 'Error';
+                    file.errorReason = 'Processing failed: ' + (err && err.message ? err.message :
+                        'Unknown error. Make sure py/server.py is running with its dependencies installed (pip install -r requirements.txt).');
+                    activeAgentId = null;
+                    addActivity('lease-abstraction', `${file.name} > Processing failed`, 'Error');
+                    refreshServicePage('lease-abstraction');
+                    persistServiceFiles('lease-abstraction');
+                }
+
+                await sleep(300);
+                return processLeaseFileAt(fileIndex + 1);
+            }
+
+            window.togglePause = function() {
+                processState.isPaused = !processState.isPaused;
+                const serviceId = activeSubItemId || 'lease-abstraction';
+                const status = processState.isPaused ? 'Paused' : 'Resumed';
+                addActivity(serviceId, `Process ${status}`, processState.isPaused ? 'Pending' : 'Processing');
+                refreshServicePage(serviceId);
+            };
+
+            window.stopProcess = function() {
+                processState.stopped = true;
+                processState.isRunning = false;
+                processState.isPaused = false;
+                processState.isComplete = true;
+                activeAgentId = null;
+                const serviceId = activeSubItemId || 'lease-abstraction';
+                addActivity(serviceId, 'Process Stopped', 'Error');
+                showMessage('⏹️ Stopped', 'Process has been stopped.', ['OK']);
+                refreshServicePage(serviceId);
+                persistServiceFiles(serviceId);
+            };
+
+            window.clearFiles = function(serviceId) {
+                showConfirm('🗑️ Clear Files', 'Are you sure you want to clear all uploaded files?', function(confirmed) {
+                    if (confirmed) {
+                        if (serviceId === 'translation') {
+                            translationFiles = [];
+                            nextTranslationFileId = 1;
+                            translationActivityLog = [];
+                        } else {
+                            leaseFiles = [];
+                            nextLeaseFileId = 1;
+                            leaseActivityLog = [];
+                            leaseFileBlobs = {};
+                        }
+                        refreshServicePage(serviceId);
+                        persistServiceFiles(serviceId);
+                        showMessage('🗑️ Cleared', 'All files and related activity log entries have been cleared.', ['OK']);
+                    }
+                });
+            };
+
+            // ============================================================
+            // 16. ACTIVITY LOG DOWNLOAD
+            // ============================================================
+            window.downloadActivityLog = function() {
+                const serviceId = activeSubItemId || 'lease-abstraction';
+                const log = serviceId === 'translation' ? translationActivityLog : leaseActivityLog;
+
+                if (log.length === 0) {
+                    showWarning('No activities to download.');
+                    return;
+                }
+
+                let logData = 'Date & Time | Activity | Status\n';
+                logData += '='.repeat(50) + '\n';
+                log.forEach(item => {
+                    logData += `${item.time} | ${item.activity} | ${item.result}\n`;
+                });
+
+                const blob = new Blob([logData], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `Activity_Log_${new Date().toISOString().split('T')[0]}.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                showMessage('✅ Downloaded', 'Activity log downloaded successfully.', ['OK']);
+            };
+
+            // ============================================================
+            // 17. REFRESH SERVICE PAGE (in-place, flicker-free update)
+            // ============================================================
+            // While a process is running this gets called repeatedly (about once
+            // per second, per step). Re-running the full loadContent() /
+            // resetContentArea() pipeline here used to blank the whole page out
+            // and fade it back in on every tick - that's what caused the visible
+            // "blinking". Instead, when the relevant service page is the one
+            // currently on screen, only the pieces that actually changed (file
+            // table, activity log, agent strip, control buttons, file count,
+            // connection status) are patched in place. Nothing is removed and
+            // recreated, so there's no flicker and no scroll jump. If the user
+            // has navigated away from this service page, the in-memory state is
+            // still updated and simply renders correctly next time they open it.
+            function refreshServicePage(serviceId) {
+                if (serviceId !== 'lease-abstraction' && serviceId !== 'translation') return;
+                if (activeSubItemId !== serviceId) return;
+
+                const isTranslation = serviceId === 'translation';
+                const files = isTranslation ? translationFiles : leaseFiles;
+                const activityLog = isTranslation ? translationActivityLog : leaseActivityLog;
+
+                const fileCountEl = document.getElementById('fileCountText');
+                if (fileCountEl) {
+                    fileCountEl.textContent = files.length > 0 ? `${files.length} file(s) uploaded` : 'No files uploaded yet';
+                }
+
+                const fileTableBody = document.getElementById('fileTableBody');
+                if (fileTableBody) {
+                    fileTableBody.innerHTML = buildFileTableRows(files) ||
+                        '<tr><td colspan="4" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No files uploaded yet.</td></tr>';
+                }
+
+                const activityListEl = document.getElementById('activityList');
+                if (activityListEl) {
+                    activityListEl.innerHTML = buildActivityLogRows(activityLog) ||
+                        '<tr><td colspan="3" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No activities recorded.</td></tr>';
+                }
+
+                const agentsRow = document.getElementById('agentsTopRow');
+                if (agentsRow) {
+                    agentsRow.innerHTML = buildAgentPillsHTML(serviceId);
+                }
+
+                const controlsWrap = document.getElementById('processControls');
+                if (controlsWrap) {
+                    controlsWrap.innerHTML = buildControlButtonsHTML(serviceId, files.length > 0);
+                }
+
+                const statusWrap = document.getElementById('connectionStatusWrap');
+                if (statusWrap) {
+                    statusWrap.innerHTML = buildConnectionStatusHTML();
+                }
+
+                const systemSelect = document.getElementById('systemConfigSelect');
+                if (systemSelect) systemSelect.value = currentSystemConfig;
+            }
+
+            // ============================================================
+            // 18. SYSTEM CONNECTION - auto-verified as soon as the user
+            // picks Desktop / ShareFile / SharePoint from the dropdown.
+            // ============================================================
+            window.verifySystemConnection = function() {
+                const select = document.getElementById('systemConfigSelect');
+                const selected = select.value;
+
+                // Desktop is the local machine - always available, no remote
+                // handshake needed.
+                if (selected === 'Desktop') {
+                    connectionStatus = 'connected';
+                    currentSystemConfig = 'Desktop';
+                    refreshServicePage(activeSubItemId || 'lease-abstraction');
+                    return;
+                }
+
+                // ShareFile / SharePoint: simulate a real connection attempt.
+                const isConnected = Math.random() > 0.3;
+
+                if (isConnected) {
+                    connectionStatus = 'connected';
+                    currentSystemConfig = selected;
+                    refreshServicePage(activeSubItemId || 'lease-abstraction');
+                    showMessage('✅ Connected', `Successfully connected to ${selected}.`, ['OK']);
+                } else {
+                    connectionStatus = 'disconnected';
+                    currentSystemConfig = 'Desktop';
+                    select.value = 'Desktop';
+                    refreshServicePage(activeSubItemId || 'lease-abstraction');
+                    showMessage('❌ Not Connected', `Failed to connect to ${selected}. Switched back to Desktop.`, ['OK']);
+                    connectionStatus = 'connected';
+                    refreshServicePage(activeSubItemId || 'lease-abstraction');
+                }
+            };
+
+            // ============================================================
+            // 19. FILE UPLOAD HANDLER
+            // ============================================================
+            window.handleFileUpload = function(event, serviceId) {
+                const files = event.target.files;
+                if (files.length === 0) return;
+
+                const isTranslation = serviceId === 'translation';
+                const idCounter = isTranslation ? nextTranslationFileId : nextLeaseFileId;
+
+                let newFiles = [];
+                for (let i = 0; i < files.length; i++) {
+                    const file = files[i];
+
+                    const newFile = {
+                        id: idCounter + i,
+                        name: file.name,
+                        status: 'pending',
+                        scanResult: '0',
+                        progress: '0',
+                        action: 'Pending',
+                        savedPath: getUserClientFilePath(CURRENT_USER_ID, file.name)
+                    };
+
+                    if (isTranslation) {
+                        const langSelect = document.getElementById('translationLangSelect');
+                        newFile.targetLang = langSelect ? langSelect.value : 'English';
+                    }
+
+                    newFiles.push(newFile);
+                }
+
+                if (isTranslation) {
+                    translationFiles = translationFiles.concat(newFiles);
+                    nextTranslationFileId += newFiles.length;
+                } else {
+                    leaseFiles = leaseFiles.concat(newFiles);
+                    nextLeaseFileId += newFiles.length;
+                    // Keep the real File objects in memory (JSON can't store
+                    // bytes) so Start can actually upload them for real
+                    // scanning/extraction - see runLeaseAbstractionPipeline().
+                    for (let i = 0; i < files.length; i++) {
+                        leaseFileBlobs[newFiles[i].id] = files[i];
+                    }
+                }
+
+                refreshServicePage(serviceId);
+                event.target.value = '';
+                persistServiceFiles(serviceId);
+
+                showMessage('✅ Upload Complete', `${newFiles.length} file(s) uploaded successfully.`, ['OK']);
+            };
+
+            // ============================================================
+            // 20. PAYMENT METHODS FUNCTIONS
+            // ============================================================
+            function renderPaymentMethods() {
+                const list = document.getElementById('paymentList');
+                if (!list) return;
+
+                const myMethods = getMyPaymentMethods();
+
+                if (myMethods.length === 0) {
+                    list.innerHTML =
+                        '<li style="padding:15px; color:rgba(0,0,0,0.4); text-align:center;">No payment methods added yet.</li>';
+                    populateBalancePaymentMethods();
+                    return;
+                }
+
+                list.innerHTML = '';
+                myMethods.forEach((method) => {
+                    const li = document.createElement('li');
+                    li.innerHTML = `
+                        <div class="payment-info">
+                            <span class="payment-icon">${method.icon}</span>
+                            <div class="payment-details">
+                                <span class="payment-name">${method.name} ${method.isDefault ? '<span style="color:darkblue;font-size:0.7rem;font-weight:600;">(Default)</span>' : ''}</span>
+                                <span class="payment-sub">${method.details} ${method.expires ? '| Expires: ' + method.expires : ''}</span>
+                            </div>
+                        </div>
+                        <div class="payment-actions">
+                            ${!method.isDefault ? `<button class="default-btn" onclick="setDefaultPayment(${method.id})">Set Default</button>` : ''}
+                            <button class="remove-btn" onclick="removePaymentMethod(${method.id})">Remove</button>
+                        </div>
+                    `;
+                    list.appendChild(li);
+                });
+
+                populateBalancePaymentMethods();
+            }
+
+            function populateBalancePaymentMethods() {
+                const select = document.getElementById('balancePaymentMethod');
+                if (!select) return;
+
+                const myMethods = getMyPaymentMethods();
+
+                select.innerHTML = '';
+                if (myMethods.length === 0) {
+                    select.innerHTML = '<option value="">No payment methods available</option>';
+                    return;
+                }
+
+                myMethods.forEach((method) => {
+                    const option = document.createElement('option');
+                    option.value = method.id;
+                    option.textContent = method.name + ' (' + method.details + ')';
+                    if (method.isDefault) option.selected = true;
+                    select.appendChild(option);
+                });
+            }
+
+            window.togglePaymentForm = function() {
+                const type = document.getElementById('paymentType').value;
+                const creditFields = document.getElementById('creditCardFields');
+                const upiFields = document.getElementById('upiFields');
+
+                if (type === 'credit-card') {
+                    creditFields.style.display = 'block';
+                    upiFields.style.display = 'none';
+                } else if (type === 'upi') {
+                    creditFields.style.display = 'none';
+                    upiFields.style.display = 'block';
+                }
+            };
+
+            window.addPaymentMethod = function() {
+                const type = document.getElementById('paymentType').value;
+                let name, details, icon, expires = '';
+
+                if (type === 'credit-card') {
+                    const cardNumber = document.getElementById('cardNumber').value.trim();
+                    const cardName = document.getElementById('cardName').value.trim();
+                    const expiry = document.getElementById('expiryDate').value.trim();
+                    const cvv = document.getElementById('cvv').value.trim();
+
+                    if (!cardNumber || !cardName) {
+                        showWarning('Please fill in all required fields.');
+                        return;
+                    }
+
+                    name = cardName;
+                    details = '**** ' + cardNumber.slice(-4);
+                    icon = '💳';
+                    expires = expiry;
+
+                } else if (type === 'upi') {
+                    const upiId = document.getElementById('upiId').value.trim();
+                    if (!upiId) {
+                        showWarning('Please enter UPI ID.');
+                        return;
+                    }
+                    name = 'UPI';
+                    details = upiId;
+                    icon = '📱';
+                }
+
+                const newMethod = {
+                    id: nextPaymentId++,
+                    name: name,
+                    details: details,
+                    icon: icon,
+                    expires: expires,
+                    isDefault: getMyPaymentMethods().length === 0,
+                    type: type,
+                    userId: CURRENT_USER_ID
+                };
+
+                paymentMethods.push(newMethod);
+                renderPaymentMethods();
+
+                document.getElementById('cardNumber').value = '';
+                document.getElementById('cardName').value = '';
+                document.getElementById('expiryDate').value = '';
+                document.getElementById('cvv').value = '';
+                document.getElementById('upiId').value = '';
+                persistPaymentMethods();
+
+                showMessage('✅ Success', 'Payment method added successfully!', ['OK']);
+            };
+
+            window.setDefaultPayment = function(id) {
+                paymentMethods.forEach(m => { if (m.userId === CURRENT_USER_ID) m.isDefault = (m.id === id); });
+                renderPaymentMethods();
+                persistPaymentMethods();
+                const method = paymentMethods.find(m => m.id === id);
+                showMessage('✅ Updated', `"${method.name}" is now your default payment method.`, ['OK']);
+            };
+
+            window.removePaymentMethod = function(id) {
+                const method = paymentMethods.find(m => m.id === id);
+                if (method.isDefault) {
+                    showWarning('Cannot remove the default payment method. Please set another as default first.');
+                    return;
+                }
+                showConfirm('🗑️ Remove Payment Method', `Are you sure you want to remove "${method.name}"?`, function(
+                confirmed) {
+                    if (confirmed) {
+                        paymentMethods = paymentMethods.filter(m => m.id !== id);
+                        renderPaymentMethods();
+                        persistPaymentMethods();
+                        showMessage('🗑️ Removed', `"${method.name}" has been removed successfully.`, ['OK']);
+                    }
+                });
+            };
+
+            // ============================================================
+            // 21. PAYMENT HISTORY FUNCTIONS
+            // ============================================================
+            function getDefaultHistoryRange() {
+                const today = new Date();
+                const fromDate = new Date();
+                fromDate.setDate(today.getDate() - 4);
+                const toStr = today.toISOString().split('T')[0];
+                const fromStr = fromDate.toISOString().split('T')[0];
+                return { from: fromStr, to: toStr };
+            }
+
+            function getFilteredHistory() {
+                const fromInput = document.getElementById('historyFromDate');
+                const toInput = document.getElementById('historyToDate');
+                const mine = getMyPaymentHistory();
+                if (!fromInput || !toInput || !fromInput.value || !toInput.value) {
+                    return mine;
+                }
+                const from = fromInput.value;
+                const to = toInput.value;
+                return mine.filter(t => t.date >= from && t.date <= to);
+            }
+
+            function renderHistoryRows(tbody, list) {
+                if (list.length === 0) {
+                    tbody.innerHTML =
+                        '<tr><td colspan="7" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions found.</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = '';
+                const sortedHistory = [...list].sort((a, b) => new Date(b.date) - new Date(a.date));
+                sortedHistory.forEach((transaction) => {
+                    const tr = document.createElement('tr');
+                    const formattedDate = new Date(transaction.date).toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: '2-digit'
+                    });
+                    // Transaction Date & Time together in a single column
+                    const dateTimeText = transaction.time ? `${formattedDate}, ${transaction.time}` : formattedDate;
+                    tr.innerHTML = `
+                        <td>${dateTimeText}</td>
+                        <td><span style="font-weight:500;color:darkblue;">${transaction.id}</span></td>
+                        <td>${transaction.paymentType}</td>
+                        <td>${transaction.paymentMode}</td>
+                        <td>${transaction.description}</td>
+                        <td class="credit">${transaction.credit > 0 ? '$' + transaction.credit.toFixed(2) : '-'}</td>
+                        <td class="debit">${transaction.debit > 0 ? '$' + transaction.debit.toFixed(2) : '-'}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            }
+
+            function renderPaymentHistory() {
+                const tbody = document.getElementById('historyTableBody');
+                if (!tbody) return;
+
+                // Dates start blank by default - getFilteredHistory() already
+                // returns every transaction for this user when no range is set.
+                const filtered = getFilteredHistory();
+                renderHistoryRows(tbody, filtered);
+                updateSummary(filtered);
+            }
+
+            window.applyHistoryFilter = function() {
+                const fromInput = document.getElementById('historyFromDate');
+                const toInput = document.getElementById('historyToDate');
+                if (!fromInput.value || !toInput.value) {
+                    showWarning('Please select both From and To dates.');
+                    return;
+                }
+                if (fromInput.value > toInput.value) {
+                    showWarning('"From" date cannot be after "To" date.');
+                    return;
+                }
+                const tbody = document.getElementById('historyTableBody');
+                const filtered = getFilteredHistory();
+                renderHistoryRows(tbody, filtered);
+                updateSummary(filtered);
+            };
+
+            window.clearHistoryFilter = function() {
+                document.getElementById('historyFromDate').value = '';
+                document.getElementById('historyToDate').value = '';
+                const tbody = document.getElementById('historyTableBody');
+                const filtered = getFilteredHistory();
+                renderHistoryRows(tbody, filtered);
+                updateSummary(filtered);
+            };
+
+            window.downloadHistoryExcel = function() {
+                const filtered = getFilteredHistory();
+                if (filtered.length === 0) {
+                    showWarning('No data available to download for the selected range.');
+                    return;
+                }
+                const sorted = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
+                const headers = ['Transaction Date & Time', 'Transaction ID', 'Payment Type', 'Payment Mode',
+                    'Description', 'Credit', 'Debit'
+                ];
+                let table = '<table border="1"><tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
+                sorted.forEach(t => {
+                    const dateTimeText = t.time ? `${t.date}, ${t.time}` : t.date;
+                    table += '<tr>' +
+                        `<td>${dateTimeText}</td><td>${t.id}</td><td>${t.paymentType}</td>` +
+                        `<td>${t.paymentMode}</td><td>${t.description}</td>` +
+                        `<td>${t.credit > 0 ? t.credit.toFixed(2) : ''}</td>` +
+                        `<td>${t.debit > 0 ? t.debit.toFixed(2) : ''}</td>` +
+                        '</tr>';
+                });
+                table += '</table>';
+
+                const blob = new Blob(['\ufeff' + table], { type: 'application/vnd.ms-excel' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'Payment_History_' + new Date().toISOString().split('T')[0] + '.xls';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+
+            function updateSummary(list) {
+                const data = list || getMyPaymentHistory();
+                let totalCredit = 0,
+                    totalDebit = 0;
+                data.forEach(t => { totalCredit += t.credit;
+                    totalDebit += t.debit; });
+                const balance = totalCredit - totalDebit;
+
+                document.getElementById('totalCredit').textContent = '$' + totalCredit.toFixed(2);
+                document.getElementById('totalDebit').textContent = '$' + totalDebit.toFixed(2);
+                document.getElementById('currentBalance').textContent = '$' + balance.toFixed(2);
+            }
+
+            // ============================================================
+            // 22. BALANCE FUNCTIONS
+            // ============================================================
+            function updateBalanceDisplay() {
+                let totalCredit = 0,
+                    totalDebit = 0;
+                getMyPaymentHistory().forEach(t => { totalCredit += t.credit;
+                    totalDebit += t.debit; });
+                const balance = totalCredit - totalDebit;
+
+                const creditEl = document.getElementById('totalCreditBalance');
+                const debitEl = document.getElementById('totalDebitBalance');
+                const balanceEl = document.getElementById('currentBalanceDisplay');
+
+                if (creditEl) creditEl.textContent = '$' + totalCredit.toFixed(2);
+                if (debitEl) debitEl.textContent = '$' + totalDebit.toFixed(2);
+                if (balanceEl) balanceEl.textContent = '$' + balance.toFixed(2);
+            }
+
+            window.addBalance = function() {
+                const methodSelect = document.getElementById('balancePaymentMethod');
+                const amountInput = document.getElementById('balanceAmount');
+                const descInput = document.getElementById('balanceDescription');
+
+                const methodId = parseInt(methodSelect.value);
+                const amount = parseFloat(amountInput.value);
+                const description = descInput.value.trim();
+
+                if (!methodId) { showWarning('Please select a payment method.'); return; }
+                if (!amount || amount <= 0) { showWarning('Please enter a valid amount.'); return; }
+                if (!description) { showWarning('Please enter a description.'); return; }
+
+                const method = paymentMethods.find(m => m.id === methodId);
+                if (!method) { showWarning('Selected payment method not found.'); return; }
+
+                const now = new Date();
+                const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                const newTransaction = {
+                    id: txnId,
+                    date: now.toISOString().split('T')[0],
+                    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                    userId: CURRENT_USER_ID,
+                    paymentType: method.type === 'upi' ? 'UPI' : method.type === 'credit-card' ? 'Credit Card' :
+                        'Bank Transfer',
+                    paymentMode: method.name + ' ' + method.details,
+                    description: description,
+                    credit: amount,
+                    debit: 0
+                };
+
+                paymentHistory.push(newTransaction);
+                amountInput.value = '';
+                descInput.value = '';
+
+                renderPaymentHistory();
+                updateBalanceDisplay();
+                persistPaymentHistory();
+                showMessage('✅ Success', `$${amount.toFixed(2)} added successfully! Transaction ID: ${txnId}`, ['OK']);
+            };
+
+            // ============================================================
+            // 23. MESSAGE BOX
+            // ============================================================
+            // Title/buttons config per message type now lives in messages.json
+            // (loaded in loadAppData) instead of being hardcoded here.
+            let MESSAGES = {
+                success: { title: '✅ Success', buttons: ['OK'], blocking: false },
+                warning: { title: '⚠️ Warning', buttons: ['OK'], blocking: false },
+                error: { title: '❌ Error', buttons: ['OK'], blocking: false },
+                confirm: { title: '❓ Confirm', buttons: ['Yes', 'No'], blocking: true },
+                info: { title: 'ℹ️ Information', buttons: ['OK'], blocking: false }
+            };
+
+            const msgOverlay = document.getElementById('messageOverlay');
+            const msgTitle = document.getElementById('msgTitle');
+            const msgText = document.getElementById('msgText');
+            const msgButtons = document.getElementById('msgButtons');
+            let onMsgButtonClick = null;
+
+            window.handleButtonClick = function(label) {
+                if (msgOverlay) {
+                    msgOverlay.style.display = 'none';
+                }
+                document.body.classList.remove('disable-bg');
+
+                if (typeof onMsgButtonClick === 'function') {
+                    try { onMsgButtonClick(label); } catch (e) { console.warn('MessageBox callback error:', e); }
+                }
+                onMsgButtonClick = null;
+            };
+
+            function renderMessageBox(cfg, callback) {
+                if (typeof callback === 'function') { onMsgButtonClick = callback; } else { onMsgButtonClick = null; }
+
+                let buttons = cfg.buttons || ['OK'];
+                if (!Array.isArray(buttons)) buttons = [String(buttons)];
+
+                msgTitle.textContent = cfg.title || 'Message';
+                msgText.textContent = cfg.message || '';
+
+                msgButtons.innerHTML = '';
+                buttons.forEach((label) => {
+                    const btn = document.createElement('button');
+                    btn.className = 'msg-action-btn';
+                    btn.textContent = label;
+                    btn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        handleButtonClick(label);
+                    });
+                    msgButtons.appendChild(btn);
+                });
+
+                msgOverlay.style.display = 'flex';
+                document.body.classList.add('disable-bg');
+                msgOverlay.style.animation = 'none';
+                requestAnimationFrame(() => {
+                    msgOverlay.style.animation = 'msgFadeIn 0.2s ease';
+                });
+            }
+
+            function showMessage(title, message, buttons) {
+                renderMessageBox({ title: title, message: message, buttons: buttons || ['OK'] });
+            }
+
+            window.showWarning = function(message) {
+                renderMessageBox({ title: MESSAGES.warning.title, message: message, buttons: ['OK'] });
+            };
+
+            window.showConfirm = function(title, message, callback) {
+                renderMessageBox({ title: title || MESSAGES.confirm.title, message: message, buttons: ['Yes', 'No'] },
+                    function(label) {
+                        callback(label === 'Yes');
+                    });
+            };
+
+            msgOverlay.addEventListener('click', function(e) {
+                if (e.target === msgOverlay) { handleButtonClick('Close'); }
             });
-        };
-        reader.readAsDataURL(file);
-      }},
-      { label: 'Cancel', class: 'btn-secondary', callback: function() { closeModal(); } }
-    ]
-  });
-}
-
-function loadTemplateDropdown() {
-  // Populate ALL template dropdowns on the page
-  var selectors = ['outputTemplate', 'outputTemplateTrans', 'templateSelect'];
-
-  // Scan actual Template/ folder from server
-  fetch('/api/templates/scan?_=' + Date.now())
-    .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(data) {
-      if (!data || !data.success || !data.data || !data.data.folders.length) {
-        _loadTemplateDropdownFromJson(selectors);
-        return;
-      }
-
-      // Build optgroup HTML (folder = group, file = option)
-      var html = '';
-      var hasOptions = false;
-      data.data.folders.forEach(function(folder) {
-        if (!folder.files.length) return;
-        hasOptions = true;
-        html += '<optgroup label="' + folder.name + '">';
-        folder.files.forEach(function(file) {
-          html += '<option value="' + file.path + '">' + file.name + '</option>';
-        });
-        html += '</optgroup>';
-      });
-
-      if (!hasOptions) { _loadTemplateDropdownFromJson(selectors); return; }
-
-      // Apply to all dropdowns
-      selectors.forEach(function(id) {
-        var sel = document.getElementById(id);
-        if (sel) sel.innerHTML = html;
-      });
-    })
-    .catch(function() { _loadTemplateDropdownFromJson(selectors); });
-}
-
-
-// ── Output Template File Picker ───────────────────────────────────────────────
-var _outputTemplateFile   = null;  // The selected template File object
-var _outputTemplateText   = '';    // Extracted text from template
-
-function selectOutputTemplate() {
-  var el = document.getElementById('outputTemplateFile');
-  if (el) el.click();
-}
-
-function clearOutputTemplate() {
-  _outputTemplateFile = null;
-  _outputTemplateText = '';
-  var nameEl  = document.getElementById('templateFileName');
-  var clearEl = document.getElementById('templateClearBtn');
-  if (nameEl)  nameEl.textContent = 'No template — Default format';
-  if (clearEl) clearEl.style.display = 'none';
-}
-
-function handleTemplateFileSelect(event) {
-  var file = event.target.files && event.target.files[0];
-  if (!file) return;
-  var ext = file.name.split('.').pop().toLowerCase();
-  if (!['pdf','docx','doc'].includes(ext)) {
-    showModal('warning', 'Only PDF (.pdf) or Word (.docx/.doc) files are accepted as templates.');
-    event.target.value = '';
-    return;
-  }
-  _outputTemplateFile = file;
-  var nameEl  = document.getElementById('templateFileName');
-  var clearEl = document.getElementById('templateClearBtn');
-  if (nameEl)  nameEl.textContent = '📄 ' + file.name;
-  if (clearEl) clearEl.style.display = 'inline';
-  addLog('📋 Output template selected: ' + file.name, 'info');
-}
-
-function _loadTemplateDropdownFromJson(selectors) {
-  // Fallback: use templates.json data
-  var byFolder = {};
-  allTemplates.forEach(function(t) {
-    if (t.status !== 'Active' || t.category !== 'Lease Abstraction') return;
-    var folder = t.folder_name || 'Templates';
-    if (!byFolder[folder]) byFolder[folder] = [];
-    byFolder[folder].push(t);
-  });
-
-  var html = '';
-  Object.keys(byFolder).forEach(function(folder) {
-    html += '<optgroup label="' + folder + '">';
-    byFolder[folder].forEach(function(t) {
-      html += '<option value="' + t.file_path + '">' + t.template_name + '</option>';
-    });
-    html += '</optgroup>';
-  });
-
-  if (!html) html = '<option value="">No templates configured</option>';
-
-  var ids = Array.isArray(selectors) ? selectors : [selectors];
-  ids.forEach(function(id) {
-    var sel = typeof id === 'string' ? document.getElementById(id) : id;
-    if (sel) sel.innerHTML = html;
-  });
-}
-
-// ============================================
-// ADMIN USERS MANAGEMENT
-// ============================================
-
-function loadAdminUsers() {
-  const users = JSON.parse(localStorage.getItem('lexora_users') || '[]');
-  renderAdminUsersTable(users);
-  loadPendingAccounts();
-}
-
-function renderAdminUsersTable(users) {
-  const tbody = document.getElementById('adminUsersBody');
-  if (!tbody) return;
-  if (!users.length) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:1.5rem;">No users.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = users.map(function(u, idx) {
-    const statusColor = u.status === 'active' ? '#22c55e' : u.status === 'hold' ? '#f59e0b' : '#ef4444';
-    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
-      '<td style="padding:0.5rem 0.8rem;font-weight:600;">' + (u.firstName||'') + ' ' + (u.lastName||'') + '</td>' +
-      '<td style="padding:0.5rem 0.8rem;font-size:0.82rem;color:#475569;">' + (u.email||'') + '</td>' +
-      '<td style="padding:0.5rem 0.8rem;">' +
-        '<span style="background:' + (u.account_type==='admin'?'#ede9fe':'#f0fdf4') + ';color:' + (u.account_type==='admin'?'#7c3aed':'#16a34a') + ';padding:0.15rem 0.5rem;border-radius:5px;font-size:0.78rem;font-weight:600;">' + (u.account_type||u.role||'user') + '</span></td>' +
-      '<td style="padding:0.5rem 0.8rem;font-size:0.82rem;">' + (u.plan||'Basic') + '</td>' +
-      '<td style="padding:0.5rem 0.8rem;">' +
-        '<span style="background:#f1f5f9;color:' + statusColor + ';padding:0.15rem 0.5rem;border-radius:5px;font-size:0.78rem;font-weight:600;">' + (u.status||'active') + '</span></td>' +
-      '<td style="padding:0.5rem 0.8rem;white-space:nowrap;">' +
-        '<button data-idx="' + idx + '" onclick="adminEditUser(this.dataset.idx)" title="Edit Details" style="border:none;background:none;cursor:pointer;font-size:1rem;padding:0.1rem 0.25rem;">✏️</button>' +
-        '<button data-idx="' + idx + '" onclick="adminToggleRole(this.dataset.idx)" title="Toggle Admin Role" style="border:none;background:none;cursor:pointer;font-size:1rem;padding:0.1rem 0.25rem;">🔐</button>' +
-        '<button data-idx="' + idx + '" onclick="adminHoldService(this.dataset.idx)" title="Hold/Resume Service" style="border:none;background:none;cursor:pointer;font-size:1rem;padding:0.1rem 0.25rem;">⏸️</button>' +
-        (u.account_type==='admin'||u.role==='admin' ? '<span title="Admin - locked" style="color:#94a3b8;font-size:0.75rem;padding:0.1rem 0.25rem;">🔒</span>' : '<button data-idx="' + idx + '" onclick="adminDeleteUser(this.dataset.idx)" title="Delete Account" style="border:none;background:none;cursor:pointer;font-size:1rem;padding:0.1rem 0.25rem;">🗑️</button>') +
-      '</td></tr>';
-  }).join('');
-}
-
-function adminEditUser(idxStr) {
-  const idx  = parseInt(idxStr);
-  const users = JSON.parse(localStorage.getItem('lexora_users') || '[]');
-  const u    = users[idx];
-  if (!u) return;
-  const S = 'width:100%;padding:0.5rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.88rem;';
-  const form = '<div style="display:flex;flex-direction:column;gap:0.75rem;font-size:0.88rem;">' +
-    '<div style="display:flex;gap:0.7rem;">' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">First Name</label><input id="auFN" value="' + (u.firstName||'') + '" style="' + S + '" /></div>' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Last Name</label><input id="auLN" value="' + (u.lastName||'') + '" style="' + S + '" /></div>' +
-    '</div>' +
-    '<div><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Email (read-only)</label><input value="' + (u.email||'') + '" disabled style="' + S + 'background:#f1f5f9;color:#64748b;" /></div>' +
-    '<div style="display:flex;gap:0.7rem;">' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Mobile</label><input id="auMob" value="' + (u.mobile||'') + '" style="' + S + '" /></div>' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Plan</label>' +
-        '<select id="auPlan" style="' + S + '"><option ' + (u.plan==='Basic'?'selected':'') + '>Basic</option><option ' + (u.plan==='Pro'?'selected':'') + '>Pro</option><option ' + (u.plan==='Enterprise'?'selected':'') + '>Enterprise</option></select>' +
-      '</div>' +
-    '</div>' +
-    '<div style="display:flex;gap:0.7rem;">' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Account Type</label>' +
-        '<select id="auType" style="' + S + '"><option ' + (u.account_type==='user'?'selected':'') + '>user</option><option ' + (u.account_type==='admin'?'selected':'') + '>admin</option></select>' +
-      '</div>' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Balance ($)</label><input id="auBal" type="number" value="' + (u.balance||0) + '" step="0.01" style="' + S + '" /></div>' +
-    '</div>' +
-  '</div>';
-  showModal('info', form, {
-    title: '✏️ Edit User — ' + u.firstName,
-    closeOnBackdrop: false,
-    buttons: [
-      { label: 'Save', class: 'btn-success', callback: function() {
-        users[idx] = Object.assign({}, u, {
-          firstName:    document.getElementById('auFN').value.trim(),
-          lastName:     document.getElementById('auLN').value.trim(),
-          mobile:       document.getElementById('auMob').value.trim(),
-          plan:         document.getElementById('auPlan').value,
-          account_type: document.getElementById('auType').value,
-          balance:      parseFloat(document.getElementById('auBal').value) || 0
-        });
-        localStorage.setItem('lexora_users', JSON.stringify(users));
-        saveUsersToDisk(users);
-        renderAdminUsersTable(users);
-        closeModal();
-        showModal('success', 'User updated!', { onConfirm: function(){} });
-      }},
-      { label: 'Cancel', class: 'btn-secondary', callback: function() { closeModal(); } }
-    ]
-  });
-}
-
-function adminToggleRole(idxStr) {
-  const idx   = parseInt(idxStr);
-  const users = JSON.parse(localStorage.getItem('lexora_users') || '[]');
-  const u     = users[idx];
-  if (!u) return;
-  const newType = u.account_type === 'admin' ? 'user' : 'admin';
-  showModal('confirm', 'Change "' + u.firstName + '" role to ' + newType + '?', {
-    onConfirm: function() {
-      users[idx].account_type = newType;
-      users[idx].role = newType;
-      localStorage.setItem('lexora_users', JSON.stringify(users));
-      saveUsersToDisk(users);
-      renderAdminUsersTable(users);
-      showModal('success', 'Role changed to ' + newType + '!', { onConfirm: function(){} });
-    }, onCancel: function() {}
-  });
-}
-
-function adminHoldService(idxStr) {
-  const idx   = parseInt(idxStr);
-  const users = JSON.parse(localStorage.getItem('lexora_users') || '[]');
-  const u     = users[idx];
-  if (!u) return;
-  const newStatus = u.status === 'hold' ? 'active' : 'hold';
-  showModal('confirm', (newStatus === 'hold' ? 'Hold' : 'Resume') + ' service for "' + u.firstName + '"?', {
-    onConfirm: function() {
-      users[idx].status = newStatus;
-      localStorage.setItem('lexora_users', JSON.stringify(users));
-      saveUsersToDisk(users);
-      renderAdminUsersTable(users);
-      showModal('success', 'Service ' + newStatus + '!', { onConfirm: function(){} });
-    }, onCancel: function() {}
-  });
-}
-
-function adminDeleteUser(idxStr) {
-  const idx   = parseInt(idxStr);
-  const users = JSON.parse(localStorage.getItem('lexora_users') || '[]');
-  const u     = users[idx];
-  if (!u) return;
-  if (u.account_type === 'admin' || u.role === 'admin' || u.lock === 'yes') {
-    showModal('warning', '🔒 Admin accounts are locked and cannot be deleted.');
-    return;
-  }
-  showModal('confirm', 'Permanently delete account of "' + u.firstName + ' ' + u.lastName + '"?', {
-    onConfirm: function() {
-      users.splice(idx, 1);
-      localStorage.setItem('lexora_users', JSON.stringify(users));
-      saveUsersToDisk(users);
-      renderAdminUsersTable(users);
-      showModal('success', 'Account deleted.', { onConfirm: function(){} });
-    }, onCancel: function() {}
-  });
-}
-
-// ── Pending (Temp) Accounts ──────────────────────────────────────────────────
-function loadPendingAccounts() {
-  fetch('/db/temp_accounts.json?_=' + Date.now())
-    .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(data) {
-      const pending = data ? (data.pending || []) : [];
-      const countEl = document.getElementById('pendingCount');
-      if (countEl) countEl.textContent = pending.length;
-      const tbody = document.getElementById('pendingUsersBody');
-      if (!tbody) return;
-      if (!pending.length) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:1rem;">No pending registrations.</td></tr>';
-        return;
-      }
-      tbody.innerHTML = pending.map(function(p, i) {
-        const expires = p.code_expires ? new Date(p.code_expires).toLocaleString() : '—';
-        return '<tr style="border-bottom:1px solid #fde68a;">' +
-          '<td style="padding:0.4rem 0.8rem;">' + (p.firstName||'') + ' ' + (p.lastName||'') + '</td>' +
-          '<td style="padding:0.4rem 0.8rem;font-size:0.82rem;">' + (p.email||'') + '</td>' +
-          '<td style="padding:0.4rem 0.8rem;font-size:0.8rem;color:#64748b;">' + (p.requestedAt ? new Date(p.requestedAt).toLocaleString() : '—') + '</td>' +
-          '<td style="padding:0.4rem 0.8rem;font-size:0.8rem;color:#f59e0b;">' + expires + '</td>' +
-          '<td style="padding:0.4rem 0.8rem;white-space:nowrap;">' +
-            '<button data-pidx="' + i + '" onclick="approveTempAccount(this.dataset.pidx)" title="Approve" style="border:none;background:none;cursor:pointer;font-size:1rem;padding:0.1rem 0.25rem;">✅</button>' +
-            '<button data-pidx="' + i + '" onclick="rejectTempAccount(this.dataset.pidx)" title="Reject" style="border:none;background:none;cursor:pointer;font-size:1rem;padding:0.1rem 0.25rem;">❌</button>' +
-          '</td></tr>';
-      }).join('');
-    })
-    .catch(function() {
-      const tbody = document.getElementById('pendingUsersBody');
-      if (tbody) tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:1rem;">Start server to load pending accounts.</td></tr>';
-    });
-}
-
-function approveTempAccount(idxStr) {
-  showModal('confirm', 'Approve this registration?', {
-    onConfirm: function() {
-      fetch('/api/register/approve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pendingIndex: parseInt(idxStr) })
-      }).then(function(r) { return r.json(); })
-        .then(function(res) {
-          if (res.success) { loadAdminUsers(); showModal('success', 'Account approved and created!', { onConfirm: function(){} }); }
-          else { showModal('warning', res.error || 'Failed'); }
-        }).catch(function() { showModal('warning', 'Server not running.'); });
-    }, onCancel: function() {}
-  });
-}
-
-function rejectTempAccount(idxStr) {
-  showModal('confirm', 'Reject this registration request?', {
-    onConfirm: function() {
-      fetch('/api/register/reject', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pendingIndex: parseInt(idxStr) })
-      }).then(function(r) { return r.json(); })
-        .then(function(res) {
-          loadAdminUsers();
-          showModal('info', 'Registration rejected.', { onConfirm: function(){} });
-        }).catch(function() { loadAdminUsers(); });
-    }, onCancel: function() {}
-  });
-}
-
-// ============================================
-// COMPANY DETAILS
-// ============================================
-
-let companyData = {};
-
-function loadCompanyData(callback) {
-  fetch('/db/company.json?_=' + Date.now())
-    .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(data) {
-      if (!data) return;
-      // Apply any scheduled changes whose start_date <= today
-      const today = new Date(); today.setHours(0,0,0,0);
-      const scheduled = data.scheduled_changes || [];
-      let effective = Object.assign({}, data.company);
-      scheduled.forEach(function(sc) {
-        if (new Date(sc.start_date) <= today) {
-          Object.assign(effective, sc.changes);
-        }
-      });
-      companyData = effective;
-      localStorage.setItem('lexora_company', JSON.stringify({ company: effective, scheduled_changes: data.scheduled_changes || [] }));
-      // Update footer copyright from company.json
-      _updateFooterCopyright(effective);
-      if (callback) callback(effective);
-    })
-    .catch(function() {
-      const cached = localStorage.getItem('lexora_company');
-      if (cached) { companyData = JSON.parse(cached).company || {}; _updateFooterCopyright(companyData); if (callback) callback(companyData); }
-    });
-}
-
-function _updateFooterCopyright(c) {
-  if (!c) return;
-  var year = c.copyright_year || new Date().getFullYear();
-  var text = c.copyright_text || ('© ' + year + ' ' + (c.name || 'Lexora AI Solutions') + '. All rights reserved.');
-  var web  = c.website
-    ? ' <a href="' + c.website + '" target="_blank" style="color:#6366f1;text-decoration:none;margin-left:6px;">' + c.website.replace('https://','') + '</a>'
-    : '';
-  var html = '<i class="far fa-copyright" style="margin-right:5px;"></i>' + text + web;
-  // Update global footer
-  var gf = document.getElementById('appFooterCopyright');
-  if (gf) gf.innerHTML = html;
-  // Update all per-section footers
-  document.querySelectorAll('.section-copyright-bar').forEach(function(el) { el.innerHTML = html; });
-}
-
-function _injectSectionFooters() {
-  // Copyright now shown in fixed global footer only (not per-section)
-}
-
-function renderContactDetails() {
-  const fields = [
-    { id: 'co-name',    key: 'name',          icon: 'fa-building',       label: 'Company Name' },
-    { id: 'co-addr',    key: 'address',          icon: 'fa-map-marker-alt', label: 'Address' },
-    { id: 'co-hours',   key: 'working_hours',    icon: 'fa-clock',          label: 'Working Hours' },
-    { id: 'co-days',    key: 'working_days',     icon: 'fa-calendar-alt',   label: 'Working Days' },
-    { id: 'co-loc',     key: 'location',         icon: 'fa-globe-americas', label: 'Location' },
-    { id: 'co-email',   key: 'email',            icon: 'fa-envelope',       label: 'Email' },
-    { id: 'co-phone',   key: 'phone',            icon: 'fa-phone',          label: 'Phone' },
-    { id: 'co-wa',      key: 'whatsapp_number',  icon: 'fa-whatsapp',       label: 'WhatsApp Number' },
-  ];
-  fields.forEach(function(f) {
-    const el = document.getElementById(f.id);
-    if (el && companyData[f.key]) el.textContent = companyData[f.key];
-  });
-}
-
-function loadCompanyAdmin() {
-  const tbody = document.getElementById('companyTableBody');
-  if (!tbody) return;
-  const data = JSON.parse(localStorage.getItem('lexora_company') || '{}');
-  const company = data.company || companyData || {};
-  const scheduled = data.scheduled_changes || [];
-
-  const fields = [
-    { key: 'name',            label: 'Company Name' },
-    { key: 'address',         label: 'Address' },
-    { key: 'email',           label: 'Email' },
-    { key: 'phone',           label: 'Phone' },
-    { key: 'whatsapp_number', label: 'WhatsApp Number (for OTP)' },
-    { key: 'working_hours',   label: 'Working Hours' },
-    { key: 'working_days',    label: 'Working Days' },
-    { key: 'location',        label: 'Location' },
-    { key: 'website',         label: 'Website' },
-  ];
-  tbody.innerHTML = fields.map(function(f) {
-    const sched = scheduled.find(function(s) { return s.changes && s.changes[f.key]; });
-    const schedInfo = sched ? '<span style="font-size:0.75rem;color:#f59e0b;display:block;">⏰ Scheduled: ' + (sched.changes[f.key]) + ' (from ' + sched.start_date + ')</span>' : '';
-    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
-      '<td style="padding:0.6rem 1rem;font-weight:600;color:#1e293b;width:160px;">' + f.label + '</td>' +
-      '<td style="padding:0.6rem 1rem;color:#475569;">' + (company[f.key]||'—') + schedInfo + '</td>' +
-      '<td style="padding:0.6rem 1rem;white-space:nowrap;">' +
-        '<button data-key="' + f.key + '" data-label="' + f.label + '" data-val="' + encodeURIComponent(company[f.key]||'') + '" onclick="editCompanyField(this)" ' +
-        'style="padding:0.25rem 0.7rem;background:#3b82f6;color:white;border:none;border-radius:6px;cursor:pointer;font-size:0.78rem;">Edit</button>' +
-      '</td></tr>';
-  }).join('');
-}
-
-function editCompanyField(btn) {
-  const key   = btn.dataset.key;
-  const label = btn.dataset.label;
-  const val   = decodeURIComponent(btn.dataset.val || '');
-  const today = new Date().toISOString().split('T')[0];
-
-  const form = '<div style="display:flex;flex-direction:column;gap:0.8rem;font-size:0.9rem;">' +
-    '<div><label style="font-weight:600;display:block;margin-bottom:0.3rem;">' + label + '</label>' +
-    '<input id="coVal" value="' + val.replace(/"/g,'&quot;') + '" style="width:100%;padding:0.6rem 1rem;border:2px solid #e2e8f0;border-radius:8px;" /></div>' +
-    '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:0.8rem;">' +
-    '<label style="font-weight:600;display:block;margin-bottom:0.3rem;font-size:0.85rem;">📅 Apply Change</label>' +
-    '<div style="display:flex;align-items:center;gap:0.8rem;flex-wrap:wrap;">' +
-    '<label><input type="radio" name="applyType" value="now" checked style="accent-color:#3b82f6;"> Immediately</label>' +
-    '<label><input type="radio" name="applyType" value="date"> From date: <input type="date" id="coDate" value="' + today + '" style="padding:0.3rem;border:1px solid #e2e8f0;border-radius:6px;margin-left:0.3rem;"></label>' +
-    '</div></div></div>';
-
-  showModal('info', form, {
-    title: '✏️ Edit — ' + label,
-    icon: '✏️',
-    closeOnBackdrop: false,
-    buttons: [
-      { label: 'Save', class: 'btn-success', callback: function() {
-        const newVal = document.getElementById('coVal').value.trim();
-        const applyType = document.querySelector('input[name="applyType"]:checked').value;
-        const applyDate = document.getElementById('coDate').value;
-
-        const stored = JSON.parse(localStorage.getItem('lexora_company') || '{}');
-        const company = stored.company || {};
-        let scheduled = stored.scheduled_changes || [];
-
-        if (applyType === 'now') {
-          company[key] = newVal;
-          // Remove any existing schedule for this key
-          scheduled = scheduled.filter(function(s) { return !s.changes[key]; });
-        } else {
-          // Schedule the change
-          const existing = scheduled.find(function(s) { return s.start_date === applyDate; });
-          if (existing) { existing.changes[key] = newVal; }
-          else { scheduled.push({ start_date: applyDate, changes: { [key]: newVal } }); }
-        }
-
-        const payload = { company: company, scheduled_changes: scheduled };
-        localStorage.setItem('lexora_company', JSON.stringify(payload));
-
-        fetch('/api/company/save', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        }).catch(function() {});
-
-        // Apply immediately if no date
-        if (applyType === 'now') { companyData[key] = newVal; renderContactDetails(); }
-        loadCompanyAdmin();
-        closeModal();
-        showModal('success', applyType === 'now'
-          ? label + ' updated immediately!'
-          : label + ' scheduled from ' + applyDate + '!',
-          { onConfirm: function(){} });
-      }},
-      { label: 'Cancel', class: 'btn-secondary', callback: function() { closeModal(); } }
-    ]
-  });
-}
-
-// ============================================
-// PLANS & OFFERS
-// ============================================
-
-let allPlans = [];
-
-function loadPlans(callback) {
-  fetch('/db/plans.json?_=' + Date.now())
-    .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(data) {
-      if (data && data.plans) {
-        allPlans = data.plans;
-        localStorage.setItem('lexora_plans', JSON.stringify(allPlans));
-      } else {
-        var cached = localStorage.getItem('lexora_plans');
-        if (cached) allPlans = JSON.parse(cached);
-      }
-      if (callback) callback(allPlans);
-    })
-    .catch(function() {
-      var cached = localStorage.getItem('lexora_plans');
-      if (cached) { allPlans = JSON.parse(cached); }
-      if (callback) callback(allPlans);
-    });
-}
-
-function savePlans() {
-  fetch('/api/plans/save', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ plans: allPlans })
-  }).then(function(r) { return r.json(); })
-    .then(function(res) {
-      if (res.success) {
-        localStorage.setItem('lexora_plans', JSON.stringify(allPlans));
-        console.log('[Lexora] plans.json saved');
-      }
-    })
-    .catch(function() { localStorage.setItem('lexora_plans', JSON.stringify(allPlans)); });
-}
-
-// Render the Plan & Offer section (public view) — only active plans with start_date <= today
-function renderPlansSection() {
-  const container = document.getElementById('plansContainer');
-  if (!container) return;
-  const today = new Date(); today.setHours(0,0,0,0);
-
-  const visible = allPlans.filter(function(p) {
-    return p.active && new Date(p.start_date) <= today;
-  });
-
-  if (visible.length === 0) {
-    container.innerHTML = '<p style="color:#94a3b8;text-align:center;padding:2rem;">No active plans available yet.</p>';
-    return;
-  }
-
-  const colorMap = { blue: '#3b82f6', green: '#22c55e', purple: '#8b5cf6', orange: '#f59e0b', red: '#ef4444' };
-
-  container.innerHTML = visible.map(function(p) {
-    const color   = colorMap[p.color] || '#3b82f6';
-    const price   = p.amount === 0 ? 'Free' : '$' + p.amount + ' / ' + p.frequency;
-    const incList = (p.included || []).map(function(i) { return '<p style="margin:0.25rem 0;">✅ ' + i + '</p>'; }).join('');
-    const excList = (p.excluded || []).map(function(i) { return '<p style="margin:0.25rem 0;color:#94a3b8;">❌ ' + i + '</p>'; }).join('');
-    const lockBadge = p.lock === 'yes' ? '<span style="font-size:0.72rem;background:#fef3c7;color:#b45309;padding:0.15rem 0.5rem;border-radius:6px;margin-left:0.4rem;">🔒 Free</span>' : '';
-    return '<div class="card accent ' + (p.color||'blue') + '" style="min-height:280px;">' +
-      '<div class="card-header"><span class="icon">' + (p.icon||'📋') + '</span>' +
-      '<h3 class="title">' + p.name + lockBadge + '</h3></div>' +
-      '<div class="card-body">' +
-      '<p style="font-size:1.4rem;font-weight:700;color:#1e293b;margin-bottom:0.4rem;">' + price + '</p>' +
-      '<p style="font-size:0.8rem;color:#64748b;margin-bottom:0.8rem;">' + (p.description||'') + '</p>' +
-      incList + (excList ? '<div style="margin-top:0.5rem;">' + excList + '</div>' : '') +
-      '</div>' +
-      '<div class="card-footer">' +
-      '<span style="color:' + color + ';font-weight:600;cursor:pointer;" onclick="selectPlan(\'' + p.id + '\')">Get Started \u2192</span>' +
-      '</div></div>';
-  }).join('');
-}
-
-function selectPlan(planId) {
-  const plan = allPlans.find(function(p) { return p.id === planId; });
-  if (!plan) return;
-  showModal('info', plan.amount === 0
-    ? 'Basic plan selected. You can upgrade anytime.'
-    : plan.name + ' plan — $' + plan.amount + '/' + plan.frequency + '. Contact sales to activate.',
-    { onConfirm: function(){} });
-}
-
-// ── Admin: Render plan management table ──────────────────────────────────
-function renderAdminPlansTable() {
-  const tbody = document.getElementById('adminPlansBody');
-  if (!tbody) return;
-  if (allPlans.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#94a3b8;padding:1.5rem;">No plans yet.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = allPlans.map(function(p, idx) {
-    const locked = p.lock === 'yes';
-    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
-      '<td style="padding:0.5rem 0.8rem;">' + p.icon + ' ' + p.name + '</td>' +
-      '<td style="padding:0.5rem 0.8rem;">' + (p.amount === 0 ? 'Free' : '$' + p.amount) + '</td>' +
-      '<td style="padding:0.5rem 0.8rem;">' + p.frequency + '</td>' +
-      '<td style="padding:0.5rem 0.8rem;font-size:0.78rem;max-width:150px;">' + (p.included||[]).join(', ') + '</td>' +
-      '<td style="padding:0.5rem 0.8rem;">' + p.start_date + '</td>' +
-      '<td style="padding:0.5rem 0.8rem;">' +
-        '<span style="padding:0.2rem 0.6rem;border-radius:6px;font-size:0.78rem;font-weight:600;background:' + (p.active ? '#dcfce7' : '#fee2e2') + ';color:' + (p.active ? '#16a34a' : '#dc2626') + ';">' +
-        (p.active ? 'Active' : 'Inactive') + '</span></td>' +
-      '<td style="padding:0.5rem 0.8rem;">' +
-        (locked ? '<span style="color:#b45309;font-size:0.8rem;">🔒 Locked</span>' : '<span style="color:#22c55e;font-size:0.8rem;">🔓 Free</span>') + '</td>' +
-      '<td style="padding:0.5rem 0.8rem;white-space:nowrap;">' +
-        '<button onclick="editPlan(' + idx + ')" style="padding:0.25rem 0.6rem;background:#3b82f6;color:white;border:none;border-radius:6px;cursor:pointer;font-size:0.78rem;margin-right:0.3rem;">Edit</button>' +
-        (!locked ? '<button onclick="deletePlan(' + idx + ')" style="padding:0.25rem 0.6rem;background:#ef4444;color:white;border:none;border-radius:6px;cursor:pointer;font-size:0.78rem;">Delete</button>'
-                 : '<span style="color:#94a3b8;font-size:0.75rem;">Protected</span>') +
-      '</td></tr>';
-  }).join('');
-}
-
-function addNewPlan() {
-  const today = new Date().toISOString().split('T')[0];
-  const S = 'width:100%;padding:0.5rem;border:2px solid #e2e8f0;border-radius:8px;';
-  const form = '<div style="display:flex;flex-direction:column;gap:0.8rem;font-size:0.88rem;">' +
-    '<div style="display:flex;gap:0.7rem;flex-wrap:wrap;">' +
-      '<div style="flex:0.5;min-width:60px;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Icon</label><input id="pIcon" value="📋" style="' + S + '" /></div>' +
-      '<div style="flex:1.5;min-width:120px;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Name *</label><input id="pName" placeholder="Plan name" style="' + S + '" /></div>' +
-      '<div style="flex:0.8;min-width:80px;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Amount ($)</label><input id="pAmount" type="number" value="0" min="0" style="' + S + '" /></div>' +
-      '<div style="flex:1.2;min-width:120px;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Frequency</label><input id="pFreq" placeholder="e.g. monthly, yearly, one-time, forever" style="' + S + '" /></div>' +
-    '</div>' +
-    '<div style="display:flex;gap:0.7rem;">' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Color</label><select id="pColor" style="' + S + '"><option>blue</option><option>green</option><option>purple</option><option>orange</option></select></div>' +
-      '<div style="flex:3;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Description</label><input id="pDesc" placeholder="Short description" style="' + S + '" /></div>' +
-    '</div>' +
-    '<div style="display:flex;gap:0.7rem;">' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Included (one per line)</label><textarea id="pIncluded" rows="4" style="' + S + 'font-family:inherit;resize:vertical;"></textarea></div>' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Excluded (one per line)</label><textarea id="pExcluded" rows="4" style="' + S + 'font-family:inherit;resize:vertical;"></textarea></div>' +
-    '</div>' +
-    '<div style="display:flex;gap:0.7rem;align-items:flex-end;">' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Start Date *</label><input id="pStart" type="date" value="' + today + '" style="' + S + '" /></div>' +
-      '<div style="flex:1;display:flex;align-items:center;gap:0.5rem;padding-bottom:0.2rem;"><input type="checkbox" id="pActive" checked style="width:16px;height:16px;accent-color:#22c55e;" /><label for="pActive" style="font-weight:600;">Active</label></div>' +
-    '</div>' +
-  '</div>';
-
-  showModal('info', form, {
-    title: '➕ Add New Plan',
-    icon: '📋',
-    closeOnBackdrop: false,
-    buttons: [
-      { label: 'Add Plan', class: 'btn-success', callback: function() {
-        const name = document.getElementById('pName').value.trim();
-        const start = document.getElementById('pStart').value;
-        if (!name || !start) { showModal('warning', 'Name and Start Date are required.'); return; }
-        const newPlan = {
-          id: 'plan_' + Date.now(),
-          name: name,
-          amount: parseFloat(document.getElementById('pAmount').value) || 0,
-          currency: 'USD',
-          frequency: document.getElementById('pFreq').value,
-          included: document.getElementById('pIncluded').value.split('\n').map(function(s){return s.trim();}).filter(Boolean),
-          excluded: document.getElementById('pExcluded').value.split('\n').map(function(s){return s.trim();}).filter(Boolean),
-          start_date: start,
-          lock: 'no',
-          active: document.getElementById('pActive').checked,
-          color: document.getElementById('pColor').value,
-          icon: document.getElementById('pIcon').value,
-          description: document.getElementById('pDesc').value.trim()
-        };
-        allPlans.push(newPlan);
-        savePlans();
-        renderAdminPlansTable();
-        closeModal();
-        showModal('success', 'Plan "' + name + '" added!', { onConfirm: function(){} });
-      }},
-      { label: 'Cancel', class: 'btn-secondary', callback: function() { closeModal(); } }
-    ]
-  });
-}
-
-function editPlan(idx) {
-  const p = allPlans[idx];
-  if (!p) return;
-  const S2 = 'width:100%;padding:0.5rem;border:2px solid #e2e8f0;border-radius:8px;';
-  const form = '<div style="display:flex;flex-direction:column;gap:0.8rem;font-size:0.88rem;">' +
-    '<div style="display:flex;gap:0.7rem;flex-wrap:wrap;">' +
-      '<div style="flex:0.5;min-width:60px;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Icon</label><input id="epIcon" value="' + (p.icon||'📋') + '" style="' + S2 + '" /></div>' +
-      '<div style="flex:1.5;min-width:120px;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Name *</label><input id="epName" value="' + p.name + '" style="' + S2 + '" /></div>' +
-      '<div style="flex:0.8;min-width:80px;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Amount ($)</label><input id="epAmount" type="number" value="' + p.amount + '" style="' + S2 + '" /></div>' +
-      '<div style="flex:1.2;min-width:120px;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Frequency</label><input id="epFreq" value="' + (p.frequency||'') + '" placeholder="monthly, yearly, one-time, forever" style="' + S2 + '" /></div>' +
-    '</div>' +
-    '<div style="display:flex;gap:0.7rem;">' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Color</label><select id="epColor" style="' + S2 + '"><option ' + (p.color==='blue'?'selected':'') + '>blue</option><option ' + (p.color==='green'?'selected':'') + '>green</option><option ' + (p.color==='purple'?'selected':'') + '>purple</option><option ' + (p.color==='orange'?'selected':'') + '>orange</option></select></div>' +
-      '<div style="flex:3;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Description</label><input id="epDesc" value="' + (p.description||'') + '" style="' + S2 + '" /></div>' +
-    '</div>' +
-    '<div style="display:flex;gap:0.7rem;">' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Included (one per line)</label><textarea id="epIncluded" rows="4" style="' + S2 + 'font-family:inherit;resize:vertical;">' + (p.included||[]).join('\n') + '</textarea></div>' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Excluded (one per line)</label><textarea id="epExcluded" rows="4" style="' + S2 + 'font-family:inherit;resize:vertical;">' + (p.excluded||[]).join('\n') + '</textarea></div>' +
-    '</div>' +
-    '<div style="display:flex;gap:0.7rem;align-items:flex-end;">' +
-      '<div style="flex:1;"><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Start Date</label><input id="epStart" type="date" value="' + p.start_date + '" style="' + S2 + '" /></div>' +
-      '<div style="flex:1;display:flex;align-items:center;gap:0.5rem;padding-bottom:0.2rem;"><input type="checkbox" id="epActive" ' + (p.active?'checked':'') + ' style="width:16px;height:16px;accent-color:#22c55e;" /><label for="epActive" style="font-weight:600;">Active</label></div>' +
-    '</div>' +
-  '</div>';
-
-  showModal('info', form, {
-    title: '✏️ Edit Plan — ' + p.name,
-    icon: '✏️',
-    closeOnBackdrop: false,
-    buttons: [
-      { label: 'Save', class: 'btn-success', callback: function() {
-        const name = document.getElementById('epName').value.trim();
-        if (!name) { showModal('warning', 'Plan name is required.'); return; }
-        allPlans[idx] = Object.assign({}, p, {
-          name: name,
-          icon: document.getElementById('epIcon').value,
-          color: document.getElementById('epColor').value,
-          amount: parseFloat(document.getElementById('epAmount').value) || 0,
-          frequency: (document.getElementById('epFreq').value||'').trim() || 'monthly',
-          description: document.getElementById('epDesc').value.trim(),
-          included: document.getElementById('epIncluded').value.split('\n').map(function(s){return s.trim();}).filter(Boolean),
-          excluded: document.getElementById('epExcluded').value.split('\n').map(function(s){return s.trim();}).filter(Boolean),
-          start_date: document.getElementById('epStart').value,
-          active: document.getElementById('epActive').checked
-        });
-        savePlans();
-        renderAdminPlansTable();
-        closeModal();
-        showModal('success', 'Plan updated!', { onConfirm: function(){} });
-      }},
-      { label: 'Cancel', class: 'btn-secondary', callback: function() { closeModal(); } }
-    ]
-  });
-}
-
-function deletePlan(idx) {
-  const p = allPlans[idx];
-  if (!p) return;
-  if (p.lock === 'yes') { showModal('warning', 'This plan is locked and cannot be deleted.'); return; }
-  showModal('confirm', 'Delete plan "' + p.name + '"? This cannot be undone.', {
-    onConfirm: function() {
-      allPlans.splice(idx, 1);
-      savePlans();
-      renderAdminPlansTable();
-      showModal('success', 'Plan deleted.', { onConfirm: function(){} });
-    },
-    onCancel: function() {}
-  });
-}
-
-// ── Admin: File Manager ───────────────────────────────────────────────────
-
-// ── Files section: Add / Delete / Download ────────────────────────────────────
-// ── Current path helper ──────────────────────────────────────────────────────
-function _currentBreadcrumbPath() {
-  return (typeof _currentFolder !== 'undefined' && _currentFolder) ? _currentFolder : '';
-}
-
-function addNewFile() {
-  var base  = _currentBreadcrumbPath();
-  var label = base ? 'Current location: ' + base : 'Root folder';
-  var S     = 'width:100%;padding:0.5rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.88rem;';
-  var form  = '<div style="display:flex;flex-direction:column;gap:0.75rem;">' +
-    '<div style="background:#eff6ff;padding:0.5rem 0.75rem;border-radius:6px;font-size:0.82rem;color:#3b82f6;">📍 ' + label + '</div>' +
-    '<div><label style="font-weight:600;display:block;margin-bottom:0.2rem;">Upload a file</label><input type="file" id="newFileInput" style="width:100%;" /></div>' +
-    '<div style="text-align:center;color:#94a3b8;font-size:0.82rem;">— or create empty file —</div>' +
-    '<div><input id="newFileName" placeholder="filename.txt" style="' + S + '" /></div>' +
-  '</div>';
-  showModal('info', form, { title: '📄 Add File', closeOnBackdrop: false, buttons: [
-    { label: 'Add', class: 'btn-success', callback: function() {
-        var base2   = _currentBreadcrumbPath();
-        var fileEl  = document.getElementById('newFileInput');
-        var name    = (document.getElementById('newFileName').value || '').trim();
-        if (fileEl && fileEl.files.length) {
-          var file   = fileEl.files[0];
-          var reader = new FileReader();
-          reader.onload = function(ev) {
-            var b64  = ev.target.result.split(',')[1];
-            var path = base2 ? base2 + '/' + file.name : file.name;
-            fetch('/api/files/upload', { method:'POST', headers:{'Content-Type':'application/json'},
-              body: JSON.stringify({ path, fileData: b64, fileName: file.name }) })
-            .then(function(r){ return r.json(); })
-            .then(function(res) {
-              closeModal();
-              if (res.success) { reloadAdminFilesAtCurrentFolder(); showModal('success','File uploaded to ' + path + '!'); }
-              else { showModal('warning', res.error||'Upload failed'); }
-            }).catch(function(){ closeModal(); showModal('warning','Server not running.'); });
-          };
-          reader.readAsDataURL(file);
-        } else if (name) {
-          var path = base2 ? base2 + '/' + name : name;
-          fetch('/api/files/write', { method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ path, content: '' }) })
-          .then(function(r){ return r.json(); })
-          .then(function(res) {
-            closeModal();
-            if (res.success) { reloadAdminFilesAtCurrentFolder(); showModal('success','File created: ' + path); }
-            else { showModal('warning', res.error||'Failed'); }
-          }).catch(function(){ closeModal(); showModal('warning','Server not running.'); });
-        } else { showModal('warning','Select a file or enter a filename.'); }
-    }},
-    { label: 'Cancel', class: 'btn-secondary', callback: function(){ closeModal(); } }
-  ]});
-}
-
-function addNewFolder() {
-  var base  = _currentBreadcrumbPath();
-  var label = base ? 'Inside: ' + base : 'Root folder';
-  var S     = 'width:100%;padding:0.5rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.88rem;';
-  var form  = '<div style="display:flex;flex-direction:column;gap:0.75rem;">' +
-    '<div style="background:#eff6ff;padding:0.5rem 0.75rem;border-radius:6px;font-size:0.82rem;color:#3b82f6;">📍 ' + label + '</div>' +
-    '<div><label style="font-weight:600;display:block;margin-bottom:0.3rem;">Folder Name</label>' +
-      '<input id="newFolderName" placeholder="my-folder" style="' + S + '" /></div>' +
-  '</div>';
-  showModal('info', form, { title: '📁 Add Folder', closeOnBackdrop: false, buttons: [
-    { label: 'Create', class: 'btn-success', callback: function() {
-        var base2  = _currentBreadcrumbPath();
-        var name   = (document.getElementById('newFolderName').value || '').trim().replace(/[^a-zA-Z0-9_\-. ]/g, '');
-        if (!name) { showModal('warning','Enter a folder name.'); return; }
-        var path   = base2 ? base2 + '/' + name : name;
-        fetch('/api/files/mkdir', { method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ path }) })
-        .then(function(r){ return r.json(); })
-        .then(function(res) {
-          closeModal();
-          if (res.success) {
-            reloadAdminFilesAtCurrentFolder();
-            showModal('success', 'Folder created: ' + path, {onConfirm:function(){}});
-          } else { showModal('warning', res.error||'Failed to create folder'); }
-        }).catch(function(){ closeModal(); showModal('warning','Server not running.'); });
-    }},
-    { label: 'Cancel', class: 'btn-secondary', callback: function(){ closeModal(); } }
-  ]});
-}
-
-function deleteSelectedFiles() {
-  const checked = Array.from(document.querySelectorAll('.file-checkbox:checked'));
-  if (!checked.length) { showModal('warning','Select files to delete.'); return; }
-  const paths = checked.map(function(cb){ return decodeURIComponent(cb.dataset.path); });
-  showModal('confirm', 'Delete ' + paths.length + ' file(s)?', {
-    onConfirm: function() {
-      let done = 0;
-      paths.forEach(function(path) {
-        fetch('/api/files/delete', { method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ path }) })
-        .then(function(){ done++; if(done===paths.length){ reloadAdminFilesAtCurrentFolder(); showModal('success',done+' item(s) deleted!'); } })
-        .catch(function(){ done++; if(done===paths.length) loadAdminFiles(); });
-      });
-    }, onCancel: function(){}
-  });
-}
-
-function downloadSelectedFiles() {
-  var checked = Array.from(document.querySelectorAll('.file-checkbox:checked'));
-  if (!checked.length) { showModal('warning','Select files to download.'); return; }
-  checked.forEach(function(cb) {
-    var path  = decodeURIComponent(cb.dataset.path);
-    var fname = path.split('/').pop();
-    var a = document.createElement('a');
-    a.href     = '/api/files/download?path=' + encodeURIComponent(path);
-    a.download = fname;
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(function(){ document.body.removeChild(a); }, 200);
-  });
-}
-
-// Also make files clickable for single download
-function singleDownload(path) {
-  var fname = path.split('/').pop();
-  var a = document.createElement('a');
-  a.href     = '/api/files/download?path=' + encodeURIComponent(path);
-  a.download = fname;
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(function(){ document.body.removeChild(a); }, 200);
-}
-
-function loadAdminFiles() {
-  const tbody = document.getElementById('filesTableBody');
-  if (!tbody) return;
-  tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:1.5rem;"><i class="fas fa-spinner fa-spin"></i> Loading files...</td></tr>';
-
-  fetch('/api/files/list?_=' + Date.now())
-    .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(data) {
-      if (!data || !data.files) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:1rem;">Server not running or no files found.</td></tr>';
-        return;
-      }
-      renderFileTable(data.files);
-    })
-    .catch(function() {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#f87171;padding:1rem;">Start server to browse files.</td></tr>';
-    });
-}
-
-// ── Hierarchical file manager state ──────────────────────────────────────
-let _allServerFiles = [];
-let _currentFolder  = '';
-
-function renderFileTable(files) {
-  _allServerFiles = files;
-  _currentFolder  = '';
-  _renderCurrentFolder();
-}
-
-// Reload files but STAY at current folder position
-function reloadAdminFilesAtCurrentFolder() {
-  var savedFolder = _currentFolder;
-  var tbody = document.getElementById('filesTableBody');
-  if (tbody) tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:1rem;"><i class="fas fa-spinner fa-spin"></i></td></tr>';
-
-  fetch('/api/files/list?_=' + Date.now())
-    .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(data) {
-      if (!data || !data.files) return;
-      _allServerFiles = data.files;
-      _currentFolder  = savedFolder; // restore position
-      _renderCurrentFolder();
-    })
-    .catch(function() {
-      if (tbody) tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#f87171;padding:1rem;">⚠ Reload failed.</td></tr>';
-    });
-}
-
-function _renderCurrentFolder() {
-  const tbody   = document.getElementById('filesTableBody');
-  const breadEl = document.getElementById('fileBreadcrumb');
-  if (!tbody) return;
-
-  // Breadcrumb
-  if (breadEl) {
-    if (_currentFolder === '') {
-      breadEl.innerHTML = '<i class="fas fa-hdd" style="color:#64748b;margin-right:0.4rem;"></i><span style="color:#64748b;">Root</span>';
-    } else {
-      const parts = _currentFolder.split('/');
-      let path = '';
-      let crumbs = '<i class="fas fa-hdd" style="color:#3b82f6;margin-right:0.4rem;"></i>' +
-        '<a href="#" onclick="navigateFolder(\'\'); return false;" style="color:#3b82f6;text-decoration:none;">Root</a>';
-      parts.forEach(function(part) {
-        path = path ? path + '/' + part : part;
-        const p = path;
-        crumbs += ' <span style="color:#cbd5e1;margin:0 0.3rem;">/</span>' +
-          '<a href="#" data-nav="' + p + '" onclick="navigateFolder(this.dataset.nav); return false;" style="color:#3b82f6;text-decoration:none;">' + part + '</a>';
-      });
-      breadEl.innerHTML = crumbs;
-    }
-  }
-
-  // Filter: only direct children of _currentFolder
-  var rows;
-  if (_currentFolder === '') {
-    rows = _allServerFiles.filter(function(f) {
-      return f.path.indexOf('/') === -1;
-    });
-  } else {
-    var prefix = _currentFolder + '/';
-    rows = _allServerFiles.filter(function(f) {
-      if (!f.path.startsWith(prefix)) return false;
-      var rest = f.path.slice(prefix.length);
-      return rest !== '' && rest.indexOf('/') === -1;
-    });
-  }
-
-  if (!rows || rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:1.5rem;">Empty folder.</td></tr>';
-    return;
-  }
-
-  const iconMap  = { json:'fa-database', py:'fa-code', js:'fa-code', css:'fa-code', html:'fa-code', md:'fa-file-alt', txt:'fa-file-alt', zip:'fa-file-archive', png:'fa-file-image', jpg:'fa-file-image', jpeg:'fa-file-image' };
-  const colorMap = { json:'#22c55e', py:'#3b82f6', js:'#f59e0b', css:'#8b5cf6', html:'#ef4444', md:'#64748b' };
-
-  tbody.innerHTML = rows.map(function(f) {
-    const isFolder = (f.type === 'folder');
-    const icon  = isFolder ? 'fa-folder-open' : (iconMap[f.ext] || 'fa-file');
-    const color = isFolder ? '#f59e0b'          : (colorMap[f.ext] || '#64748b');
-
-    const nameCell = isFolder
-      ? '<a href="#" data-nav="' + f.path + '" onclick="navigateFolder(this.dataset.nav); return false;" ' +
-        'style="color:#f59e0b;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:0.4rem;">' +
-        '<i class="fas ' + icon + '" style="color:' + color + ';"></i>' + f.name + '</a>'
-      : '<a href="#" data-fpath="' + encodeURIComponent(f.path) + '" onclick="openFileLink(this); return false;" ' +
-        'style="color:#1e293b;text-decoration:none;display:inline-flex;align-items:center;gap:0.4rem;" title="Click to view ' + f.name + '">' +
-        '<i class="fas ' + icon + '" style="color:' + color + ';"></i>' + f.name + '</a>';
-
-    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
-      '<td style="padding:0.4rem 0.5rem;width:36px;"><input type="checkbox" class="file-checkbox" data-path="' + encodeURIComponent(f.path) + '" style="accent-color:#3b82f6;width:14px;height:14px;" /></td>' +
-      '<td style="padding:0.4rem 0.8rem;">' + nameCell + '</td>' +
-      '<td style="padding:0.4rem 0.8rem;color:#64748b;font-size:0.8rem;">' + (isFolder ? '<span style="background:#fef3c7;color:#92400e;padding:0.1rem 0.4rem;border-radius:4px;font-size:0.73rem;">DIR</span>' : (f.ext.toUpperCase() || '—')) + '</td>' +
-      '<td style="padding:0.4rem 0.8rem;color:#64748b;font-size:0.8rem;">' + (f.size || '—') + '</td>' +
-      '<td style="padding:0.4rem 0.8rem;color:#64748b;font-size:0.8rem;">' + (f.modified || '—') + '</td>' +
-      (isFolder
-        ? '<td style="padding:0.4rem 0.8rem;color:#94a3b8;">—</td>'
-        : '<td style="padding:0.4rem 0.8rem;white-space:nowrap;">' +
-          '<button data-fpath="' + encodeURIComponent(f.path) + '" onclick="openFileLink(this)" title="View/Edit" style="border:none;background:none;cursor:pointer;font-size:1rem;padding:0.1rem 0.3rem;">📝</button>' +
-          '<button data-path="' + encodeURIComponent(f.path) + '" data-name="' + encodeURIComponent(f.name) + '" onclick="deleteAdminFileByEl(this)" title="Delete" style="border:none;background:none;cursor:pointer;font-size:1rem;padding:0.1rem 0.3rem;">🗑️</button>' +
-          '</td>') +
-    '</tr>';
-  }).join('');
-}
-
-function navigateFolder(folderPath) {
-  _currentFolder = folderPath;
-  _renderCurrentFolder();
-}
-
-function openFileLink(el) {
-  const path = decodeURIComponent(el.dataset.fpath);
-  const ext  = path.split('.').pop().toLowerCase();
-  if (ext === 'json') {
-    openJsonFullEditor(path);
-  } else if (['html','css','js','py','txt','md'].includes(ext)) {
-    openCodeEditor(path);
-  } else {
-    showAdminFile(path);
-  }
-}
-
-// ── JSON Full-Width Editable Table Editor ─────────────────────────────────────
-
-// ============================================
-// JSON EDITOR SCHEMAS
-// Define field types for each JSON file
-// ============================================
-var JSON_SCHEMAS = {
-  'users.json': {
-    two_factor_auth: { type:'boolean' },
-    lock:              { type:'select',   options:['yes','no'] },
-    active:            { type:'boolean' },
-    status:            { type:'select',   options:['active','inactive','hold'] },
-    account_type:      { type:'select',   options:['admin','user'] },
-    role:              { type:'select',   options:['admin','user'] },
-    gender:            { type:'select',   options:['Male','Female','Other','Prefer not to say'] },
-    plan:              { type:'select',   options:['Basic','Pro','Enterprise'] },
-    email_notifications: { type:'boolean' }
-  },
-  'plans.json': {
-    lock:      { type:'select', options:['yes','no'] },
-    active:    { type:'boolean' },
-    frequency: { type:'select', options:['monthly','yearly','forever','one-time','per project'] },
-    color:     { type:'select', options:['blue','green','purple','orange','red'] }
-  },
-  'templates.json': {
-    lock:     { type:'select', options:['Yes','No'] },
-    status:   { type:'select', options:['Active','Inactive'] },
-    category: { type:'select', options:['Lease Abstraction','Translation','Other'] }
-  },
-  'agents.json': {
-    lock:         { type:'select',  options:['yes','no'] },
-    active:       { type:'boolean' },
-    api_provider: { type:'select',  options:['openrouter','openai','deepl','none'] }
-  },
-  'api_config.json': {
-    lock:   { type:'select',  options:['yes','no'] },
-    active: { type:'boolean' }
-  },
-  'payment_methods.json': {
-    isDefault: { type:'boolean' }
-  },
-
-  'company.json': {},
-  'temp_accounts.json': {
-    lock: { type:'select', options:['yes','no'] }
-  },
-  'transaction_history.json': {
-    lock: { type:'select', options:['yes','no'] },
-    type: { type:'select', options:['credit','debit'] }
-  },
-  'rules.json': {
-    lock:   { type:'select', options:['yes','no'] },
-    active: { type:'boolean' }
-  }
-};
-
-function _getFieldSchema(fileName, colName) {
-  var fileSchema = JSON_SCHEMAS[fileName] || {};
-  if (fileSchema[colName]) return fileSchema[colName];
-  // Defaults by column name pattern
-  if (colName === 'lock')   return { type:'select', options:['yes','no'] };
-  if (colName === 'active') return { type:'boolean' };
-  if (colName === 'status') return { type:'select', options:['active','inactive'] };
-  return { type:'text' };
-}
-
-function _renderCell(val, ri, col, fileName, readOnly) {
-  val = (val === undefined || val === null) ? '' : val;
-  var schema = _getFieldSchema(fileName, col);
-  var sVal   = String(val);
-  var base   = 'class="je-cell" data-ri="' + ri + '" data-col="' + col + '"';
-  if (readOnly) {
-    return '<span style="color:#94a3b8;font-size:0.82rem;padding:0.3rem 0.5rem;display:block;">' + sVal + '</span>';
-  }
-  if (schema.type === 'boolean') {
-    return '<input type="checkbox" ' + base + ' ' + (String(val)==='true'||val===true?'checked':'') + ' style="width:16px;height:16px;accent-color:#3b82f6;cursor:pointer;" />';
-  }
-  if (schema.type === 'select') {
-    var opts = schema.options.map(function(o){ return '<option ' + (o===sVal?'selected':'') + '>' + o + '</option>'; }).join('');
-    return '<select ' + base + ' style="width:100%;padding:0.25rem 0.4rem;border:1px solid #e2e8f0;border-radius:4px;font-size:0.82rem;background:#fff;">' + opts + '</select>';
-  }
-  return '<input ' + base + ' value="' + sVal.replace(/"/g,'&quot;').replace(/</g,'&lt;') + '" style="width:100%;min-width:80px;" />';
-}
-
-var _jeState = { path:'', data:null, arrKey:null, arr:[], cols:[] };
-
-function openJsonFullEditor(path) {
-  const overlay = document.getElementById('jsonFullOverlay');
-  const body    = document.getElementById('jeBody');
-  const title   = document.getElementById('jeTitle');
-  if (!overlay) { openCodeEditor(path); return; }
-  const fname   = path.split('/').pop().replace('.json','');
-  if (title) title.textContent = fname;
-  if (body)  body.innerHTML = '<p style="padding:2rem;text-align:center;color:#94a3b8;"><i class="fas fa-spinner fa-spin"></i> Loading...</p>';
-  overlay.classList.add('open');
-
-  fetch('/api/files/read', { method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ path }) })
-  .then(function(r){ return r.json(); })
-  .then(function(res) {
-    if (!res.success) { closeJsonFullEditor(); showModal('warning','Cannot read: ' + res.error); return; }
-    var data;
-    try { data = JSON.parse(res.content); } catch(e) { closeJsonFullEditor(); openCodeEditor(path); return; }
-    // Find the best array to edit (or key-value)
-    var found = _findEditableArray(data);
-    if (!found) { closeJsonFullEditor(); openCodeEditor(path); return; }
-
-    var jeAddBtn  = document.getElementById('jeAddRowBtn');
-    var jeDelBtn  = document.getElementById('jeDelSelBtn');
-    var jeSelBtn  = document.getElementById('jeSelAllBtn');
-
-    if (found.mode === 'keyvalue') {
-      // Flat/nested object → key-value editor, hide array-only buttons
-      if (jeAddBtn) jeAddBtn.style.display = 'none';
-      if (jeDelBtn) jeDelBtn.style.display = 'none';
-      if (jeSelBtn) jeSelBtn.style.display = 'none';
-      _jeState = { path, data, arrKey: null, arr: null, cols: null, mode: 'keyvalue' };
-      _renderKeyValueTable(_flattenObject(data, ''));
-    } else {
-      // Array mode — filter out nested array/object columns for display
-      if (jeAddBtn) jeAddBtn.style.display = '';
-      if (jeDelBtn) jeDelBtn.style.display = '';
-      if (jeSelBtn) jeSelBtn.style.display = '';
-      // Filter cols: skip if first row value is array or nested object
-      var firstRow = found.arr && found.arr[0];
-      var displayCols = found.cols.filter(function(c) {
-        if (!firstRow) return true;
-        var v = firstRow[c];
-        return !Array.isArray(v) && (v === null || v === undefined || typeof v !== 'object');
-      });
-      // Limit long-text cols (ruleText) to textarea in _renderCell
-      _jeState = { path, data, arrKey: found.key, arr: JSON.parse(JSON.stringify(found.arr || [])), cols: displayCols, mode: found.mode };
-      _renderJeTable();
-    }
-  })
-  .catch(function() { closeJsonFullEditor(); showModal('warning','Server not running.'); });
-}
-
-// Default column schemas for known empty arrays
-var _KNOWN_COLS = {
-  'pending':       ['id','firstName','lastName','email','mobile','verification_code','requestedAt','code_expires'],
-  'resetCodes':    ['email','code','expiry'],
-  'methods':       ['id','name','details','icon','isDefault'],
-  'transactions':  ['id','date','description','type','amount','balance'],
-  'scheduled_changes': ['start_date','changes']
-};
-
-function _findEditableArray(data) {
-  // Top-level array
-  if (Array.isArray(data) && data.length > 0) {
-    return { key: null, arr: data, cols: Object.keys(data[0]), mode: 'array' };
-  }
-  // Search recursively up to 3 levels
-  // First pass: look for non-empty arrays
-  function searchNonEmpty(obj, keyPath, depth) {
-    if (depth > 3) return null;
-    for (var k in obj) {
-      var v = obj[k];
-      var path = keyPath ? keyPath + '.' + k : k;
-      if (Array.isArray(v) && v.length > 0) {
-        return { key: path, arr: v, cols: Object.keys(v[0]), mode: 'array' };
-      } else if (typeof v === 'object' && v && !Array.isArray(v) && depth < 3) {
-        var found = searchNonEmpty(v, path, depth + 1);
-        if (found) return found;
-      }
-    }
-    return null;
-  }
-  var nonEmpty = searchNonEmpty(data, '', 0);
-  if (nonEmpty) return nonEmpty;
-
-  // Second pass: check if there's a meaningful dict to show as key-value
-  // Prefer key-value mode if the top-level has a rich dict property
-  for (var kk in data) {
-    if (typeof data[kk] === 'object' && data[kk] && !Array.isArray(data[kk])) {
-      var subKeys = Object.keys(data[kk]);
-      if (subKeys.length > 2) {
-        // Rich nested object → show as key-value of the whole data
-        return { key: null, arr: null, cols: null, mode: 'keyvalue', data: data };
-      }
-    }
-  }
-
-  // Third pass: look for empty arrays with known columns
-  function searchEmpty(obj, keyPath, depth) {
-    if (depth > 3) return null;
-    for (var k in obj) {
-      var v = obj[k];
-      var path = keyPath ? keyPath + '.' + k : k;
-      if (Array.isArray(v) && v.length === 0) {
-        var known = _KNOWN_COLS[k];
-        if (known) return { key: path, arr: [], cols: known, mode: 'array-empty' };
-      } else if (typeof v === 'object' && v && !Array.isArray(v) && depth < 3) {
-        var found = searchEmpty(v, path, depth + 1);
-        if (found) return found;
-      }
-    }
-    return null;
-  }
-  var emptyArr = searchEmpty(data, '', 0);
-  if (emptyArr) return emptyArr;
-
-  // Fallback: key-value mode
-  return { key: null, arr: null, cols: null, mode: 'keyvalue', data: data };
-}
-
-// ── Flatten a nested object into key-value pairs ──────────────────────────────
-function _flattenObject(obj, prefix) {
-  var pairs = [];
-  Object.keys(obj).forEach(function(k) {
-    var v = obj[k];
-    var fullKey = prefix ? prefix + '.' + k : k;
-    if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
-      pairs = pairs.concat(_flattenObject(v, fullKey));
-    } else if (!Array.isArray(v)) {
-      pairs.push({ key: fullKey, label: k, value: v, type: typeof v });
-    }
-  });
-  return pairs;
-}
-
-function _renderJeTable() {
-  var body    = document.getElementById('jeBody');
-  if (!body) return;
-  var st      = _jeState;
-  var cols    = st.cols;
-  var arr     = st.arr;
-  var fileName = st.path.split('/').pop();
-
-  // Ensure lock column exists
-  if (cols.indexOf('lock') === -1) cols = cols.concat(['lock']);
-  // Ensure arr rows have lock field
-  arr.forEach(function(r){ if (r.lock === undefined) r.lock = 'no'; });
-
-  var thead = '<thead><tr>' +
-    '<th style="padding:0.5rem 0.5rem;width:36px;text-align:center;">' +
-      '<input type="checkbox" id="jeSelectAll" onchange="jeToggleAll(this)" style="width:15px;height:15px;accent-color:#3b82f6;cursor:pointer;" title="Select All"/>' +
-    '</th>' +
-    cols.map(function(c){ return '<th style="padding:0.5rem 0.8rem;white-space:nowrap;">' + c + '</th>'; }).join('') +
-    '<th style="padding:0.5rem 0.5rem;width:50px;">Del</th></tr></thead>';
-
-  var tbody = '<tbody>' + arr.map(function(row, ri) {
-    var locked = String(row.lock || 'no').toLowerCase() === 'yes';
-    var rowStyle = locked ? 'background:#fef9f0;' : '';
-    return '<tr style="border-bottom:1px solid #f1f5f9;' + rowStyle + '">' +
-      '<td style="padding:0.25rem 0.5rem;text-align:center;"><input type="checkbox" class="je-row-check" data-ri="' + ri + '" style="width:14px;height:14px;accent-color:#3b82f6;cursor:pointer;" /></td>' +
-      cols.map(function(c) {
-        return '<td style="padding:0.2rem 0.3rem;">' + _renderCell(row[c], ri, c, fileName, false) + '</td>';
-      }).join('') +
-      '<td style="padding:0.25rem 0.4rem;text-align:center;">' +
-        (locked
-          ? '<span title="Locked — change lock to No to delete" style="color:#f59e0b;font-size:1rem;">🔒</span>'
-          : '<button onclick="_jeDeleteRow(' + ri + ')" style="border:none;background:none;cursor:pointer;font-size:1rem;" title="Delete">🗑️</button>') +
-      '</td>' +
-    '</tr>';
-  }).join('') + '</tbody>';
-
-  body.innerHTML = '<table class="je-table" style="table-layout:auto;width:100%;">' + thead + tbody + '</table>';
-}
-
-function jeToggleAll(cb) {
-  document.querySelectorAll('.je-row-check').forEach(function(c){ c.checked = cb.checked; });
-}
-
-function jeDeleteSelected() {
-  var checked = Array.from(document.querySelectorAll('.je-row-check:checked'));
-  if (!checked.length) { showModal('warning','Select rows to delete.'); return; }
-  var toDelete = checked.map(function(c){ return parseInt(c.dataset.ri); }).sort(function(a,b){return b-a;});
-  // Check locks
-  var locked = toDelete.filter(function(ri){ return String(_jeState.arr[ri]&&_jeState.arr[ri].lock||'no').toLowerCase()==='yes'; });
-  if (locked.length) { showModal('warning','🔒 ' + locked.length + ' row(s) are locked. Change lock to "no" first.'); return; }
-  toDelete.forEach(function(ri){ _jeState.arr.splice(ri,1); });
-  _renderJeTable();
-}
-
-
-function _renderKeyValueTable(pairs) {
-  var body = document.getElementById('jeBody');
-  if (!body) return;
-  if (!pairs.length) {
-    body.innerHTML = '<p style="padding:2rem;text-align:center;color:#94a3b8;">No editable fields found.</p>';
-    return;
-  }
-  var rows = pairs.map(function(p, i) {
-    var inputType = p.type === 'number' ? 'number' : p.type === 'boolean' ? 'text' : 'text';
-    var val = p.value === null || p.value === undefined ? '' : String(p.value);
-    return '<tr>' +
-      '<td style="padding:0.45rem 1rem;font-weight:600;color:#1e293b;white-space:nowrap;background:#f8fafc;border-bottom:1px solid #eef2f6;width:220px;">' + p.label + '</td>' +
-      '<td style="padding:0.25rem 0.5rem;border-bottom:1px solid #eef2f6;">' +
-        (p.type === 'boolean'
-          ? '<select class="je-cell" data-kvkey="' + p.key + '" style="width:100%;padding:0.3rem 0.5rem;border:1.5px solid transparent;border-radius:5px;font-size:0.85rem;"><option ' + (val==='true'?'selected':'') + '>true</option><option ' + (val==='false'?'selected':'') + '>false</option></select>'
-          : '<input class="je-cell" data-kvkey="' + p.key + '" value="' + val.replace(/"/g,'&quot;') + '" type="' + inputType + '" style="width:100%;" />') +
-      '</td>' +
-    '</tr>';
-  }).join('');
-  body.innerHTML = '<table class="je-table" style="min-width:500px;">' +
-    '<thead><tr><th style="padding:0.55rem 1rem;width:220px;">Field</th><th style="padding:0.55rem 0.5rem;">Value</th></tr></thead>' +
-    '<tbody>' + rows + '</tbody></table>';
-}
-
-function _jeDeleteRow(ri) {
-  _jeState.arr.splice(ri, 1);
-  _renderJeTable();
-}
-
-function addJsonEditorRow() {
-  var st      = _jeState;
-  var newRow  = {};
-  st.cols.forEach(function(c){ newRow[c] = ''; });
-  st.arr.push(newRow);
-  _renderJeTable();
-  // Scroll to bottom
-  const body = document.getElementById('jeBody');
-  if (body) setTimeout(function(){ body.scrollTop = body.scrollHeight; }, 50);
-}
-
-function saveJsonFullEditor() {
-  var st = _jeState;
-  var rebuilt, jsonStr;
-
-  if (st.mode === 'keyvalue') {
-    // Collect key-value pairs and set them back into the data object
-    var updated = JSON.parse(JSON.stringify(st.data));
-    document.querySelectorAll('.je-cell[data-kvkey]').forEach(function(inp) {
-      var keys = inp.dataset.kvkey.split('.');
-      var obj  = updated;
-      for (var i = 0; i < keys.length - 1; i++) {
-        if (!obj[keys[i]]) obj[keys[i]] = {};
-        obj = obj[keys[i]];
-      }
-      var lastKey = keys[keys.length - 1];
-      var val     = inp.value;
-      var origVal = obj[lastKey];
-      if (typeof origVal === 'number')  val = isNaN(Number(val)) ? val : Number(val);
-      if (typeof origVal === 'boolean') val = (val === 'true');
-      obj[lastKey] = val;
-    });
-    rebuilt = updated;
-  } else {
-    // Array mode: collect cell values
-    document.querySelectorAll('.je-cell[data-ri]').forEach(function(inp) {
-      var ri  = parseInt(inp.dataset.ri);
-      var col = inp.dataset.col;
-      if (!isNaN(ri) && col && st.arr[ri] !== undefined) {
-        var val  = inp.value;
-        var orig = st.arr[ri][col];
-        if (typeof orig === 'number' && val !== '') val = isNaN(Number(val)) ? val : Number(val);
-        if (typeof orig === 'boolean') val = (val === 'true');
-        st.arr[ri][col] = val;
-      }
-    });
-    rebuilt = _rebuildJson(st);
-  }
-
-  jsonStr = JSON.stringify(rebuilt, null, 2);
-  fetch('/api/files/write', { method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ path: st.path, content: jsonStr }) })
-  .then(function(r){ return r.json(); })
-  .then(function(res) {
-    if (res.success) {
-      closeJsonFullEditor();
-      showModal('success', st.path.split('/').pop() + ' saved!', { onConfirm: function(){} });
-    } else { showModal('warning','Save failed: ' + (res.error||'unknown')); }
-  })
-  .catch(function(){ showModal('warning','Server not running — cannot save.'); });
-}
-
-function _rebuildJson(st) {
-  if (!st.arrKey) return st.arr;
-  var result  = JSON.parse(JSON.stringify(st.data));
-  var keys    = st.arrKey.split('.');
-  var obj     = result;
-  for (var i = 0; i < keys.length - 1; i++) { obj = obj[keys[i]]; }
-  obj[keys[keys.length - 1]] = st.arr;
-  return result;
-}
-
-function closeJsonFullEditor() {
-  const overlay = document.getElementById('jsonFullOverlay');
-  if (overlay) overlay.classList.remove('open');
-  _jeState = { path:'', data:null, arrKey:null, arr:[], cols:[] };
-}
-
-// ── JSON Editor (legacy modal - kept for backwards compat) ────────────────────
-function openJsonEditor(path) { openJsonFullEditor(path); }
-
-function openCodeEditor(path) {
-  fetch('/api/files/read', { method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ path }) })
-  .then(function(r){ return r.json(); })
-  .then(function(res) {
-    if (!res.success) { showModal('warning', 'Cannot read: ' + res.error); return; }
-    var fileName = path.split('/').pop();
-    var editorHtml = '<div>' +
-      '<textarea id="codeEditorArea" style="width:100%;height:350px;font-family:monospace;font-size:0.82rem;' +
-      'padding:0.75rem;border:2px solid #e2e8f0;border-radius:8px;resize:vertical;background:#1e1e2e;color:#cdd6f4;line-height:1.5;">' +
-      res.content.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</textarea>' +
-      '<div style="font-size:0.75rem;color:#94a3b8;margin-top:0.3rem;">📄 ' + path + '</div>' +
-      '</div>';
-    showModal('info', editorHtml, {
-      title: '✏️ ' + fileName,
-      icon: '📝',
-      closeOnBackdrop: false,
-      buttons: [
-        { label: '💾 Save', class: 'btn-success', callback: function() {
-          var el = document.getElementById('codeEditorArea');
-          if (!el) return;
-          var newContent = el.value;
-          fetch('/api/files/write', { method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ path, content: newContent }) })
-          .then(function(r){ return r.json(); })
-          .then(function(res) {
-            if (res.success) { closeModal(); showModal('success', fileName + ' saved!', { onConfirm: function(){} }); }
-            else { showModal('warning', 'Save failed: ' + (res.error||'unknown')); }
-          }).catch(function() { showModal('warning', 'Server not running — cannot save.'); });
-        }},
-        { label: 'Cancel', class: 'btn-secondary', callback: function() { closeModal(); } }
-      ]
-    });
-  })
-  .catch(function() { showModal('warning', 'Server not running.'); });
-}
-
-function showAdminFileByEl(btn) {
-  showAdminFile(decodeURIComponent(btn.dataset.path));
-}
-function deleteAdminFileByEl(btn) {
-  deleteAdminFile(decodeURIComponent(btn.dataset.path), decodeURIComponent(btn.dataset.name));
-}
-function deleteAdminFile(path, name) {
-  showModal('confirm', 'Delete "' + name + '"? This cannot be undone.', {
-    onConfirm: function() {
-      fetch('/api/files/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: path })
-      }).then(function(r) { return r.json(); })
-        .then(function(res) {
-          if (res.success) {
-            loadAdminFiles();
-            showModal('success', '"' + name + '" deleted!');
-          } else {
-            showModal('warning', 'Delete failed: ' + (res.error||'Unknown'));
-          }
-        })
-        .catch(function() { showModal('warning', 'Server not running.'); });
-    },
-    onCancel: function() {}
-  });
-}
-
-function showAdminFile(path) {
-  fetch('/api/files/read', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: path })
-  }).then(function(r) { return r.json(); })
-    .then(function(res) {
-      if (res.success) {
-        const content = res.content || '';
-        const display = content.length > 3000 ? content.substring(0, 3000) + '\n... (truncated)' : content;
-        showModal('info', '<pre style="background:#f8fafc;padding:1rem;border-radius:8px;overflow:auto;max-height:350px;font-size:0.8rem;text-align:left;white-space:pre-wrap;">' + display.replace(/</g,'&lt;') + '</pre>', {
-          title: '📄 ' + path, icon: '📄', closeOnBackdrop: true
-        });
-      } else {
-        showModal('warning', 'Cannot read: ' + (res.error||'Unknown'));
-      }
-    })
-    .catch(function() { showModal('warning', 'Server not running.'); });
-}
-
-function toggleAllFileCheckboxes() {
-  const all = document.getElementById('selectAll');
-  document.querySelectorAll('.file-checkbox').forEach(function(cb) { cb.checked = all?.checked; });
-}
-
-
-// ============================================
-// AGENTS + API CONFIG
-// ============================================
-
-function loadAdminAgents() {
-  fetch('/db/agents.json?_=' + Date.now())
-    .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(data) {
-      var agents = data ? (data.agents || []) : [];
-      var tbody  = document.getElementById('agentsTableBody');
-      if (!tbody) return;
-      if (!agents.length) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:1.5rem;">No agents.</td></tr>'; return; }
-      tbody.innerHTML = agents.map(function(a) {
-        var locked  = a.lock === 'yes';
-        var actBg   = a.active ? '#dcfce7' : '#fee2e2';
-        var actCol  = a.active ? '#16a34a' : '#dc2626';
-        return '<tr style="border-bottom:1px solid #f1f5f9;">' +
-          '<td style="padding:0.5rem 0.8rem;font-weight:700;">' + (a.role||'') + (locked ? ' 🔒' : '') + '</td>' +
-          '<td style="padding:0.5rem 0.8rem;"><span style="background:#eff6ff;color:#3b82f6;padding:0.15rem 0.5rem;border-radius:5px;font-size:0.78rem;">' + (a.phase||'') + '</span></td>' +
-          '<td style="padding:0.5rem 0.8rem;color:#475569;font-size:0.82rem;">' + (a.powered_by||'') + '</td>' +
-          '<td style="padding:0.5rem 0.8rem;font-family:monospace;font-size:0.78rem;color:#64748b;">' + (a.model||'—') + '</td>' +
-          '<td style="padding:0.5rem 0.8rem;text-align:center;"><span style="font-weight:700;color:#3b82f6;">' + (a.frequency_in_code||0) + '</span></td>' +
-          '<td style="padding:0.5rem 0.8rem;"><span style="background:' + actBg + ';color:' + actCol + ';padding:0.15rem 0.5rem;border-radius:5px;font-size:0.78rem;font-weight:600;">' + (a.active ? 'Active' : 'Inactive') + '</span></td>' +
-        '</tr>';
-      }).join('');
-    })
-    .catch(function() { var t = document.getElementById('agentsTableBody'); if(t) t.innerHTML='<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:1rem;">Start server to load agents.</td></tr>'; });
-}
-
-function loadApiConfigAdmin() {
-  fetch('/db/api_config.json?_=' + Date.now())
-    .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(data) {
-      var providers = data ? (data.providers || []) : [];
-      var cards     = document.getElementById('apiConfigCards');
-      if (!cards) return;
-      if (!providers.length) { cards.innerHTML = '<p style="color:#94a3b8;text-align:center;padding:1rem;">No API providers configured.</p>'; return; }
-      var S = 'width:100%;padding:0.6rem 1rem;border:2px solid #e2e8f0;border-radius:8px;font-size:0.9rem;font-family:monospace;';
-      cards.innerHTML = providers.map(function(p, i) {
-        var providerColor = { openrouter:'#8b5cf6', openai:'#22c55e', deepl:'#3b82f6' }[p.id] || '#64748b';
-        return '<div style="border:2px solid #eef2f6;border-radius:10px;padding:1rem 1.2rem;border-left:4px solid ' + providerColor + ';">' +
-          '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.75rem;">' +
-            '<div><h4 style="font-size:0.95rem;font-weight:700;color:#1e293b;margin:0;">' + p.name + '</h4>' +
-            '<p style="font-size:0.78rem;color:#64748b;margin:0.2rem 0 0;">' + (p.used_for||'') + '</p></div>' +
-            '<span style="background:' + providerColor + '20;color:' + providerColor + ';font-size:0.75rem;padding:0.2rem 0.6rem;border-radius:5px;font-weight:600;">' + p.env_key + '</span>' +
-          '</div>' +
-          '<div style="display:flex;gap:0.5rem;align-items:center;">' +
-            '<div style="position:relative;flex:1;">' +
-              '<input type="password" id="apikey_' + p.id + '" value="' + (p.api_key||'') + '" placeholder="Paste your ' + p.name + ' API key here" style="' + S + 'padding-right:2.5rem;" />' +
-              '<button data-inp="apikey_' + p.id + '" onclick="toggleApiKeyVis(this,this.dataset.inp)" style="position:absolute;right:0.7rem;top:50%;transform:translateY(-50%);border:none;background:none;cursor:pointer;color:#94a3b8;"><i class="fas fa-eye"></i></button>' +
-            '</div>' +
-          '</div>' +
-          '<p style="font-size:0.75rem;color:#94a3b8;margin:0.3rem 0 0;">' + (p.description||'') + '</p>' +
-        '</div>';
-      }).join('');
-    })
-    .catch(function() { var c=document.getElementById('apiConfigCards'); if(c) c.innerHTML='<p style="color:#94a3b8;text-align:center;">Start server to load API config.</p>'; });
-}
-
-function toggleApiKeyVis(btn, inputId) {
-  var inp = document.getElementById(inputId);
-  if (!inp) return;
-  inp.type = inp.type === 'password' ? 'text' : 'password';
-  btn.innerHTML = inp.type === 'password' ? '<i class="fas fa-eye"></i>' : '<i class="fas fa-eye-slash"></i>';
-}
-
-function saveApiConfigs() {
-  fetch('/db/api_config.json?_=' + Date.now())
-    .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(data) {
-      if (!data) return;
-      data.providers.forEach(function(p) {
-        var el = document.getElementById('apikey_' + p.id);
-        if (el) p.api_key = el.value.trim();
-      });
-      return fetch('/api/files/write', { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ path: 'db/api_config.json', content: JSON.stringify(data, null, 2) }) });
-    })
-    .then(function(r){ if(r) return r.json(); })
-    .then(function(res) {
-      if (res && res.success) showModal('success', 'API keys saved!', { onConfirm: function(){} });
-      else showModal('warning', 'Save failed — start server.');
-    })
-    .catch(function(){ showModal('warning','Server not running. Keys saved in browser only.'); });
-}
-
-// ============================================
-// DRAG & DROP EVENTS
-// ============================================
-
-document.addEventListener('DOMContentLoaded', function() {
-  // ── Auth check ──────────────────────────────────────────────────
-  if (typeof isLoggedIn === 'function') {
-    if (!isLoggedIn()) { showAuthOverlay(); return; }
-    else { hideAuthOverlay(); }
-  }
-  // ── Load company details (logo + name) ──────────────────────────
-  fetch('/db/company.json?_=' + Date.now())
-    .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(data) {
-      if (!data || !data.company) return;
-      const co = data.company;
-      // Header company name
-      const nameEl = document.getElementById('headerCompanyName');
-      if (nameEl && co.name) nameEl.textContent = co.name;
-      // Header logo
-      const logoEl = document.getElementById('headerLogoImg');
-      if (logoEl && co.logo) { logoEl.src = co.logo; logoEl.onerror = function(){ logoEl.style.display='none'; }; }
-      // Auth overlay company name
-      const authNameEl = document.getElementById('authCompanyName');
-      if (authNameEl && co.name) authNameEl.textContent = co.name;
-      // Auth overlay logo
-      const authLogoEl = document.querySelector('#authOverlay img');
-      if (authLogoEl && co.logo) authLogoEl.src = co.logo;
-      // Store globally
-      window._companyName = co.name || 'Lexora';
-      window._companyLogo = co.logo || 'db/logo.png';
-      // Section label stays as-is (just section name)
-      window._companyNameForLabels = co.name || 'Lexora';
-    })
-    .catch(function(){});
-  // Upload area for Lease
-  const uploadArea = document.getElementById('uploadArea');
-  if (uploadArea) {
-    uploadArea.addEventListener('dragover', function(e) {
-      e.preventDefault();
-      this.classList.add('dragover');
-    });
-    uploadArea.addEventListener('dragleave', function(e) {
-      e.preventDefault();
-      this.classList.remove('dragover');
-    });
-    uploadArea.addEventListener('drop', function(e) {
-      e.preventDefault();
-      this.classList.remove('dragover');
-      const files = e.dataTransfer.files;
-      if (files.length > 0) {
-        for (let i = 0; i < files.length; i++) {
-          uploadedFiles.push(files[i]);
-          fileStatuses.push({
-            name: files[i].name,
-            scanResult: 'Pending',
-            status: '0%',
-            action: 'Processing',
-            progress: 0
-          });
-        }
-        updateFileTable();
-        var countEl = document.getElementById('uploadFileCount');
-        if (countEl) {
-          countEl.textContent = uploadedFiles.length + (uploadedFiles.length === 1 ? ' file selected' : ' files selected');
-          countEl.style.display = 'inline-block';
-        }
-      }
-    });
-  }
-
-  // Upload area for Translation
-  const uploadAreaTrans = document.getElementById('uploadAreaTrans');
-  if (uploadAreaTrans) {
-    uploadAreaTrans.addEventListener('dragover', function(e) {
-      e.preventDefault();
-      this.classList.add('dragover');
-    });
-    uploadAreaTrans.addEventListener('dragleave', function(e) {
-      e.preventDefault();
-      this.classList.remove('dragover');
-    });
-    uploadAreaTrans.addEventListener('drop', function(e) {
-      e.preventDefault();
-      this.classList.remove('dragover');
-      const files = e.dataTransfer.files;
-      if (files.length > 0) {
-        for (let i = 0; i < files.length; i++) {
-          uploadedFilesTrans.push(files[i]);
-          fileStatusesTrans.push({
-            name: files[i].name,
-            scanResult: 'Pending',
-            status: '0%',
-            action: 'Processing',
-            progress: 0
-          });
-        }
-        updateFileTableTrans();
-        var countElT = document.getElementById('uploadFileCountTrans');
-        if (countElT) {
-          countElT.textContent = uploadedFilesTrans.length + (uploadedFilesTrans.length === 1 ? ' file selected' : ' files selected');
-          countElT.style.display = 'inline-block';
-        }
-      }
-    });
-  }
-
-  // Initialize — sync from disk first, then load UI
-  syncUsersFromDisk().then(function() {
-    handleSystemChange();
-    loadPaymentData();
-    loadTransactions();
-    loadDashboard();
-    loadProfile();
-    loadEmailSettings(false);
-    loadPlans(function(plans) {
-      renderPlansSection();
-    });
-    loadCompanyData(function() {
-      renderContactDetails();
-    });
-    // Load templates for dropdown
-    fetch('/db/templates.json?_=' + Date.now())
-      .then(function(r){ return r.ok ? r.json() : null; })
-      .then(function(data) {
-        if (data) { allTemplates = data.templates || []; localStorage.setItem('lexora_templates', JSON.stringify(allTemplates)); loadTemplateDropdown(); }
-      }).catch(function(){
-        const cached = localStorage.getItem('lexora_templates');
-        if (cached) { allTemplates = JSON.parse(cached); loadTemplateDropdown(); }
-      });
-
-    // Set default active section
-    showSection('dashboard');
-
-    setTimeout(function() {
-      showModal('success', 'Welcome back! You have successfully logged in.', {
-        onConfirm: function() {}
-      });
-    }, 500);
-  });
-});
-
-// Close menus on click outside
-document.addEventListener('click', function(event) {
-  const servicesMenu = document.getElementById('services-menu');
-  const userProfileWrapper = document.querySelector('.user-profile-wrapper');
-  if (!servicesMenu?.contains(event.target) && !userProfileWrapper?.contains(event.target)) {
-    const subMenu = document.getElementById('subMenu');
-    const userSubMenu = document.getElementById('userSubMenu');
-    if (subMenu) subMenu.classList.remove('open');
-    if (userSubMenu) userSubMenu.classList.remove('open');
-  }
-});
-
-// Make functions globally accessible
-window.showSection = showSection;
-window.toggleMenu = toggleMenu;
-window.closeAllMenus = closeAllMenus;
-window.handleLogout = handleLogout;
-window.handleSystemChange = handleSystemChange;
-window.handleConnect = handleConnect;
-window.handleFormSubmit = handleFormSubmit;
-window.startProcess = startProcess;
-window.pauseProcess = pauseProcess;
-window.stopProcess = stopProcess;
-window.clearAll = clearAll;
-window.generateReport = generateReport;
-window.downloadOutput = downloadOutput;
-window.downloadAll = downloadAll;
-window.viewScanError = viewScanError;
-window.startProcessTrans = startProcessTrans;
-window.pauseProcessTrans = pauseProcessTrans;
-window.stopProcessTrans = stopProcessTrans;
-window.clearAllTrans = clearAllTrans;
-window.generateReportTrans = generateReportTrans;
-window.downloadOutputTrans = downloadOutputTrans;
-window.showAdminTab = showAdminTab;
-window.saveEmailSettings = saveEmailSettings;
-window.loadEmailSettings = loadEmailSettings;
-window.toggleSmtpPwd = toggleSmtpPwd;
-window.loadDashboard = loadDashboard;
-window.reloadSettings = reloadSettings;
-window.sendTestEmail = sendTestEmail;
-window.saveRules = saveRules;
-window.loadFiles = loadFiles;
-window.toggleFile = toggleFile;
-window.toggleAllCheckboxes = toggleAllCheckboxes;
-window.addFile = addFile;
-window.deleteSelected = deleteSelected;
-window.downloadSelected = downloadSelected;
-window.showFile = showFile;
-window.viewFile = viewFile;
-window.editFile = editFile;
-window.downloadFileById = downloadFileById;
-window.showJsonContent = showJsonContent;
-window.editJsonContent = editJsonContent;
-window.setDefault = setDefault;
-window.removeMethod = removeMethod;
-window.showAddPayment = showAddPayment;
-window.showAddAmount = showAddAmount;
-window.filterTransactions = filterTransactions;
-window.loadPlans = loadPlans;
-window.savePlans = savePlans;
-window.renderPlansSection = renderPlansSection;
-window.renderAdminPlansTable = renderAdminPlansTable;
-window.addNewPlan = addNewPlan;
-window.editPlan = editPlan;
-window.deletePlan = deletePlan;
-window.selectPlan = selectPlan;
-window.loadCompanyData = loadCompanyData;
-window.loadCompanyAdmin = loadCompanyAdmin;
-window.editCompanyField = editCompanyField;
-window.renderContactDetails = renderContactDetails;
-window.loadAdminUsers = loadAdminUsers;
-window.loadAdminTemplates = loadAdminTemplates;
-window.renderAdminTemplatesTable = renderAdminTemplatesTable;
-window.showTemplateUpload = showTemplateUpload;
-window.toggleTemplateStatus = toggleTemplateStatus;
-window.deleteTemplate = deleteTemplate;
-window.loadTemplateDropdown = loadTemplateDropdown;
-window.openCodeEditor = openCodeEditor;
-window.openJsonFullEditor = openJsonFullEditor;
-window.addNewFolder = addNewFolder;
-window.openJsonEditor = openJsonEditor;
-window.addJsonEditorRow = addJsonEditorRow;
-window.saveJsonFullEditor = saveJsonFullEditor;
-window.closeJsonFullEditor = closeJsonFullEditor;
-window.jeToggleAll = jeToggleAll;
-window.jeDeleteSelected = jeDeleteSelected;
-window.jeToggleAll = jeToggleAll;
-window.loadAdminAgents = loadAdminAgents;
-window.loadApiConfigAdmin = loadApiConfigAdmin;
-window.saveApiConfigs = saveApiConfigs;
-window.toggleApiKeyVis = toggleApiKeyVis;
-window.openJsonEditor = openJsonEditor;
-window.adminEditUser = adminEditUser;
-window.adminToggleRole = adminToggleRole;
-window.adminHoldService = adminHoldService;
-window.adminDeleteUser = adminDeleteUser;
-window.loadPendingAccounts = loadPendingAccounts;
-window.approveTempAccount = approveTempAccount;
-window.rejectTempAccount = rejectTempAccount;
-window.navigateFolder = navigateFolder;
-window.openFileLink = openFileLink;
-window.toggleAllFileCheckboxes = toggleAllFileCheckboxes;
-window.loadAdminFiles = loadAdminFiles;
-window.deleteAdminFile = deleteAdminFile;
-window.showAdminFile = showAdminFile;
-window.toggleAllFileCheckboxes = toggleAllFileCheckboxes;
-window.loadPaymentData = loadPaymentData;
-window.savePaymentData = savePaymentData;
-window.loadTransactionData = loadTransactionData;
-window.saveTransactionData = saveTransactionData;
-window.togglePassword = togglePassword;
-window.saveUsersToDisk = saveUsersToDisk;
-window.syncUsersFromDisk = syncUsersFromDisk;
-window.handlePhotoUpload = handlePhotoUpload;
-window.removePhoto = removePhoto;
-window.updateProfile = updateProfile;
-window.clearActivityLog = clearActivityLog;
-window.loadApiSection = loadApiSection;
-window.generateApiKey = generateApiKey;
-window.copyApiKey = copyApiKey;
-window.saveApiKey = saveApiKey;
-window.revokeApiKey = revokeApiKey;
-window.toggleApiKeyVisibility = toggleApiKeyVisibility;
-window.closeModal = closeModal;
-window.closeModalOnBackdrop = closeModalOnBackdrop;
-window.showModal = showModal;
-
-// ── Startup: inject copyright strip into every section ────────────────────
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', _injectSectionFooters);
-} else {
-  _injectSectionFooters();
-}
-// ── PDF Generator — Midtown National Abstract Format ─────────────────────────
-async function _generatePDF(data, outName, srcFileName) {
-  if (typeof window.jspdf === 'undefined' && typeof jsPDF === 'undefined') {
-    throw new Error('jsPDF not loaded');
-  }
-  var jspdfLib = window.jspdf ? window.jspdf.jsPDF : jsPDF;
-  var doc = new jspdfLib({ orientation: 'portrait', unit: 'mm', format: 'letter' });
-
-  var d    = data || {};
-  var info = d.lease_info || {};
-  var pageW = 215.9, margin = 14, colW = pageW - margin * 2;
-  var y = 16, lineH = 5.5, headerH = 7;
-
-  function addPage() {
-    doc.addPage();
-    y = 16;
-    _pdfFooter(doc, pageW);
-  }
-  function checkY(need) { if (y + need > 270) addPage(); }
-
-  // ── HEADER ──
-  doc.setFont('helvetica','bold'); doc.setFontSize(13);
-  doc.text('Lease Abstract', margin, y); y += 7;
-  doc.setFontSize(10); doc.setFont('helvetica','normal');
-  doc.text('Lease : ' + (info.tenant_name||'') + ' (' + (info.ics_code||'t0000000') + ')', margin, y);
-  y += 9;
-
-  // ── LEASE INFORMATION TABLE ──
-  doc.autoTable({
-    startY: y,
-    head: [['', 'LEASE INFORMATION', '', '']],
-    body: [
-      ['Name',           info.tenant_name||'',          'Status',          info.status||''],
-      ['DBA',            info.dba||'',                  'ICS Code',        info.ics_code||'-'],
-      ['Property',       info.property_code||'',        'Lease Type',      info.lease_type||''],
-      ['Location',       info.location||'',             'Sales Category',  info.sales_category||''],
-      ['Customer',       info.customer||'-',             'Contract Area',   (info.contract_area_sf||'') + ' (Rentable)'],
-      ['',               '',                            'Area',            '0.00 (Rentable)'],
-      ['Primary Contact','',                            'Monthly Rent',    ''],
-      ['Name',           info.primary_contact_name||info.tenant_name||'', 'Annual Rent', info.annual_rent||'0.00'],
-      ['Office Phone',   info.primary_contact_phone||'','Rent Per Area',   '0.00'],
-      ['FAX',            '',                            'Deposit',         info.deposit||'0.00'],
-      ['E-Mail',         info.primary_contact_email||'','Lease Term',      (info.lease_term_from||'') + ' To ' + (info.lease_term_to||'')]
-    ],
-    styles: { fontSize: 8, cellPadding: 1.5, lineColor: [150,150,150], lineWidth: 0.2 },
-    headStyles: { fillColor: [255,255,255], textColor: [0,0,0], fontStyle: 'bold', halign: 'center' },
-    alternateRowStyles: {},
-    columnStyles: { 0: {fontStyle:'bold', cellWidth:28}, 1:{cellWidth:62}, 2:{fontStyle:'bold',cellWidth:28}, 3:{cellWidth:colW-118} },
-    margin: { left: margin, right: margin },
-    theme: 'grid'
-  });
-  y = doc.lastAutoTable.finalY + 5;
-
-  // ── CHARGE SCHEDULES ──
-  var charges = d.charge_schedules || [];
-  if (charges.length) {
-    checkY(20);
-    doc.autoTable({
-      startY: y,
-      head: [['Charge Code','Charge Desc','Date From','Date To','Monthly Amt','Annual Amt','Amt Per Area','Amend Type','Units']],
-      body: charges.map(function(c){
-        return [c.charge_code||'', c.charge_desc||'', c.date_from||'', c.date_to||'',
-                c.monthly_amt||'', c.annual_amt||'', c.amt_per_area_psf||'',
-                c.amendment_type||'Original Lease', c.units||''];
-      }),
-      styles: { fontSize: 7, cellPadding: 1.2 },
-      headStyles: { fillColor: [220,220,220], textColor: [0,0,0], fontStyle: 'bold', fontSize: 7 },
-      margin: { left: margin, right: margin },
-      theme: 'grid'
-    });
-    y = doc.lastAutoTable.finalY + 4;
-  }
-
-  // ── AMENDMENTS ──
-  var amends = d.amendments || [];
-  if (amends.length) {
-    checkY(16);
-    doc.autoTable({
-      startY: y,
-      head: [['Type','Description','Status','Term (Months)','Date From','Date To','Units']],
-      body: amends.map(function(a){
-        return [a.type||'Original Lease', a.description||'Original Lease', a.status||'In Process',
-                a.term_months||'', a.date_from||'', a.date_to||'', a.units||''];
-      }),
-      styles: { fontSize: 7, cellPadding: 1.2 },
-      headStyles: { fillColor: [220,220,220], textColor: [0,0,0], fontStyle: 'bold', fontSize: 7 },
-      margin: { left: margin, right: margin },
-      theme: 'grid'
-    });
-    y = doc.lastAutoTable.finalY + 4;
-  }
-
-  // ── LATE FEE ──
-  var lf = d.late_fee || {};
-  if (lf.percent || lf.calculation_type) {
-    checkY(18);
-    doc.autoTable({
-      startY: y,
-      head: [['Calculation Type','Grace Period','Percent','2nd Fee Calc','2nd Fee Grace','2nd Fee %','Per Day Fee']],
-      body: [[lf.calculation_type||'% Owed-Total', lf.grace_period_days||'0', lf.percent||'10.00',
-              lf.second_fee_calc||'', lf.second_fee_grace||'', lf.second_fee_pct||'', lf.per_day_fee||'0.00']],
-      styles: { fontSize: 7.5, cellPadding: 1.5 },
-      headStyles: { fillColor: [220,220,220], textColor: [0,0,0], fontStyle: 'bold', fontSize: 7 },
-      margin: { left: margin, right: margin },
-      theme: 'grid'
-    });
-    y = doc.lastAutoTable.finalY + 5;
-  }
-  _pdfFooter(doc, pageW);
-
-  // ── OTHER LEASE PROVISIONS / CLAUSES ──
-  var clauses = d.clauses || {};
-  var clauseIds = Object.keys(clauses);
-  if (clauseIds.length) {
-    addPage();
-    doc.setFont('helvetica','bold'); doc.setFontSize(10);
-    doc.text('Other Lease Provisions / Clauses', margin, y); y += 6;
-    // Table header
-    doc.autoTable({
-      startY: y,
-      head: [['Id','Name','Description','Amendment Type']],
-      body: clauseIds.map(function(id){
-        var c = clauses[id]||{};
-        return [id, c.name||id, c.description||'Lease is silent.', 'Original Lease'];
-      }),
-      styles: { fontSize: 7, cellPadding: 1.8, overflow: 'linebreak', valign: 'top' },
-      headStyles: { fillColor: [220,220,220], textColor: [0,0,0], fontStyle: 'bold', fontSize: 7.5 },
-      columnStyles: {
-        0: { cellWidth: 14, fontStyle: 'bold' },
-        1: { cellWidth: 24 },
-        2: { cellWidth: 135 },
-        3: { cellWidth: 20 }
-      },
-      margin: { left: margin, right: margin },
-      theme: 'grid',
-      didDrawPage: function() { _pdfFooter(doc, pageW); }
-    });
-    y = doc.lastAutoTable.finalY + 5;
-  }
-
-  // ── CONTACTS ──
-  var contacts = d.contacts || [];
-  if (contacts.length) {
-    checkY(20);
-    doc.autoTable({
-      startY: y,
-      head: [['Role','Company','Name','Address','Phone','Email']],
-      body: contacts.map(function(c){
-        return [c.role||'', c.company||'', c.name||'', c.address||'', c.phone||'', c.email||''];
-      }),
-      styles: { fontSize: 7, cellPadding: 1.5 },
-      headStyles: { fillColor: [220,220,220], textColor: [0,0,0], fontStyle: 'bold', fontSize: 7 },
-      margin: { left: margin, right: margin },
-      theme: 'grid'
-    });
-    _pdfFooter(doc, pageW);
-  }
-
-  // Return blob URL — download only happens when user clicks the Download link
-  var _blob = doc.output('blob');
-  return { url: URL.createObjectURL(_blob), name: outName };
-}
-
-function _pdfFooter(doc, pageW) {
-  var pageCount = doc.internal.getNumberOfPages();
-  doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(100);
-  doc.text(new Date().toLocaleString(), 14, 278);
-  doc.text('Page : ' + pageCount, pageW - 14, 278, { align: 'right' });
-  doc.setTextColor(0);
-}
-
-
-// ════════════════════════════════════════════════════════════
-// ADMIN PAYMENT ACCOUNTS
-// ════════════════════════════════════════════════════════════
-
-function loadAdminPaymentAccounts() {
-  fetch('/api/admin/payment-accounts?_=' + Date.now())
-    .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(data) {
-      if (!data) return;
-      renderPaymentAccountsTable(data.accounts || []);
-      renderAllPaymentsTable(data.all_user_payments || []);
-    })
-    .catch(function(e){ console.warn('Could not load payment accounts:', e.message); });
-}
-
-function renderPaymentAccountsTable(accounts) {
-  var tbody = document.getElementById('paymentAccountsBody');
-  if (!tbody) return;
-  if (!accounts.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:1.5rem;">No payment accounts configured</td></tr>';
-    return;
-  }
-  var typeIcons = { paypal:'fab fa-paypal', bank:'fas fa-university', upi:'fas fa-mobile-alt', stripe:'fab fa-stripe', card:'fas fa-credit-card' };
-  tbody.innerHTML = accounts.map(function(acc) {
-    var icon = typeIcons[acc.type] || 'fas fa-wallet';
-    var details = acc.email || acc.upi_id || acc.account_number || '—';
-    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
-      '<td style="padding:0.65rem 0.8rem;font-weight:600;color:#1e293b;"><i class="' + icon + '" style="color:#3b82f6;margin-right:0.5rem;"></i>' + acc.name + '</td>' +
-      '<td style="padding:0.65rem 0.8rem;color:#475569;text-transform:capitalize;">' + (acc.type||'—') + '</td>' +
-      '<td style="padding:0.65rem 0.8rem;color:#64748b;font-size:0.82rem;">' + details + '</td>' +
-      '<td style="padding:0.65rem 0.8rem;text-align:center;">' + (acc.isDefault ? '<span style="color:#22c55e;font-weight:700;">✓ Default</span>' : '') + '</td>' +
-      '<td style="padding:0.65rem 0.8rem;text-align:right;font-weight:700;color:#1e293b;">$' + (Number(acc.total_received||0).toFixed(2)) + '</td>' +
-      '<td style="padding:0.65rem 0.8rem;text-align:center;"><span style="padding:0.2rem 0.6rem;border-radius:20px;font-size:0.75rem;font-weight:700;background:' + (acc.status==='active'?'#dcfce7':'#f1f5f9') + ';color:' + (acc.status==='active'?'#16a34a':'#64748b') + ';">' + (acc.status||'inactive') + '</span></td>' +
-      '<td style="padding:0.65rem 0.8rem;text-align:center;"><button onclick="editPaymentAccount(\'' + acc.id + '\')" style="background:none;border:none;color:#3b82f6;cursor:pointer;font-size:0.82rem;"><i class="fas fa-edit"></i></button></td>' +
-      '</tr>';
-  }).join('');
-}
-
-function renderAllPaymentsTable(payments) {
-  var tbody = document.getElementById('allPaymentsBody');
-  if (!tbody) return;
-  if (!payments.length) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:1.5rem;">No payment records yet</td></tr>';
-    renderAdminPaymentSummary(payments);
-    return;
-  }
-  // Sort newest first
-  var sorted = payments.slice().sort(function(a,b){ return new Date(b.date) - new Date(a.date); });
-  tbody.innerHTML = sorted.map(function(p) {
-    var isCredit = p.type === 'credit';
-    return '<tr style="border-bottom:1px solid #f1f5f9;">' +
-      '<td style="padding:0.6rem 0.8rem;font-size:0.82rem;color:#64748b;">' + (p.date ? new Date(p.date).toLocaleDateString('en-IN') : '—') + '</td>' +
-      '<td style="padding:0.6rem 0.8rem;font-weight:600;color:#1e293b;">' + (p.userName || p.userId || '—') + '</td>' +
-      '<td style="padding:0.6rem 0.8rem;color:#475569;">' + (p.description || '—') + '</td>' +
-      '<td style="padding:0.6rem 0.8rem;text-align:center;"><span style="padding:0.15rem 0.55rem;border-radius:20px;font-size:0.75rem;font-weight:700;background:' + (isCredit?'#dcfce7':'#fee2e2') + ';color:' + (isCredit?'#16a34a':'#dc2626') + ';">' + (p.type||'—') + '</span></td>' +
-      '<td style="padding:0.6rem 0.8rem;text-align:right;font-weight:700;color:' + (isCredit?'#16a34a':'#dc2626') + ';">' + (isCredit?'+':'-') + '$' + Number(p.amount||0).toFixed(2) + '</td>' +
-      '<td style="padding:0.6rem 0.8rem;text-align:center;"><span style="font-size:0.75rem;color:#64748b;">' + (p.status||'completed') + '</span></td>' +
-      '</tr>';
-  }).join('');
-  renderAdminPaymentSummary(payments);
-}
-
-function renderAdminPaymentSummary(payments) {
-  var el = document.getElementById('adminPaymentSummary');
-  if (!el) return;
-  var totalIn  = payments.filter(function(p){ return p.type==='credit'; }).reduce(function(s,p){ return s+Number(p.amount||0); }, 0);
-  var totalOut = payments.filter(function(p){ return p.type==='debit';  }).reduce(function(s,p){ return s+Number(p.amount||0); }, 0);
-  var pill = function(label, val, color) {
-    return '<div style="background:#fff;border:1px solid #eef2f6;border-radius:10px;padding:0.6rem 1rem;font-size:0.85rem;">' +
-           '<div style="color:#64748b;margin-bottom:0.1rem;">' + label + '</div>' +
-           '<div style="font-weight:700;color:' + color + ';font-size:1.1rem;">$' + val.toFixed(2) + '</div></div>';
-  };
-  el.innerHTML = pill('Total Received',totalIn,'#16a34a') + pill('Total Paid Out',totalOut,'#dc2626') + pill('Net Balance',totalIn-totalOut,'#3b82f6');
-}
-
-function filterAdminPayments() { loadAdminPaymentAccounts(); } // reload with filter — extend later
-
-function addPaymentAccount() {
-  showModal('info', 'Payment account management: Edit db/admin_payment_accounts.json directly or use the API endpoint POST /api/admin/payment-accounts/save', { onConfirm: function(){} });
-}
-
-function editPaymentAccount(id) {
-  showModal('info', 'Edit account ' + id + ': update db/admin_payment_accounts.json', { onConfirm: function(){} });
-}
-
-window.loadAdminPaymentAccounts = loadAdminPaymentAccounts;
-window.addPaymentAccount        = addPaymentAccount;
-window.editPaymentAccount       = editPaymentAccount;
-window.filterAdminPayments      = filterAdminPayments;
-
-// ════════════════════════════════════════════════════════════
-// USER FILE STORAGE — Save files to user_directory
-// ════════════════════════════════════════════════════════════
-
-function saveUserFile(type, filename, blobOrArrayBuffer) {
-  var user = getCurrentUser();
-  if (!user) return Promise.resolve(null);
-  return new Promise(function(resolve, reject) {
-    var reader = new FileReader();
-    var blob   = blobOrArrayBuffer instanceof Blob ? blobOrArrayBuffer : new Blob([blobOrArrayBuffer]);
-    reader.onload = function(e) {
-      var b64 = e.target.result.split(',')[1];
-      fetch('/api/user/save-file', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.id, type: type, filename: filename, data: b64 })
-      }).then(function(r){ return r.json(); }).then(resolve).catch(reject);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-}
-
-window.saveUserFile = saveUserFile;
-
-// ════════════════════════════════════════════════════════════
-// TRANSLATION AGENT PANEL + REPORT + DOWNLOAD
-// ════════════════════════════════════════════════════════════
-function _setActiveAgentTrans(agentKey) {
-  document.querySelectorAll('#agentPipelineTrans .agent-node').forEach(function(n){ n.classList.remove('active'); });
-  var el = document.getElementById('agent-trans-' + agentKey);
-  if (el) el.classList.add('active');
-  var panel = document.getElementById('agentPipelineTrans');
-  if (panel) panel.style.display = 'flex';
-}
-function _markAgentDoneTrans(agentKey) {
-  var el = document.getElementById('agent-trans-' + agentKey);
-  if (el) { el.classList.remove('active'); el.classList.add('done'); }
-}
-
-function downloadAllTrans() {
-  document.querySelectorAll('#fileTableBodyTrans tr a[download]').forEach(function(a){ a.click(); });
-}
-
-function generateActivityReportTrans() {
-  var log = document.getElementById('activityLogTrans'); if (!log) return;
-  var lines = ['# Lexora Translation — Activity Log', 'Generated: ' + new Date().toLocaleString(), ''];
-  log.querySelectorAll('.log-entry').forEach(function(e){ lines.push(e.textContent); });
-  var blob = new Blob([lines.join('\n')], {type:'text/markdown'});
-  var a    = document.createElement('a');
-  a.href   = URL.createObjectURL(blob);
-  a.download = 'Translation_Activity_' + Date.now() + '.md';
-  a.click(); URL.revokeObjectURL(a.href);
-}
-
-window.downloadAllTrans            = downloadAllTrans;
-window.generateActivityReportTrans = generateActivityReportTrans;
-window._setActiveAgentTrans        = _setActiveAgentTrans;
-window._markAgentDoneTrans         = _markAgentDoneTrans;
-
-// ════════════════════════════════════════════════════════════
-// WHATSAPP MOBILE VERIFICATION
-// ════════════════════════════════════════════════════════════
-var _waOTPCode    = null;
-var _waOTPExpiry  = null;
-var _waOTPTimer   = null;
-var _waMobile     = null;
-
-// verifyWhatsAppOTP handled by auth.js confirmMobileVerifyOTP()
-
-// ════════════════════════════════════════════════════════════
-// DASHBOARD COUNTS + BALANCE
-// ════════════════════════════════════════════════════════════
-function _updateDashboardCounts() {
-  var lEl = document.getElementById('dash-leases');
-  var tEl = document.getElementById('dash-translations');
-  if (lEl) lEl.textContent = localStorage.getItem('lexora_lease_count') || '0';
-  if (tEl) tEl.textContent = localStorage.getItem('lexora_trans_count') || '0';
-  var user = typeof getCurrentUser === 'function' ? getCurrentUser() : null;
-  if (!user) return;
-  var planEl = document.getElementById('dash-plan');
-  var actEl  = document.getElementById('dash-account-type');
-  if (planEl) planEl.textContent = user.account_type || user.role || '—';
-  if (actEl)  actEl.textContent  = user.status || 'active';
-  fetch('/api/transactions/list?userId=' + encodeURIComponent(user.id))
-    .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(d) {
-      if (!d || !d.transactions) return;
-      var txns  = d.transactions;
-      var spent = txns.filter(function(t){ return t.type==='debit'; }).reduce(function(s,t){ return s+Number(t.amount||0); }, 0);
-      var added = txns.filter(function(t){ return t.type==='credit'; }).reduce(function(s,t){ return s+Number(t.amount||0); }, 0);
-      var el = document.getElementById('dash-balance');
-      if (el) el.textContent = '$' + Math.abs(added - spent).toFixed(4);
-    }).catch(function(){});
-}
-window._updateDashboardCounts = _updateDashboardCounts;
+
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape' && msgOverlay.style.display === 'flex') { handleButtonClick('Close'); }
+            });
+
+            // ============================================================
+            // 24. API KEY FUNCTIONS
+            // ============================================================
+            function generateRandomKey() {
+                const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+                let key = 'tc_live_';
+                for (let i = 0; i < 32; i++) { key += chars.charAt(Math.floor(Math.random() * chars.length)); }
+                return key;
+            }
+
+            function getActiveApiKey() {
+                return apiKeys.find(k => k.status !== 'revoked') || null;
+            }
+
+            window.generateApiKey = function() {
+                const newKey = {
+                    id: nextApiKeyId++,
+                    key: generateRandomKey(),
+                    createdAt: new Date().toLocaleString(),
+                    status: 'active',
+                    saved: false
+                };
+                apiKeys.unshift(newKey);
+                if (profileData) profileData.apiKey = newKey.key;
+                renderApiKeyDisplay();
+                persistApiKeys();
+                persistProfile();
+                showMessage('✅ API Key Generated',
+                    'Your new API key has been generated successfully. Please copy and store it securely.', ['OK']);
+            };
+
+            window.copyApiKey = function() {
+                const activeKey = getActiveApiKey();
+                if (!activeKey) { showWarning('No active API key to copy. Generate one first.'); return; }
+
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(activeKey.key).then(() => {
+                        showMessage('📋 Copied', 'API key copied to clipboard.', ['OK']);
+                    }).catch(() => {
+                        showMessage('📋 API Key', `Copy failed automatically — here is your key:\n${activeKey.key}`, ['OK']);
+                    });
+                } else {
+                    showMessage('📋 API Key', `Your API key:\n${activeKey.key}`, ['OK']);
+                }
+            };
+
+            window.saveApiKey = function() {
+                const activeKey = getActiveApiKey();
+                if (!activeKey) { showWarning('No active API key to save. Generate one first.'); return; }
+
+                activeKey.saved = true;
+                if (profileData) profileData.apiKey = activeKey.key;
+                renderApiKeyDisplay();
+                persistApiKeys();
+                persistProfile();
+                showMessage('💾 Saved', 'API key has been saved to your account record.', ['OK']);
+            };
+
+            window.revokeApiKey = function() {
+                const activeKey = getActiveApiKey();
+                if (!activeKey) { showWarning('No active API key to revoke.'); return; }
+
+                showConfirm('🚫 Revoke API Key',
+                    'Are you sure you want to revoke this API key? Any application using it will stop working immediately.',
+                    function(confirmed) {
+                        if (confirmed) {
+                            activeKey.status = 'revoked';
+                            activeKey.revokedAt = new Date().toLocaleString();
+                            if (profileData && profileData.apiKey === activeKey.key) profileData.apiKey = null;
+                            renderApiKeyDisplay();
+                            persistApiKeys();
+                            persistProfile();
+                            showMessage('🚫 Revoked', 'The API key has been revoked and can no longer be used.', ['OK']);
+                        }
+                    });
+            };
+
+            function renderApiKeyDisplay() {
+                const display = document.getElementById('apiKeyDisplay');
+                const actionsEl = document.getElementById('apiKeyActions');
+                const historyEl = document.getElementById('apiKeyHistory');
+                if (!display) return;
+
+                const activeKey = getActiveApiKey();
+
+                if (!activeKey) {
+                    display.textContent = 'No active API key. Click "Generate New API Key" to create one.';
+                } else {
+                    display.innerHTML = `<span style="font-family:monospace;">${activeKey.key}</span>` +
+                        (activeKey.saved ?
+                            ' <span style="font-size:0.7rem;color:#27ae60;font-weight:600;">(Saved)</span>' : '');
+                }
+
+                if (actionsEl) {
+                    actionsEl.style.display = activeKey ? 'flex' : 'none';
+                }
+
+                if (historyEl) {
+                    const others = apiKeys.filter(k => k !== activeKey);
+                    if (others.length === 0) {
+                        historyEl.innerHTML = '';
+                    } else {
+                        historyEl.innerHTML =
+                            '<div style="margin-top:14px;font-size:0.8rem;color:rgba(0,0,0,0.6);">Previous keys:</div>' +
+                            '<ul style="list-style:none;padding:0;margin-top:6px;">' +
+                            others.map(k =>
+                                `<li style="padding:6px 0;border-bottom:1px solid rgba(0,0,139,0.05);font-family:monospace;font-size:0.8rem;">${k.key} <span style="color:rgba(0,0,0,0.4);font-family:inherit;">(${k.createdAt}${k.status === 'revoked' ? ' — Revoked' : ''})</span></li>`
+                                ).join('') +
+                            '</ul>';
+                    }
+                }
+            }
+
+            function renderServicesApiList() {
+                const container = document.getElementById('servicesApiList');
+                if (!container) return;
+
+                const servicesMenu = MENU_CONFIG.mainMenu.find(m => m.id === 'services');
+                if (!servicesMenu) return;
+
+                container.innerHTML = servicesMenu.subItems.map(sub => {
+                    const apiData = SERVICES_API_DATA[sub.id];
+                    if (!apiData) return '';
+                    return `
+                        <div class="service-api-block">
+                            <h4>${apiData.icon} ${apiData.label}</h4>
+                            <div class="api-endpoint-row">
+                                <span class="api-method get">GET</span>
+                                <span class="api-endpoint-path">${apiData.get.endpoint}</span>
+                            </div>
+                            <p class="api-endpoint-desc">${apiData.get.description}</p>
+                            <pre class="api-example">${apiData.get.example}</pre>
+                            <div class="api-endpoint-row">
+                                <span class="api-method post">POST</span>
+                                <span class="api-endpoint-path">${apiData.post.endpoint}</span>
+                            </div>
+                            <p class="api-endpoint-desc">${apiData.post.description}</p>
+                            <pre class="api-example">${apiData.post.example}</pre>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            // ============================================================
+            // 25. SUPPORT TABLE FUNCTIONS
+            // ============================================================
+            function escapeHtml(str) {
+                return String(str == null ? '' : str)
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+            }
+
+            let selectedSupportIds = new Set();
+
+            function renderSupportRows(tbody, list) {
+                if (list.length === 0) {
+                    tbody.innerHTML =
+                        '<tr><td colspan="8" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No submissions found.</td></tr>';
+                    return;
+                }
+                // Defensive: backfill an id for any record that's missing one
+                // (e.g. hand-edited via the Admin File Manager) so a row can
+                // never silently fail to open in the message card.
+                list.forEach(item => {
+                    if (!item.id) item.id = 'SUP' + String(nextSupportId++).padStart(3, '0');
+                });
+                const sorted = [...list].sort((a, b) => new Date(b.date) - new Date(a.date));
+                tbody.innerHTML = sorted.map(item => `
+                    <tr class="support-row ${selectedSupportIds.has(item.id) ? 'row-checked' : ''} ${selectedSupportId === item.id ? 'selected' : ''}">
+                        <td onclick="event.stopPropagation();"><input type="checkbox" class="support-row-check" data-id="${item.id}" ${selectedSupportIds.has(item.id) ? 'checked' : ''} onchange="toggleSupportRowCheck('${item.id}', this)" /></td>
+                        <td onclick="selectSupportRow('${item.id}')">${item.date}</td>
+                        <td onclick="selectSupportRow('${item.id}')">${item.time}</td>
+                        <td onclick="selectSupportRow('${item.id}')">${item.type}</td>
+                        <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.subject)}</td>
+                        <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.message)}</td>
+                        <td onclick="selectSupportRow('${item.id}')"><span class="status-badge ${item.status === 'Resolved' ? 'status-resolved' : 'status-pending'}">${escapeHtml(item.status)}</span></td>
+                        <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.response)}</td>
+                    </tr>
+                `).join('');
+            }
+
+            function getFilteredSupport() {
+                const fromInput = document.getElementById('supportFromDate');
+                const toInput = document.getElementById('supportToDate');
+                const mine = getMyContactSubmissions();
+                if (!fromInput || !toInput || !fromInput.value || !toInput.value) {
+                    return mine;
+                }
+                const from = fromInput.value;
+                const to = toInput.value;
+                return mine.filter(t => t.date >= from && t.date <= to);
+            }
+
+            function renderSupportTable() {
+                const tbody = document.getElementById('supportTableBody');
+                if (!tbody) return;
+
+                // Deliberately no default From/To pre-fill - every submission
+                // shows by default; a date range only narrows things down
+                // once the user actually picks one and applies it.
+                renderSupportRows(tbody, getFilteredSupport());
+            }
+
+            window.toggleSupportRowCheck = function(id, checkbox) {
+                if (checkbox.checked) selectedSupportIds.add(id);
+                else selectedSupportIds.delete(id);
+            };
+
+            window.toggleSupportSelectAll = function(checkbox) {
+                document.querySelectorAll('.support-row-check').forEach((cb) => {
+                    cb.checked = checkbox.checked;
+                    if (checkbox.checked) selectedSupportIds.add(cb.dataset.id);
+                    else selectedSupportIds.delete(cb.dataset.id);
+                });
+            };
+
+            window.deleteSelectedSupport = function() {
+                if (selectedSupportIds.size === 0) {
+                    showWarning('Select at least one query first.');
+                    return;
+                }
+                const count = selectedSupportIds.size;
+                showConfirm('🗑️ Delete', `Delete ${count} selected item(s)? This cannot be undone.`, function(confirmed) {
+                    if (!confirmed) return;
+                    contactSubmissions = contactSubmissions.filter(c => !selectedSupportIds.has(c.id));
+                    if (selectedSupportId && selectedSupportIds.has(selectedSupportId)) {
+                        closeMessagePopup();
+                    }
+                    selectedSupportIds.clear();
+                    persistContactSubmissions();
+                    renderSupportRows(document.getElementById('supportTableBody'), getFilteredSupport());
+                    showMessage('🗑️ Deleted', 'Selected item(s) have been deleted.', ['OK']);
+                });
+            };
+
+            window.applySupportFilter = function() {
+                const fromInput = document.getElementById('supportFromDate');
+                const toInput = document.getElementById('supportToDate');
+                if (!fromInput.value || !toInput.value) {
+                    showWarning('Please select both From and To dates.');
+                    return;
+                }
+                if (fromInput.value > toInput.value) {
+                    showWarning('"From" date cannot be after "To" date.');
+                    return;
+                }
+                renderSupportRows(document.getElementById('supportTableBody'), getFilteredSupport());
+            };
+
+            window.resetSupportFilter = function() {
+                document.getElementById('supportFromDate').value = '';
+                document.getElementById('supportToDate').value = '';
+                renderSupportRows(document.getElementById('supportTableBody'), getFilteredSupport());
+            };
+
+            window.downloadSupportExcel = function() {
+                const filtered = getFilteredSupport();
+                if (filtered.length === 0) {
+                    showWarning('No data available to download for the selected range.');
+                    return;
+                }
+                const sorted = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
+                const headers = ['ID', 'Date', 'Time', 'Type', 'Subject', 'Message', 'Status', 'Response'];
+                let table = '<table border="1"><tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
+                sorted.forEach(t => {
+                    table += '<tr>' +
+                        `<td>${t.id}</td><td>${t.date}</td><td>${t.time}</td><td>${t.type}</td>` +
+                        `<td>${t.subject}</td><td>${t.message}</td>` +
+                        `<td>${t.status}</td><td>${t.response}</td>` +
+                        '</tr>';
+                });
+                table += '</table>';
+
+                const blob = new Blob(['\ufeff' + table], { type: 'application/vnd.ms-excel' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'Support_Submissions_' + new Date().toISOString().split('T')[0] + '.xls';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+
+            // ============================================================
+            // 26. CONTACT FORM FUNCTIONS
+            // ============================================================
+            let selectedSupportId = null;
+            let nextSupportId = 1;
+
+            // ID + Status share the top row (ID narrow, Status to its
+            // right); Response is full width (same width as Message),
+            // placed below the button row - only the editability of
+            // Type/Subject/Message and the button row change between modes.
+            function buildContactCardHTML(opts) {
+                const readonly = !!opts.readonly;
+                const fieldAttrs = readonly ? 'disabled style="opacity:0.7;"' : '';
+                return `
+                    <div class="form-row contact-id-status-row">
+                        <div class="form-group">
+                            <label>Message ID</label>
+                            <input type="text" value="${escapeHtml(opts.id)}" disabled style="opacity:0.7;font-weight:600;" />
+                        </div>
+                        <div class="form-group">
+                            <label>Status</label>
+                            <input type="text" value="${escapeHtml(opts.status || '')}" disabled style="opacity:0.7;" />
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Type</label>
+                        <select id="contactType" ${fieldAttrs}>
+                            <option value="Query" ${opts.type === 'Query' ? 'selected' : ''}>Query</option>
+                            <option value="Inquiry" ${opts.type === 'Inquiry' ? 'selected' : ''}>Inquiry</option>
+                            <option value="Complaint" ${opts.type === 'Complaint' ? 'selected' : ''}>Complaint</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Subject *</label>
+                        <input type="text" id="contactSubject" placeholder="Enter subject" value="${escapeHtml(opts.subject || '')}" ${fieldAttrs} />
+                    </div>
+                    <div class="form-group">
+                        <label>Message *</label>
+                        <textarea id="contactMessage" rows="4" placeholder="Type your message here..." ${fieldAttrs}>${escapeHtml(opts.message || '')}</textarea>
+                    </div>
+                    ${readonly ? `
+                        <div style="display:flex;gap:10px;">
+                            <button class="submit-btn" onclick="openMessagePopup('compose')">➕ Create New</button>
+                        </div>
+                    ` : `
+                        <div style="display:flex;gap:10px;">
+                            <button class="submit-btn" onclick="submitContactForm()">📤 Submit</button>
+                            <button class="submit-btn" style="border-color:rgba(0,0,139,0.3);color:rgba(0,0,0,0.6);" onclick="resetContactForm()">↺ Reset</button>
+                        </div>
+                    `}
+                    <div class="form-group">
+                        <label>Response</label>
+                        <textarea rows="3" disabled style="opacity:0.7;">${opts.response && opts.response !== '-' ? escapeHtml(opts.response) : ''}</textarea>
+                    </div>
+                `;
+            }
+
+            // ---- "Send us a Message" popup (triggered by a row click or
+            // the "Create New" link - the log table itself is full width
+            // now, with no permanently-visible side card). ----
+            window.openMessagePopup = function(mode, item) {
+                const readonly = mode === 'view' && !!item;
+                selectedSupportId = readonly ? item.id : null;
+
+                const fieldsHtml = readonly ? buildContactCardHTML({
+                    id: item.id, type: item.type, subject: item.subject, message: item.message,
+                    response: item.response, status: item.status, readonly: true
+                }) : buildContactCardHTML({ id: 'New', type: 'Query', response: '', status: '', readonly: false });
+
+                const html = `
+                    <div class="admin-modal-overlay" id="messagePopupOverlay">
+                        <div class="admin-modal-card message-popup-card">
+                            <button class="admin-modal-close" onclick="closeMessagePopup()">✕</button>
+                            <h3 class="admin-modal-title" id="contactCardTitle">${readonly ? '✉️ Message Details' : '✉️ Send us a Message'}</h3>
+                            <div class="payment-form" id="contactCardBody">${fieldsHtml}</div>
+                        </div>
+                    </div>
+                `;
+                const existing = document.getElementById('messagePopupOverlay');
+                if (existing) existing.remove();
+                document.body.insertAdjacentHTML('beforeend', html);
+
+                const tbody = document.getElementById('supportTableBody');
+                if (tbody) renderSupportRows(tbody, getFilteredSupport());
+            };
+
+            window.closeMessagePopup = function() {
+                const overlay = document.getElementById('messagePopupOverlay');
+                if (overlay) overlay.remove();
+                selectedSupportId = null;
+                const tbody = document.getElementById('supportTableBody');
+                if (tbody) renderSupportRows(tbody, getFilteredSupport());
+            };
+
+            // Kept for internal re-renders (e.g. after Submit) without
+            // closing/reopening the popup from scratch.
+            window.renderContactCard = function(mode, item) {
+                const wrap = document.getElementById('contactCardBody');
+                const titleEl = document.getElementById('contactCardTitle');
+                if (!wrap) { openMessagePopup(mode, item); return; }
+                if (mode === 'view' && item) {
+                    selectedSupportId = item.id;
+                    wrap.innerHTML = buildContactCardHTML({
+                        id: item.id, type: item.type, subject: item.subject, message: item.message,
+                        response: item.response, status: item.status, readonly: true
+                    });
+                    if (titleEl) titleEl.textContent = '✉️ Message Details';
+                } else {
+                    selectedSupportId = null;
+                    wrap.innerHTML = buildContactCardHTML({ id: 'New', type: 'Query', response: '', status: '', readonly: false });
+                    if (titleEl) titleEl.textContent = '✉️ Send us a Message';
+                }
+                const tbody = document.getElementById('supportTableBody');
+                if (tbody) renderSupportRows(tbody, getFilteredSupport());
+            };
+
+            window.selectSupportRow = function(id) {
+                const item = contactSubmissions.find(c => c.id === id);
+                if (!item) return;
+                openMessagePopup('view', item);
+            };
+
+            window.submitContactForm = function() {
+                const typeSelect = document.getElementById('contactType');
+                const subjectInput = document.getElementById('contactSubject');
+                const messageInput = document.getElementById('contactMessage');
+
+                const type = typeSelect.value;
+                const subject = subjectInput.value.trim();
+                const message = messageInput.value.trim();
+
+                if (!subject || !message) {
+                    showWarning('Please fill in both Subject and Message.');
+                    return;
+                }
+
+                const now = new Date();
+                contactSubmissions.push({
+                    id: 'SUP' + String(nextSupportId++).padStart(3, '0'),
+                    userId: CURRENT_USER_ID,
+                    date: now.toISOString().split('T')[0],
+                    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                    type: type,
+                    subject: subject,
+                    message: message,
+                    status: 'Pending',
+                    response: '-'
+                });
+
+                closeMessagePopup();
+                persistContactSubmissions();
+                sendContactAcknowledgementEmail(type, subject, message);
+                const tbody = document.getElementById('supportTableBody');
+                if (tbody) renderSupportRows(tbody, getFilteredSupport());
+                showMessage('✅ Message Sent', 'Thank you for reaching out! Our team will get back to you shortly.', [
+                    'OK'
+                ]);
+            };
+
+            // Fires the acknowledgement email in the background via the backend's
+            // SMTP endpoint (json/smtp-config.json). Failures are logged quietly -
+            // the user has already seen the "Message Sent" confirmation, and a
+            // missing/unreachable SMTP server shouldn't block the submission.
+            function sendContactAcknowledgementEmail(type, subject, message) {
+                const recipient = (profileData && profileData.email) || (COMPANY_INFO && COMPANY_INFO.email);
+                if (!recipient) return;
+
+                fetch('/api/send-acknowledgement', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        toEmail: recipient,
+                        userName: profileData ? `${profileData.firstName} ${profileData.lastName}` : 'there',
+                        type: type,
+                        subject: subject,
+                        message: message
+                    })
+                }).catch(e => console.warn('Acknowledgement email could not be sent:', e));
+            }
+
+            window.resetContactForm = function() {
+                renderContactCard('compose');
+            };
+
+            // ============================================================
+            // 27. DASHBOARD FUNCTIONS
+            // ============================================================
+            function renderTodayTransactions() {
+                const tbody = document.getElementById('todayTableBody');
+                if (!tbody) return;
+
+                const myHistory = getMyPaymentHistory();
+                const todayStr = new Date().toISOString().split('T')[0];
+                const todayList = myHistory.filter(t => t.date === todayStr);
+
+                if (todayList.length === 0) {
+                    tbody.innerHTML =
+                        '<tr><td colspan="7" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions today.</td></tr>';
+                } else {
+                    renderHistoryRows(tbody, todayList);
+                }
+
+                let totalCredit = 0,
+                    totalDebit = 0;
+                myHistory.forEach(t => { totalCredit += t.credit;
+                    totalDebit += t.debit; });
+                const balanceEl = document.getElementById('dashBalance');
+                if (balanceEl) balanceEl.textContent = '$' + (totalCredit - totalDebit).toFixed(2);
+            }
+
+            // ============================================================
+            // 28. PROFILE FUNCTIONS
+            // ============================================================
+            function buildProfileBody() {
+                return `
+                    <div class="payment-layout">
+                        <div class="payment-left">
+                            <div class="payment-card profile-photo-card" style="height:480px;">
+                                <div class="profile-photo-card-header">
+                                    <h3>🖼️ Profile Photo</h3>
+                                    <a class="profile-remove-photo-link" id="profileRemovePhotoLink" style="display:${profileData.photo ? 'inline-flex' : 'none'};" onclick="removeProfilePhoto()">🗑️ Remove Photo</a>
+                                </div>
+                                <div class="card-body profile-photo-dropzone-body">
+                                    <div class="profile-photo-dropzone" id="profilePhotoDropzone"
+                                         ondragover="event.preventDefault(); this.classList.add('drag-over');"
+                                         ondragleave="this.classList.remove('drag-over');"
+                                         ondrop="handlePhotoDrop(event)"
+                                         onclick="document.getElementById('profilePhotoInput').click()">
+                                        <div class="profile-photo-preview" id="profilePhotoPreview">
+                                            ${profileData.photo ?
+                                                `<img src="${profileData.photo}" alt="Profile" />` :
+                                                '<div class="profile-photo-placeholder">👤<div>Click or drag a photo here</div></div>'}
+                                        </div>
+                                    </div>
+                                    <input type="file" id="profilePhotoInput" accept="image/*" style="display:none;" onchange="handlePhotoUpload(event)" />
+                                </div>
+                            </div>
+                        </div>
+                        <div class="payment-right">
+                            <div class="payment-card" style="height:480px;">
+                                <h3>👤 Personal Information</h3>
+                                <div class="card-body" style="overflow-y:auto;">
+                                    <div class="payment-form">
+                                        <div class="form-row">
+                                            <div class="form-group">
+                                                <label>First Name</label>
+                                                <input type="text" id="profileFirstName" value="${profileData.firstName}" />
+                                            </div>
+                                            <div class="form-group">
+                                                <label>Last Name</label>
+                                                <input type="text" id="profileLastName" value="${profileData.lastName}" />
+                                            </div>
+                                        </div>
+                                        <div class="form-row">
+                                            <div class="form-group">
+                                                <label>Gender</label>
+                                                <select id="profileGender">
+                                                    <option value="Male" ${profileData.gender === 'Male' ? 'selected' : ''}>Male</option>
+                                                    <option value="Female" ${profileData.gender === 'Female' ? 'selected' : ''}>Female</option>
+                                                    <option value="Other" ${profileData.gender === 'Other' ? 'selected' : ''}>Other</option>
+                                                </select>
+                                            </div>
+                                            <div class="form-group">
+                                                <label>Birthdate</label>
+                                                <input type="date" id="profileBirthdate" value="${profileData.birthdate}" />
+                                            </div>
+                                        </div>
+                                        <div class="form-row">
+                                            <div class="form-group">
+                                                <label>Mobile No</label>
+                                                <input type="text" id="profileMobile" value="${profileData.mobile}" />
+                                            </div>
+                                            <div class="form-group">
+                                                <label>Email Address</label>
+                                                <input type="email" id="profileEmail" value="${profileData.email}" disabled style="opacity:0.6;cursor:not-allowed;" />
+                                            </div>
+                                        </div>
+                                        <div class="form-row">
+                                            <div class="form-group">
+                                                <label>Password</label>
+                                                <div class="password-field-wrapper">
+                                                    <input type="password" id="profilePassword" value="${profileData.password}" />
+                                                    <span class="password-eye" onclick="togglePasswordVisibility('profilePassword', this)">👁️</span>
+                                                </div>
+                                            </div>
+                                            <div class="form-group">
+                                                <label>Confirm Password</label>
+                                                <div class="password-field-wrapper">
+                                                    <input type="password" id="profileConfirmPassword" value="${profileData.password}" />
+                                                    <span class="password-eye" onclick="togglePasswordVisibility('profileConfirmPassword', this)">👁️</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="form-row">
+                                            <div class="form-group" style="margin-top:-8px;">
+                                                <small style="color:rgba(0,0,0,0.5);font-size:0.72rem;">Min 8 characters, with 1 uppercase, 1 lowercase, 1 number and 1 special character.</small>
+                                            </div>
+                                        </div>
+                                        <div class="form-group profile-2fa-save-row" style="margin-top:4px;">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" id="profileTwoFactorAuth" ${profileData.twoFactorAuth === 'Yes' ? 'checked' : ''} />
+                                                Two-Factor Authentication (2FA)
+                                            </label>
+                                            <button class="submit-btn" onclick="saveProfile()">💾 Save Changes</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            window.togglePasswordVisibility = function(inputId, eyeEl) {
+                const input = document.getElementById(inputId);
+                if (input.type === 'password') {
+                    input.type = 'text';
+                    eyeEl.textContent = '🙈';
+                } else {
+                    input.type = 'password';
+                    eyeEl.textContent = '👁️';
+                }
+            };
+
+            window.handlePhotoUpload = function(event) {
+                const file = event.target.files[0];
+                if (file) processProfilePhotoFile(file);
+                // Reset so picking the exact same file again still fires 'change'
+                event.target.value = '';
+            };
+
+            window.handlePhotoDrop = function(event) {
+                event.preventDefault();
+                const zone = document.getElementById('profilePhotoDropzone');
+                if (zone) zone.classList.remove('drag-over');
+                const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+                if (!file) return;
+                if (!file.type.startsWith('image/')) {
+                    showWarning('Please drop an image file.');
+                    return;
+                }
+                processProfilePhotoFile(file);
+            };
+
+            function processProfilePhotoFile(file) {
+                const reader = new FileReader();
+                reader.onload = async function(e) {
+                    const dataUrl = e.target.result;
+                    // Optimistic preview while the upload completes - the
+                    // dropzone shows the image filling its full width/height
+                    // (cover fit, see CSS) rather than a small avatar circle.
+                    document.getElementById('profilePhotoPreview').innerHTML = `<img src="${dataUrl}" alt="Profile" />`;
+                    try {
+                        const res = await fetch('/api/upload-photo', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ userId: CURRENT_USER_ID, fileName: file.name, dataUrl: dataUrl })
+                        });
+                        const result = await res.json();
+                        if (!res.ok || !result.path) throw new Error(result.error || 'Upload failed');
+                        // Store the real saved path (Users/<UserID>/ProfilePhoto/...) in
+                        // users.json, not the raw base64 - cache-bust so the <img> refreshes.
+                        profileData.photo = result.path + '?t=' + Date.now();
+                        document.getElementById('profilePhotoPreview').innerHTML = `<img src="${profileData.photo}" alt="Profile" />`;
+                        updateAvatarDisplay();
+                        persistProfile();
+                        refreshProfilePhotoCard();
+                    } catch (err) {
+                        console.warn('Profile photo upload failed:', err);
+                        showWarning('Could not save the profile photo to the server. Make sure py/server.py is running.');
+                    }
+                };
+                reader.readAsDataURL(file);
+            }
+
+            function refreshProfilePhotoCard() {
+                const removeLink = document.getElementById('profileRemovePhotoLink');
+                if (removeLink) removeLink.style.display = profileData.photo ? 'inline-flex' : 'none';
+            }
+
+            window.removeProfilePhoto = function() {
+                profileData.photo = null;
+                document.getElementById('profilePhotoPreview').innerHTML =
+                    '<div class="profile-photo-placeholder">👤<div>Click or drag a photo here</div></div>';
+                updateAvatarDisplay();
+                persistProfile();
+                refreshProfilePhotoCard();
+            };
+
+            // Password policy: 8+ chars, 1 upper, 1 lower, 1 digit, 1 special char.
+            function getPasswordPolicyIssues(password) {
+                const issues = [];
+                if (!password || password.length < 8) issues.push('at least 8 characters');
+                if (!/[A-Z]/.test(password)) issues.push('1 uppercase letter');
+                if (!/[a-z]/.test(password)) issues.push('1 lowercase letter');
+                if (!/[0-9]/.test(password)) issues.push('1 numeric digit');
+                if (!/[^A-Za-z0-9]/.test(password)) issues.push('1 special character');
+                return issues;
+            }
+
+            window.saveProfile = function() {
+                const password = document.getElementById('profilePassword').value;
+                const confirmPassword = document.getElementById('profileConfirmPassword').value;
+
+                if (password !== confirmPassword) {
+                    showWarning('Password and Confirm Password do not match.');
+                    return;
+                }
+
+                const policyIssues = getPasswordPolicyIssues(password);
+                if (policyIssues.length > 0) {
+                    showWarning('Password must contain ' + policyIssues.join(', ') + '.');
+                    return;
+                }
+
+                profileData.firstName = document.getElementById('profileFirstName').value.trim();
+                profileData.lastName = document.getElementById('profileLastName').value.trim();
+                profileData.gender = document.getElementById('profileGender').value;
+                profileData.birthdate = document.getElementById('profileBirthdate').value;
+                profileData.mobile = document.getElementById('profileMobile').value.trim();
+                profileData.password = password;
+                profileData.twoFactorAuth = document.getElementById('profileTwoFactorAuth').checked ? 'Yes' : 'No';
+
+                userNameDisplay.textContent = profileData.firstName + ' ' + profileData.lastName;
+                MENU_CONFIG.user.name = profileData.firstName + ' ' + profileData.lastName;
+                updateAvatarDisplay();
+                persistProfile();
+
+                showMessage('✅ Profile Updated', 'Your profile information has been saved successfully.', ['OK']);
+            };
+
+            function updateAvatarDisplay() {
+                const avatarImg = document.getElementById('avatarImg');
+                const avatarTextEl = document.getElementById('avatarText');
+                if (profileData.photo) {
+                    avatarImg.src = profileData.photo;
+                    avatarImg.style.display = 'block';
+                    avatarTextEl.style.display = 'none';
+                } else {
+                    avatarImg.style.display = 'none';
+                    avatarTextEl.style.display = 'block';
+                    avatarTextEl.textContent = (profileData.firstName[0] || '') + (profileData.lastName[0] || '');
+                }
+            }
+
+            // ============================================================
+            // 28b. ADMIN FILE MANAGER (Developer/Admin role only)
+            // Browses/manages the real project folder through the
+            // /api/admin/* routes in py/server.py.
+            // ============================================================
+            let adminCurrentPath = '';
+            let adminEntries = [];
+            let adminSelectedPaths = new Set();
+
+            function buildAdminFilesBody() {
+                return `
+                    <div class="admin-files-card">
+                        <div class="admin-files-header">
+                            <h3>📁 Files and Folder</h3>
+                        </div>
+                        <div class="admin-toolbar">
+                            <button class="admin-btn admin-btn-add-file" onclick="document.getElementById('adminFileInput').click()">📄 Add File</button>
+                            <button class="admin-btn admin-btn-add-folder" onclick="adminAddFolder()">📁 Add Folder</button>
+                            <button class="admin-btn admin-btn-delete" onclick="adminDeleteSelected()">🗑️ Delete</button>
+                            <button class="admin-btn admin-btn-download" onclick="adminDownloadSelected()">⬇️ Download</button>
+                            <input type="file" id="adminFileInput" style="display:none;" onchange="adminUploadFile(event)" />
+                        </div>
+                        <div class="admin-breadcrumb" id="adminBreadcrumb"></div>
+                        <div class="admin-table-wrapper">
+                            <table class="admin-table">
+                                <thead>
+                                    <tr>
+                                        <th><input type="checkbox" id="adminSelectAll" onchange="adminToggleSelectAll(this)" /></th>
+                                        <th>Name</th>
+                                        <th>Type</th>
+                                        <th>Size</th>
+                                        <th>Modified</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="adminTableBody">
+                                    <tr><td colspan="6" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">Loading…</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function buildAdminBreadcrumb(path) {
+                const parts = path ? path.split('/') : [];
+                let acc = '';
+                let html = `<span class="admin-crumb" onclick="loadAdminDirectory('')">🗄️ Root</span>`;
+                parts.forEach((part) => {
+                    acc = acc ? acc + '/' + part : part;
+                    html += ` <span class="admin-crumb-sep">/</span> <span class="admin-crumb" onclick="loadAdminDirectory('${acc.replace(/'/g, "\\'")}')">${part}</span>`;
+                });
+                return html;
+            }
+
+            window.loadAdminDirectory = async function(path) {
+                adminCurrentPath = path || '';
+                adminSelectedPaths = new Set();
+                const tbody = document.getElementById('adminTableBody');
+                const breadcrumb = document.getElementById('adminBreadcrumb');
+                if (breadcrumb) breadcrumb.innerHTML = buildAdminBreadcrumb(adminCurrentPath);
+                if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">Loading…</td></tr>`;
+
+                try {
+                    const res = await fetch('/api/admin/list?path=' + encodeURIComponent(adminCurrentPath));
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not load folder');
+                    adminEntries = data.entries || [];
+                    renderAdminTable();
+                } catch (err) {
+                    console.error('Admin file list failed:', err);
+                    if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px;color:#c0392b;">Could not load this folder. Make sure py/server.py is running.</td></tr>`;
+                }
+            };
+
+            function renderAdminTable() {
+                const tbody = document.getElementById('adminTableBody');
+                if (!tbody) return;
+
+                if (adminEntries.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">This folder is empty.</td></tr>`;
+                    return;
+                }
+
+                tbody.innerHTML = adminEntries.map((entry) => {
+                    const icon = entry.type === 'dir' ? '📁' : '📄';
+                    const nameCell = entry.type === 'dir' ?
+                        `<a class="admin-name-link" onclick="loadAdminDirectory('${entry.path.replace(/'/g, "\\'")}')">${icon} ${entry.name}</a>` :
+                        `<a class="admin-name-link" onclick="adminOpenFile('${entry.path.replace(/'/g, "\\'")}')">${icon} ${entry.name}</a>`;
+                    const downloadBtn = entry.type === 'file' ?
+                        (entry.downloadBlocked ?
+                            `<span class="admin-action-icon disabled" title="Protected file">🔒</span>` :
+                            `<span class="admin-action-icon" title="Download" onclick="adminDownloadOne('${entry.path.replace(/'/g, "\\'")}')">⬇️</span>`) :
+                        '';
+                    return `
+                        <tr>
+                            <td><input type="checkbox" class="admin-row-check" data-path="${entry.path}" onchange="adminToggleSelectOne('${entry.path.replace(/'/g, "\\'")}', this)" /></td>
+                            <td class="admin-name-cell">${nameCell}</td>
+                            <td><span class="admin-type-badge">${entry.typeLabel}</span></td>
+                            <td>${entry.sizeLabel || '—'}</td>
+                            <td>${entry.modified || '—'}</td>
+                            <td class="admin-actions-cell">
+                                ${downloadBtn}
+                                <span class="admin-action-icon delete" title="Delete" onclick="adminDeleteOne('${entry.path.replace(/'/g, "\\'")}')">🗑️</span>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            window.adminToggleSelectOne = function(path, checkbox) {
+                if (checkbox.checked) adminSelectedPaths.add(path);
+                else adminSelectedPaths.delete(path);
+            };
+
+            window.adminToggleSelectAll = function(checkbox) {
+                document.querySelectorAll('.admin-row-check').forEach((cb) => {
+                    cb.checked = checkbox.checked;
+                    if (checkbox.checked) adminSelectedPaths.add(cb.dataset.path);
+                    else adminSelectedPaths.delete(cb.dataset.path);
+                });
+            };
+
+            window.adminAddFolder = function() {
+                const name = prompt('New folder name:');
+                if (!name || !name.trim()) return;
+                fetch('/api/admin/mkdir', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: adminCurrentPath, name: name.trim() })
+                }).then(async (res) => {
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not create folder');
+                    loadAdminDirectory(adminCurrentPath);
+                }).catch((err) => showWarning(err.message || 'Could not create folder.'));
+            };
+
+            window.adminUploadFile = function(event) {
+                const file = event.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = async function(e) {
+                    const dataBase64 = e.target.result.split(',')[1];
+                    try {
+                        const res = await fetch('/api/admin/upload', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ path: adminCurrentPath, fileName: file.name, dataBase64: dataBase64 })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error || 'Upload failed');
+                        loadAdminDirectory(adminCurrentPath);
+                    } catch (err) {
+                        showWarning(err.message || 'Could not upload file.');
+                    }
+                };
+                reader.readAsDataURL(file);
+                event.target.value = '';
+            };
+
+            window.adminDeleteOne = function(path) {
+                showConfirm('🗑️ Delete', `Are you sure you want to delete "${path.split('/').pop()}"? This cannot be undone.`, function(confirmed) {
+                    if (!confirmed) return;
+                    adminDeletePaths([path]);
+                });
+            };
+
+            window.adminDeleteSelected = function() {
+                const paths = Array.from(adminSelectedPaths);
+                if (paths.length === 0) { showWarning('Select at least one file or folder first.'); return; }
+                showConfirm('🗑️ Delete Selected', `Delete ${paths.length} selected item(s)? This cannot be undone.`, function(confirmed) {
+                    if (!confirmed) return;
+                    adminDeletePaths(paths);
+                });
+            };
+
+            function adminDeletePaths(paths) {
+                fetch('/api/admin/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ paths: paths })
+                }).then(async (res) => {
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Delete failed');
+                    if (data.failed && data.failed.length > 0) {
+                        showWarning('Some items could not be deleted: ' + data.failed.map(f => f.path + ' (' + f.error + ')').join(', '));
+                    }
+                    loadAdminDirectory(adminCurrentPath);
+                }).catch((err) => showWarning(err.message || 'Could not delete.'));
+            }
+
+            window.adminDownloadOne = function(path) {
+                window.open('/api/admin/download?path=' + encodeURIComponent(path), '_blank');
+            };
+
+            window.adminDownloadSelected = function() {
+                const paths = Array.from(adminSelectedPaths);
+                const fileEntry = adminEntries.find(e => paths.includes(e.path) && e.type === 'file');
+                const onlyFiles = paths.every(p => {
+                    const entry = adminEntries.find(e => e.path === p);
+                    return entry && entry.type === 'file';
+                });
+                if (paths.length === 0) { showWarning('Select at least one file first.'); return; }
+                if (!onlyFiles) { showWarning('Folders can\'t be downloaded directly - please select individual files.'); return; }
+                paths.forEach(p => window.open('/api/admin/download?path=' + encodeURIComponent(p), '_blank'));
+            };
+
+            // ---- File name click -> view/edit modal (JSON as table, text as editor) ----
+            let adminTableEditorState = { path: null, mode: null, columns: [], rows: [], selected: new Set() };
+
+            window.adminOpenFile = async function(path) {
+                try {
+                    const res = await fetch('/api/admin/read?path=' + encodeURIComponent(path));
+                    const data = await res.json();
+                    if (!res.ok) {
+                        showWarning(res.status === 415 ?
+                            'This file type can\'t be previewed here - use the download icon instead.' :
+                            (data.error || 'Could not open this file.'));
+                        return;
+                    }
+
+                    if (data.isJson) {
+                        let parsed = null;
+                        try { parsed = JSON.parse(data.content); } catch (e) { parsed = null; }
+
+                        if (Array.isArray(parsed)) {
+                            const allFlatObjects = parsed.every(item => item && typeof item === 'object' && !Array.isArray(item));
+                            if (allFlatObjects) {
+                                openAdminModal(buildJsonArrayTableModalHTML(path, parsed, 'array'));
+                                return;
+                            }
+                        } else if (parsed && typeof parsed === 'object') {
+                            // Smart multi-table view: any nested array-of-objects
+                            // (one level of nesting deep) gets extracted into its
+                            // own proper table instead of showing as a JSON blob
+                            // in a single cell - e.g. rules.json's "approved"
+                            // list, smtp-config.json's "accounts", llm-config.json's
+                            // "openai.keys"/"openrouter.keys", agents.json's
+                            // "lease-abstraction"/"translation", menu-config.json's
+                            // "mainMenu"/"profileMenu". A "dict of same-shaped
+                            // sub-objects" (like messages.json's success/warning/
+                            // error/confirm/info) is treated as a virtual array -
+                            // each key becomes a row.
+                            openAdminModal(buildJsonMultiTableModalHTML(path, parsed));
+                            return;
+                        }
+                    }
+                    openAdminModal(buildTextEditorModalHTML(path, data.content));
+                } catch (err) {
+                    showWarning('Could not open this file. Make sure py/server.py is running.');
+                }
+            };
+
+            function openAdminModal(html) {
+                const existing = document.getElementById('adminFileModalOverlay');
+                if (existing) existing.remove();
+                document.body.insertAdjacentHTML('beforeend', html);
+            }
+
+            window.adminCloseFileModal = function() {
+                const overlay = document.getElementById('adminFileModalOverlay');
+                if (overlay) overlay.remove();
+                adminTableEditorState = { path: null, mode: null, rootType: 'array', columns: [], rows: [], selected: new Set(), generalRows: [], sections: [] };
+            };
+
+            function buildTextEditorModalHTML(path, content) {
+                const fileName = path.split('/').pop();
+                return `
+                    <div class="admin-modal-overlay" id="adminFileModalOverlay">
+                        <div class="admin-modal-card admin-text-modal">
+                            <button class="admin-modal-close" onclick="adminCloseFileModal()">✕</button>
+                            <div class="admin-modal-icon">📝</div>
+                            <h3 class="admin-modal-title">✏️ ${escapeHtml(fileName)}</h3>
+                            <textarea id="adminFileEditorTextarea" class="admin-text-editor" spellcheck="false">${escapeHtml(content)}</textarea>
+                            <div class="admin-modal-path">📄 ${escapeHtml(path)}</div>
+                            <div class="admin-modal-actions">
+                                <button class="admin-modal-save" onclick="adminSaveFile('${path.replace(/'/g, "\\'")}', 'text')">💾 Save</button>
+                                <button class="admin-modal-cancel" onclick="adminCloseFileModal()">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // ---- Array-of-objects JSON (e.g. payment-methods.json) AND
+            // single-object JSON (e.g. smtp-config.json, llm-config.json,
+            // agents.json) - the latter is rendered as a one-row table, its
+            // keys becoming the column headers (see adminOpenFile above). ----
+            // ---- Smart structure analysis for object-root JSON ----
+            function isDictOfObjects(obj) {
+                const values = Object.values(obj);
+                return values.length > 0 && values.every(v => v !== null && typeof v === 'object' && !Array.isArray(v));
+            }
+
+            function analyzeJsonObject(obj) {
+                if (isDictOfObjects(obj)) {
+                    // e.g. messages.json: {success:{...}, warning:{...}, ...} -
+                    // each top-level key becomes one row, with a locked "_key"
+                    // column identifying which key it came from.
+                    const rows = Object.entries(obj).map(([k, v]) => Object.assign({ _key: k }, v));
+                    return { virtualArray: rows };
+                }
+
+                const generalRows = [];
+                const sections = [];
+
+                Object.keys(obj).forEach((key) => {
+                    const val = obj[key];
+                    if (Array.isArray(val)) {
+                        sections.push({ title: key, items: val });
+                    } else if (val !== null && typeof val === 'object') {
+                        let hasNestedArray = false;
+                        Object.keys(val).forEach((subKey) => {
+                            if (Array.isArray(val[subKey])) {
+                                sections.push({ title: key + '.' + subKey, items: val[subKey] });
+                                hasNestedArray = true;
+                            }
+                        });
+                        Object.keys(val).forEach((subKey) => {
+                            if (!Array.isArray(val[subKey])) {
+                                generalRows.push({ key: key + '.' + subKey, value: val[subKey] });
+                            }
+                        });
+                    } else {
+                        generalRows.push({ key: key, value: val });
+                    }
+                });
+
+                return { generalRows, sections };
+            }
+
+            function buildJsonMultiTableModalHTML(path, obj) {
+                const analysis = analyzeJsonObject(obj);
+
+                if (analysis.virtualArray) {
+                    const rows = analysis.virtualArray;
+                    const columns = [];
+                    rows.forEach(r => Object.keys(r).forEach(k => { if (!columns.includes(k)) columns.push(k); }));
+                    adminTableEditorState = {
+                        path, mode: 'multi-virtual', rootType: 'multi-virtual',
+                        columns, rows: JSON.parse(JSON.stringify(rows)), selected: new Set()
+                    };
+                    return `
+                        <div class="admin-modal-overlay" id="adminFileModalOverlay">
+                            <div class="admin-modal-card admin-table-modal">
+                                <button class="admin-modal-close" onclick="adminCloseFileModal()">✕</button>
+                                <h3 class="admin-modal-title">${escapeHtml(path.split('/').pop())}</h3>
+                                <div class="admin-json-table-wrapper">
+                                    <table class="admin-json-table" id="adminJsonTable">${buildJsonArrayTableInnerHTML()}</table>
+                                </div>
+                                <div class="admin-modal-actions admin-json-actions">
+                                    <div class="admin-json-actions-left">
+                                        <button class="admin-btn admin-btn-add-file" onclick="adminJsonAddRow()">+ Add Row</button>
+                                        <button class="admin-btn admin-btn-delete" onclick="adminJsonDeleteSelected()">🗑️ Delete Selected</button>
+                                        <button class="admin-btn admin-btn-add-folder" onclick="adminJsonSelectAll()">☑️ Select All</button>
+                                    </div>
+                                    <div class="admin-json-actions-right">
+                                        <button class="admin-modal-save" onclick="adminSaveFile('${path.replace(/'/g, "\\'")}', 'multi-virtual')">💾 Save</button>
+                                        <button class="admin-modal-cancel" onclick="adminCloseFileModal()">Cancel</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                adminTableEditorState = {
+                    path, mode: 'multi-sectioned', rootType: 'multi-sectioned',
+                    generalRows: analysis.generalRows.map(r => Object.assign({}, r)),
+                    sections: analysis.sections.map(s => {
+                        const columns = [];
+                        s.items.forEach(it => { if (it && typeof it === 'object' && !Array.isArray(it)) Object.keys(it).forEach(k => { if (!columns.includes(k)) columns.push(k); }); });
+                        return { title: s.title, columns, rows: JSON.parse(JSON.stringify(s.items)), selected: new Set() };
+                    })
+                };
+
+                return `
+                    <div class="admin-modal-overlay" id="adminFileModalOverlay">
+                        <div class="admin-modal-card admin-table-modal admin-multi-table-modal">
+                            <button class="admin-modal-close" onclick="adminCloseFileModal()">✕</button>
+                            <h3 class="admin-modal-title">${escapeHtml(path.split('/').pop())}</h3>
+                            <div id="adminMultiTableBody">${buildMultiSectionInnerHTML()}</div>
+                            <div class="admin-modal-actions">
+                                <button class="admin-modal-save" onclick="adminSaveFile('${path.replace(/'/g, "\\'")}', 'multi-sectioned')">💾 Save</button>
+                                <button class="admin-modal-cancel" onclick="adminCloseFileModal()">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function buildMultiSectionInnerHTML() {
+                const st = adminTableEditorState;
+                let html = '';
+
+                if (st.generalRows.length > 0) {
+                    html += `
+                        <h4 class="admin-section-title">General</h4>
+                        <div class="admin-json-table-wrapper admin-section-table">
+                            <table class="admin-json-table">
+                                <thead><tr><th>Key</th><th>Value</th></tr></thead>
+                                <tbody>${st.generalRows.map((row, idx) => `
+                                    <tr>
+                                        <td class="admin-json-key-cell">${escapeHtml(row.key)}</td>
+                                        <td>${typeof row.value === 'boolean' ?
+                                            `<input type="checkbox" ${row.value ? 'checked' : ''} onchange="adminMultiUpdateGeneral(${idx}, this.checked)" />` :
+                                            `<input type="text" class="admin-json-cell-input" value="${escapeHtml(String(row.value === null || row.value === undefined ? '' : row.value))}" onchange="adminMultiUpdateGeneral(${idx}, this.value)" />`
+                                        }</td>
+                                    </tr>
+                                `).join('')}</tbody>
+                            </table>
+                        </div>
+                    `;
+                }
+
+                st.sections.forEach((section, sIdx) => {
+                    html += `
+                        <div class="admin-section-header-row">
+                            <h4 class="admin-section-title">${escapeHtml(section.title)} <span class="admin-section-count">(${section.rows.length})</span></h4>
+                            <div class="admin-section-actions">
+                                <button class="admin-btn admin-btn-add-file" onclick="adminMultiAddRow(${sIdx})">+ Add Row</button>
+                                <button class="admin-btn admin-btn-delete" onclick="adminMultiDeleteSelected(${sIdx})">🗑️ Delete Selected</button>
+                                <button class="admin-btn admin-btn-add-folder" onclick="adminMultiSelectAll(${sIdx})">☑️ Select All</button>
+                            </div>
+                        </div>
+                        <div class="admin-json-table-wrapper admin-section-table">
+                            <table class="admin-json-table" id="adminMultiSection${sIdx}">${buildMultiSectionTableInnerHTML(sIdx)}</table>
+                        </div>
+                    `;
+                });
+
+                return html;
+            }
+
+            function buildMultiSectionTableInnerHTML(sIdx) {
+                const section = adminTableEditorState.sections[sIdx];
+                const { columns, rows, selected } = section;
+
+                if (columns.length === 0) {
+                    const header = `<thead><tr><th><input type="checkbox" onchange="adminMultiToggleSelectAllCheckbox(${sIdx}, this)" /></th><th>Row (JSON)</th><th>Del</th></tr></thead>`;
+                    const body = `<tbody>${rows.map((r, idx) => `
+                        <tr>
+                            <td><input type="checkbox" ${selected.has(idx) ? 'checked' : ''} onchange="adminMultiToggleSelectRow(${sIdx}, ${idx}, this)" /></td>
+                            <td><input type="text" class="admin-json-cell-input" value="${escapeHtml(JSON.stringify(r))}" onchange="adminMultiUpdateFreeform(${sIdx}, ${idx}, this.value)" /></td>
+                            <td><span class="admin-action-icon delete" onclick="adminMultiDeleteRow(${sIdx}, ${idx})">🗑️</span></td>
+                        </tr>
+                    `).join('')}</tbody>`;
+                    return header + body;
+                }
+
+                const header = `<thead><tr><th><input type="checkbox" onchange="adminMultiToggleSelectAllCheckbox(${sIdx}, this)" /></th>${columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}<th>Del</th></tr></thead>`;
+                const body = `<tbody>${rows.map((row, idx) => `
+                    <tr>
+                        <td><input type="checkbox" ${selected.has(idx) ? 'checked' : ''} onchange="adminMultiToggleSelectRow(${sIdx}, ${idx}, this)" /></td>
+                        ${columns.map(col => {
+                            const val = row[col];
+                            if (typeof val === 'boolean') {
+                                return `<td style="text-align:center;"><input type="checkbox" ${val ? 'checked' : ''} onchange="adminMultiUpdateCell(${sIdx}, ${idx}, '${col}', this.checked)" /></td>`;
+                            }
+                            const display = (val === null || val === undefined) ? '' : (typeof val === 'object' ? JSON.stringify(val) : val);
+                            return `<td><input type="text" class="admin-json-cell-input" value="${escapeHtml(String(display))}" onchange="adminMultiUpdateCell(${sIdx}, ${idx}, '${col}', this.value)" /></td>`;
+                        }).join('')}
+                        <td><span class="admin-action-icon delete" onclick="adminMultiDeleteRow(${sIdx}, ${idx})">🗑️</span></td>
+                    </tr>
+                `).join('')}</tbody>`;
+                return header + body;
+            }
+
+            function refreshMultiSection(sIdx) {
+                const table = document.getElementById('adminMultiSection' + sIdx);
+                if (table) table.innerHTML = buildMultiSectionTableInnerHTML(sIdx);
+                const header = table ? table.closest('.admin-section-table').previousElementSibling : null;
+                if (header) {
+                    const countEl = header.querySelector('.admin-section-count');
+                    if (countEl) countEl.textContent = `(${adminTableEditorState.sections[sIdx].rows.length})`;
+                }
+            }
+
+            window.adminMultiUpdateGeneral = function(idx, value) {
+                const row = adminTableEditorState.generalRows[idx];
+                if (typeof row.value === 'boolean') { row.value = !!value; return; }
+                if (typeof row.value === 'number') {
+                    const n = parseFloat(value);
+                    row.value = isNaN(n) ? value : n;
+                    return;
+                }
+                row.value = value;
+            };
+
+            window.adminMultiUpdateCell = function(sIdx, idx, col, value) {
+                const section = adminTableEditorState.sections[sIdx];
+                const current = section.rows[idx][col];
+                if (current !== null && typeof current === 'object') {
+                    try { section.rows[idx][col] = JSON.parse(value); return; } catch (e) { /* keep typing */ }
+                }
+                section.rows[idx][col] = value;
+            };
+
+            window.adminMultiUpdateFreeform = function(sIdx, idx, value) {
+                try { adminTableEditorState.sections[sIdx].rows[idx] = JSON.parse(value); } catch (e) { /* keep old until valid JSON */ }
+            };
+
+            window.adminMultiDeleteRow = function(sIdx, idx) {
+                const section = adminTableEditorState.sections[sIdx];
+                section.rows.splice(idx, 1);
+                section.selected.delete(idx);
+                refreshMultiSection(sIdx);
+            };
+
+            window.adminMultiAddRow = function(sIdx) {
+                const section = adminTableEditorState.sections[sIdx];
+                if (section.columns.length === 0) {
+                    section.rows.push({});
+                } else {
+                    const blank = {};
+                    section.columns.forEach(c => { blank[c] = ''; });
+                    section.rows.push(blank);
+                }
+                refreshMultiSection(sIdx);
+            };
+
+            window.adminMultiToggleSelectRow = function(sIdx, idx, checkbox) {
+                const section = adminTableEditorState.sections[sIdx];
+                if (checkbox.checked) section.selected.add(idx);
+                else section.selected.delete(idx);
+            };
+
+            window.adminMultiToggleSelectAllCheckbox = function(sIdx, checkbox) {
+                const section = adminTableEditorState.sections[sIdx];
+                if (checkbox.checked) section.rows.forEach((_, idx) => section.selected.add(idx));
+                else section.selected.clear();
+                refreshMultiSection(sIdx);
+            };
+
+            window.adminMultiSelectAll = function(sIdx) {
+                const section = adminTableEditorState.sections[sIdx];
+                section.rows.forEach((_, idx) => section.selected.add(idx));
+                refreshMultiSection(sIdx);
+            };
+
+            window.adminMultiDeleteSelected = function(sIdx) {
+                const section = adminTableEditorState.sections[sIdx];
+                const toDelete = Array.from(section.selected).sort((a, b) => b - a);
+                toDelete.forEach(idx => section.rows.splice(idx, 1));
+                section.selected.clear();
+                refreshMultiSection(sIdx);
+            };
+
+            function buildJsonArrayTableModalHTML(path, arr, rootType) {
+                const columns = [];
+                arr.forEach(obj => Object.keys(obj).forEach(k => { if (!columns.includes(k)) columns.push(k); }));
+                const isObjectRoot = rootType === 'object';
+                const freeform = columns.length === 0 && !isObjectRoot;
+                adminTableEditorState = {
+                    path, mode: freeform ? 'array-freeform' : 'array', rootType: rootType || 'array',
+                    columns,
+                    rows: freeform ? arr.map(o => JSON.stringify(o)) : JSON.parse(JSON.stringify(arr)),
+                    selected: new Set()
+                };
+
+                return `
+                    <div class="admin-modal-overlay" id="adminFileModalOverlay">
+                        <div class="admin-modal-card admin-table-modal">
+                            <button class="admin-modal-close" onclick="adminCloseFileModal()">✕</button>
+                            <h3 class="admin-modal-title">${escapeHtml(path.split('/').pop())}</h3>
+                            ${freeform ? '<p class="admin-modal-note">This file is an empty list, so there are no columns to show yet - add a row and type a JSON object for it (e.g. {"id": 1, "name": "Example"}).</p>' : ''}
+                            <div class="admin-json-table-wrapper">
+                                <table class="admin-json-table" id="adminJsonTable">${buildJsonArrayTableInnerHTML()}</table>
+                            </div>
+                            <div class="admin-modal-actions admin-json-actions">
+                                <div class="admin-json-actions-left">
+                                    ${isObjectRoot ? '' : `
+                                    <button class="admin-btn admin-btn-add-file" onclick="adminJsonAddRow()">+ Add Row</button>
+                                    <button class="admin-btn admin-btn-delete" onclick="adminJsonDeleteSelected()">🗑️ Delete Selected</button>
+                                    <button class="admin-btn admin-btn-add-folder" onclick="adminJsonSelectAll()">☑️ Select All</button>
+                                    `}
+                                </div>
+                                <div class="admin-json-actions-right">
+                                    <button class="admin-modal-save" onclick="adminSaveFile('${path.replace(/'/g, "\\'")}', '${freeform ? 'array-freeform' : 'array'}')">💾 Save</button>
+                                    <button class="admin-modal-cancel" onclick="adminCloseFileModal()">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function buildJsonArrayTableInnerHTML() {
+                const { columns, rows, selected } = adminTableEditorState;
+
+                if (columns.length === 0) {
+                    const header = `<thead><tr><th><input type="checkbox" onchange="adminJsonToggleSelectAllCheckbox(this)" /></th><th>Row (JSON object)</th><th>Del</th></tr></thead>`;
+                    const body = `<tbody>${rows.map((rowStr, idx) => `
+                        <tr>
+                            <td><input type="checkbox" ${selected.has(idx) ? 'checked' : ''} onchange="adminJsonToggleSelectRow(${idx}, this)" /></td>
+                            <td><input type="text" class="admin-json-cell-input" value="${escapeHtml(rowStr)}" placeholder='{"key": "value"}' onchange="adminJsonUpdateFreeformRow(${idx}, this.value)" /></td>
+                            <td><span class="admin-action-icon delete" onclick="adminJsonDeleteRow(${idx})">🗑️</span></td>
+                        </tr>
+                    `).join('')}</tbody>`;
+                    return header + body;
+                }
+
+                const isObjectRoot = adminTableEditorState.rootType === 'object';
+                const header = `<thead><tr>${isObjectRoot ? '' : '<th><input type="checkbox" onchange="adminJsonToggleSelectAllCheckbox(this)" /></th>'}${columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}${isObjectRoot ? '' : '<th>Del</th>'}</tr></thead>`;
+                const body = `<tbody>${rows.map((row, idx) => `
+                    <tr>
+                        ${isObjectRoot ? '' : `<td><input type="checkbox" ${selected.has(idx) ? 'checked' : ''} onchange="adminJsonToggleSelectRow(${idx}, this)" /></td>`}
+                        ${columns.map(col => {
+                            const val = row[col];
+                            if (typeof val === 'boolean') {
+                                return `<td style="text-align:center;"><input type="checkbox" ${val ? 'checked' : ''} onchange="adminJsonUpdateCell(${idx}, '${col}', this.checked)" /></td>`;
+                            }
+                            const display = (val === null || val === undefined) ? '' : (typeof val === 'object' ? JSON.stringify(val) : val);
+                            return `<td><input type="text" class="admin-json-cell-input" value="${escapeHtml(String(display))}" onchange="adminJsonUpdateCell(${idx}, '${col}', this.value)" /></td>`;
+                        }).join('')}
+                        ${isObjectRoot ? '' : `<td><span class="admin-action-icon delete" onclick="adminJsonDeleteRow(${idx})">🗑️</span></td>`}
+                    </tr>
+                `).join('')}</tbody>`;
+                return header + body;
+            }
+
+            window.adminJsonUpdateFreeformRow = function(idx, value) {
+                adminTableEditorState.rows[idx] = value;
+            };
+
+            function refreshJsonTable() {
+                const table = document.getElementById('adminJsonTable');
+                if (table) table.innerHTML = buildJsonArrayTableInnerHTML();
+            }
+
+            window.adminJsonUpdateCell = function(idx, col, value) {
+                const current = adminTableEditorState.rows[idx][col];
+                // Preserve nested object/array structure: if the cell used to
+                // hold a real object/array (shown as JSON text), try to parse
+                // the edited text back into one instead of storing it as a
+                // plain string (which would otherwise corrupt the JSON shape
+                // on save).
+                if (current !== null && typeof current === 'object') {
+                    try {
+                        adminTableEditorState.rows[idx][col] = JSON.parse(value);
+                        return;
+                    } catch (e) {
+                        // not valid JSON yet (e.g. still mid-edit) - fall
+                        // through and store the raw text for now.
+                    }
+                }
+                adminTableEditorState.rows[idx][col] = value;
+            };
+
+            window.adminJsonDeleteRow = function(idx) {
+                adminTableEditorState.rows.splice(idx, 1);
+                adminTableEditorState.selected.delete(idx);
+                refreshJsonTable();
+            };
+
+            window.adminJsonAddRow = function() {
+                if (adminTableEditorState.mode === 'array-freeform') {
+                    adminTableEditorState.rows.push('{}');
+                } else if (adminTableEditorState.mode === 'array') {
+                    const blank = {};
+                    adminTableEditorState.columns.forEach(c => { blank[c] = ''; });
+                    adminTableEditorState.rows.push(blank);
+                }
+                refreshJsonTable();
+            };
+
+            window.adminJsonToggleSelectRow = function(idx, checkbox) {
+                if (checkbox.checked) adminTableEditorState.selected.add(idx);
+                else adminTableEditorState.selected.delete(idx);
+            };
+
+            window.adminJsonToggleSelectAllCheckbox = function(checkbox) {
+                if (checkbox.checked) adminTableEditorState.rows.forEach((_, idx) => adminTableEditorState.selected.add(idx));
+                else adminTableEditorState.selected.clear();
+                refreshJsonTable();
+            };
+
+            window.adminJsonSelectAll = function() {
+                adminTableEditorState.rows.forEach((_, idx) => adminTableEditorState.selected.add(idx));
+                refreshJsonTable();
+            };
+
+            window.adminJsonDeleteSelected = function() {
+                const toDelete = Array.from(adminTableEditorState.selected).sort((a, b) => b - a);
+                toDelete.forEach(idx => adminTableEditorState.rows.splice(idx, 1));
+                adminTableEditorState.selected.clear();
+                refreshJsonTable();
+            };
+
+            window.adminSaveFile = async function(path, mode) {
+                let content;
+                if (mode === 'array-freeform') {
+                    try {
+                        content = JSON.stringify(adminTableEditorState.rows.map(r => JSON.parse(r)), null, 4);
+                    } catch (err) {
+                        showWarning('One or more rows are not valid JSON: ' + err.message);
+                        return;
+                    }
+                } else if (mode === 'array') {
+                    content = JSON.stringify(adminTableEditorState.rows, null, 4);
+                } else if (mode === 'multi-virtual') {
+                    // Reconstruct {key: {...fields}} from the "_key"-tagged rows.
+                    const obj = {};
+                    adminTableEditorState.rows.forEach((row) => {
+                        const key = row._key;
+                        if (!key) return;
+                        const copy = Object.assign({}, row);
+                        delete copy._key;
+                        obj[key] = copy;
+                    });
+                    content = JSON.stringify(obj, null, 4);
+                } else if (mode === 'multi-sectioned') {
+                    // Reconstruct the full object from the General rows (paths
+                    // like "key" or "key.subkey") plus each extracted section
+                    // (title like "key" or "key.subkey") back into place.
+                    const obj = {};
+                    const setPath = (path2, value) => {
+                        const parts = path2.split('.');
+                        if (parts.length === 1) {
+                            obj[parts[0]] = value;
+                        } else {
+                            if (typeof obj[parts[0]] !== 'object' || obj[parts[0]] === null || Array.isArray(obj[parts[0]])) {
+                                obj[parts[0]] = {};
+                            }
+                            obj[parts[0]][parts[1]] = value;
+                        }
+                    };
+                    adminTableEditorState.generalRows.forEach(row => setPath(row.key, row.value));
+                    adminTableEditorState.sections.forEach(section => setPath(section.title, section.rows));
+                    content = JSON.stringify(obj, null, 4);
+                } else {
+                    content = document.getElementById('adminFileEditorTextarea').value;
+                }
+
+                try {
+                    const res = await fetch('/api/admin/write', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: path, content: content })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Save failed');
+                    adminCloseFileModal();
+                    loadAdminDirectory(adminCurrentPath);
+                    showMessage('✅ Saved', 'File saved successfully.', ['OK']);
+                } catch (err) {
+                    showWarning(err.message || 'Could not save file.');
+                }
+            };
+
+            // ============================================================
+            // 29. DOM REFS
+            // ============================================================
+            const mainMenu = document.getElementById('mainMenu');
+            const menuWrapper = document.getElementById('menuWrapper');
+            const contentArea = document.getElementById('contentArea');
+            const contentBody = document.getElementById('contentBody');
+            const currentMenuDisplay = document.getElementById('currentMenuDisplay');
+            const centerContent = document.getElementById('centerContent');
+
+            const userNameDisplay = document.getElementById('userNameDisplay');
+            const avatarText = document.getElementById('avatarText');
+            const userAvatar = document.getElementById('userAvatar');
+            const userDropdown = document.getElementById('userDropdown');
+
+            let activeItemId = null;
+            let activeSubItemId = null;
+            let isUserMenuOpen = false;
+
+            // ============================================================
+            // 29b. COMPANY BRANDING (logo + name from company.json)
+            // ============================================================
+            function applyCompanyBranding() {
+                if (!COMPANY_INFO) return;
+
+                const logoEl = document.getElementById('companyLogo');
+                const nameEl = document.getElementById('companyName');
+                const footerEl = document.getElementById('footerCompany');
+
+                if (logoEl) {
+                    if (COMPANY_INFO.logo) {
+                        logoEl.innerHTML =
+                            `<img src="${COMPANY_INFO.logo}" alt="${COMPANY_INFO.name} logo" onerror="this.onerror=null;this.src='Pictures/logo.png';" />`;
+                    } else {
+                        logoEl.textContent = '🏢';
+                    }
+                }
+
+                if (nameEl) {
+                    nameEl.innerHTML = `${COMPANY_INFO.name}\n                    <span class="separator" id="separator">|</span>`;
+                }
+
+                if (footerEl) {
+                    footerEl.textContent = COMPANY_INFO.name;
+                }
+
+                document.title = COMPANY_INFO.name;
+            }
+
+            // ============================================================
+            // 30. USER PROFILE SETUP
+            // ============================================================
+            function setupUserProfile() {
+                const fallback = MENU_CONFIG.user;
+                const name = profileData ? `${profileData.firstName} ${profileData.lastName}` : fallback.name;
+                const avatarUrl = profileData ? profileData.photo : fallback.avatar;
+                const initials = profileData ?
+                    ((profileData.firstName[0] || '') + (profileData.lastName[0] || '')) :
+                    (fallback.initials || fallback.name.split(' ').map(n => n[0]).join(''));
+
+                userNameDisplay.textContent = name;
+
+                if (avatarUrl) {
+                    userAvatar.innerHTML = `<img src="${avatarUrl}" alt="${name}" />`;
+                } else {
+                    avatarText.textContent = initials;
+                }
+
+                renderProfileMenu();
+            }
+
+            function renderProfileMenu() {
+                userDropdown.innerHTML = '';
+                const profileItems = MENU_CONFIG.profileMenu;
+                const myRole = profileData ? profileData.role : null;
+
+                profileItems.forEach((item) => {
+                    if (item.type === 'divider') {
+                        const divider = document.createElement('div');
+                        divider.className = 'dropdown-divider';
+                        userDropdown.appendChild(divider);
+                        return;
+                    }
+
+                    // Role-gated items (e.g. Admin) only render for allowed roles.
+                    if (Array.isArray(item.rolesAllowed) && !item.rolesAllowed.includes(myRole)) {
+                        return;
+                    }
+
+                    const btn = document.createElement('button');
+                    btn.className = 'dropdown-item';
+                    if (item.isLogout) btn.classList.add('logout');
+                    btn.textContent = item.label;
+                    btn.dataset.action = item.action;
+                    btn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        const action = this.dataset.action;
+                        userDropdown.classList.remove('show');
+                        isUserMenuOpen = false;
+                        handleUserAction(action);
+                    });
+                    userDropdown.appendChild(btn);
+                });
+            }
+
+            // ============================================================
+            // 31. USER DROPDOWN TOGGLE
+            // ============================================================
+            window.toggleUserDropdown = function(e) {
+                if (e) e.stopPropagation();
+                closeAllSubMenus();
+                userDropdown.classList.toggle('show');
+                isUserMenuOpen = userDropdown.classList.contains('show');
+            };
+
+            document.addEventListener('click', function(e) {
+                const profile = document.getElementById('userProfile');
+                if (profile && !profile.contains(e.target)) {
+                    userDropdown.classList.remove('show');
+                    isUserMenuOpen = false;
+                }
+            });
+
+            window.handleUserAction = function(action) {
+                if (action === 'Logout') {
+                    performLogout();
+                    return;
+                }
+
+                const pagePath = 'User / ' + action;
+                resetContentArea();
+
+                setTimeout(() => {
+                    let data;
+                    if (action === 'Profile') {
+                        data = { body: buildProfileBody() };
+                    } else if (action === 'Admin') {
+                        data = { body: buildAdminFilesBody() };
+                    }
+                    updateContent(data, pagePath);
+                    contentArea.classList.remove('loading');
+                    if (action === 'Admin') loadAdminDirectory('');
+                }, 300);
+
+                document.querySelectorAll('.menu-item > a').forEach(el => el.classList.remove('active'));
+                document.querySelectorAll('.sub-menu li a').forEach(el => el.classList.remove('active'));
+            };
+
+            // ============================================================
+            // 32. RESET CONTENT AREA
+            // ============================================================
+            function resetContentArea() {
+                contentArea.classList.add('loading');
+                contentBody.innerHTML = '';
+                centerContent.scrollTop = 0;
+            }
+
+            // ============================================================
+            // 33. UPDATE CONTENT
+            // ============================================================
+            function updateContent(data, breadcrumb) {
+                const bodyContent = typeof data.body === 'function' ? data.body() : data.body;
+                contentBody.innerHTML = bodyContent || '';
+                currentMenuDisplay.textContent = breadcrumb || 'Dashboard';
+
+                if (breadcrumb && breadcrumb.includes('Payment Mode')) {
+                    setTimeout(() => {
+                        renderPaymentMethods();
+                        const typeSelect = document.getElementById('paymentType');
+                        if (typeSelect) togglePaymentForm();
+                    }, 50);
+                }
+
+                if (breadcrumb && breadcrumb.includes('Payment History')) {
+                    setTimeout(renderPaymentHistory, 50);
+                }
+
+                if (breadcrumb && breadcrumb.includes('Balance')) {
+                    setTimeout(() => {
+                        populateBalancePaymentMethods();
+                        updateBalanceDisplay();
+                    }, 50);
+                }
+
+                if (breadcrumb === '📊 Dashboard') {
+                    setTimeout(renderTodayTransactions, 50);
+                }
+
+                if (breadcrumb && breadcrumb.includes('API Documentation')) {
+                    setTimeout(() => {
+                        renderApiKeyDisplay();
+                        renderServicesApiList();
+                    }, 50);
+                }
+
+                if (breadcrumb && breadcrumb.includes('Support') && !breadcrumb.includes('Help Center')) {
+                    setTimeout(renderSupportTable, 50);
+                }
+
+                if (breadcrumb && (breadcrumb.includes('Lease Abstraction') || breadcrumb.includes('Translation'))) {
+                    setTimeout(setupDragAndDrop, 50);
+                }
+            }
+
+            // ============================================================
+            // 34. DRAG AND DROP SETUP
+            // ============================================================
+            function setupDragAndDrop() {
+                const dropZone = document.getElementById('dropZone');
+                const fileInput = document.getElementById('fileInput');
+
+                if (!dropZone) return;
+
+                const serviceId = activeSubItemId === 'translation' ? 'translation' : 'lease-abstraction';
+
+                dropZone.addEventListener('dragover', function(e) {
+                    e.preventDefault();
+                    this.classList.add('dragover');
+                });
+
+                dropZone.addEventListener('dragleave', function(e) {
+                    e.preventDefault();
+                    this.classList.remove('dragover');
+                });
+
+                dropZone.addEventListener('drop', function(e) {
+                    e.preventDefault();
+                    this.classList.remove('dragover');
+                    const files = e.dataTransfer.files;
+                    if (files.length > 0) {
+                        const mockEvent = { target: { files: files } };
+                        handleFileUpload(mockEvent, serviceId);
+                    }
+                });
+            }
+
+            // ============================================================
+            // 35. MENU RENDERER
+            // ============================================================
+            function renderMenu() {
+                mainMenu.innerHTML = '';
+                const mainMenuItems = MENU_CONFIG.mainMenu;
+
+                mainMenuItems.forEach((item) => {
+                    const li = document.createElement('li');
+                    li.className = 'menu-item';
+
+                    const a = document.createElement('a');
+                    a.textContent = item.label;
+                    a.dataset.id = item.id;
+
+                    const hasSub = item.subItems && item.subItems.length > 0;
+                    a.dataset.hasSub = hasSub ? 'true' : 'false';
+
+                    if (hasSub) {
+                        const arrow = document.createElement('span');
+                        arrow.className = 'arrow';
+                        arrow.textContent = '▼';
+                        a.appendChild(arrow);
+                        a.addEventListener('click', function(e) {
+                            e.preventDefault();
+                            if (isUserMenuOpen) {
+                                userDropdown.classList.remove('show');
+                                isUserMenuOpen = false;
+                            }
+                            toggleSubMenu(this);
+                        });
+                    } else {
+                        a.addEventListener('click', function(e) {
+                            e.preventDefault();
+                            if (isUserMenuOpen) {
+                                userDropdown.classList.remove('show');
+                                isUserMenuOpen = false;
+                            }
+                            loadContent(item.id, null);
+                            if (window.innerWidth <= 768) menuWrapper.classList.remove('open');
+                        });
+                    }
+
+                    li.appendChild(a);
+
+                    if (hasSub) {
+                        const ul = document.createElement('ul');
+                        ul.className = 'sub-menu';
+                        ul.dataset.parentId = item.id;
+
+                        item.subItems.forEach((sub) => {
+                            const subLi = document.createElement('li');
+                            const subA = document.createElement('a');
+                            subA.textContent = sub.label;
+                            subA.dataset.id = sub.id;
+                            subA.dataset.parentId = item.id;
+
+                            subA.addEventListener('click', function(e) {
+                                e.preventDefault();
+                                if (isUserMenuOpen) {
+                                    userDropdown.classList.remove('show');
+                                    isUserMenuOpen = false;
+                                }
+                                loadContent(item.id, sub.id);
+                                closeAllSubMenus();
+                                if (window.innerWidth <= 768) menuWrapper.classList.remove('open');
+                            });
+                            subLi.appendChild(subA);
+                            ul.appendChild(subLi);
+                        });
+
+                        li.appendChild(ul);
+                    }
+
+                    mainMenu.appendChild(li);
+                });
+            }
+
+            function toggleSubMenu(element) {
+                const li = element.closest('.menu-item');
+                const subMenu = li.querySelector('.sub-menu');
+                const arrow = element.querySelector('.arrow');
+
+                if (subMenu) {
+                    document.querySelectorAll('.sub-menu.show').forEach((menu) => {
+                        if (menu !== subMenu) {
+                            menu.classList.remove('show');
+                            const parentArrow = menu.closest('.menu-item').querySelector('.arrow');
+                            if (parentArrow) parentArrow.classList.remove('open');
+                        }
+                    });
+
+                    subMenu.classList.toggle('show');
+                    if (arrow) arrow.classList.toggle('open');
+                }
+            }
+
+            function closeAllSubMenus() {
+                document.querySelectorAll('.sub-menu.show').forEach((menu) => {
+                    menu.classList.remove('show');
+                    const arrow = menu.closest('.menu-item').querySelector('.arrow');
+                    if (arrow) arrow.classList.remove('open');
+                });
+            }
+
+            // ============================================================
+            // 36. LOAD CONTENT
+            // ============================================================
+            function loadContent(parentId, subId) {
+                resetContentArea();
+
+                setTimeout(() => {
+                    const parent = MENU_CONFIG.mainMenu.find(item => item.id === parentId);
+                    if (!parent) return;
+
+                    let dataKey = parentId;
+                    let breadcrumb = parent.label;
+
+                    if (subId) {
+                        const sub = parent.subItems.find(item => item.id === subId);
+                        if (sub) {
+                            dataKey = subId;
+                            breadcrumb = parent.label + ' / ' + sub.label;
+                            activeSubItemId = subId;
+                        }
+                    } else {
+                        activeSubItemId = null;
+                    }
+
+                    activeItemId = parentId;
+
+                    let data = CONTENT_DATA[dataKey];
+                    if (!data) {
+                        data = { body: '<div class="content-section"><p>Content not available for this section.</p></div>' };
+                    }
+
+                    updateContent(data, breadcrumb);
+
+                    document.querySelectorAll('.menu-item > a').forEach((el) => {
+                        el.classList.remove('active');
+                        if (el.dataset.id === parentId) el.classList.add('active');
+                    });
+
+                    document.querySelectorAll('.sub-menu li a').forEach((el) => {
+                        el.classList.remove('active');
+                        if (el.dataset.id === subId && el.dataset.parentId === parentId) el.classList.add(
+                        'active');
+                    });
+
+                    closeAllSubMenus();
+                    contentArea.classList.remove('loading');
+                }, 300);
+            }
+
+            // ============================================================
+            // 37. MOBILE TOGGLE
+            // ============================================================
+            window.toggleMenu = function() {
+                menuWrapper.classList.toggle('open');
+            };
+
+            document.addEventListener('click', function(e) {
+                const toggle = document.querySelector('.menu-toggle');
+                if (window.innerWidth <= 768) {
+                    if (!menuWrapper.contains(e.target) && !toggle.contains(e.target)) {
+                        menuWrapper.classList.remove('open');
+                    }
+                }
+            });
+
+            document.addEventListener('click', function(e) {
+                if (!e.target.closest('.menu-item')) {
+                    closeAllSubMenus();
+                }
+            });
+
+            // ============================================================
+            // 38. CONTENT DATA
+            // ============================================================
+            const CONTENT_DATA = {
+                dashboard: {
+                    body: `
+                        <div class="dashboard-grid">
+                            <div class="dash-card">
+                                <div class="dash-card-icon">📋</div>
+                                <div class="dash-card-value" id="dashCurrentPlan">Professional Plan</div>
+                                <div class="dash-card-label">Current Plan</div>
+                            </div>
+                            <div class="dash-card">
+                                <div class="dash-card-icon">💰</div>
+                                <div class="dash-card-value" id="dashBalance">$0.00</div>
+                                <div class="dash-card-label">Balance</div>
+                            </div>
+                            <div class="dash-card">
+                                <div class="dash-card-icon">📄</div>
+                                <div class="dash-card-value">128</div>
+                                <div class="dash-card-label">Total Lease Abstraction</div>
+                            </div>
+                            <div class="dash-card">
+                                <div class="dash-card-icon">🌐</div>
+                                <div class="dash-card-value">96</div>
+                                <div class="dash-card-label">Total Translation</div>
+                            </div>
+                        </div>
+                        <div class="history-card" style="height:280px;margin-top:20px;">
+                            <h3>📅 Today's Transactions</h3>
+                            <div class="card-body">
+                                <table class="history-table" id="todayTableHeader">
+                                    <thead>
+                                        <tr>
+                                            <th>Transaction Date & Time</th>
+                                            <th>Transaction ID</th>
+                                            <th>Payment Type</th>
+                                            <th>Payment Mode</th>
+                                            <th>Description</th>
+                                            <th>Credit</th>
+                                            <th>Debit</th>
+                                        </tr>
+                                    </thead>
+                                </table>
+                                <div class="history-table-wrapper" id="todayTableWrapper">
+                                    <table class="history-table" id="todayTable">
+                                        <tbody id="todayTableBody">
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    `
+                },
+                'lease-abstraction': {
+                    body: function() {
+                        return buildServiceUploadHTML('lease-abstraction', 'Lease Abstraction', '📄');
+                    }
+                },
+                translation: {
+                    body: function() {
+                        return buildServiceUploadHTML('translation', 'Translation', '🌐');
+                    }
+                },
+                'plans-offers': {
+                    body: `
+                        <div class="plans-grid">
+                            <div class="plan-card">
+                                <div class="plan-name">🆓 Free</div>
+                                <div class="plan-price">$0<span>/month</span></div>
+                                <ul class="plan-features">
+                                    <li>✅ Unlimited Translation</li>
+                                    <li>✅ Community Support</li>
+                                    <li>✅ Basic Dashboard Access</li>
+                                </ul>
+                                <button class="plan-cta-btn">Get Started</button>
+                            </div>
+                            <div class="plan-card featured">
+                                <div class="plan-badge">⭐ Most Popular</div>
+                                <div class="plan-name">🚀 Professional</div>
+                                <div class="plan-price">$79<span>/month</span></div>
+                                <ul class="plan-features">
+                                    <li>✅ Unlimited Translation</li>
+                                    <li>✅ $10 / Lease Abstraction</li>
+                                    <li>✅ Priority Support</li>
+                                    <li>✅ Advanced Dashboard Access</li>
+                                </ul>
+                                <button class="plan-cta-btn">Upgrade Now</button>
+                            </div>
+                        </div>
+                    `
+                },
+                balance: {
+                    body: `
+                        <div class="balance-grid" id="balanceGrid">
+                            <div class="balance-card">
+                                <div class="balance-number credit" id="totalCreditBalance">$0.00</div>
+                                <div class="balance-label">Total Credit</div>
+                            </div>
+                            <div class="balance-card">
+                                <div class="balance-number debit" id="totalDebitBalance">$0.00</div>
+                                <div class="balance-label">Total Debit</div>
+                            </div>
+                            <div class="balance-card">
+                                <div class="balance-number" id="currentBalanceDisplay">$0.00</div>
+                                <div class="balance-label">Current Balance</div>
+                            </div>
+                        </div>
+                        <div class="balance-add-card">
+                            <h3>➕ Add Balance</h3>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Payment Method</label>
+                                    <select id="balancePaymentMethod"></select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Amount</label>
+                                    <input type="number" id="balanceAmount" placeholder="Enter amount" min="0.01" step="0.01" />
+                                </div>
+                                <div class="form-group">
+                                    <label>Description</label>
+                                    <input type="text" id="balanceDescription" placeholder="Enter description" />
+                                </div>
+                                <button class="add-btn" onclick="addBalance()">+ Add Balance</button>
+                            </div>
+                        </div>
+                    `
+                },
+                'payment-mode': {
+                    body: `
+                        <div class="payment-layout">
+                            <div class="payment-left">
+                                <div class="payment-card">
+                                    <h3>💳 Your Payment Methods</h3>
+                                    <div class="card-body">
+                                        <ul class="payment-list" id="paymentList"></ul>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="payment-right">
+                                <div class="payment-card">
+                                    <h3>➕ Add New Payment Method</h3>
+                                    <div class="card-body">
+                                        <div class="payment-form" id="paymentForm">
+                                            <div class="form-group">
+                                                <label>Payment Type</label>
+                                                <select id="paymentType" onchange="togglePaymentForm()">
+                                                    <option value="credit-card">💳 Credit Card</option>
+                                                    <option value="upi">📱 UPI</option>
+                                                </select>
+                                            </div>
+                                            <div id="creditCardFields">
+                                                <div class="form-group">
+                                                    <label>Card Number</label>
+                                                    <input type="text" id="cardNumber" placeholder="1234 5678 9012 3456" />
+                                                </div>
+                                                <div class="form-group">
+                                                    <label>Name on Card</label>
+                                                    <input type="text" id="cardName" placeholder="John Doe" />
+                                                </div>
+                                                <div class="form-row">
+                                                    <div class="form-group">
+                                                        <label>Expiry Date</label>
+                                                        <input type="text" id="expiryDate" placeholder="MM/YYYY" />
+                                                    </div>
+                                                    <div class="form-group">
+                                                        <label>CVV</label>
+                                                        <input type="text" id="cvv" placeholder="***" />
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div id="upiFields" style="display:none;">
+                                                <div class="form-group">
+                                                    <label>UPI ID</label>
+                                                    <input type="text" id="upiId" placeholder="john.doe@upi" />
+                                                </div>
+                                            </div>
+                                            <button class="submit-btn" onclick="addPaymentMethod()">+ Add Payment Method</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `
+                },
+                'payment-history': {
+                    body: `
+                        <div class="history-card">
+                            <div class="history-filter-bar">
+                                <div class="filter-group">
+                                    <label>From</label>
+                                    <input type="date" id="historyFromDate" />
+                                </div>
+                                <div class="filter-group">
+                                    <label>To</label>
+                                    <input type="date" id="historyToDate" />
+                                </div>
+                                <button class="filter-btn" onclick="applyHistoryFilter()">🔍 Filter</button>
+                                <button class="filter-btn reset-btn" onclick="clearHistoryFilter()">✖ Clear</button>
+                                <button class="filter-btn download-btn" onclick="downloadHistoryExcel()">⬇️ Download Excel</button>
+                            </div>
+                            <div class="card-body">
+                                <table class="history-table" id="historyTableHeader">
+                                    <thead>
+                                        <tr>
+                                            <th>Transaction Date & Time</th>
+                                            <th>Transaction ID</th>
+                                            <th>Payment Type</th>
+                                            <th>Payment Mode</th>
+                                            <th>Description</th>
+                                            <th>Credit</th>
+                                            <th>Debit</th>
+                                        </tr>
+                                    </thead>
+                                </table>
+                                <div class="history-table-wrapper" id="historyTableWrapper">
+                                    <table class="history-table" id="historyTable">
+                                        <tbody id="historyTableBody"></tbody>
+                                    </table>
+                                </div>
+                                <div class="history-summary" id="historySummary">
+                                    <div class="summary-item">
+                                        <span class="summary-label">Total Credit</span>
+                                        <span class="summary-value credit-value" id="totalCredit">$0.00</span>
+                                    </div>
+                                    <div class="summary-item">
+                                        <span class="summary-label">Total Debit</span>
+                                        <span class="summary-value debit-value" id="totalDebit">$0.00</span>
+                                    </div>
+                                    <div class="summary-item">
+                                        <span class="summary-label">Current Balance</span>
+                                        <span class="summary-value" id="currentBalance">$0.00</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `
+                },
+                'api-documentation': {
+                    body: `
+                        <div class="api-key-card">
+                            <h3>🔑 Generate New API Key</h3>
+                            <p style="font-size:0.85rem;color:rgba(0,0,0,0.6);margin-bottom:10px;">Generate a new API key to authenticate your requests. Keep it secret — treat it like a password.</p>
+                            <div class="api-key-box" id="apiKeyDisplay">No API key generated yet.</div>
+                            <div class="api-key-actions" id="apiKeyActions" style="display:none;">
+                                <button class="api-action-btn copy-btn" onclick="copyApiKey()">📋 Copy</button>
+                                <button class="api-action-btn save-btn" onclick="saveApiKey()">💾 Save</button>
+                                <button class="api-action-btn revoke-btn" onclick="revokeApiKey()">🚫 Revoke</button>
+                            </div>
+                            <button class="submit-btn" style="width:fit-content;margin-top:10px;" onclick="generateApiKey()">⚡ Generate New API Key</button>
+                            <div id="apiKeyHistory"></div>
+                        </div>
+                        <div class="api-key-card">
+                            <h3>🛠️ Services API Reference</h3>
+                            <p style="font-size:0.85rem;color:rgba(0,0,0,0.6);margin-bottom:10px;">GET and POST endpoints with example requests/responses for each service.</p>
+                            <div id="servicesApiList"></div>
+                        </div>
+                    `
+                },
+                support: {
+                    body: `
+                        <div class="history-card support-log-card support-log-full">
+                            <div class="support-log-header-row">
+                                <h3>📋 Supports: Log</h3>
+                            </div>
+                            <div class="history-filter-bar">
+                                <div class="filter-group">
+                                    <label>From</label>
+                                    <input type="date" id="supportFromDate" />
+                                </div>
+                                <div class="filter-group">
+                                    <label>To</label>
+                                    <input type="date" id="supportToDate" />
+                                </div>
+                                <button class="filter-btn" onclick="applySupportFilter()">🔍 Filter</button>
+                                <button class="filter-btn reset-btn" onclick="resetSupportFilter()">↺ Reset</button>
+                            </div>
+                            <div class="card-body">
+                                <div class="support-table-scroll" id="supportTableWrapper">
+                                    <table class="support-log-table" id="supportTable">
+                                        <thead>
+                                            <tr>
+                                                <th><input type="checkbox" onchange="toggleSupportSelectAll(this)" /></th>
+                                                <th>Date</th>
+                                                <th>Time</th>
+                                                <th>Type</th>
+                                                <th>Subject</th>
+                                                <th>Message</th>
+                                                <th>Status</th>
+                                                <th>Response</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="supportTableBody"></tbody>
+                                    </table>
+                                </div>
+                                <div class="support-log-footer-row">
+                                    <button class="filter-btn delete-btn" onclick="deleteSelectedSupport()">🗑️ Delete</button>
+                                    <a class="support-create-new-link" onclick="openMessagePopup('compose')">➕ Create New</a>
+                                    <button class="filter-btn download-btn" onclick="downloadSupportExcel()">⬇️ Download Excel</button>
+                                </div>
+                            </div>
+                        </div>
+                    `
+                },
+                'contact-us': {
+                    body: function() {
+                        const c = COMPANY_INFO || {};
+                        return `
+                        <div class="payment-card company-details-card">
+                            <h3>🏢 Company Details</h3>
+                            <div class="card-body">
+                                <ul class="contact-info-list">
+                                    <li><span class="contact-label">Company Name</span><span class="contact-value">${c.name || '-'}</span></li>
+                                    <li><span class="contact-label">Address</span><span class="contact-value">${c.address || '-'}</span></li>
+                                    <li><span class="contact-label">Working Hours</span><span class="contact-value">${c.workingHours || '-'}</span></li>
+                                    <li><span class="contact-label">Working Days</span><span class="contact-value">${c.workingDays || '-'}</span></li>
+                                    <li><span class="contact-label">Location</span><span class="contact-value">${c.location || '-'}</span></li>
+                                    <li><span class="contact-label">Email</span><span class="contact-value">${c.email || '-'}</span></li>
+                                    <li><span class="contact-label">Phone</span><span class="contact-value">${c.phone || '-'}</span></li>
+                                    <li><span class="contact-label">WhatsApp</span><span class="contact-value">${c.whatsapp || '-'}</span></li>
+                                </ul>
+                            </div>
+                        </div>
+                    `;
+                    }
+                }
+            };
+
+            // ============================================================
+            // 38b. BACKEND PERSISTENCE
+            // ============================================================
+            // py/server.py exposes PUT /api/data/<name>, which overwrites the
+            // matching json/<name>.json file on disk. Each domain (payment
+            // history, users, contact submissions, ...) is saved straight
+            // back to its own real json file - there's no separate "merge on
+            // load" step anymore, because the json files themselves are now
+            // always the live, current data (the same files load() already
+            // reads on startup). If the backend isn't running (e.g. someone
+            // opened this with `python3 -m http.server` instead of
+            // `python3 py/server.py`), saves fail quietly in the console and
+            // a single one-time warning is shown in the UI.
+            let backendSaveWarningShown = false;
+
+            async function saveJSON(name, data) {
+                try {
+                    const res = await fetch('/api/data/' + name, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                    if (!res.ok) throw new Error('Save failed with status ' + res.status);
+                } catch (e) {
+                    console.warn(`Could not save json/${name}.json to the backend:`, e);
+                    if (!backendSaveWarningShown) {
+                        backendSaveWarningShown = true;
+                        showWarning(
+                            'Changes are not being saved to disk right now. Make sure the app is running via ' +
+                            '"python3 py/server.py" (not a plain static server) so json/ files can actually be updated.'
+                        );
+                    }
+                }
+            }
+
+            function persistPaymentHistory() { return saveJSON('payment-history', paymentHistory); }
+            function persistPaymentMethods() { return saveJSON('payment-methods', paymentMethods); }
+            function persistContactSubmissions() { return saveJSON('contact-submissions', contactSubmissions); }
+            function persistApiKeys() { return saveJSON('api-keys', apiKeys); }
+
+            // Patches ONLY the currently logged-in user's own record via
+            // /api/profile/update - replaces the old blanket "overwrite all
+            // of users.json" approach, which is no longer possible now that
+            // users.json holds real passwords for every account (see
+            // py/server.py's ALLOWED_RESOURCES notes).
+            async function persistProfile() {
+                if (!profileData || !CURRENT_USER_ID) return;
+                try {
+                    const res = await fetch('/api/profile/update', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId: CURRENT_USER_ID, fields: profileData })
+                    });
+                    const result = await res.json();
+                    if (!res.ok) throw new Error(result.error || 'Save failed with status ' + res.status);
+                    if (result.user) profileData = result.user;
+                } catch (e) {
+                    console.warn('Could not save profile to the backend:', e);
+                    if (!backendSaveWarningShown) {
+                        backendSaveWarningShown = true;
+                        showWarning(
+                            'Changes are not being saved to disk right now. Make sure the app is running via ' +
+                            '"python3 py/server.py" (not a plain static server) so json/ files can actually be updated.'
+                        );
+                    }
+                }
+            }
+
+            function persistServiceFiles(serviceId) {
+                if (serviceId === 'translation') {
+                    return Promise.all([
+                        saveJSON('translation-files', translationFiles),
+                        saveJSON('translation-activity-log', translationActivityLog)
+                    ]);
+                }
+                return Promise.all([
+                    saveJSON('lease-files', leaseFiles),
+                    saveJSON('lease-activity-log', leaseActivityLog)
+                ]);
+            }
+
+            // ============================================================
+            // 39. INITIALIZE (loads all data from /json/*.json files)
+            // ============================================================
+            async function fetchJSON(path) {
+                const res = await fetch(path);
+                if (!res.ok) throw new Error('Failed to load ' + path);
+                return res.json();
+            }
+
+            async function loadAppData() {
+                const [
+                    menuConfig,
+                    paymentMethodsData,
+                    paymentHistoryData,
+                    servicesApiData,
+                    contactSubmissionsData,
+                    meData,
+                    messagesData,
+                    agentsData,
+                    companyData,
+                    apiKeysData,
+                    leaseFilesData,
+                    translationFilesData,
+                    leaseActivityLogData,
+                    translationActivityLogData
+                ] = await Promise.all([
+                    fetchJSON('json/menu-config.json'),
+                    fetchJSON('json/payment-methods.json'),
+                    fetchJSON('json/payment-history.json'),
+                    fetchJSON('json/services-api.json'),
+                    fetchJSON('json/contact-submissions.json'),
+                    fetchJSON('/api/auth/me?userId=' + encodeURIComponent(CURRENT_USER_ID)),
+                    fetchJSON('json/messages.json'),
+                    fetchJSON('json/agents.json'),
+                    fetchJSON('json/company.json'),
+                    fetchJSON('json/api-keys.json'),
+                    fetchJSON('json/lease-files.json'),
+                    fetchJSON('json/translation-files.json'),
+                    fetchJSON('json/lease-activity-log.json'),
+                    fetchJSON('json/translation-activity-log.json')
+                ]);
+
+                MENU_CONFIG = menuConfig;
+                paymentMethods = paymentMethodsData;
+                paymentHistory = paymentHistoryData;
+                SERVICES_API_DATA = servicesApiData;
+                contactSubmissions = contactSubmissionsData;
+                MESSAGES = messagesData;
+                AGENTS_BY_SERVICE = agentsData;
+                COMPANY_INFO = companyData;
+                apiKeys = apiKeysData;
+                leaseFiles = leaseFilesData;
+                translationFiles = translationFilesData;
+                leaseActivityLog = leaseActivityLogData;
+                translationActivityLog = translationActivityLogData;
+
+                // The only user record the browser ever holds - just the
+                // currently logged-in one, fetched fresh from the server.
+                profileData = meData.user;
+
+                // System Configuration default comes from the user's own
+                // sysConfig field (users.json), not a separate json file.
+                currentSystemConfig = (profileData && profileData.sysConfig) || 'Desktop';
+
+                nextApiKeyId = apiKeys.length ? Math.max(...apiKeys.map(k => k.id)) + 1 : 1;
+                nextLeaseFileId = leaseFiles.length + 1;
+                nextTranslationFileId = translationFiles.length + 1;
+                nextTransactionId = paymentHistory.length + 1;
+                nextPaymentId = paymentMethods.length + 1;
+                nextSupportId = contactSubmissions.length ?
+                    Math.max(...contactSubmissions.map(c => parseInt((c.id || '').replace('SUP', '')) || 0)) + 1 : 1;
+            }
+
+            // ============================================================
+            // 38c. AUTHENTICATION (login / register / 2FA / forgot password)
+            // Renders into #authScreen (see main.html). Talks to the
+            // /api/auth/* routes in py/server.py. Session is just the
+            // logged-in userId, kept in localStorage so a page refresh
+            // doesn't force a re-login.
+            // ============================================================
+            const AUTH_SESSION_KEY = 'lexora_session_user_id';
+
+            let authState = {
+                step: 'login',           // login | register | forgot | verify | newPassword
+                verifyPurpose: null,     // register | login | reset
+                userId: null,
+                email: null,
+                expiresInMinutes: 4,
+                codeFallback: null,      // set when the email couldn't be sent
+                resetCode: null,         // the code the user just verified, needed by reset-password
+                countdownInterval: null,
+                countdownSecondsLeft: 0
+            };
+
+            function authPost(path, payload) {
+                return fetch(path, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                }).then(async (res) => {
+                    let data = {};
+                    try { data = await res.json(); } catch (e) { /* ignore */ }
+                    if (!res.ok) throw new Error(data.error || 'Something went wrong. Please try again.');
+                    return data;
+                });
+            }
+
+            function buildAuthLeftPanel() {
+                const name = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora AI Solutions';
+                const logoPath = (COMPANY_INFO && COMPANY_INFO.logo) || 'Pictures/logo.png';
+                return `
+                    <div class="auth-brand-icon"><img src="${logoPath}" alt="${escapeHtml(name)} logo" onerror="this.onerror=null;this.src='Pictures/logo.png';" /></div>
+                    <h1 class="auth-brand-title">${name}</h1>
+                    <p class="auth-brand-tagline">Lease Abstraction AI Tool</p>
+                    <p class="auth-brand-sub">RAG · Structured Extraction · Review UI.<br/>RAG-grounded Claude extraction with source citations.</p>
+                    <div class="auth-feature-grid">
+                        <div class="auth-feature-card">
+                            <div class="auth-feature-title">📄 Structured Fields</div>
+                            <div class="auth-feature-desc">Insurance, CAM, Options, Late Fee</div>
+                        </div>
+                        <div class="auth-feature-card">
+                            <div class="auth-feature-title">🔍 Rent Roll Audit</div>
+                            <div class="auth-feature-desc">53% rent roll error audit — escalation &amp; CAM caps</div>
+                        </div>
+                        <div class="auth-feature-card">
+                            <div class="auth-feature-title">✏️ Human Review UI</div>
+                            <div class="auth-feature-desc">Verify or Edit every extracted field</div>
+                        </div>
+                        <div class="auth-feature-card">
+                            <div class="auth-feature-title">🗂️ Lease Repository</div>
+                            <div class="auth-feature-desc">All abstracted lease history stored</div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function buildLoginCard() {
+                return `
+                    <h2 class="auth-card-title">Welcome Back</h2>
+                    <div class="auth-form-group">
+                        <input type="email" id="loginEmail" class="auth-input" placeholder="Email Address" />
+                    </div>
+                    <div class="auth-form-group auth-password-group">
+                        <input type="password" id="loginPassword" class="auth-input" placeholder="Password" />
+                        <span class="auth-eye" onclick="authTogglePassword('loginPassword', this)">👁️</span>
+                    </div>
+                    <div id="authErrorBox" class="auth-error-box" style="display:none;"></div>
+                    <div class="auth-btn-row">
+                        <button class="auth-btn-primary" onclick="handleAuthLogin()">Login</button>
+                        <button class="auth-btn-secondary" onclick="authResetForm(['loginEmail','loginPassword'])">Reset</button>
+                    </div>
+                    <div class="auth-links">
+                        <a onclick="authGoTo('forgot')">Forgot Password?</a>
+                        <a onclick="authGoTo('register')">Create Account</a>
+                    </div>
+                `;
+            }
+
+            function buildRegisterCard() {
+                return `
+                    <h2 class="auth-card-title">Create Account</h2>
+                    <p class="auth-card-note">Fill your details — verification code will be sent.</p>
+                    <div class="auth-form-row">
+                        <input type="text" id="regFirstName" class="auth-input" placeholder="First Name *" />
+                        <input type="text" id="regLastName" class="auth-input" placeholder="Last Name *" />
+                    </div>
+                    <div class="auth-form-row">
+                        <select id="regGender" class="auth-input">
+                            <option value="">Select Gender *</option>
+                            <option value="Male">Male</option>
+                            <option value="Female">Female</option>
+                            <option value="Other">Other</option>
+                        </select>
+                        <input type="date" id="regBirthdate" class="auth-input" />
+                    </div>
+                    <div class="auth-form-group">
+                        <input type="text" id="regMobile" class="auth-input" placeholder="Mobile No *" />
+                    </div>
+                    <div class="auth-form-group">
+                        <input type="email" id="regEmail" class="auth-input" placeholder="Email Address *" />
+                    </div>
+                    <div class="auth-form-row">
+                        <div class="auth-password-group">
+                            <input type="password" id="regPassword" class="auth-input" placeholder="Password *" />
+                            <span class="auth-eye" onclick="authTogglePassword('regPassword', this)">👁️</span>
+                        </div>
+                        <div class="auth-password-group">
+                            <input type="password" id="regConfirmPassword" class="auth-input" placeholder="Confirm *" />
+                            <span class="auth-eye" onclick="authTogglePassword('regConfirmPassword', this)">👁️</span>
+                        </div>
+                    </div>
+                    <div class="auth-hint">Min 8 characters, with 1 uppercase, 1 lowercase, 1 number and 1 special character.</div>
+                    <div id="authErrorBox" class="auth-error-box" style="display:none;"></div>
+                    <div class="auth-btn-row">
+                        <button class="auth-btn-primary" onclick="handleAuthRegister()">Submit</button>
+                        <button class="auth-btn-secondary" onclick="authGoTo('login')">Back to Login</button>
+                    </div>
+                `;
+            }
+
+            function buildForgotCard() {
+                return `
+                    <h2 class="auth-card-title">Reset Password</h2>
+                    <p class="auth-card-note">Enter your email to receive a verification code.</p>
+                    <div class="auth-form-group">
+                        <input type="email" id="forgotEmail" class="auth-input" placeholder="Email Address" />
+                    </div>
+                    <div id="authErrorBox" class="auth-error-box" style="display:none;"></div>
+                    <div class="auth-btn-row">
+                        <button class="auth-btn-primary" onclick="handleAuthForgotSubmit()">Send Code</button>
+                        <button class="auth-btn-secondary" onclick="authGoTo('login')">Back to Login</button>
+                    </div>
+                `;
+            }
+
+            function buildVerifyCard() {
+                const titles = {
+                    register: '📝 Verify Registration',
+                    login: '🔒 Login Verify',
+                    reset: '🔑 Reset Password'
+                };
+                const title = titles[authState.verifyPurpose] || 'Verify';
+                const fallbackBox = authState.codeFallback ? `
+                    <div class="auth-fallback-box">
+                        ⚠️ Email could not be sent — use this code:
+                        <strong>${authState.codeFallback}</strong>
+                    </div>
+                ` : '';
+                return `
+                    <h2 class="auth-card-title">${title}</h2>
+                    <p class="auth-card-note">Enter the 6-digit code sent to<br/>${escapeHtml(authState.email || '')}</p>
+                    ${fallbackBox}
+                    <div class="auth-otp-row" id="authOtpRow">
+                        ${[0, 1, 2, 3, 4, 5].map(i => `<input type="text" maxlength="1" class="auth-otp-box" data-otp-index="${i}" inputmode="numeric" autocomplete="one-time-code" />`).join('')}
+                    </div>
+                    <div class="auth-countdown" id="authCountdown">Expires in --:--</div>
+                    <div id="authErrorBox" class="auth-error-box" style="display:none;"></div>
+                    <div class="auth-btn-row">
+                        <button class="auth-btn-primary" onclick="handleAuthVerifySubmit()">Verify</button>
+                        <button class="auth-btn-secondary" onclick="handleAuthResend()">Resend</button>
+                    </div>
+                    <div class="auth-links">
+                        <a onclick="authGoBackFromVerify()">← Back</a>
+                    </div>
+                `;
+            }
+
+            function buildNewPasswordCard() {
+                return `
+                    <h2 class="auth-card-title">Set New Password</h2>
+                    <p class="auth-card-note">Choose a new password for your account.</p>
+                    <div class="auth-form-group auth-password-group">
+                        <input type="password" id="newPassword1" class="auth-input" placeholder="New Password *" />
+                        <span class="auth-eye" onclick="authTogglePassword('newPassword1', this)">👁️</span>
+                    </div>
+                    <div class="auth-form-group auth-password-group">
+                        <input type="password" id="newPassword2" class="auth-input" placeholder="Confirm New Password *" />
+                        <span class="auth-eye" onclick="authTogglePassword('newPassword2', this)">👁️</span>
+                    </div>
+                    <div class="auth-hint">Min 8 characters, with 1 uppercase, 1 lowercase, 1 number and 1 special character.</div>
+                    <div id="authErrorBox" class="auth-error-box" style="display:none;"></div>
+                    <div class="auth-btn-row">
+                        <button class="auth-btn-primary" onclick="handleAuthSetNewPassword()">Save New Password</button>
+                    </div>
+                `;
+            }
+
+            function buildAuthCard() {
+                switch (authState.step) {
+                    case 'register': return buildRegisterCard();
+                    case 'forgot': return buildForgotCard();
+                    case 'verify': return buildVerifyCard();
+                    case 'newPassword': return buildNewPasswordCard();
+                    default: return buildLoginCard();
+                }
+            }
+
+            function renderAuthScreen() {
+                const root = document.getElementById('authScreen');
+                if (!root) return;
+                root.innerHTML = `
+                    <div class="auth-wrapper">
+                        <div class="auth-left">${buildAuthLeftPanel()}</div>
+                        <div class="auth-right"><div class="auth-card">${buildAuthCard()}</div></div>
+                    </div>
+                `;
+                if (authState.step === 'verify') {
+                    wireOtpBoxes();
+                    startAuthCountdown();
+                }
+            }
+
+            function wireOtpBoxes() {
+                const boxes = Array.from(document.querySelectorAll('.auth-otp-box'));
+                boxes.forEach((box, idx) => {
+                    box.addEventListener('input', () => {
+                        box.value = box.value.replace(/[^0-9]/g, '').slice(0, 1);
+                        if (box.value && idx < boxes.length - 1) boxes[idx + 1].focus();
+                    });
+                    box.addEventListener('keydown', (e) => {
+                        if (e.key === 'Backspace' && !box.value && idx > 0) boxes[idx - 1].focus();
+                    });
+                    box.addEventListener('paste', (e) => {
+                        const pasted = (e.clipboardData || window.clipboardData).getData('text').replace(/[^0-9]/g, '');
+                        if (pasted.length > 1) {
+                            e.preventDefault();
+                            pasted.slice(0, 6).split('').forEach((digit, i) => { if (boxes[i]) boxes[i].value = digit; });
+                            (boxes[Math.min(pasted.length, 6) - 1] || boxes[5]).focus();
+                        }
+                    });
+                });
+                if (boxes[0]) boxes[0].focus();
+            }
+
+            function getOtpValue() {
+                return Array.from(document.querySelectorAll('.auth-otp-box')).map(b => b.value || '').join('');
+            }
+
+            function startAuthCountdown() {
+                clearInterval(authState.countdownInterval);
+                authState.countdownSecondsLeft = Math.round((authState.expiresInMinutes || 4) * 60);
+                updateCountdownDisplay();
+                authState.countdownInterval = setInterval(() => {
+                    authState.countdownSecondsLeft--;
+                    if (authState.countdownSecondsLeft <= 0) {
+                        clearInterval(authState.countdownInterval);
+                        updateCountdownDisplay(true);
+                        return;
+                    }
+                    updateCountdownDisplay();
+                }, 1000);
+            }
+
+            function updateCountdownDisplay(expired) {
+                const el = document.getElementById('authCountdown');
+                if (!el) return;
+                if (expired) {
+                    el.textContent = 'Code expired - tap Resend for a new one.';
+                    el.classList.add('expired');
+                    return;
+                }
+                const m = Math.floor(authState.countdownSecondsLeft / 60);
+                const s = authState.countdownSecondsLeft % 60;
+                el.textContent = `Expires in ${m}:${String(s).padStart(2, '0')}`;
+                el.classList.remove('expired');
+            }
+
+            window.authGoTo = function(step) {
+                clearInterval(authState.countdownInterval);
+                authState.step = step;
+                authState.codeFallback = null;
+                renderAuthScreen();
+            };
+
+            window.authGoBackFromVerify = function() {
+                if (authState.verifyPurpose === 'reset') authGoTo('forgot');
+                else if (authState.verifyPurpose === 'register') authGoTo('register');
+                else authGoTo('login');
+            };
+
+            window.authTogglePassword = function(id, el) {
+                const input = document.getElementById(id);
+                if (!input) return;
+                if (input.type === 'password') { input.type = 'text'; el.textContent = '🙈'; }
+                else { input.type = 'password'; el.textContent = '👁️'; }
+            };
+
+            window.authResetForm = function(ids) {
+                ids.forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+                hideAuthError();
+            };
+
+            function showAuthError(msg) {
+                const box = document.getElementById('authErrorBox');
+                if (box) { box.textContent = msg; box.style.display = 'block'; }
+            }
+
+            function hideAuthError() {
+                const box = document.getElementById('authErrorBox');
+                if (box) box.style.display = 'none';
+            }
+
+            window.handleAuthLogin = async function() {
+                hideAuthError();
+                const email = document.getElementById('loginEmail').value.trim();
+                const password = document.getElementById('loginPassword').value;
+                if (!email || !password) { showAuthError('Please enter both email and password.'); return; }
+
+                try {
+                    const res = await authPost('/api/auth/login', { email, password });
+                    if (res.requires2FA) {
+                        authState.verifyPurpose = 'login';
+                        authState.userId = res.userId;
+                        authState.email = res.email;
+                        authState.expiresInMinutes = res.expiresInMinutes;
+                        authState.codeFallback = res.emailFailed ? res.code : null;
+                        authGoTo('verify');
+                    } else {
+                        completeLogin(res.userId);
+                    }
+                } catch (err) {
+                    showAuthError(err.message);
+                }
+            };
+
+            window.handleAuthRegister = async function() {
+                hideAuthError();
+                const firstName = document.getElementById('regFirstName').value.trim();
+                const lastName = document.getElementById('regLastName').value.trim();
+                const gender = document.getElementById('regGender').value;
+                const birthdate = document.getElementById('regBirthdate').value;
+                const mobile = document.getElementById('regMobile').value.trim();
+                const email = document.getElementById('regEmail').value.trim();
+                const password = document.getElementById('regPassword').value;
+                const confirmPassword = document.getElementById('regConfirmPassword').value;
+
+                if (!firstName || !lastName || !email || !password) {
+                    showAuthError('Please fill in all required fields.');
+                    return;
+                }
+                if (password !== confirmPassword) {
+                    showAuthError('Password and Confirm do not match.');
+                    return;
+                }
+
+                try {
+                    const res = await authPost('/api/auth/register', {
+                        firstName, lastName, gender, birthdate, mobile, email, password
+                    });
+                    authState.verifyPurpose = 'register';
+                    authState.userId = res.userId;
+                    authState.email = res.email;
+                    authState.expiresInMinutes = res.expiresInMinutes;
+                    authState.codeFallback = res.emailFailed ? res.code : null;
+                    authGoTo('verify');
+                } catch (err) {
+                    showAuthError(err.message);
+                }
+            };
+
+            window.handleAuthForgotSubmit = async function() {
+                hideAuthError();
+                const email = document.getElementById('forgotEmail').value.trim();
+                if (!email) { showAuthError('Please enter your email address.'); return; }
+
+                try {
+                    const res = await authPost('/api/auth/forgot-password', { email });
+                    authState.verifyPurpose = 'reset';
+                    authState.userId = res.userId;
+                    authState.email = res.email;
+                    authState.expiresInMinutes = res.expiresInMinutes;
+                    authState.codeFallback = res.emailFailed ? res.code : null;
+                    authGoTo('verify');
+                } catch (err) {
+                    showAuthError(err.message);
+                }
+            };
+
+            window.handleAuthVerifySubmit = async function() {
+                hideAuthError();
+                const code = getOtpValue();
+                if (code.length !== 6) { showAuthError('Please enter the 6-digit code.'); return; }
+
+                try {
+                    if (authState.verifyPurpose === 'register') {
+                        await authPost('/api/auth/verify-register', { userId: authState.userId, code });
+                        clearInterval(authState.countdownInterval);
+                        authGoTo('login');
+                        showMessage('✅ Verified', 'Your account has been verified. Please log in.', ['OK']);
+                    } else if (authState.verifyPurpose === 'login') {
+                        await authPost('/api/auth/verify-login', { userId: authState.userId, code });
+                        clearInterval(authState.countdownInterval);
+                        completeLogin(authState.userId);
+                    } else if (authState.verifyPurpose === 'reset') {
+                        await authPost('/api/auth/verify-reset-code', { userId: authState.userId, code });
+                        authState.resetCode = code;
+                        clearInterval(authState.countdownInterval);
+                        authGoTo('newPassword');
+                    }
+                } catch (err) {
+                    showAuthError(err.message);
+                }
+            };
+
+            window.handleAuthResend = async function() {
+                hideAuthError();
+                try {
+                    const res = await authPost('/api/auth/resend-code', { userId: authState.userId });
+                    authState.expiresInMinutes = res.expiresInMinutes;
+                    authState.codeFallback = res.emailFailed ? res.code : null;
+                    renderAuthScreen();
+                    showMessage('📨 Code Resent', 'A new verification code has been sent.', ['OK']);
+                } catch (err) {
+                    showAuthError(err.message);
+                }
+            };
+
+            window.handleAuthSetNewPassword = async function() {
+                hideAuthError();
+                const p1 = document.getElementById('newPassword1').value;
+                const p2 = document.getElementById('newPassword2').value;
+                if (p1 !== p2) { showAuthError('Passwords do not match.'); return; }
+
+                try {
+                    await authPost('/api/auth/reset-password', {
+                        userId: authState.userId, code: authState.resetCode, newPassword: p1
+                    });
+                    authGoTo('login');
+                    showMessage('✅ Password Updated', 'Your password has been reset. Please log in.', ['OK']);
+                } catch (err) {
+                    showAuthError(err.message);
+                }
+            };
+
+            function completeLogin(userId) {
+                CURRENT_USER_ID = userId;
+                localStorage.setItem(AUTH_SESSION_KEY, userId);
+                document.getElementById('authScreen').style.display = 'none';
+                document.getElementById('appShell').style.display = '';
+                initializeApp();
+            }
+
+            function performLogout() {
+                localStorage.removeItem(AUTH_SESSION_KEY);
+                CURRENT_USER_ID = null;
+                profileData = null;
+                document.getElementById('appShell').style.display = 'none';
+                authState = { step: 'login', verifyPurpose: null, userId: null, email: null,
+                    expiresInMinutes: 4, codeFallback: null, resetCode: null,
+                    countdownInterval: null, countdownSecondsLeft: 0 };
+                const authScreen = document.getElementById('authScreen');
+                authScreen.style.display = '';
+                renderAuthScreen();
+            }
+
+            function showAuthScreen() {
+                document.getElementById('appShell').style.display = 'none';
+                document.getElementById('authScreen').style.display = '';
+                authState.step = 'login';
+                renderAuthScreen();
+            }
+
+            async function boot() {
+                try {
+                    COMPANY_INFO = await fetchJSON('json/company.json');
+                } catch (e) { /* auth screen falls back to a default name */ }
+
+                const savedUserId = localStorage.getItem(AUTH_SESSION_KEY);
+                if (savedUserId) {
+                    try {
+                        const res = await fetch('/api/auth/me?userId=' + encodeURIComponent(savedUserId));
+                        if (res.ok) {
+                            CURRENT_USER_ID = savedUserId;
+                            document.getElementById('authScreen').style.display = 'none';
+                            document.getElementById('appShell').style.display = '';
+                            return initializeApp();
+                        }
+                    } catch (e) { /* fall through to login */ }
+                    localStorage.removeItem(AUTH_SESSION_KEY);
+                }
+                showAuthScreen();
+            }
+            async function initializeApp() {
+                try {
+                    await loadAppData();
+                } catch (err) {
+                    console.error('Failed to load application data:', err);
+                    document.getElementById('contentBody').innerHTML =
+                        '<div class="content-section"><h3>⚠️ Unable to load data</h3>' +
+                        '<p>Could not load JSON data files. Browsers block local file fetches when you open main.html ' +
+                        'directly (file://) or use a plain static server. Run ' +
+                        '<code>python3 py/server.py</code> in the project folder, and open ' +
+                        '<code>http://localhost:8000/main.html</code>.</p></div>';
+                    return;
+                }
+
+                setupUserProfile();
+                applyCompanyBranding();
+                renderMenu();
+
+                const dashboardItem = MENU_CONFIG.mainMenu.find(item => item.id === 'dashboard');
+                if (dashboardItem) {
+                    loadContent('dashboard', null);
+                }
+
+                console.log('✅ Menu system ready with JSON configuration!');
+                console.log('Payment Methods:', paymentMethods);
+                console.log('Payment History:', paymentHistory);
+                console.log('Lease Files:', leaseFiles);
+                console.log('Translation Files:', translationFiles);
+            }
+
+            boot();
+        })();
