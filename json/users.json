@@ -14,7 +14,7 @@
         "verificationCode": null,
         "verificationCodeExpiresAt": null,
         "verificationPurpose": null,
-        "sessionStatus": "Offline",
+        "sessionStatus": "Online",
         "role": "Developer",
         "lock": "No",
         "twoFactorAuth": "Yes",
@@ -40,7 +40,7 @@
         "sessionStatus": "Offline",
         "role": "Admin",
         "lock": "No",
-        "twoFactorAuth": "No",
+        "twoFactorAuth": "Yes",
         "emailVerified": "Yes",
         "mobileVerified": "No",
         "sysConfig": "Sharefile"

@@ -1,1 +1,13 @@
-[]
+[
+    {
+        "id": "26070300001",
+        "userId": "U0000001",
+        "date": "2026-07-03",
+        "time": "09:28 AM",
+        "type": "Query",
+        "subject": "Test",
+        "message": "Test One",
+        "status": "Pending",
+        "response": "-"
+    }
+]

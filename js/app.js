@@ -4812,7 +4812,7 @@
                 options = options || {};
                 const headers = Object.assign({}, options.headers || {});
                 if (AUTH_TOKEN) headers['Authorization'] = 'Bearer ' + AUTH_TOKEN;
-                return authFetch(url, Object.assign({}, options, { headers }));
+                return fetch(url, Object.assign({}, options, { headers }));
             }
 
             let authState = {

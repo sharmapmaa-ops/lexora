@@ -1,1 +1,62 @@
-[]
+[
+    {
+        "time": "2026-07-03 03:50",
+        "activity": "All files processed successfully",
+        "result": "Completed",
+        "userId": "U0000001"
+    },
+    {
+        "time": "2026-07-03 03:50",
+        "activity": "01_GOFO Express Commerce Square Industrial Lease_1.10.2025_ocr.pdf > Deduct $1 Balance (TXN004)",
+        "result": "Completed",
+        "userId": "U0000001"
+    },
+    {
+        "time": "2026-07-03 03:50",
+        "activity": "01_GOFO Express Commerce Square Industrial Lease_1.10.2025_ocr.pdf > Users/U0000001/Translation/01_GOFO_Express_Commerce_Square_Industrial_Lease_1102025_ocr/Output.pdf generated successfully",
+        "result": "Completed",
+        "userId": "U0000001"
+    },
+    {
+        "time": "2026-07-03 03:50",
+        "activity": "01_GOFO Express Commerce Square Industrial Lease_1.10.2025_ocr.pdf > Output saved to Users/U0000001/Translation/01_GOFO_Express_Commerce_Square_Industrial_Lease_1102025_ocr",
+        "result": "Completed",
+        "userId": "U0000001"
+    },
+    {
+        "time": "2026-07-03 03:50",
+        "activity": "01_GOFO Express Commerce Square Industrial Lease_1.10.2025_ocr.pdf > Formatting applied",
+        "result": "Completed",
+        "userId": "U0000001"
+    },
+    {
+        "time": "2026-07-03 03:50",
+        "activity": "01_GOFO Express Commerce Square Industrial Lease_1.10.2025_ocr.pdf > Translated to English (OpenAI)",
+        "result": "Completed",
+        "userId": "U0000001"
+    },
+    {
+        "time": "2026-07-03 03:49",
+        "activity": "01_GOFO Express Commerce Square Industrial Lease_1.10.2025_ocr.pdf > Text extracted from document",
+        "result": "Completed",
+        "userId": "U0000001"
+    },
+    {
+        "time": "2026-07-03 03:49",
+        "activity": "01_GOFO Express Commerce Square Industrial Lease_1.10.2025_ocr.pdf > Input File Scanning",
+        "result": "Completed",
+        "userId": "U0000001"
+    },
+    {
+        "time": "2026-07-03 03:48",
+        "activity": "01_GOFO Express Commerce Square Industrial Lease_1.10.2025_ocr.pdf > Checking Balance",
+        "result": "Completed",
+        "userId": "U0000001"
+    },
+    {
+        "time": "2026-07-03 03:48",
+        "activity": "Process Started",
+        "result": "Processing",
+        "userId": "U0000001"
+    }
+]

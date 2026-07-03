@@ -1,1 +1,14 @@
-[]
+[
+    {
+        "id": 1,
+        "userId": "U0000001",
+        "name": "01_GOFO Express Commerce Square Industrial Lease_1.10.2025_ocr.pdf",
+        "status": "completed",
+        "scanResult": "100",
+        "progress": "100",
+        "action": "Pending",
+        "savedPath": "Users/U0000001/Clients/Default/01_GOFO Express Commerce Square Industrial Lease_1.10.2025_ocr.pdf",
+        "accuracy": 75,
+        "leaseName": "GOFO_Inc"
+    }
+]
