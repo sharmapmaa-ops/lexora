@@ -35,17 +35,23 @@ import json
 import mimetypes
 import os
 import re
+import hashlib
 import secrets
 import shutil
+import tempfile
 import smtplib
 import ssl
 import sys
 import threading
+import time
 import uuid
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote as url_quote, urlencode
+import urllib.request
+import urllib.error
+import html as html_module
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lease_engine  # noqa: E402  (needs the sys.path tweak above)
@@ -107,40 +113,121 @@ class AuthError(Exception):
 # server-side on logout, which a self-contained JWT can't be without an
 # extra blocklist anyway).
 #
-# In-memory only (not persisted to disk) - a server restart naturally logs
-# everyone out, which is a perfectly reasonable default for a token store
-# this simple (no separate revocation-list bookkeeping needed) and avoids
-# ever having live session tokens sitting in a file on disk.
+# _sessions itself stays in-memory (the fast lookup path on every single
+# request) - json/sessions.json (see _persist_sessions_locked below) is a
+# durable, human-inspectable mirror of it for admin visibility, storing
+# only a one-way hash of each token rather than the live token itself. A
+# server restart still logs everyone out (the in-memory dict is gone),
+# but the history of who was active when survives in that file.
 # ============================================================
 _sessions = {}
 _sessions_lock = threading.Lock()
-SESSION_TTL_HOURS = 24 * 7  # 7 days
+SESSION_TTL_HOURS = 24 * 7  # 7 days - absolute maximum a session can live
+IDLE_TIMEOUT_MINUTES = 30   # auto-logout after this long with no activity,
+                            # even if well within the 7-day absolute limit
+_SESSIONS_JSON_PATH = None  # resolved lazily, see _sessions_json_path()
+
+
+def _sessions_json_path():
+    global _SESSIONS_JSON_PATH
+    if _SESSIONS_JSON_PATH is None:
+        _SESSIONS_JSON_PATH = os.path.join(JSON_DIR, "sessions.json")
+    return _SESSIONS_JSON_PATH
+
+
+def _persist_sessions_locked():
+    """Caller must already hold _sessions_lock."""
+    try:
+        rows = []
+        for token, s in _sessions.items():
+            rows.append({
+                "sessionId": hashlib.sha256(token.encode("utf-8")).hexdigest()[:16],
+                "userId": s["userId"],
+                "createdAt": s["createdAt"].isoformat(timespec="seconds"),
+                "lastActiveAt": s["lastActiveAt"].isoformat(timespec="seconds"),
+                "expiresAt": s["expiresAt"].isoformat(timespec="seconds"),
+            })
+        with open(_sessions_json_path(), "w", encoding="utf-8") as f:
+            json.dump(rows, f, indent=2)
+    except OSError as err:
+        print(f"Could not persist sessions.json (non-fatal): {err}")
 
 
 def _create_session(user_id):
     token = secrets.token_urlsafe(32)
+    now = datetime.datetime.now()
     with _sessions_lock:
         _sessions[token] = {
             "userId": user_id,
-            "expiresAt": datetime.datetime.now() + datetime.timedelta(hours=SESSION_TTL_HOURS),
+            "createdAt": now,
+            "lastActiveAt": now,
+            "expiresAt": now + datetime.timedelta(hours=SESSION_TTL_HOURS),
         }
+        _persist_sessions_locked()
     return token
 
 
 def _get_session(token):
+    """Besides the absolute 7-day expiry, a session now also auto-logs-out
+    after IDLE_TIMEOUT_MINUTES of no activity at all - every successful
+    call here counts as activity and slides that window forward.
+    sessions.json is only re-written at most once every 60 seconds per
+    session (not on literally every request) to avoid hammering disk on
+    a busy session."""
+    now = datetime.datetime.now()
     with _sessions_lock:
         session = _sessions.get(token)
         if not session:
             return None
-        if datetime.datetime.now() > session["expiresAt"]:
+        if now > session["expiresAt"]:
             del _sessions[token]
+            _persist_sessions_locked()
             return None
+        if now - session["lastActiveAt"] > datetime.timedelta(minutes=IDLE_TIMEOUT_MINUTES):
+            del _sessions[token]
+            _persist_sessions_locked()
+            return None
+        should_persist = (now - session["lastActiveAt"]) > datetime.timedelta(seconds=60)
+        session["lastActiveAt"] = now
+        if should_persist:
+            _persist_sessions_locked()
         return session
+
+
+# ============================================================
+# Item 8 (production security) - a simple in-memory rate limiter for the
+# endpoints someone could otherwise brute-force: login (password guessing)
+# and the OTP-verify endpoints (a 6-digit code is only 1,000,000
+# possibilities - with no throttling at all, that's guessable in minutes
+# with a basic script). Keyed by whatever identifies the *target* being
+# attacked (email or userId), not by IP, since this app has no reverse
+# proxy in front of it yet to reliably supply a real client IP - see the
+# production security notes for why a real reverse proxy + this app
+# together is the right long-term setup.
+# ============================================================
+_rate_limit_hits = {}
+_rate_limit_lock = threading.Lock()
+
+
+def _check_rate_limit(key, max_attempts=8, window_seconds=300):
+    """Raises ValueError (surfaced to the client as a normal 400 error,
+    not a stack trace) once `key` has been hit more than `max_attempts`
+    times within `window_seconds`. Callers should call this BEFORE doing
+    the sensitive check (password/code comparison), so a failed attempt
+    still counts even though the request is about to be rejected anyway."""
+    now = time.time()
+    with _rate_limit_lock:
+        hits = [t for t in _rate_limit_hits.get(key, []) if now - t < window_seconds]
+        hits.append(now)
+        _rate_limit_hits[key] = hits
+        if len(hits) > max_attempts:
+            raise ValueError("Too many attempts. Please wait a few minutes and try again.")
 
 
 def _destroy_session(token):
     with _sessions_lock:
         _sessions.pop(token, None)
+        _persist_sessions_locked()
 
 
 # Only these json/ files can be read/written through the /api/data/<name>
@@ -163,6 +250,7 @@ ALLOWED_RESOURCES = {
     "lease-activity-log",
     "translation-activity-log",
     "notifications",
+    "plan-history",
 }
 
 # json files that must never be served as static files (contain secrets).
@@ -185,6 +273,97 @@ ADMIN_DOWNLOAD_BLOCKLIST = {".env"}
 MAX_BODY_BYTES = 30 * 1024 * 1024  # generous - lease PDFs / photos are base64
 
 # ============================================================
+# Background job store for /api/lease/analyze-start + analyze-status.
+# Previously /api/lease/analyze was one single blocking HTTP request that
+# did the entire LLM call (huge system prompt + up to 120k chars of lease
+# text) inside it - on a real document that can genuinely take anywhere
+# from 20s to a couple of minutes, during which the frontend progress bar
+# had zero visibility into what was happening and just sat at 20% looking
+# stuck (see runAnalyzeJob() in app.js for the polling side). This mirrors
+# the exact same background-thread + polling pattern already used for the
+# OCR step (_extract_jobs / _run_extract_job below) so analysis behaves
+# the same way and never risks tripping a gateway/proxy timeout either.
+_analyze_jobs = {}
+_analyze_jobs_lock = threading.Lock()
+
+
+def _set_analyze_job(job_id, **fields):
+    with _analyze_jobs_lock:
+        job = _analyze_jobs.setdefault(job_id, {})
+        job.update(fields)
+        job["updatedAt"] = datetime.datetime.now()
+
+
+def _get_analyze_job(job_id):
+    with _analyze_jobs_lock:
+        return dict(_analyze_jobs.get(job_id) or {})
+
+
+def _cleanup_stale_analyze_jobs():
+    cutoff = datetime.datetime.now() - datetime.timedelta(seconds=_EXTRACT_JOB_MAX_AGE_SECONDS)
+    with _analyze_jobs_lock:
+        stale = [jid for jid, job in _analyze_jobs.items() if job.get("updatedAt", cutoff) < cutoff]
+        for jid in stale:
+            _analyze_jobs.pop(jid, None)
+
+
+# Background job store for /api/translation/translate-start + -status -
+# same reasoning and shape as _analyze_jobs above: translating a full
+# document in one shot is another single potentially-long LLM call that
+# was previously blocking a single HTTP request.
+_translate_jobs = {}
+_translate_jobs_lock = threading.Lock()
+
+
+def _set_translate_job(job_id, **fields):
+    with _translate_jobs_lock:
+        job = _translate_jobs.setdefault(job_id, {})
+        job.update(fields)
+        job["updatedAt"] = datetime.datetime.now()
+
+
+def _get_translate_job(job_id):
+    with _translate_jobs_lock:
+        return dict(_translate_jobs.get(job_id) or {})
+
+
+def _cleanup_stale_translate_jobs():
+    cutoff = datetime.datetime.now() - datetime.timedelta(seconds=_EXTRACT_JOB_MAX_AGE_SECONDS)
+    with _translate_jobs_lock:
+        stale = [jid for jid, job in _translate_jobs.items() if job.get("updatedAt", cutoff) < cutoff]
+        for jid in stale:
+            _translate_jobs.pop(jid, None)
+
+
+def _run_translate_job(job_id, text, target_language):
+    llm_config = lease_engine.load_llm_config()
+    try:
+        translated, used_provider = lease_engine.translate_text(text, target_language, llm_config=llm_config)
+    except lease_engine.LeaseEngineError as err:
+        print(f"Translation LLM call failed on every configured provider, falling back: {err}")
+        translated, used_provider = None, None
+
+    if translated is not None:
+        method = f"llm-{used_provider}"
+    else:
+        method = "heuristic"
+        translated = (
+            f"[No LLM is configured, so this is the original text unchanged - "
+            f"set OPENAI_API_KEY/OPENROUTER_API_KEY in .env for a real translation "
+            f"into {target_language}.]\n\n{text[:4000]}"
+        )
+    _set_translate_job(job_id, status="done", translatedText=translated[:100000], method=method)
+
+
+def _run_analyze_job(job_id, text, fallback_name):
+    try:
+        result = lease_engine.analyze_lease(text, fallback_name=fallback_name)
+        _set_analyze_job(job_id, status="done", result=result)
+    except Exception as err:
+        print(f"Analyze job {job_id} failed: {err}")
+        _set_analyze_job(job_id, status="error", error=str(err))
+
+
 # Background job store for /api/lease/extract-start + extract-status.
 # Text extraction (especially the OCR fallback for scanned PDFs) can take
 # well over a minute for a long document - long enough that a reverse
@@ -260,7 +439,7 @@ def _get_email_job(user_id):
         return dict(_email_jobs.get(user_id) or {})
 
 
-def _send_verification_email_async(user_id, to_email, user_name, code, purpose, expiry_minutes):
+def _send_verification_email_async(user_id, to_email, user_name, code, purpose, expiry_minutes, base_url=""):
     _set_email_job(user_id, status="sending")
     # Always visible in the server's own console/terminal, regardless of
     # whether the email itself succeeds - handy for local dev/testing
@@ -269,7 +448,7 @@ def _send_verification_email_async(user_id, to_email, user_name, code, purpose, 
 
     def _worker():
         try:
-            _send_verification_email(to_email, user_name, code, purpose, expiry_minutes)
+            _send_verification_email(to_email, user_name, code, purpose, expiry_minutes, base_url=base_url, user_id=user_id)
             _set_email_job(user_id, status="sent")
         except Exception as err:
             print(f"Verification email to {to_email} could not be sent (code is still valid - see above): {err}")
@@ -501,6 +680,60 @@ def _send_ticket_update_email(to_email, user_name, ticket_id, status, response, 
     _send_email(to_email, f"[Ticket {ticket_id}] Update: {status}", plain_body, html_body=html)
 
 
+def _send_notification_email(to_email, user_name, title, message, table_rows=None, table_headers=None):
+    """Generic branded notification email - used for support ticket
+    create/update/delete, API key generate/revoke, profile changes, and
+    the no-2FA login alert. table_rows/table_headers (both optional) let
+    a caller render a simple HTML table into the body - used by the
+    process-completion email (service/file/charge/status)."""
+    company_name = _load_company_name()
+    plain_lines = [f"Hi {user_name},", "", message]
+    table_html = ""
+    if table_rows and table_headers:
+        plain_lines.append("")
+        plain_lines.append(" | ".join(table_headers))
+        for row in table_rows:
+            plain_lines.append(" | ".join(str(c) for c in row))
+        header_html = "".join(
+            f'<th style="text-align:left;padding:8px 10px;font-size:0.72rem;text-transform:uppercase;'
+            f'letter-spacing:0.4px;color:#ffffff;background:#131b3f;">{h}</th>' for h in table_headers
+        )
+        body_rows_html = ""
+        for i, row in enumerate(table_rows):
+            bg = "#ffffff" if i % 2 == 0 else "#f4f5fa"
+            cells = "".join(
+                f'<td style="padding:8px 10px;font-size:0.85rem;color:#23263a;border-bottom:1px solid #eee;">{c}</td>'
+                for c in row
+            )
+            body_rows_html += f'<tr style="background:{bg};">{cells}</tr>'
+        table_html = (
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+            f'style="border-collapse:collapse;margin:16px 0;"><tr>{header_html}</tr>{body_rows_html}</table>'
+        )
+    plain_body = "\n".join(plain_lines) + f"\n\n— {company_name}"
+    body_html = f"""
+<p style="font-size:0.95rem;color:#23263a;margin:0 0 14px 0;">Hi {user_name},</p>
+<p style="font-size:0.95rem;color:#23263a;line-height:1.6;margin:0 0 8px 0;white-space:pre-wrap;">{message}</p>
+{table_html}
+<p style="font-size:0.85rem;color:#555;line-height:1.6;margin:18px 0 0 0;">— {company_name}</p>
+"""
+    html = _html_email_wrapper(company_name, title, body_html)
+    _send_email(to_email, title, plain_body, html_body=html)
+
+
+def _send_notification_email_async(to_email, user_name, title, message, table_rows=None, table_headers=None):
+    """Fire-and-forget wrapper (mirrors _send_verification_email_async) -
+    notification emails should never block the HTTP response they're
+    triggered from."""
+    def _worker():
+        try:
+            _send_notification_email(to_email, user_name, title, message, table_rows, table_headers)
+        except Exception as err:
+            print(f"Notification email to {to_email} ({title}) could not be sent: {err}")
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 _VERIFICATION_PURPOSE_LABELS = {
     "register": "complete your registration",
     "login": "complete your login",
@@ -516,17 +749,191 @@ def _load_company_name():
         return "Lexora AI Solutions"
 
 
-def _send_verification_email(to_email, user_name, code, purpose, expiry_minutes):
+def escape_html(s):
+    return html_module.escape(str(s or ""))
+
+
+def _integration_store_path(user_id):
+    return _user_dir(_safe_id(user_id), "_integrations.json")
+
+
+def _load_integration_token(user_id, provider):
+    path = _integration_store_path(user_id)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data.get(provider)
+
+
+def _save_integration_token(user_id, provider, token_data):
+    path = _integration_store_path(user_id)
+    data = {}
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            data = {}
+    token_data = dict(token_data)
+    token_data["connectedAt"] = datetime.datetime.now().isoformat(timespec="seconds")
+    data[provider] = token_data
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def _exchange_oauth_code(provider, code, redirect_uri):
+    """Item 3 - the second half of the OAuth Authorization Code flow:
+    trades the one-time `code` (from the redirect the provider just sent
+    the browser back with) for a real access_token/refresh_token, via a
+    server-to-server POST that includes the app's Client Secret - this
+    step can only happen here, never in the browser, since the secret
+    must never reach client-side JS."""
+    if provider == "sharefile":
+        subdomain = os.environ.get("SHAREFILE_SUBDOMAIN", "")
+        token_url = f"https://{subdomain}.sharefile.com/oauth/token"
+        payload = {
+            "grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri,
+            "client_id": os.environ.get("SHAREFILE_CLIENT_ID", ""),
+            "client_secret": os.environ.get("SHAREFILE_CLIENT_SECRET", ""),
+        }
+    elif provider == "sharepoint":
+        tenant_id = os.environ.get("SHAREPOINT_TENANT_ID", "common")
+        token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+        payload = {
+            "grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri,
+            "client_id": os.environ.get("SHAREPOINT_CLIENT_ID", ""),
+            "client_secret": os.environ.get("SHAREPOINT_CLIENT_SECRET", ""),
+            "scope": "Files.ReadWrite.All offline_access",
+        }
+    else:
+        raise ValueError(f"Unknown provider: {provider}")
+
+    data = urlencode(payload).encode("utf-8")
+    req = urllib.request.Request(token_url, data=data, method="POST",
+                                  headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _push_file_to_connected_storage(user_id, local_file_path, dest_file_name):
+    """Item 3 - best-effort: if this user has ShareFile/SharePoint
+    connected, also pushes a copy of the just-generated Output.pdf there.
+    Never raises - a failure here (expired token, network hiccup) should
+    never break the actual lease-processing pipeline, which has already
+    succeeded by the time this runs. Returns True/False for whether a
+    push was attempted and succeeded, purely for logging."""
+    sys_config = None
+    try:
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        sys_config = (user or {}).get("sysConfig")
+    except Exception:
+        pass
+    if sys_config not in ("Sharefile", "Sharepoint"):
+        return False
+
+    provider = sys_config.lower()
+    token_data = _load_integration_token(user_id, provider)
+    if not token_data or not token_data.get("access_token"):
+        return False
+
+    try:
+        with open(local_file_path, "rb") as f:
+            file_bytes = f.read()
+
+        if provider == "sharepoint":
+            # Simple upload (works for files under ~4MB, which covers the
+            # vast majority of generated lease/translation PDFs) into the
+            # user's OneDrive root - a real production integration would
+            # let the person pick a specific SharePoint site/folder and use
+            # the resumable upload session API for anything larger.
+            url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{url_quote(dest_file_name)}:/content"
+            req = urllib.request.Request(url, data=file_bytes, method="PUT", headers={
+                "Authorization": f"Bearer {token_data['access_token']}",
+                "Content-Type": "application/pdf",
+            })
+        else:  # sharefile
+            url = f"https://{os.environ.get('SHAREFILE_SUBDOMAIN','')}.sharefile.com/sf/v3/Items/Upload"
+            req = urllib.request.Request(url, data=file_bytes, method="POST", headers={
+                "Authorization": f"Bearer {token_data['access_token']}",
+                "Content-Type": "application/pdf",
+            })
+
+        with urllib.request.urlopen(req, timeout=30):
+            pass
+        return True
+    except Exception as err:
+        print(f"Could not push {dest_file_name} to {provider} for {user_id} (lease processing itself already succeeded): {err}")
+        return False
+
+
+def _extract_text_from_b64(data_b64, file_name, tmp_dir):
+    """Item 4 helper - decodes a base64-uploaded file (PDF or plain text)
+    into a temp file and returns its extracted text, reusing the exact
+    same OCR-capable extraction the main pipeline uses so a scanned
+    "Human Output" PDF works just as well as a text-layer one."""
+    if not data_b64:
+        return ""
+    raw = base64.b64decode(data_b64)
+    name = _safe_filename(file_name or "file.pdf")
+    path = os.path.join(tmp_dir, f"{uuid.uuid4().hex[:8]}_{name}")
+    with open(path, "wb") as f:
+        f.write(raw)
+    if name.lower().endswith(".pdf"):
+        return lease_engine.extract_text(path)
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read()
+
+
+def _base_url_from_headers(headers):
+    """Derives this server's own public base URL from the incoming
+    request's Host header - works for both local dev (http://localhost:PORT)
+    and the deployed Render domain (https://...) without hardcoding
+    anything. Used to build the verification email's magic link below."""
+    host = (headers.get("Host") or "").strip()
+    if not host:
+        return ""
+    scheme = "http" if host.startswith("localhost") or host.startswith("127.0.0.1") else "https"
+    return f"{scheme}://{host}"
+
+
+def _send_verification_email(to_email, user_name, code, purpose, expiry_minutes, base_url="", user_id=""):
     company_name = _load_company_name()
     label = _VERIFICATION_PURPOSE_LABELS.get(purpose, "verify your account")
+    verify_link = f"{base_url}/?verifyCode={code}&verifyUserId={user_id}&verifyPurpose={purpose}" if base_url and user_id else ""
     plain_body = (
         f"Hi {user_name},\n\n"
         f"Use this code to {label}:\n\n"
         f"    {code}\n\n"
-        f"This code expires in {expiry_minutes} minute(s).\n\n"
+        + (f"Or open this link and it'll be filled in for you automatically: {verify_link}\n\n" if verify_link else "")
+        + f"This code expires in {expiry_minutes} minute(s).\n\n"
         f"If you didn't request this, you can safely ignore this email.\n\n"
         f"— {company_name}"
     )
+    # Item 5 - email clients (Gmail, Outlook, Apple Mail) strip <script>
+    # and inline onclick JS, so a real one-click clipboard copy from
+    # inside an email is not reliably possible anywhere. Instead of
+    # fighting that, the button is a real link to the app with the code
+    # in the URL (?verifyCode=...) - app.js auto-fills the OTP input the
+    # moment it sees that on page load, so clicking it is just as fast as
+    # copy-paste would have been, and works in every client.
+    button_html = f"""
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding-top:14px;">
+<a href="{verify_link}"
+   style="display:inline-block;background:#131b3f;color:#ffffff;font-size:0.8rem;font-weight:600;
+   text-decoration:none;padding:10px 24px;border-radius:6px;font-family:'Segoe UI',Arial,sans-serif;">
+✅ Fill In Code For Me
+</a>
+</td></tr></table>
+<p style="font-size:0.75rem;color:#9aa0b0;text-align:center;margin:10px 0 24px 0;">Opens the app with this code already filled in - or tap/double-click the code above to select and copy it manually.</p>
+""" if verify_link else """
+<p style="font-size:0.75rem;color:#9aa0b0;text-align:center;margin:10px 0 24px 0;">Tap or double-click the code above to select it, then copy (Ctrl/Cmd+C)</p>
+"""
     body_html = f"""
 <p style="font-size:0.95rem;color:#23263a;margin:0 0 14px 0;">Hi {user_name},</p>
 <p style="font-size:0.95rem;color:#23263a;line-height:1.6;margin:0 0 22px 0;">Use the verification code below to {label}:</p>
@@ -535,7 +942,7 @@ def _send_verification_email(to_email, user_name, code, purpose, expiry_minutes)
 <span style="font-family:'Courier New',Courier,monospace;font-size:2rem;font-weight:700;letter-spacing:8px;color:#0a0f2c;user-select:all;">{code}</span>
 </div>
 </td></tr></table>
-<p style="font-size:0.75rem;color:#9aa0b0;text-align:center;margin:10px 0 24px 0;">Tap or double-click the code above to select it, then copy (Ctrl/Cmd+C)</p>
+{button_html}
 <p style="font-size:0.85rem;color:#4a5066;line-height:1.6;margin:0 0 4px 0;">This code expires in <strong>{expiry_minutes} minute(s)</strong>.</p>
 <p style="font-size:0.8rem;color:#9aa0b0;line-height:1.6;margin:0;">If you didn't request this, you can safely ignore this email — your account is still secure.</p>
 """
@@ -559,6 +966,15 @@ class Handler(SimpleHTTPRequestHandler):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
     def end_headers(self):
+        # Item 8 (production security) - basic protective headers on every
+        # response. This app is served from behind whatever reverse proxy
+        # terminates TLS in production (Render, nginx, etc.) - HSTS is
+        # intentionally left to that layer, since this process itself
+        # doesn't know whether it's actually being reached over https.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+
         # No caching for the app's own static files - CSS/JS/HTML edits
         # should always show up on the next reload, not sit stale in a
         # browser or proxy cache (this is a small local dev tool, not a
@@ -592,9 +1008,19 @@ class Handler(SimpleHTTPRequestHandler):
     # ------------------------------------------------------------------
     def _authenticated_user_id(self):
         auth_header = self.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+        else:
+            # Plain browser navigation (window.open, <a href>, iframe -
+            # used for file downloads) can never attach a custom
+            # Authorization header, so those specific requests pass the
+            # session token as a "token" query-string param instead. Every
+            # other route still requires the real header - this fallback
+            # only kicks in when the header is absent.
+            query = parse_qs(urlparse(self.path).query)
+            token = (query.get("token", [""])[0]).strip()
+        if not token:
             raise AuthError("Not authenticated - please log in again.")
-        token = auth_header[7:].strip()
         session = _get_session(token)
         if not session:
             raise AuthError("Your session has expired - please log in again.")
@@ -666,11 +1092,16 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/auth/directory": self._handle_auth_directory,
             "/api/auth/email-status": self._handle_auth_email_status,
             "/api/lease/extract-status": self._handle_lease_extract_status,
+            "/api/lease/analyze-status": self._handle_lease_analyze_status,
+            "/api/translation/translate-status": self._handle_translation_translate_status,
             "/api/lease/list": self._handle_lease_list,
+            "/api/translation/list": self._handle_translation_list,
+            "/api/lease/review-data": self._handle_lease_review_get,
+            "/api/integrations/status": self._handle_integrations_status,
+            "/api/integrations/callback": self._handle_integrations_callback,
             "/api/lease/documents": self._handle_lease_documents,
             "/api/rules/list": self._handle_rules_list,
             "/api/lease/download": self._handle_lease_download,
-            "/api/translation/list": self._handle_translation_list,
             "/api/translation/download": self._handle_translation_download,
         }
         get_handler = get_routes.get(path)
@@ -846,19 +1277,26 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/upload-photo": self._handle_upload_photo,
             "/api/send-acknowledgement": self._handle_send_acknowledgement,
             "/api/send-ticket-update": self._handle_send_ticket_update,
+            "/api/send-notification": self._handle_send_notification,
             "/api/lease/scan-template": self._handle_lease_scan_template,
             "/api/lease/upload-template": self._handle_lease_upload_template,
             "/api/lease/upload": self._handle_lease_upload,
             "/api/lease/extract-start": self._handle_lease_extract_start,
-            "/api/lease/analyze": self._handle_lease_analyze,
+            "/api/lease/analyze-start": self._handle_lease_analyze_start,
             "/api/lease/validate": self._handle_lease_validate,
             "/api/lease/save-output": self._handle_lease_save_output,
+            "/api/lease/review-submit": self._handle_lease_review_submit,
             "/api/rules/propose": self._handle_rules_propose,
             "/api/rules/approve": self._handle_rules_approve,
+            "/api/lease/discover-rules": self._handle_lease_discover_rules,
+            "/api/admin/test-compare": self._handle_admin_test_compare,
             "/api/rules/reject": self._handle_rules_reject,
+            "/api/rules/delete-pending": self._handle_rules_delete_pending,
+            "/api/rules/delete-approved": self._handle_rules_delete_approved,
+            "/api/rules/update-approved": self._handle_rules_update_approved,
             "/api/lease/generate-pdf": self._handle_lease_generate_pdf,
             "/api/translation/upload": self._handle_translation_upload,
-            "/api/translation/translate": self._handle_translation_translate,
+            "/api/translation/translate-start": self._handle_translation_translate_start,
             "/api/translation/save-output": self._handle_translation_save_output,
             "/api/translation/generate-pdf": self._handle_translation_generate_pdf,
             "/api/admin/mkdir": self._handle_admin_mkdir,
@@ -948,6 +1386,25 @@ class Handler(SimpleHTTPRequestHandler):
         )
         return 200, {"ok": True}
 
+    # ---- generic notification email (tickets, api keys, profile, login alerts) ----
+    def _handle_send_notification(self, body):
+        to_email = body.get("toEmail")
+        if not to_email:
+            raise ValueError("toEmail is required")
+        title = body.get("title") or "Account notification"
+        message = body.get("message") or ""
+        table_rows = body.get("tableRows")
+        table_headers = body.get("tableHeaders")
+        _send_notification_email_async(
+            to_email,
+            body.get("userName") or "there",
+            title,
+            message,
+            table_rows=table_rows,
+            table_headers=table_headers,
+        )
+        return 200, {"ok": True}
+
     def _handle_send_ticket_update(self, body):
         to_email = body.get("toEmail")
         if not to_email:
@@ -963,6 +1420,89 @@ class Handler(SimpleHTTPRequestHandler):
         return 200, {"ok": True}
 
     # ---- Section 14.1: output template scan (batch-level, not per file) ----
+    # ---- Item 3: ShareFile/SharePoint "system configuration". A REAL
+    # connection to either needs an OAuth app registered with that
+    # provider (Citrix ShareFile developer portal / Microsoft Azure AD for
+    # SharePoint's Graph API) - there's no way to fake that meaningfully,
+    # so this just reports whether the necessary Client ID/Secret are
+    # present in .env, and hands back the real OAuth authorize URL when
+    # they are. Until a Developer adds those credentials, every provider
+    # here correctly reports "not configured" rather than randomly
+    # pretending to succeed. ----
+    def _handle_integrations_status(self, query):
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        provider = (query.get("provider", [""])[0]).lower()
+        base_url = _base_url_from_headers(self.headers)
+        redirect_uri = f"{base_url}/api/integrations/callback"
+        state = f"{user_id}:{provider}"
+
+        if provider == "sharefile":
+            client_id = os.environ.get("SHAREFILE_CLIENT_ID")
+            subdomain = os.environ.get("SHAREFILE_SUBDOMAIN", "")
+            configured = bool(client_id and os.environ.get("SHAREFILE_CLIENT_SECRET") and subdomain)
+            auth_url = (
+                f"https://{subdomain}.sharefile.com/oauth/authorize?response_type=code"
+                f"&client_id={client_id}&redirect_uri={url_quote(redirect_uri, safe='')}"
+                f"&state={url_quote(state)}"
+                if configured else ""
+            )
+        elif provider == "sharepoint":
+            client_id = os.environ.get("SHAREPOINT_CLIENT_ID")
+            tenant_id = os.environ.get("SHAREPOINT_TENANT_ID", "common")
+            configured = bool(client_id and os.environ.get("SHAREPOINT_CLIENT_SECRET"))
+            auth_url = (
+                f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize"
+                f"?client_id={client_id}&response_type=code&scope=Files.ReadWrite.All%20offline_access"
+                f"&redirect_uri={url_quote(redirect_uri, safe='')}"
+                f"&state={url_quote(state)}"
+                if configured else ""
+            )
+        else:
+            return self._send_json(400, {"error": "Unknown provider"})
+
+        connected = False
+        if configured:
+            token_data = _load_integration_token(user_id, provider)
+            connected = bool(token_data and token_data.get("access_token"))
+        return self._send_json(200, {"ok": True, "configured": configured, "authUrl": auth_url, "connected": connected})
+
+    def _handle_integrations_callback(self, query):
+        """OAuth redirect target for both providers (item 3) - exchanges
+        the one-time authorization code for a real access/refresh token
+        and stores it against the user encoded in `state`, then shows a
+        plain confirmation page the popup window can just be closed from.
+        Never touches lease data - this only runs once, right after the
+        person approves access on the provider's own site."""
+        code = (query.get("code", [""])[0])
+        state = (query.get("state", [""])[0])
+        error = (query.get("error", [""])[0])
+        if error:
+            return self._send_html(400, f"<h3>Connection failed</h3><p>{escape_html(error)}</p><p>You can close this window.</p>")
+        if not code or ":" not in state:
+            return self._send_html(400, "<h3>Missing authorization code</h3><p>You can close this window and try again.</p>")
+
+        user_id, _, provider = state.partition(":")
+        base_url = _base_url_from_headers(self.headers)
+        redirect_uri = f"{base_url}/api/integrations/callback"
+
+        try:
+            token_data = _exchange_oauth_code(provider, code, redirect_uri)
+        except Exception as err:
+            print(f"OAuth token exchange failed for {provider}/{user_id}: {err}")
+            return self._send_html(502, f"<h3>Connection failed</h3><p>Could not complete the connection to {escape_html(provider)}. Please try again.</p>")
+
+        _save_integration_token(user_id, provider, token_data)
+        return self._send_html(200, f"<h3>✅ Connected to {escape_html(provider.title())}</h3><p>You can close this window and go back to the app.</p>")
+
+    def _send_html(self, status, html_body):
+        full = f"<!doctype html><html><body style='font-family:sans-serif;text-align:center;padding:60px;'>{html_body}</body></html>"
+        body = full.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _handle_lease_scan_template(self, body):
         user_id = _safe_id(self._resolve_user_id(body))
         template_name = body.get("templateName")
@@ -978,14 +1518,20 @@ class Handler(SimpleHTTPRequestHandler):
             template_name = "Default.pdf"
 
         pages = None
+        style_profile = {"headerBgColor": None, "fontFamily": None, "logoImagePath": None}
         if lease_engine.pdfplumber and template_path.lower().endswith(".pdf"):
             try:
                 with lease_engine.pdfplumber.open(template_path) as pdf:
                     pages = len(pdf.pages)
             except Exception:
                 pages = None
+            # Item 6 - identify the custom template's header color, font,
+            # and logo once here (not per-file), so every lease processed
+            # against this template in the batch reuses the same profile.
+            if template_path != DEFAULT_TEMPLATE_PATH:
+                style_profile = lease_engine.save_template_style_profile(template_path)
 
-        return 200, {"ok": True, "template": template_name, "pages": pages}
+        return 200, {"ok": True, "template": template_name, "pages": pages, "styleDetected": bool(style_profile.get("headerBgColor") or style_profile.get("logoImagePath"))}
 
     def _handle_lease_upload_template(self, body):
         user_id = _safe_id(self._resolve_user_id(body))
@@ -1003,6 +1549,15 @@ class Handler(SimpleHTTPRequestHandler):
         return 200, {"ok": True, "templateName": file_name, "path": _rel_to_root(out_path)}
 
     # ---- Section 14.2: input file upload/scanning ----
+    # ============================================================
+    # Item 4 - "Test & Compare": Admin/Developer tool to check extraction
+    # accuracy against a human-reviewed answer key for the same lease, and
+    # surface the worst-matching fields as candidates for new/updated
+    # extraction rules. Synchronous (not the async job-poll pattern the
+    # main pipeline uses) since this is a low-volume admin tool, not
+    # user-facing high-throughput processing - a real LLM extraction call
+    # can take a while, which is an accepted tradeoff here.
+    # ============================================================
     def _handle_lease_upload(self, body):
         user_id = _safe_id(self._resolve_user_id(body))
         original_name = _safe_filename(body.get("fileName"), "document.pdf")
@@ -1060,18 +1615,40 @@ class Handler(SimpleHTTPRequestHandler):
             payload["error"] = job.get("error", "Extraction failed")
         return self._send_json(200, payload)
 
-    # ---- Section 14.3 (40%): "GPT prompt" analysis stand-in ----
-    def _handle_lease_analyze(self, body):
+    # ---- Section 14.3 (40%): "GPT prompt" analysis - runs in a background
+    # thread (see _run_analyze_job above), same async-job + polling shape
+    # as the extract step, so a slow LLM call never blocks a single HTTP
+    # request long enough to look "stuck" or trip a gateway timeout. ----
+    def _handle_lease_analyze_start(self, body):
         text = body.get("text") or ""
         fallback_name = body.get("fallbackName") or "Lease"
-        result = lease_engine.analyze_lease(text, fallback_name=fallback_name)
-        return 200, {"ok": True, **result}
+
+        _cleanup_stale_analyze_jobs()
+        job_id = uuid.uuid4().hex
+        _set_analyze_job(job_id, status="running")
+        thread = threading.Thread(target=_run_analyze_job, args=(job_id, text, fallback_name), daemon=True)
+        thread.start()
+
+        return 200, {"ok": True, "jobId": job_id}
+
+    def _handle_lease_analyze_status(self, query):
+        job_id = (query.get("jobId", [""])[0])
+        job = _get_analyze_job(job_id)
+        if not job:
+            return self._send_json(404, {"error": "Unknown or expired job"})
+        payload = {"ok": True, "status": job.get("status", "running")}
+        if job.get("status") == "done":
+            payload.update(job.get("result") or {})
+        elif job.get("status") == "error":
+            payload["error"] = job.get("error", "Analysis failed")
+        return self._send_json(200, payload)
 
     # ---- Section 14.3 (60%): document-type + duplicate validation ----
     def _handle_lease_validate(self, body):
         user_id = _safe_id(self._resolve_user_id(body))
         doc_type = body.get("docType")
         lease_name = lease_engine.sanitize_lease_name(body.get("leaseName"))
+        fields = body.get("fields") or {}
 
         if doc_type == "Other":
             return 200, {"ok": True, "valid": False, "reason": "invalid", "leaseName": lease_name}
@@ -1080,6 +1657,34 @@ class Handler(SimpleHTTPRequestHandler):
         if os.path.isfile(output_json_path):
             return 200, {"ok": True, "valid": False, "reason": "duplicate", "leaseName": lease_name}
 
+        # Item 6 - content-level duplicate check: even if this document got
+        # a different auto-generated lease name (different filename, OCR
+        # picked up the tenant name slightly differently, this is a
+        # reference/exhibit doc for a lease already on file, etc.), the
+        # same tenant+landlord+address+dates fingerprint means it's the
+        # same underlying lease. Scans every lease this user has already
+        # fully processed (has an Output.pdf, not just a pending review).
+        fingerprint = lease_engine.compute_lease_fingerprint(fields)
+        if fingerprint:
+            base = _user_dir(user_id, "LeaseAbstraction")
+            if os.path.isdir(base):
+                for name in os.listdir(base):
+                    if name.startswith("_") or name == lease_name:
+                        continue
+                    existing_json = os.path.join(base, name, "Output.json")
+                    if not os.path.isfile(existing_json):
+                        continue
+                    try:
+                        with open(existing_json, "r", encoding="utf-8") as f:
+                            existing_data = json.load(f)
+                    except (OSError, json.JSONDecodeError):
+                        continue
+                    if existing_data.get("fingerprint") == fingerprint:
+                        return 200, {
+                            "ok": True, "valid": False, "reason": "duplicate-content",
+                            "leaseName": lease_name, "matchedLeaseName": name,
+                        }
+
         return 200, {"ok": True, "valid": True, "leaseName": lease_name}
 
     # ---- Section 14.3 (80%): Output.json + saved document + LeaseDocuments.json ----
@@ -1087,7 +1692,7 @@ class Handler(SimpleHTTPRequestHandler):
         user_id = _safe_id(self._resolve_user_id(body))
         lease_name = lease_engine.sanitize_lease_name(body.get("leaseName"))
         doc_type = body.get("docType") or "Lease"
-        fields = body.get("fields") or {}
+        fields = lease_engine.sanitize_fields_recursively(body.get("fields") or {})
         extraction_method = body.get("extractionMethod") or "heuristic"
         accuracy = body.get("accuracy")
         accuracy_method = body.get("accuracyMethod")
@@ -1118,6 +1723,7 @@ class Handler(SimpleHTTPRequestHandler):
             "leaseName": lease_name,
             "userId": user_id,
             "docType": doc_type,
+            "fingerprint": lease_engine.compute_lease_fingerprint(fields),
             "extractionMethod": extraction_method,
             "accuracy": accuracy,
             "accuracyMethod": accuracy_method,
@@ -1125,6 +1731,7 @@ class Handler(SimpleHTTPRequestHandler):
             "missingFields": missing_fields,
             "lowConfidenceFields": low_confidence_fields,
             "fields": fields,
+            "reviewStatus": "pending_review",
             "createdAt": now_iso,
             "updatedAt": now_iso,
             "sourceDocuments": [source_docs_rel],
@@ -1172,6 +1779,47 @@ class Handler(SimpleHTTPRequestHandler):
             "savedDocument": source_docs_rel,
         }
 
+    # ---- Human Review (before PDF generation) - see save-output above,
+    # which is where Output.json first gets written; these two routes let
+    # the reviewer fetch it back for editing and save their corrections.
+    # Nothing here re-runs the LLM - it's a straight read/edit/write of
+    # the same Output.json, same shape used everywhere else. ----
+    def _handle_lease_review_get(self, query):
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        lease_name = lease_engine.sanitize_lease_name((query.get("leaseName", [""])[0]))
+        output_json_path = _user_dir(user_id, "LeaseAbstraction", lease_name, "Output.json")
+        if not os.path.isfile(output_json_path):
+            return self._send_json(404, {"error": "Output.json not found for this lease"})
+        with open(output_json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return self._send_json(200, {"ok": True, "leaseName": lease_name, "fields": data.get("fields", {}),
+                                      "docType": data.get("docType"), "accuracy": data.get("accuracy"),
+                                      "reviewStatus": data.get("reviewStatus", "pending_review")})
+
+    def _handle_lease_review_submit(self, body):
+        user_id = _safe_id(self._resolve_user_id(body))
+        lease_name = lease_engine.sanitize_lease_name(body.get("leaseName"))
+        fields = body.get("fields")
+        if not isinstance(fields, dict):
+            raise ValueError("fields must be an object")
+
+        output_json_path = _user_dir(user_id, "LeaseAbstraction", lease_name, "Output.json")
+        if not os.path.isfile(output_json_path):
+            raise ValueError("Output.json not found for this lease")
+        with open(output_json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        data["fields"] = lease_engine.sanitize_fields_recursively(fields)
+        data["reviewStatus"] = "reviewed"
+        data["reviewedAt"] = datetime.datetime.now().isoformat(timespec="seconds")
+        data["reviewedBy"] = user_id
+        data["updatedAt"] = data["reviewedAt"]
+
+        with open(output_json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+
+        return 200, {"ok": True}
+
     # ---- Section 14.3 (100%): Output.pdf generation ----
     def _handle_lease_generate_pdf(self, body):
         user_id = _safe_id(self._resolve_user_id(body))
@@ -1183,8 +1831,29 @@ class Handler(SimpleHTTPRequestHandler):
         if not os.path.isfile(output_json_path):
             raise ValueError("Output.json not found - run save-output first")
 
+        # Item 6 - if this is a custom (non-default) template, its style
+        # profile (header color/font/logo) was already extracted and saved
+        # when the batch started (see _handle_lease_scan_template) - load
+        # it back here so generate_output_pdf can apply it.
+        style_profile = None
+        if template_name and template_name != "Default.pdf":
+            template_path = _user_dir(user_id, "LeaseAbstraction", "_templates", _safe_filename(template_name))
+            if os.path.isfile(template_path):
+                style_profile = lease_engine.load_template_style_profile(template_path)
+
         pdf_path = os.path.join(lease_folder, "Output.pdf")
-        lease_engine.generate_output_pdf(output_json_path, pdf_path, template_name=template_name)
+        lease_engine.generate_output_pdf(output_json_path, pdf_path, template_name=template_name, style_profile=style_profile)
+
+        # Item 3 - if this user has ShareFile/SharePoint connected, also
+        # push a copy there. Fire-and-forget: the lease itself is already
+        # fully processed and saved locally by this point, so a slow or
+        # failed push to a third-party system must never hold up (or
+        # break) the response to the person waiting on Generate Output.
+        threading.Thread(
+            target=_push_file_to_connected_storage,
+            args=(user_id, pdf_path, f"{lease_name} - Lease Abstraction.pdf"),
+            daemon=True,
+        ).start()
 
         return 200, {"ok": True, "outputPdf": _rel_to_root(pdf_path)}
 
@@ -1210,28 +1879,30 @@ class Handler(SimpleHTTPRequestHandler):
 
         return 200, {"ok": True, "stagingPath": _rel_to_root(out_path), "originalFileName": original_name}
 
-    def _handle_translation_translate(self, body):
+    def _handle_translation_translate_start(self, body):
         text = body.get("text") or ""
         target_language = body.get("targetLanguage") or "English"
-        llm_config = lease_engine.load_llm_config()
 
-        try:
-            translated, used_provider = lease_engine.translate_text(text, target_language, llm_config=llm_config)
-        except lease_engine.LeaseEngineError as err:
-            print(f"Translation LLM call failed on every configured provider, falling back: {err}")
-            translated, used_provider = None, None
+        _cleanup_stale_translate_jobs()
+        job_id = uuid.uuid4().hex
+        _set_translate_job(job_id, status="running")
+        thread = threading.Thread(target=_run_translate_job, args=(job_id, text, target_language), daemon=True)
+        thread.start()
 
-        if translated is not None:
-            method = f"llm-{used_provider}"
-        else:
-            method = "heuristic"
-            translated = (
-                f"[No LLM is configured, so this is the original text unchanged - "
-                f"set OPENAI_API_KEY/OPENROUTER_API_KEY in .env for a real translation "
-                f"into {target_language}.]\n\n{text[:4000]}"
-            )
+        return 200, {"ok": True, "jobId": job_id}
 
-        return 200, {"ok": True, "translatedText": translated[:100000], "method": method}
+    def _handle_translation_translate_status(self, query):
+        job_id = (query.get("jobId", [""])[0])
+        job = _get_translate_job(job_id)
+        if not job:
+            return self._send_json(404, {"error": "Unknown or expired job"})
+        payload = {"ok": True, "status": job.get("status", "running")}
+        if job.get("status") == "done":
+            payload["translatedText"] = job.get("translatedText", "")
+            payload["method"] = job.get("method", "heuristic")
+        elif job.get("status") == "error":
+            payload["error"] = job.get("error", "Translation failed")
+        return self._send_json(200, payload)
 
     def _handle_translation_save_output(self, body):
         user_id = _safe_id(self._resolve_user_id(body))
@@ -1284,41 +1955,67 @@ class Handler(SimpleHTTPRequestHandler):
         if not os.path.isfile(output_json_path):
             raise ValueError("Output.json not found - run save-output first")
 
+        with open(output_json_path, "r", encoding="utf-8") as f:
+            output_data = json.load(f)
+
         pdf_path = os.path.join(folder, "Output.pdf")
-        lease_engine.generate_translation_pdf(output_json_path, pdf_path)
+        # Item 6 - prefer the layout-preserving renderer (surgically edits
+        # the ORIGINAL PDF, keeping images/logos/signatures/tables exactly
+        # as they were) whenever the original source file is still there
+        # and has a real text layer to work from; falls back to the plain
+        # reflowed report otherwise (scanned/image-only source, or the
+        # original file is missing for some reason) rather than failing
+        # outright.
+        source_rel = output_data.get("sourceDocument")
+        source_abs = os.path.join(ROOT_DIR, source_rel) if source_rel else None
+        target_language = output_data.get("targetLanguage", "")
+        hybrid_mode = bool(body.get("hybrid"))
+        source_is_pdf = bool(source_abs and os.path.isfile(source_abs) and source_abs.lower().endswith(".pdf"))
+        used_layout_preserving = False
+        mode_used = "reflow"
+        translation_diagnostics = {"requestedMode": "hybrid" if hybrid_mode else "simple"}
 
-        return 200, {"ok": True, "outputPdf": _rel_to_root(pdf_path)}
+        if hybrid_mode and source_is_pdf:
+            # HYBRID (checkbox checked): layout-preserving - surgically
+            # edit the original PDF. On scanned/photo sources the OCR
+            # bounding boxes are kept but recognition+translation runs
+            # through the vision LLM (page image = ground truth), which
+            # is what makes this path usable on photographs at all.
+            try:
+                lease_engine.generate_layout_preserving_translation_pdf(
+                    source_abs, pdf_path, target_language,
+                    diagnostics=translation_diagnostics, vision_assist=True)
+                used_layout_preserving = True
+                mode_used = "hybrid-layout-preserving"
+            except Exception as err:
+                print(f"Hybrid layout-preserving translation not possible for {doc_name}, falling back to reflow: {err}")
+                translation_diagnostics["fatalError"] = str(err)
+        elif not hybrid_mode and source_is_pdf and not lease_engine.pdf_has_text_layer(source_abs) and lease_engine.llm_is_configured():
+            # SIMPLE (checkbox unchecked) on a scanned/photo PDF: bypass
+            # Tesseract entirely - the vision model reads each page image
+            # directly (like Google Lens) and the output is a clean
+            # reflowed document. Accurate text, original layout not kept.
+            try:
+                lease_engine.generate_vision_translation_pdf(
+                    source_abs, pdf_path, target_language, doc_name=doc_name,
+                    diagnostics=translation_diagnostics)
+                mode_used = "simple-vision"
+            except Exception as err:
+                print(f"Vision translation not possible for {doc_name}, falling back to reflow: {err}")
+                translation_diagnostics["fatalError"] = str(err)
+        # SIMPLE on a digital PDF (real text layer): the extracted text is
+        # already accurate, so the existing reflow of Output.json's
+        # translatedText is the right answer - no vision call needed.
+        if mode_used == "reflow" and not used_layout_preserving:
+            lease_engine.generate_translation_pdf(output_json_path, pdf_path)
 
-    def _handle_translation_list(self, query):
-        user_id = _safe_id(self._resolve_user_id_query(query))
-        try:
-            base = _user_dir(user_id, "Translation")
-        except ValueError:
-            return self._send_json(400, {"error": "Invalid path"})
+        threading.Thread(
+            target=_push_file_to_connected_storage,
+            args=(user_id, pdf_path, f"{doc_name} - Translation.pdf"),
+            daemon=True,
+        ).start()
 
-        docs = []
-        if os.path.isdir(base):
-            for name in sorted(os.listdir(base)):
-                if name.startswith("_"):
-                    continue
-                folder = os.path.join(base, name)
-                output_json_path = os.path.join(folder, "Output.json")
-                if not os.path.isdir(folder) or not os.path.isfile(output_json_path):
-                    continue
-                try:
-                    with open(output_json_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                except (OSError, json.JSONDecodeError):
-                    data = {}
-                docs.append({
-                    "docName": name,
-                    "targetLanguage": data.get("targetLanguage"),
-                    "createdAt": data.get("createdAt"),
-                    "hasOutputPdf": os.path.isfile(os.path.join(folder, "Output.pdf")),
-                })
-
-        docs.sort(key=lambda d: d.get("createdAt") or "", reverse=True)
-        return self._send_json(200, {"ok": True, "documents": docs})
+        return 200, {"ok": True, "outputPdf": _rel_to_root(pdf_path), "layoutPreserving": used_layout_preserving, "mode": mode_used, "diagnostics": translation_diagnostics}
 
     def _handle_translation_download(self, query):
         user_id = _safe_id(self._resolve_user_id_query(query))
@@ -1337,15 +2034,67 @@ class Handler(SimpleHTTPRequestHandler):
         with open(abs_path, "rb") as f:
             data = f.read()
 
+        # Item 2 - the file on disk stays "Output.pdf" (nothing else in
+        # the codebase that checks for that name needs to change), but
+        # what the user actually sees when they download it is the
+        # original filename + " - Translation.pdf", not the generic
+        # internal name.
+        download_name = os.path.basename(abs_path)
+        if file_name == "Output.pdf":
+            output_json_path = os.path.join(folder, "Output.json")
+            if os.path.isfile(output_json_path):
+                try:
+                    with open(output_json_path, "r", encoding="utf-8") as f2:
+                        source_rel = json.load(f2).get("sourceDocument")
+                    if source_rel:
+                        base_name = os.path.splitext(os.path.basename(source_rel))[0]
+                        download_name = f"{base_name} - Translation.pdf"
+                except (OSError, json.JSONDecodeError):
+                    pass
+
         mime_type = mimetypes.guess_type(abs_path)[0] or "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", mime_type)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(abs_path)}"')
+        self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
         self.end_headers()
         self.wfile.write(data)
 
     # ---- Dashboard "My Processed Leases" card: list + drill-down + download ----
+    def _handle_translation_list(self, query):
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        try:
+            base = _user_dir(user_id, "Translation")
+        except ValueError:
+            return self._send_json(400, {"error": "Invalid path"})
+
+        docs = []
+        if os.path.isdir(base):
+            for name in sorted(os.listdir(base)):
+                if name.startswith("_"):
+                    continue  # skip _staging internal folder
+                folder = os.path.join(base, name)
+                output_json_path = os.path.join(folder, "Output.json")
+                if not os.path.isdir(folder) or not os.path.isfile(output_json_path):
+                    continue
+                try:
+                    with open(output_json_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    data = {}
+                has_pdf = os.path.isfile(os.path.join(folder, "Output.pdf"))
+                if not has_pdf:
+                    continue
+                docs.append({
+                    "docName": name,
+                    "targetLanguage": data.get("targetLanguage"),
+                    "createdAt": data.get("createdAt"),
+                    "hasOutputPdf": has_pdf,
+                })
+
+        docs.sort(key=lambda d: d.get("createdAt") or "", reverse=True)
+        return self._send_json(200, {"ok": True, "documents": docs})
+
     def _handle_lease_list(self, query):
         user_id = _safe_id(self._resolve_user_id_query(query))
         try:
@@ -1367,12 +2116,15 @@ class Handler(SimpleHTTPRequestHandler):
                         data = json.load(f)
                 except (OSError, json.JSONDecodeError):
                     data = {}
+                has_pdf = os.path.isfile(os.path.join(folder, "Output.pdf"))
+                if not has_pdf:
+                    continue  # still awaiting human review - not "processed" yet, don't show on the Dashboard
                 leases.append({
                     "leaseName": name,
                     "docType": data.get("docType"),
                     "accuracy": data.get("accuracy"),
                     "createdAt": data.get("createdAt"),
-                    "hasOutputPdf": os.path.isfile(os.path.join(folder, "Output.pdf")),
+                    "hasOutputPdf": has_pdf,
                 })
 
         leases.sort(key=lambda l: l.get("createdAt") or "", reverse=True)
@@ -1421,11 +2173,26 @@ class Handler(SimpleHTTPRequestHandler):
         except OSError as err:
             return self._send_json(500, {"error": str(err)})
 
+        # Item 2 - friendly download name: original filename + " - Lease
+        # Abstraction.pdf", not the generic internal "Output.pdf".
+        download_name = os.path.basename(abs_path)
+        if file_name == "Output.pdf":
+            output_json_path = os.path.join(folder, "Output.json")
+            if os.path.isfile(output_json_path):
+                try:
+                    with open(output_json_path, "r", encoding="utf-8") as f2:
+                        source_docs = json.load(f2).get("sourceDocuments") or []
+                    if source_docs:
+                        base_name = os.path.splitext(os.path.basename(source_docs[0]))[0]
+                        download_name = f"{base_name} - Lease Abstraction.pdf"
+                except (OSError, json.JSONDecodeError):
+                    pass
+
         mime_type = mimetypes.guess_type(abs_path)[0] or "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", mime_type)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(abs_path)}"')
+        self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
         self.end_headers()
         self.wfile.write(data)
 
@@ -1631,6 +2398,15 @@ class Handler(SimpleHTTPRequestHandler):
     def _rules_path(self):
         return os.path.join(JSON_DIR, "rules.json")
 
+    def _find_developer_user_id(self):
+        """Item 7 - auto-discovered rules get attributed to the Developer
+        account (not whichever user happened to process the lease that
+        triggered discovery), mirroring getDeveloperUserId() on the
+        frontend - same "first user with role Developer" lookup."""
+        users = auth_store.load_users()
+        dev = next((u for u in users if u.get("role") == "Developer"), None)
+        return dev.get("id") if dev else None
+
     def _load_rules(self):
         try:
             with open(self._rules_path(), "r", encoding="utf-8") as f:
@@ -1680,7 +2456,7 @@ class Handler(SimpleHTTPRequestHandler):
         return 200, {"ok": True, "rule": new_rule}
 
     def _handle_rules_approve(self, body):
-        self._require_role(("Developer",))
+        self._require_role(("Admin", "Developer"))
         rule_id = body.get("ruleId")
         data = self._load_rules()
         pending = data.get("pending", [])
@@ -1696,7 +2472,7 @@ class Handler(SimpleHTTPRequestHandler):
         return 200, {"ok": True}
 
     def _handle_rules_reject(self, body):
-        self._require_role(("Developer",))
+        self._require_role(("Admin", "Developer"))
         rule_id = body.get("ruleId")
         data = self._load_rules()
         pending = data.get("pending", [])
@@ -1705,6 +2481,189 @@ class Handler(SimpleHTTPRequestHandler):
         data["pending"] = [r for r in pending if r.get("id") != rule_id]
         self._save_rules(data)
         return 200, {"ok": True}
+
+    # ---- Item 1: Rules tab-strip UI - a regular User can delete their OWN
+    # pending proposal (Developer/Admin can delete anyone's); Master Rules
+    # editing/deleting is Admin/Developer only. ----
+    def _handle_rules_delete_pending(self, body):
+        user_id = _safe_id(self._resolve_user_id(body))
+        rule_ids = body.get("ruleIds") or ([body.get("ruleId")] if body.get("ruleId") else [])
+        if not rule_ids:
+            raise ValueError("No rule id(s) given.")
+        is_privileged = self._session_user_role(user_id) in ("Admin", "Developer")
+
+        data = self._load_rules()
+        pending = data.get("pending", [])
+        if not is_privileged:
+            not_owned = [rid for rid in rule_ids if not any(r.get("id") == rid and r.get("userId") == user_id for r in pending)]
+            if not_owned:
+                raise ValueError("You can only delete your own pending rule proposals.")
+        data["pending"] = [r for r in pending if r.get("id") not in rule_ids]
+        self._save_rules(data)
+        return 200, {"ok": True, "deleted": len(rule_ids)}
+
+    def _handle_rules_delete_approved(self, body):
+        self._require_role(("Admin", "Developer"))
+        rule_ids = body.get("ruleIds") or ([body.get("ruleId")] if body.get("ruleId") else [])
+        if not rule_ids:
+            raise ValueError("No rule id(s) given.")
+        data = self._load_rules()
+        data["approved"] = [r for r in data.get("approved", []) if r.get("id") not in rule_ids]
+        self._save_rules(data)
+        return 200, {"ok": True, "deleted": len(rule_ids)}
+
+    def _handle_rules_update_approved(self, body):
+        self._require_role(("Admin", "Developer"))
+        updates = body.get("updates")
+        if not isinstance(updates, list) or not updates:
+            raise ValueError("No updates given.")
+        data = self._load_rules()
+        approved = data.get("approved", [])
+        by_id = {r.get("id"): r for r in approved}
+        applied = 0
+        for u in updates:
+            rule = by_id.get(u.get("id"))
+            if not rule:
+                continue
+            if "fieldId" in u:
+                rule["fieldId"] = (u.get("fieldId") or "").strip() or rule.get("fieldId")
+            if "ruleType" in u:
+                rule["ruleType"] = (u.get("ruleType") or "mapping").strip()
+            if "ruleText" in u:
+                rule["ruleText"] = (u.get("ruleText") or "").strip() or rule.get("ruleText")
+            applied += 1
+        self._save_rules(data)
+        return 200, {"ok": True, "updated": applied}
+
+    # ---- Item 7: auto rule-discovery. Fire-and-forget (mirrors the email
+    # notification pattern) - runs a lightweight extra LLM call in the
+    # background right after a lease is analyzed, looking for extraction
+    # patterns worth turning into a reusable rule. Never blocks the user's
+    # pipeline and never fails it - any problem here just gets printed and
+    # dropped. Proposed rules land in rules.json's "pending" list under
+    # the Developer's own userId (not the uploading user's), so they show
+    # up in the same Update Rules approval queue as manually-submitted
+    # ones, just clearly attributable to the system rather than a user. ----
+    def _handle_lease_discover_rules(self, body):
+        user_id = _safe_id(self._resolve_user_id(body))
+        text = body.get("text") or ""
+        if not text.strip():
+            return 200, {"ok": True, "queued": False}
+
+        rules_snapshot = self._load_rules()
+        existing_texts = [
+            r.get("ruleText", "") for r in rules_snapshot.get("approved", []) + rules_snapshot.get("pending", [])
+        ]
+        dev_id = self._find_developer_user_id() or user_id
+
+        def _worker():
+            try:
+                proposals = lease_engine.discover_new_rules(text, existing_texts)
+                if not proposals:
+                    return
+                now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+                fresh = self._load_rules()
+                for p in proposals:
+                    fresh.setdefault("pending", []).append({
+                        "id": f"auto_rule_{uuid.uuid4().hex[:10]}",
+                        "fieldId": p["fieldId"],
+                        "ruleType": p["ruleType"],
+                        "ruleText": p["ruleText"],
+                        "confidence": p["confidence"],
+                        "usageCount": 0,
+                        "successCount": 0,
+                        "status": "pending",
+                        "createdAt": now_iso,
+                        "approvedAt": None,
+                        "appliedCount": 0,
+                        "auditLog": [],
+                        "userId": dev_id,
+                        "source": "auto-discovered",
+                    })
+                self._save_rules(fresh)
+            except Exception as err:  # noqa: BLE001 - background job, never let it surface
+                print(f"Rule auto-discovery failed: {err}")
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return 200, {"ok": True, "queued": True}
+
+    def _handle_admin_test_compare(self, body):
+        """Item 4 - the Test & Compare admin card. Accepts up to 10
+        {original, humanOutput, currentOutput?} file sets in one request
+        (base64-encoded, same convention as the regular upload flow).
+        Runs OCR text extraction on whichever pieces need it, our OWN
+        extraction pipeline on the original if no currentOutput was
+        supplied, then compare_extraction_quality() for each - proposed
+        rules land in rules.json's pending queue exactly like every other
+        rule source (Developer approval still required, duplicates
+        skipped)."""
+        self._require_role(("Admin", "Developer"))
+        user_id = _safe_id(self._resolve_user_id(body))
+        items = body.get("items") or []
+        if not items:
+            raise ValueError("No test items provided.")
+        if len(items) > 10:
+            raise ValueError("Please test 10 documents or fewer at a time.")
+
+        rules_snapshot = self._load_rules()
+        existing_texts = [r.get("ruleText", "") for r in rules_snapshot.get("approved", []) + rules_snapshot.get("pending", [])]
+        dev_id = self._find_developer_user_id() or user_id
+
+        results = []
+        tmp_dir = tempfile.mkdtemp(prefix="testcompare_")
+        conversation_history = []  # item 4 - one shared conversation across every lease in THIS batch
+        try:
+            for idx, item in enumerate(items):
+                label = item.get("originalName") or f"Item {idx + 1}"
+                try:
+                    original_text = _extract_text_from_b64(item.get("originalBase64"), item.get("originalName"), tmp_dir)
+                    human_text = _extract_text_from_b64(item.get("humanOutputBase64"), item.get("humanOutputName"), tmp_dir)
+
+                    if item.get("currentOutputBase64"):
+                        current_text = _extract_text_from_b64(item.get("currentOutputBase64"), item.get("currentOutputName"), tmp_dir)
+                        current_source = "uploaded"
+                    else:
+                        analyzed = lease_engine.analyze_lease(original_text, fallback_name=label)
+                        current_text = json.dumps(analyzed["fields"], indent=2, ensure_ascii=False)
+                        current_source = "freshly generated by our system"
+
+                    comparison = lease_engine.compare_extraction_quality(
+                        original_text, human_text, current_text, existing_texts,
+                        conversation_history=conversation_history,
+                    )
+                    conversation_history = comparison["conversationHistory"]
+
+                    added_rule_ids = []
+                    now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+                    fresh = self._load_rules()
+                    fresh_texts_lower = {r.get("ruleText", "").strip().lower() for r in fresh.get("approved", []) + fresh.get("pending", [])}
+                    for p in comparison["proposedRules"]:
+                        if p["ruleText"].strip().lower() in fresh_texts_lower:
+                            continue
+                        rule_id = f"testcmp_{uuid.uuid4().hex[:10]}"
+                        fresh.setdefault("pending", []).append({
+                            "id": rule_id, "fieldId": p["fieldId"], "ruleType": p["ruleType"],
+                            "ruleText": p["ruleText"], "confidence": p["confidence"],
+                            "usageCount": 0, "successCount": 0, "status": "pending",
+                            "createdAt": now_iso, "approvedAt": None, "appliedCount": 0,
+                            "auditLog": [], "userId": dev_id, "source": "test-compare",
+                        })
+                        fresh_texts_lower.add(p["ruleText"].strip().lower())
+                        added_rule_ids.append(rule_id)
+                    self._save_rules(fresh)
+                    existing_texts.extend(p["ruleText"] for p in comparison["proposedRules"])
+
+                    results.append({
+                        "label": label, "ok": True, "similarity": comparison["similarity"],
+                        "currentOutputSource": current_source,
+                        "rulesProposed": len(added_rule_ids),
+                    })
+                except Exception as err:
+                    results.append({"label": label, "ok": False, "error": str(err)})
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        return 200, {"ok": True, "results": results}
 
     def _handle_auth_register(self, body):
         first = (body.get("firstName") or "").strip()
@@ -1750,7 +2709,7 @@ class Handler(SimpleHTTPRequestHandler):
             auth_store.save_users(users)
 
             resp = {"ok": True, "userId": existing["id"], "email": email, "expiresInMinutes": expiry_minutes}
-            _send_verification_email_async(existing["id"], email, existing["firstName"], code, "register", expiry_minutes)
+            _send_verification_email_async(existing["id"], email, existing["firstName"], code, "register", expiry_minutes, base_url=_base_url_from_headers(self.headers))
             return 200, resp
 
         issues = auth_store.password_policy_issues(password)
@@ -1763,6 +2722,10 @@ class Handler(SimpleHTTPRequestHandler):
 
         # Every newly self-registered account has 2FA on by default, and
         # stays "InActive" (can't log in yet) until the email is verified.
+        # Also starts on a 7-day Free plan automatically (item 3) so a
+        # brand new account isn't immediately blocked from using either
+        # service before they've even had a chance to look around.
+        today = datetime.date.today()
         new_user = {
             "id": user_id, "photo": None, "firstName": first, "lastName": last,
             "gender": gender, "birthdate": birthdate, "mobile": mobile, "email": email,
@@ -1772,17 +2735,20 @@ class Handler(SimpleHTTPRequestHandler):
             "sessionStatus": "Offline", "role": "User", "lock": "No",
             "twoFactorAuth": "Yes", "emailVerified": "No", "mobileVerified": "No",
             "sysConfig": "Desktop",
+            "plan": "Free", "planStartDate": today.isoformat(),
+            "planEndDate": (today + datetime.timedelta(days=7)).isoformat(), "planStatus": "Active",
         }
         users.append(new_user)
         auth_store.save_users(users)
 
         resp = {"ok": True, "userId": user_id, "email": email, "expiresInMinutes": expiry_minutes}
-        _send_verification_email_async(user_id, email, first, code, "register", expiry_minutes)
+        _send_verification_email_async(user_id, email, first, code, "register", expiry_minutes, base_url=_base_url_from_headers(self.headers))
         return 200, resp
 
     def _handle_auth_verify_register(self, body):
         user_id = body.get("userId")
         code = (body.get("code") or "").strip()
+        _check_rate_limit(f"verify:{user_id}")
         users = auth_store.load_users()
         user = auth_store.find_user_by_id(users, user_id)
         if not user:
@@ -1807,6 +2773,7 @@ class Handler(SimpleHTTPRequestHandler):
         password = body.get("password") or ""
         if not email or not password:
             raise ValueError("Please enter both email and password.")
+        _check_rate_limit(f"login:{email}")
 
         users = auth_store.load_users()
         user = auth_store.find_user_by_email(users, email)
@@ -1834,17 +2801,30 @@ class Handler(SimpleHTTPRequestHandler):
                 "ok": True, "requires2FA": True, "userId": user["id"],
                 "email": user["email"], "expiresInMinutes": expiry_minutes,
             }
-            _send_verification_email_async(user["id"], user["email"], user["firstName"], code, "login", expiry_minutes)
+            _send_verification_email_async(user["id"], user["email"], user["firstName"], code, "login", expiry_minutes, base_url=_base_url_from_headers(self.headers))
             return 200, resp
 
         user["sessionStatus"] = "Online"
         auth_store.save_users(users)
         token = _create_session(user["id"])
+        # 2FA is off for this account, so there's no verification-code
+        # email in this path at all - send a lightweight "you just logged
+        # in" alert instead, so the user still has *some* email trail of
+        # account access even without 2FA turned on.
+        _send_notification_email_async(
+            user["email"], user["firstName"],
+            "New login to your account",
+            f"We noticed a new login to your {_load_company_name()} account just now. "
+            f"If this was you, no action is needed.\n\n"
+            f"If you don't recognize this login, please reset your password immediately "
+            f"and consider turning on 2-Step Verification in your Profile settings.",
+        )
         return 200, {"ok": True, "requires2FA": False, "userId": user["id"], "token": token}
 
     def _handle_auth_verify_login(self, body):
         user_id = body.get("userId")
         code = (body.get("code") or "").strip()
+        _check_rate_limit(f"verify:{user_id}")
         users = auth_store.load_users()
         user = auth_store.find_user_by_id(users, user_id)
         if not user:
@@ -1874,6 +2854,7 @@ class Handler(SimpleHTTPRequestHandler):
         email = (body.get("email") or "").strip().lower()
         if not email:
             raise ValueError("Please enter your email address.")
+        _check_rate_limit(f"forgot:{email}")
 
         users = auth_store.load_users()
         user = auth_store.find_user_by_email(users, email)
@@ -1892,7 +2873,7 @@ class Handler(SimpleHTTPRequestHandler):
             "ok": True, "userId": user["id"], "email": user["email"],
             "expiresInMinutes": expiry_minutes,
         }
-        _send_verification_email_async(user["id"], user["email"], user["firstName"], code, "reset", expiry_minutes)
+        _send_verification_email_async(user["id"], user["email"], user["firstName"], code, "reset", expiry_minutes, base_url=_base_url_from_headers(self.headers))
         return 200, resp
 
     def _handle_auth_verify_reset_code(self, body):
@@ -1901,6 +2882,7 @@ class Handler(SimpleHTTPRequestHandler):
         # re-validates it for real before actually changing anything.
         user_id = body.get("userId")
         code = (body.get("code") or "").strip()
+        _check_rate_limit(f"verify:{user_id}")
         users = auth_store.load_users()
         user = auth_store.find_user_by_id(users, user_id)
         if not user:
@@ -1957,7 +2939,7 @@ class Handler(SimpleHTTPRequestHandler):
         auth_store.save_users(users)
 
         resp = {"ok": True, "expiresInMinutes": expiry_minutes}
-        _send_verification_email_async(user["id"], user["email"], user["firstName"], code, purpose, expiry_minutes)
+        _send_verification_email_async(user["id"], user["email"], user["firstName"], code, purpose, expiry_minutes, base_url=_base_url_from_headers(self.headers))
         return 200, resp
 
     # ------------------------------------------------------------------

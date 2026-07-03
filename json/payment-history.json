@@ -9,38 +9,5 @@
         "description": "Initial balance top-up",
         "credit": 100000,
         "debit": 0
-    },
-    {
-        "id": "TXN002",
-        "date": "2026-07-03",
-        "time": "09:11 AM",
-        "userId": "U0000001",
-        "paymentType": "Service Fee",
-        "paymentMode": "Wallet Balance",
-        "description": "Lease Abstraction - 01_GOFO Express Commerce Square Industrial Lease_1.10.2025_ocr.pdf",
-        "credit": 0,
-        "debit": 1
-    },
-    {
-        "id": "TXN003",
-        "date": "2026-07-03",
-        "time": "09:17 AM",
-        "userId": "U0000001",
-        "paymentType": "Bank Transfer",
-        "paymentMode": "HDFC Bank Debit Card **** **** **** 4821",
-        "description": "Test 10",
-        "credit": 10,
-        "debit": 0
-    },
-    {
-        "id": "TXN004",
-        "date": "2026-07-03",
-        "time": "09:20 AM",
-        "userId": "U0000001",
-        "paymentType": "Service Fee",
-        "paymentMode": "Wallet Balance",
-        "description": "Translation - 01_GOFO Express Commerce Square Industrial Lease_1.10.2025_ocr.pdf",
-        "credit": 0,
-        "debit": 1
     }
 ]

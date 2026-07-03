@@ -56,13 +56,17 @@ LEASE DATES — CRITICAL: Sign Date is the latest execution date (check signatur
 Holdover % is in Sec. 4.2 or equivalent holdover section. Extract the percentage (e.g., '125%'). Also note the holdover tenancy type (e.g., 'tenancy at sufferance'). The holdover clause describes what happens if TT remains after lease expiration.
 
 [LATE_FEE]
-Late Fee details are in Sec. 28 or equivalent. Extract: (1) Calculation type (% or flat), (2) Percentage/Amount (e.g., '5%'), (3) Grace period in days (e.g., '10'), (4) Due day (e.g., '1'). Note any postmark presumptions. Format: Type='% Owed-Total', Percent='5%', Grace='10'.
+Late Fee details are in Sec. 6/28 or equivalent. Extract into these EXACT structured fields (used for a table with these columns): calc_type (e.g. '% Owed-Total'), grace_period (days, as a plain number like '0' or '10'), percent (e.g. '10.00' - number only, no % sign), second_fee_calc_type (usually blank unless there's a distinct 2nd late fee), second_fee_grace_period, second_fee_percent, per_day_fee (a flat $/day late charge if the lease has one, else '0.00'). If the lease states "greater of X% or $Y", percent=X and note the $Y flat-fee floor isn't captured in per_day_fee (that's a different, day-based fee) - leave per_day_fee '0.00' in that case.
 
 [SECURITY_DEPOSIT]
 Security Deposit amount is in Lease Summary under 'Security Deposit' and Sec. 1.8(d). Extract exact dollar amount. Also check Sec. 27 for: interest bearing (Yes/No), offset rights, restore obligation, return conditions. Format amount as '$28,126.00'.
 
 [RENT_SCHEDULE]
-RENT SCHEDULE — CRITICAL: Extract EVERY year/period of the rent schedule. Check Lease Summary 'Yearly Rent' section and Sec. 1.8(a-b). For annual escalations (e.g., 3% increase), calculate each year separately. Include: Unit, From Date, To Date, Monthly Amount, Annual Amount, Annual Per SF. The first period starts at RCD. If RCD falls mid-month, first payment is prorated per 30-day month. MUST also extract rent for Option periods if Sec. 1.8(c) states rent increases through 'Term and any Option Extensions'.
+RENT SCHEDULE — CRITICAL: Extract EVERY charge line, not just base rent. The output table has one row per charge-code per period, matching this convention:
+- charge_code "rent" / charge_desc "Base Rent": one row per escalation period from the Base Rent schedule.
+- charge_code "abated" / charge_desc "Abated Rent": if there's a rent abatement period, one row covering it, with monthly_amount and annual_amount as NEGATIVE numbers (e.g. "-3,469.33").
+- charge_code "camest" / charge_desc "CAM Estimate": the estimated CAM/Operating Cost charge, spanning the full lease term, if given as a monthly $ amount.
+For EACH row also extract: from_date, to_date (MM/DD/YYYY), monthly_amount, annual_amount (monthly x 12, or the stated annual figure), amt_per_area (annual_amount / premises size, formatted like ".67" or "1.00" - no leading 0), and units (the premises size as a whole number, e.g. "132"). Check Lease Summary 'Yearly Rent' section and Sec. 1.8(a-b). For annual escalations (e.g., 3% increase), calculate each year separately. The first period starts at RCD; if RCD falls mid-month, first payment is prorated per 30-day month. MUST also extract rent for Option periods if Sec. 1.8(c) states rent increases through 'Term and any Option Extensions'.
 
 [RENT_ESCALATION]
 Rent Escalation / Increase is in Sec. 1.8(c). Extract the escalation formula (e.g., '3% every year throughout the Term and any Option Extensions'). This applies to base rent increases year-over-year.
@@ -235,11 +239,17 @@ OUTPUT FORMAT — Return ONLY this JSON, no markdown fences:
     "proration": ""
   },
   "rent": {
-    "rent_schedule": [],
+    "rent_schedule": [
+      {"charge_code": "", "charge_desc": "", "from_date": "", "to_date": "", "monthly_amount": "", "annual_amount": "", "amt_per_area": "", "units": ""}
+    ],
     "rent_escalation": "",
     "prepaid_rent_cam": "",
     "security_deposit": "",
     "late_fee": "",
+    "late_fee_table": {
+      "calc_type": "", "grace_period": "", "percent": "",
+      "second_fee_calc_type": "", "second_fee_grace_period": "", "second_fee_percent": "", "per_day_fee": ""
+    },
     "interest_on_late_payment": "",
     "percentage_rent": "",
     "holdover": ""

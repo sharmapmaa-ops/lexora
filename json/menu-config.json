@@ -2,12 +2,12 @@
     "mainMenu": [
         {
             "id": "dashboard",
-            "label": "📊 Dashboard",
+            "label": "\ud83d\udcca Dashboard",
             "subItems": []
         },
         {
             "id": "services",
-            "label": "🛠️ Services",
+            "label": "\ud83d\udee0\ufe0f Services",
             "subItems": [
                 {
                     "id": "lease-abstraction",
@@ -21,12 +21,12 @@
         },
         {
             "id": "plans-offers",
-            "label": "📋 Plans & Offers",
+            "label": "\ud83d\udccb Plans & Offers",
             "subItems": []
         },
         {
             "id": "payment",
-            "label": "💳 Payment",
+            "label": "\ud83d\udcb3 Payment",
             "subItems": [
                 {
                     "id": "balance",
@@ -44,7 +44,7 @@
         },
         {
             "id": "help",
-            "label": "❓ Help",
+            "label": "\u2753 Help",
             "subItems": [
                 {
                     "id": "api-documentation",
@@ -64,12 +64,12 @@
     "profileMenu": [
         {
             "id": "profile",
-            "label": "👤 My Profile",
+            "label": "\ud83d\udc64 My Profile",
             "action": "Profile"
         },
         {
             "id": "admin",
-            "label": "🗂️ Admin",
+            "label": "\ud83d\uddc2\ufe0f Admin",
             "action": "Admin",
             "rolesAllowed": [
                 "Developer",
@@ -78,7 +78,7 @@
         },
         {
             "id": "notification",
-            "label": "🔔 Notification",
+            "label": "\ud83d\udd14 Notification",
             "action": "Notification"
         },
         {
@@ -86,7 +86,7 @@
         },
         {
             "id": "logout",
-            "label": "🚪 Logout",
+            "label": "\ud83d\udeaa Logout",
             "action": "Logout",
             "isLogout": true
         }

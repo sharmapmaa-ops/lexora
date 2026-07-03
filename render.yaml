@@ -15,7 +15,7 @@ services:
     name: lexora-ai-solutions
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: free
+    plan: starter
     healthCheckPath: /
     envVars:
       # sync: false = Render prompts for these in its dashboard instead of

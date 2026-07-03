@@ -1,0 +1,50 @@
+[
+  {
+    "id": "free",
+    "name": "Free",
+    "icon": "\ud83c\udd93",
+    "monthlyPrice": 0,
+    "pricePerLeaseAbstraction": 10,
+    "pricePerTranslation": 5,
+    "featured": false,
+    "features": [
+      "$10 / Lease Abstraction",
+      "$5 / Translation",
+      "Community Support",
+      "Basic Dashboard Access"
+    ],
+    "billingUnit": "document"
+  },
+  {
+    "id": "standard",
+    "name": "Standard",
+    "icon": "\u2b50",
+    "monthlyPrice": 29,
+    "pricePerLeaseAbstraction": 8,
+    "pricePerTranslation": 2,
+    "featured": false,
+    "features": [
+      "$8 / Lease Abstraction",
+      "$2 / Translation",
+      "Email Support",
+      "Standard Dashboard Access"
+    ],
+    "billingUnit": "document"
+  },
+  {
+    "id": "professional",
+    "name": "Professional",
+    "icon": "\ud83d\ude80",
+    "monthlyPrice": 79,
+    "pricePerLeaseAbstraction": 5,
+    "pricePerTranslation": 1,
+    "featured": true,
+    "features": [
+      "$5 / Lease Abstraction",
+      "$1 / Translation",
+      "Priority Support",
+      "Advanced Dashboard Access"
+    ],
+    "billingUnit": "document"
+  }
+]
