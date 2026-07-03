@@ -16,4 +16,34 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: free
-    healthCheckPath: /main.html
+    healthCheckPath: /
+    envVars:
+      # sync: false = Render prompts for these in its dashboard instead of
+      # reading them from this file - .env itself is gitignored and never
+      # part of the repo Render builds from, so there's nothing to leak
+      # here. Set the real values under your Render service's
+      # Environment tab after the first deploy.
+      - key: LLM_PROVIDER
+        value: openai
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: openai/gpt-4o
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "465"
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_SENDER_EMAIL
+        sync: false
+      - key: SMTP_USE_TLS
+        value: "false"
+      - key: SMTP_EXPIRY_MINUTES
+        value: "4"

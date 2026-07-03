@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
+# Real secrets (API keys, SMTP password) - see .env.example for the
+# template. Never commit the real .env; GitHub's push protection will
+# block commits containing real API keys/passwords anyway.
 .env
 *.log
 

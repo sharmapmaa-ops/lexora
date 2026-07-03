@@ -15,7 +15,7 @@ workflow described in the project requirements (section 14):
                                    lease fields + an accuracy/confidence
                                    score. Uses a real OpenAI/OpenRouter call
                                    (json/extraction_prompt.txt as the system
-                                   prompt) when json/llm-config.json has an
+                                   prompt) when the .env file has an
                                    API key configured; otherwise falls back
                                    to a deterministic regex/keyword engine.
   3. generate_output_pdf(...)  -> builds Output.pdf from Output.json, laid
@@ -27,7 +27,7 @@ commercial lease abstraction rules) and json/rules.json is the same rule
 set in structured form (used for reference/governance - its rules are
 already folded into extraction_prompt.txt, so it isn't re-injected into
 the prompt verbatim to avoid doubling token usage). When a key is present
-in json/llm-config.json, call_llm_extraction() sends the extracted lease
+in .env, call_llm_extraction() sends the extracted lease
 text to OpenAI or OpenRouter (chat completions) and returns the rich
 structured JSON described in extraction_prompt.txt's OUTPUT FORMAT
 section. Without a key, analyze_lease() falls back to the simpler
@@ -96,8 +96,8 @@ class LeaseEngineError(Exception):
 
 
 # lease_engine.py lives in py/, json/ is a sibling of py/ under the project root.
-JSON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "json")
-LLM_CONFIG_PATH = os.path.join(JSON_DIR, "llm-config.json")
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+JSON_DIR = os.path.join(ROOT_DIR, "json")
 EXTRACTION_PROMPT_PATH = os.path.join(JSON_DIR, "extraction_prompt.txt")
 
 # Below this many extracted characters, the text is almost certainly just
@@ -115,67 +115,89 @@ MIN_CHARS_PER_PAGE = 150
 OCR_MAX_WORKERS = 6
 
 
+def _load_dotenv(path):
+    """Same minimal .env loader as server.py (duplicated, not imported,
+    so this module still works standalone/under a different entry point).
+    See server.py's copy for the full rationale."""
+    if not os.path.isfile(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+
+
+_load_dotenv(os.path.join(ROOT_DIR, ".env"))
+
+
 def load_llm_config():
-    try:
-        with open(LLM_CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def _get_primary(items):
-    """Returns the item flagged primary=true, or the first item if none is
-    flagged, or None if the list is empty - lets an admin add several
-    OpenAI/OpenRouter keys in json/llm-config.json and mark which one is
-    actually used."""
-    if not items:
-        return None
-    for item in items:
-        if item.get("primary"):
-            return item
-    return items[0]
-
-
-
-# API keys are intentionally NOT stored in json/llm-config.json (that file
-# is committed to git). Instead each provider's key is read from an
-# environment variable - set these as Codespace/deployment secrets, or in
-# a local, git-ignored .env file loaded by start-server.sh. If a "keys"
-# entry in llm-config.json still carries a literal, non-empty apiKey
-# (e.g. an older config), it's used as a last-resort fallback so nothing
-# breaks - but new/edited configs should leave apiKey empty ("") and rely
-# on the environment variable instead.
-_PROVIDER_ENV_VARS = {
-    "openai": "OPENAI_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
-}
+    """LLM provider/key config comes from environment variables (.env)
+    now - json/llm-config.json was removed because committing real API
+    keys in a tracked JSON file got git pushes blocked by GitHub's
+    secret-scanning push protection."""
+    return {
+        "provider": os.environ.get("LLM_PROVIDER", "openai"),
+        "openai": {
+            "apiKey": os.environ.get("OPENAI_API_KEY"),
+            "model": os.environ.get("OPENAI_MODEL", "gpt-4o"),
+            "baseUrl": "https://api.openai.com/v1/chat/completions",
+        },
+        "openrouter": {
+            "apiKey": os.environ.get("OPENROUTER_API_KEY"),
+            "model": os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o"),
+            "baseUrl": "https://openrouter.ai/api/v1/chat/completions",
+        },
+    }
 
 
 def _resolve_provider_cfg(llm_config, provider):
-    """Flattens json/llm-config.json's {baseUrl, keys: [...]} shape into
-    the single {apiKey, model, baseUrl} dict _call_chat_completion expects,
-    using whichever key is flagged primary. The actual secret comes from
-    the provider's environment variable first, falling back to a literal
-    apiKey in the JSON only if the env var isn't set."""
-    provider_section = llm_config.get(provider, {}) or {}
-    primary_key = _get_primary(provider_section.get("keys") or [])
-    if not primary_key:
-        return {}
-    env_var = _PROVIDER_ENV_VARS.get(provider)
-    api_key = (os.environ.get(env_var) if env_var else None) or primary_key.get("apiKey") or ""
-    return {
-        "apiKey": api_key,
-        "model": primary_key.get("model"),
-        "baseUrl": provider_section.get("baseUrl"),
-    }
+    return llm_config.get(provider, {}) or {}
 
 
 def load_extraction_prompt():
     try:
         with open(EXTRACTION_PROMPT_PATH, "r", encoding="utf-8") as f:
-            return f.read()
+            base_prompt = f.read()
     except OSError:
         return None
+    return base_prompt + _load_extra_approved_rules_supplement()
+
+
+def _load_extra_approved_rules_supplement():
+    """Renders any approved rule that ISN'T one of the 73 original
+    built-in ones (those are already baked into extraction_prompt.txt's
+    own prose - re-injecting them here would just double token usage for
+    no benefit) as an extra prompt section. This is what makes a rule
+    approved through the Update Rules UI actually take effect on the next
+    extraction call, with no manual prompt editing needed."""
+    try:
+        with open(os.path.join(JSON_DIR, "rules.json"), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+    extra_rules = [r for r in data.get("approved", []) if not r.get("builtin")]
+    if not extra_rules:
+        return ""
+
+    lines = [
+        "\n\n---\nADDITIONAL FIELD-EXTRACTION RULES (approved by the Developer after the "
+        "rules above were written - apply these too, on top of everything else in this prompt):"
+    ]
+    for rule in extra_rules:
+        field_id = rule.get("fieldId", "")
+        rule_type = rule.get("ruleType", "")
+        rule_text = rule.get("ruleText", "")
+        if field_id and rule_text:
+            lines.append(f"- [{field_id}] ({rule_type}): {rule_text}")
+    return "\n".join(lines)
 
 
 def robust_json_parse(raw):
@@ -261,34 +283,68 @@ def _call_chat_completion(provider, provider_cfg, system_prompt, user_content, m
         raise LeaseEngineError(f"{provider} returned an unexpected response shape: {err}")
 
 
+def _call_chat_completion_with_failover(llm_config, system_prompt, user_content, max_tokens=16000):
+    """Tries the configured primary provider first; if it's configured but
+    the call itself fails (auth error, network error, bad response),
+    automatically tries the OTHER provider too (if it has a key
+    configured) before giving up - previously a single OpenAI hiccup fell
+    straight through to the heuristic engine even though a working
+    OpenRouter key was sitting right there in .env unused. Returns
+    (content, provider_used) - content is None if neither provider has a
+    key configured at all (caller falls back to heuristic silently);
+    raises LeaseEngineError only if at least one provider was actually
+    tried and every attempt failed."""
+    primary_provider = llm_config.get("provider", "openai")
+    fallback_provider = "openrouter" if primary_provider == "openai" else "openai"
+
+    last_error = None
+    tried_any = False
+    for provider in (primary_provider, fallback_provider):
+        provider_cfg = _resolve_provider_cfg(llm_config, provider)
+        if not provider_cfg.get("apiKey"):
+            continue  # this provider isn't configured at all - just skip it
+        tried_any = True
+        try:
+            content = _call_chat_completion(provider, provider_cfg, system_prompt, user_content, max_tokens=max_tokens)
+        except LeaseEngineError as err:
+            print(f"{provider} call failed{' - trying ' + fallback_provider + ' next' if provider == primary_provider else ''}: {err}")
+            last_error = err
+            continue
+        if content is not None:
+            return content, provider
+
+    if tried_any and last_error:
+        raise last_error
+    return None, None
+
+
 def call_llm_extraction(text, llm_config=None):
-    """Calls OpenAI or OpenRouter (whichever is set as "provider" in
-    json/llm-config.json) using json/extraction_prompt.txt as the system
-    prompt. Returns the parsed JSON dict on success, or None if no API key
-    is configured / the prompt file is missing (caller should fall back to
-    the heuristic engine). Raises LeaseEngineError on a real call failure
-    (key present but request/parse failed) so the caller can decide whether
-    to fall back or surface the error."""
+    """Calls OpenAI or OpenRouter (whichever LLM_PROVIDER is set to in
+    .env, with automatic failover to the other one if it's also
+    configured - see _call_chat_completion_with_failover) using
+    json/extraction_prompt.txt as the system prompt. Returns
+    (parsed_fields_dict, provider_used) on success, or (None, None) if no
+    API key is configured at all (caller falls back to the heuristic
+    engine). Raises LeaseEngineError if every configured provider's call
+    failed."""
     llm_config = llm_config if llm_config is not None else load_llm_config()
-    provider = llm_config.get("provider", "openai")
-    provider_cfg = _resolve_provider_cfg(llm_config, provider)
 
     system_prompt = load_extraction_prompt()
     if not system_prompt:
-        return None  # no prompt file - caller falls back to heuristic
+        return None, None  # no prompt file - caller falls back to heuristic
 
-    content = _call_chat_completion(
-        provider, provider_cfg, system_prompt,
+    content, provider = _call_chat_completion_with_failover(
+        llm_config, system_prompt,
         "LEASE DOCUMENT TEXT:\n\n" + text[:120000],
         max_tokens=16000,
     )
     if content is None:
-        return None  # no API key configured - caller falls back to heuristic
+        return None, None  # no API key configured anywhere - caller falls back to heuristic
 
     parsed = robust_json_parse(content)
     if parsed is None:
         raise LeaseEngineError(f"{provider} returned a response that isn't valid JSON")
-    return parsed
+    return parsed, provider
 
 
 VALIDATION_SYSTEM_PROMPT = "You are a lease abstraction QC validator. Return ONLY valid JSON."
@@ -301,8 +357,6 @@ def call_llm_validation(fields, llm_config=None):
     summary, or None if no LLM is configured (caller falls back to a
     heuristic completeness score)."""
     llm_config = llm_config if llm_config is not None else load_llm_config()
-    provider = llm_config.get("provider", "openai")
-    provider_cfg = _resolve_provider_cfg(llm_config, provider)
 
     prompt = (
         "Analyze this lease extraction for completeness and accuracy.\n"
@@ -317,8 +371,8 @@ def call_llm_validation(fields, llm_config=None):
         "Extracted lease data:\n" + json.dumps(fields, indent=2)[:8000]
     )
 
-    content = _call_chat_completion(
-        provider, provider_cfg, VALIDATION_SYSTEM_PROMPT, prompt, max_tokens=2000
+    content, provider = _call_chat_completion_with_failover(
+        llm_config, VALIDATION_SYSTEM_PROMPT, prompt, max_tokens=2000
     )
     if content is None:
         return None
@@ -605,22 +659,68 @@ def _find_party_name(text, role_words):
     return None
 
 
-def _find_after_label(text, labels):
-    """Looks for 'Label: value' or 'Label - value' style lines and returns the value."""
+def _find_after_label(text, labels, max_lines=3):
+    """Looks for 'Label: value' or 'Label - value' style lines and returns
+    the value - allows the value to continue onto a couple of wrapped
+    continuation lines (common in PDF table cells, e.g. a long landlord
+    name that wraps across 2-3 lines) but stops at a blank line or what
+    looks like the start of the next label, so it doesn't run on into
+    unrelated content."""
     for label in labels:
         pattern = re.compile(re.escape(label) + r"\s*[:\-]\s*(.+)", re.IGNORECASE)
         m = pattern.search(text)
-        if m:
-            value = m.group(1).strip()
-            value = re.split(r"[\n\r]", value)[0].strip()
-            if value:
-                return value[:120]
+        if not m:
+            continue
+        start = m.start(1)
+        chunk = text[start:start + 600]
+        lines = chunk.split("\n")
+        value_lines = [lines[0].strip()] if lines and lines[0].strip() else []
+        for line in lines[1:max_lines]:
+            stripped = line.strip()
+            if not stripped:
+                break  # blank line - value block ended
+            if re.match(r"^[A-Z][A-Z \-'\u2019/]{2,40}[:\-]", stripped):
+                break  # looks like the start of the next label
+            value_lines.append(stripped)
+        value = " ".join(value_lines).strip()
+        if value:
+            return value[:200]
+    return None
+
+
+def _find_date_near_label(text, labels):
+    """Looks for a label like 'Expiration Date' and extracts the nearest
+    date-shaped value on the same line/nearby - far more reliable than
+    grabbing "the Nth date found anywhere in the document" (which has no
+    idea which date means what, and easily picks up an unrelated date
+    like an "Estimated Commencement Date" instead of the real
+    expiration date)."""
+    for label in labels:
+        pattern = re.compile(re.escape(label) + r"\s*[:\-]?\s*(.{0,80})", re.IGNORECASE)
+        for m in pattern.finditer(text):
+            date_match = _DATE_RE.search(m.group(1))
+            if date_match:
+                return date_match.group(0)
+    return None
+
+
+def _find_money_near_label(text, labels):
+    """Same idea as _find_date_near_label but for dollar amounts - avoids
+    grabbing "the first dollar figure anywhere in the document" (which
+    could be a phone number, an unrelated fee, or a table header amount
+    rather than the actual rent)."""
+    for label in labels:
+        pattern = re.compile(re.escape(label) + r"\s*[:\-]?\s*(.{0,120})", re.IGNORECASE)
+        for m in pattern.finditer(text):
+            money_match = _MONEY_RE.search(m.group(1))
+            if money_match:
+                return money_match.group(0)
     return None
 
 
 def heuristic_analyze_lease(text, fallback_name="Lease Document"):
     """Deterministic regex/keyword field extraction - used when no LLM key
-    is configured in json/llm-config.json (see analyze_lease below)."""
+    is configured in .env (see analyze_lease below)."""
     doc_type = classify_document(text)
 
     tenant = _find_party_name(text, ["Tenant", "Lessee"])
@@ -630,12 +730,20 @@ def heuristic_analyze_lease(text, fallback_name="Lease Document"):
     )
 
     all_dates = [m.group(0) for m in _DATE_RE.finditer(text)]
-
-    lease_start = all_dates[0] if len(all_dates) > 0 else None
-    lease_end = all_dates[1] if len(all_dates) > 1 else None
-
     money_matches = _MONEY_RE.findall(text)
-    base_rent = money_matches[0] if money_matches else None
+
+    lease_start = (
+        _find_date_near_label(text, ["Commencement Date", "Date of Lease", "Lease Commencement", "Effective Date"])
+        or (all_dates[0] if len(all_dates) > 0 else None)
+    )
+    lease_end = (
+        _find_date_near_label(text, ["Expiration Date", "Lease Expiration", "Termination Date", "End Date"])
+        or (all_dates[1] if len(all_dates) > 1 else None)
+    )
+    base_rent = (
+        _find_money_near_label(text, ["Monthly Base Rent", "Base Rent", "Monthly Rent", "Minimum Monthly Rent"])
+        or (money_matches[0] if money_matches else None)
+    )
 
     lease_name_source = tenant or property_address or fallback_name
     lease_name = sanitize_lease_name(lease_name_source)
@@ -710,9 +818,83 @@ def _run_accuracy_check(fields, llm_config):
     }
 
 
+def translate_text(text, target_language, llm_config=None):
+    """Real translation via OpenAI/OpenRouter, with automatic failover to
+    whichever of the two is configured if the primary one's call fails
+    (see _call_chat_completion_with_failover). Returns
+    (translated_text, provider_used), or (None, None) if no LLM key is
+    configured at all (caller falls back to a clear heuristic message
+    rather than pretending to translate). Raises LeaseEngineError if
+    every configured provider's call failed."""
+    llm_config = llm_config if llm_config is not None else load_llm_config()
+
+    system_prompt = (
+        f"You are a professional document translator. Translate the user's text into "
+        f"{target_language}. Preserve the original meaning, tone, register, and structure "
+        f"(paragraphs, lists, headings, line breaks) as closely as the target language allows. "
+        f"Return ONLY the translated text - no preamble, no notes, no commentary about the "
+        f"translation itself."
+    )
+    content, provider = _call_chat_completion_with_failover(llm_config, system_prompt, text[:100000], max_tokens=8000)
+    if content is None:
+        return None, None  # no API key configured anywhere - caller falls back
+    return content.strip(), provider
+
+
+def generate_translation_pdf(output_json_path, pdf_out_path):
+    """Builds Output.pdf for a translation job - original text on the
+    left... actually simpler: translated text as the main body, with a
+    short header noting the source document and target language, same
+    visual style as the lease abstraction report."""
+    if not REPORTLAB_OK:
+        raise LeaseEngineError(
+            "reportlab is not installed - run: pip install -r requirements.txt"
+        )
+
+    with open(output_json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    doc_name = data.get("docName", "Document")
+    target_language = data.get("targetLanguage", "")
+    translated_text = data.get("translatedText", "")
+    method = data.get("translationMethod", "heuristic")
+
+    doc = SimpleDocTemplate(
+        pdf_out_path, pagesize=LETTER,
+        topMargin=0.75 * inch, bottomMargin=0.75 * inch,
+        leftMargin=0.75 * inch, rightMargin=0.75 * inch,
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "TranslationTitle", parent=styles["Title"], textColor=colors.HexColor("#00008B")
+    )
+    normal = styles["Normal"]
+    body_style = ParagraphStyle("TranslationBody", parent=normal, spaceAfter=10, leading=15)
+
+    story = [
+        Paragraph("Translation Report", title_style),
+        Paragraph(f"Source document: {doc_name}", normal),
+        Paragraph(f"Target language: {target_language}", normal),
+        Paragraph(f"Translation method: {method}", normal),
+        Paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", normal),
+        Spacer(1, 14),
+        HRFlowable(width="100%", color=colors.HexColor("#00008B")),
+        Spacer(1, 14),
+    ]
+
+    for para in (translated_text or "").split("\n\n"):
+        para = para.strip()
+        if not para:
+            continue
+        safe_para = para.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
+        story.append(Paragraph(safe_para, body_style))
+
+    doc.build(story)
+
+
 def analyze_lease(text, fallback_name="Lease Document"):
     """Section 14.3 (40%) - 'data analyzed and interpreted using GPT
-    prompts'. Tries a real LLM call (OpenAI/OpenRouter, json/llm-config.json
+    prompts'. Tries a real LLM call (OpenAI/OpenRouter, key from .env
     + json/extraction_prompt.txt) first; falls back to the heuristic engine
     if no key is configured or the call fails. Either way, also runs a
     second lightweight pass (call_llm_validation, or a heuristic
@@ -723,21 +905,20 @@ def analyze_lease(text, fallback_name="Lease Document"):
     llm_config = load_llm_config()
 
     try:
-        llm_fields = call_llm_extraction(text, llm_config=llm_config)
+        llm_fields, used_provider = call_llm_extraction(text, llm_config=llm_config)
     except LeaseEngineError as err:
-        # Key was present but the call failed - fall back rather than
+        # Every configured provider's call failed - fall back rather than
         # aborting the whole pipeline, but keep the error visible.
-        print(f"LLM extraction failed, falling back to heuristic engine: {err}")
-        llm_fields = None
+        print(f"LLM extraction failed on every configured provider, falling back to heuristic engine: {err}")
+        llm_fields, used_provider = None, None
 
     if llm_fields is not None:
-        provider = llm_config.get("provider", "openai")
         lease_name = sanitize_lease_name(_lease_name_source_from_fields(llm_fields, fallback_name))
         result = {
             "docType": doc_type,
             "leaseName": lease_name,
             "fields": llm_fields,
-            "extractionMethod": f"llm-{provider}",
+            "extractionMethod": f"llm-{used_provider}",
         }
     else:
         result = heuristic_analyze_lease(text, fallback_name=fallback_name)

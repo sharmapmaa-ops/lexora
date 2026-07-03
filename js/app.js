@@ -46,6 +46,8 @@
             // 7. CONTACT FORM SUBMISSIONS DATA
             // ============================================================
             let contactSubmissions = [];
+            let notifications = [];
+            let nextNotificationId = 1;
 
             // ============================================================
             // 8. USER / PROFILE DATA
@@ -91,6 +93,69 @@
 
             function getMyContactSubmissions() {
                 return contactSubmissions.filter(c => c.userId === CURRENT_USER_ID);
+            }
+
+            // Developer/Admin see every user's data on the Payment History
+            // and Support pages (with a User ID column + filter); a plain
+            // User only ever sees their own - getCurrentBalance() etc. still
+            // always uses the strictly-own getMyPaymentHistory() above, this
+            // one is only for what the *page* displays.
+            function isAdminOrDeveloper() {
+                return !!profileData && (profileData.role === 'Admin' || profileData.role === 'Developer');
+            }
+
+            function getVisiblePaymentHistory() {
+                return isAdminOrDeveloper() ? paymentHistory.slice() : getMyPaymentHistory();
+            }
+
+            function getVisibleContactSubmissions() {
+                return isAdminOrDeveloper() ? contactSubmissions.slice() : getMyContactSubmissions();
+            }
+
+            // Sanitized {id, email, firstName, lastName, role, ...} list (no
+            // passwords/codes - see py/auth_store.py's public_user_view) -
+            // loaded once at startup, used for the Developer/Admin user-id/
+            // email filters above and to find "who is the Developer" for
+            // the balance-centralization rule in addBalance().
+            let USER_DIRECTORY = [];
+
+            async function loadUserDirectory() {
+                try {
+                    const res = await authFetch('/api/auth/directory');
+                    const data = await res.json();
+                    USER_DIRECTORY = data.users || [];
+                } catch (e) {
+                    USER_DIRECTORY = [];
+                }
+            }
+
+            function getDeveloperUserId() {
+                const dev = USER_DIRECTORY.find(u => u.role === 'Developer');
+                return dev ? dev.id : null;
+            }
+
+            function getUserDirectoryEntry(userId) {
+                return USER_DIRECTORY.find(u => u.id === userId) || null;
+            }
+
+            // Lease/Translation files and activity logs all live in one
+            // shared json file per service (like payments/support above) -
+            // these scope them down to the current user so one person's
+            // uploads/history never show up in someone else's session.
+            function getMyLeaseFiles() {
+                return leaseFiles.filter(f => f.userId === CURRENT_USER_ID);
+            }
+
+            function getMyTranslationFiles() {
+                return translationFiles.filter(f => f.userId === CURRENT_USER_ID);
+            }
+
+            function getMyLeaseActivityLog() {
+                return leaseActivityLog.filter(a => a.userId === CURRENT_USER_ID);
+            }
+
+            function getMyTranslationActivityLog() {
+                return translationActivityLog.filter(a => a.userId === CURRENT_USER_ID);
             }
 
             // ============================================================
@@ -154,8 +219,10 @@
                         file.status === 'processing' ? 'processing' : 'pending';
 
                     const actionLabel = file.status === 'error' ? (file.errorLabel || 'Error') : null;
+                    const docFolder = file.leaseName || file.docName || '';
+                    const downloadKind = file.docName ? 'translation' : 'lease';
                     const actionLink = file.status === 'completed' ?
-                        `<a class="file-action-link" onclick="downloadFile('${file.name}')">Download</a>` :
+                        `<a class="file-action-link" onclick="downloadFile('Output.pdf', '${docFolder.replace(/'/g, "\\'")}', '${downloadKind}')">Download</a>` :
                         file.status === 'error' ?
                         `<a class="file-action-link error-link" onclick="retryFile('${file.id}')">${actionLabel}</a>` :
                         `<span class="file-action-link disabled">${file.status === 'processing' ? 'Processing' : 'Pending'}</span>`;
@@ -241,8 +308,8 @@
             // ============================================================
             function buildServiceUploadHTML(serviceId, serviceLabel, icon) {
                 const isTranslation = serviceId === 'translation';
-                const files = isTranslation ? translationFiles : leaseFiles;
-                const activityLog = isTranslation ? translationActivityLog : leaseActivityLog;
+                const files = isTranslation ? getMyTranslationFiles() : getMyLeaseFiles();
+                const activityLog = isTranslation ? getMyTranslationActivityLog() : getMyLeaseActivityLog();
 
                 const fileRows = buildFileTableRows(files);
                 const activityRows = buildActivityLogRows(activityLog);
@@ -308,6 +375,23 @@
                                 <div class="card-body">
                                     ${outputFieldHTML}
 
+                                    ${serviceId === 'lease-abstraction' ? `
+                                    <div class="setup-row-split">
+                                        <div class="setup-group">
+                                            <label>Extraction Rules</label>
+                                            <button class="filter-btn" onclick="openRulesPopup()">📐 Update Rules</button>
+                                        </div>
+                                        <div class="setup-group">
+                                            <label>System Configuration</label>
+                                            <div class="system-config-row">
+                                                <select id="systemConfigSelect" onchange="verifySystemConnection()">
+                                                    ${systemOptions}
+                                                </select>
+                                                <span id="connectionStatusWrap">${buildConnectionStatusHTML()}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    ` : `
                                     <div class="setup-group">
                                         <label>System Configuration</label>
                                         <div class="system-config-row">
@@ -317,6 +401,7 @@
                                             <span id="connectionStatusWrap">${buildConnectionStatusHTML()}</span>
                                         </div>
                                     </div>
+                                    `}
 
                                     <div class="setup-group" style="margin-top:8px;">
                                         <div class="process-controls" id="processControls">
@@ -440,13 +525,21 @@
             // ============================================================
             // 14. FILE DOWNLOAD / RETRY
             // ============================================================
-            window.downloadFile = function(fileName) {
-                showMessage('⬇️ Download', `Downloading "${fileName}"...`, ['OK']);
+            window.downloadFile = function(fileName, docFolderName, kind) {
+                if (!docFolderName) {
+                    showWarning('This file was not processed through the real pipeline, so there\'s nothing to download yet.');
+                    return;
+                }
+                const base = kind === 'translation' ? '/api/translation/download' : '/api/lease/download';
+                const nameParam = kind === 'translation' ? 'docName' : 'leaseName';
+                const url = base + '?userId=' + encodeURIComponent(CURRENT_USER_ID) +
+                    '&' + nameParam + '=' + encodeURIComponent(docFolderName) + '&fileName=' + encodeURIComponent(fileName);
+                window.open(url, '_blank');
             };
 
             window.retryFile = function(fileId) {
                 const serviceId = activeSubItemId === 'translation' ? 'translation' : 'lease-abstraction';
-                const files = serviceId === 'translation' ? translationFiles : leaseFiles;
+                const files = serviceId === 'translation' ? getMyTranslationFiles() : getMyLeaseFiles();
                 const file = files.find(f => String(f.id) === String(fileId));
                 const reason = (file && file.errorReason) ? file.errorReason :
                     'This file could not be processed. Click "Start" to try again.';
@@ -474,6 +567,7 @@
             // lease-files.json will have no blob here and Start will ask
             // the user to re-upload it (see processLeaseFileAt below).
             let leaseFileBlobs = {};
+            let translationFileBlobs = {};
 
             function sleep(ms) {
                 return new Promise(resolve => setTimeout(resolve, ms));
@@ -493,7 +587,7 @@
             }
 
             async function postJSON(url, payload) {
-                const res = await fetch(url, {
+                const res = await authFetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
@@ -517,7 +611,7 @@
 
                 while (true) {
                     await sleep(2000);
-                    const res = await fetch('/api/lease/extract-status?jobId=' + encodeURIComponent(jobId));
+                    const res = await authFetch('/api/lease/extract-status?jobId=' + encodeURIComponent(jobId));
                     let status;
                     try { status = await res.json(); } catch (e) { status = {}; }
                     if (!res.ok) throw new Error(status.error || 'Could not check extraction status');
@@ -541,6 +635,7 @@
                     const xhr = new XMLHttpRequest();
                     xhr.open('POST', url);
                     xhr.setRequestHeader('Content-Type', 'application/json');
+                    if (AUTH_TOKEN) xhr.setRequestHeader('Authorization', 'Bearer ' + AUTH_TOKEN);
                     xhr.upload.onprogress = function(e) {
                         if (e.lengthComputable && typeof onProgress === 'function') {
                             onProgress(Math.round((e.loaded / e.total) * 100));
@@ -561,7 +656,7 @@
             }
 
             window.startProcess = function(serviceId) {
-                const files = serviceId === 'translation' ? translationFiles : leaseFiles;
+                const files = serviceId === 'translation' ? getMyTranslationFiles() : getMyLeaseFiles();
                 if (files.length === 0) {
                     showWarning('No files to process. Please upload files first.');
                     return;
@@ -578,8 +673,7 @@
                 if (serviceId === 'lease-abstraction') {
                     setTimeout(() => runLeaseAbstractionPipeline(), 500);
                 } else {
-                    // -1 = "balance not checked yet for this file" - see processNextFile
-                    setTimeout(() => processNextFile(serviceId, 0, -1), 500);
+                    setTimeout(() => runTranslationPipeline(), 500);
                 }
             };
 
@@ -592,136 +686,14 @@
                 cb();
             }
 
-            // stageIndex meaning, per file:
-            //   -1            -> not started: run the real $1 minimum-balance check first
-            //   0..N-1        -> running named agent N (the visible pipeline + progress bars)
-            //   N (out of AGENTS.length) -> agents finished: deduct $1, record the transaction, mark completed
-            function processNextFile(serviceId, fileIndex, stageIndex) {
-                if (processState.stopped) return;
-
-                const files = serviceId === 'translation' ? translationFiles : leaseFiles;
-                const AGENTS = getAgents(serviceId);
-
-                if (fileIndex >= files.length) {
-                    // All files processed (one by one) - some may have failed individually
-                    const hasErrors = files.some(f => f.status === 'error');
-                    activeAgentId = null;
-                    processState.isRunning = false;
-                    processState.isComplete = true;
-                    addActivity(serviceId, hasErrors ? 'Processing finished with errors' : 'All files processed successfully',
-                        hasErrors ? 'Error' : 'Completed');
-                    refreshServicePage(serviceId);
-                    persistServiceFiles(serviceId);
-                    showMessage(hasErrors ? '⚠️ Finished with Errors' : '✅ Complete',
-                        hasErrors ?
-                        'Processing finished, but one or more files could not be completed. Check the Action column for details.' :
-                        'All files have been processed successfully!', ['OK']);
-                    return;
-                }
-
-                const file = files[fileIndex];
-
-                // ---- Step 0: minimum $1 balance check (real, checked against the live balance) ----
-                if (stageIndex === -1) {
-                    waitIfPaused(serviceId, () => {
-                        activeAgentId = null;
-                        file.status = 'processing';
-                        refreshServicePage(serviceId);
-
-                        setTimeout(() => {
-                            if (processState.stopped) return;
-
-                            if (getCurrentBalance() < 1) {
-                                file.status = 'error';
-                                file.errorReason = 'Insufficient balance. A minimum of $1 is required to process this file. Please add balance, then click Start again.';
-                                addActivity(serviceId, `${file.name} > Checking Balance`, 'Error');
-                                refreshServicePage(serviceId);
-                                persistServiceFiles(serviceId);
-                                setTimeout(() => waitIfPaused(serviceId, () => processNextFile(serviceId, fileIndex + 1, -1)), 400);
-                                return;
-                            }
-
-                            addActivity(serviceId, `${file.name} > Checking Balance`, 'Completed');
-                            refreshServicePage(serviceId);
-                            setTimeout(() => waitIfPaused(serviceId, () => processNextFile(serviceId, fileIndex, 0)), 250);
-                        }, 500);
-                    });
-                    return;
-                }
-
-                // ---- Final step: agent pipeline finished - deduct $1 + record the transaction ----
-                if (stageIndex >= AGENTS.length) {
-                    waitIfPaused(serviceId, () => {
-                        activeAgentId = null;
-                        refreshServicePage(serviceId);
-
-                        setTimeout(() => {
-                            if (processState.stopped) return;
-
-                            const now = new Date();
-                            const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
-                            paymentHistory.push({
-                                id: txnId,
-                                date: now.toISOString().split('T')[0],
-                                time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
-                                userId: CURRENT_USER_ID,
-                                paymentType: 'Service Fee',
-                                paymentMode: 'Wallet Balance',
-                                description: `${serviceId === 'translation' ? 'Translation' : 'Lease Abstraction'} - ${file.name}`,
-                                credit: 0,
-                                debit: 1
-                            });
-
-                            file.status = 'completed';
-                            file.scanResult = '100';
-                            file.progress = '100';
-                            addActivity(serviceId, `${file.name} > Deduct $1 Balance (${txnId})`, 'Completed');
-                            refreshServicePage(serviceId);
-                            persistPaymentHistory();
-                            persistServiceFiles(serviceId);
-                            setTimeout(() => waitIfPaused(serviceId, () => processNextFile(serviceId, fileIndex + 1, -1)), 400);
-                        }, 500);
-                    });
-                    return;
-                }
-
-                // ---- Named agent stages (Core Lease Extractor, Rent Schedule Extractor, ...) ----
-                const stage = AGENTS[stageIndex];
-                const scanStages = AGENTS.filter(a => a.phase === 'scan');
-                const processStages = AGENTS.filter(a => a.phase !== 'scan');
-
-                waitIfPaused(serviceId, () => {
-                    activeAgentId = stage.id;
-                    file.status = 'processing';
-                    refreshServicePage(serviceId);
-
-                    setTimeout(() => {
-                        if (processState.stopped) return;
-
-                        // Scan Result fills first (0% -> 100%); only once it is 100% does
-                        // Progress start moving from 0%.
-                        if (stage.phase === 'scan') {
-                            const doneCount = scanStages.findIndex(s => s.id === stage.id) + 1;
-                            file.scanResult = String(Math.round((doneCount / scanStages.length) * 100));
-                            file.progress = '0';
-                        } else {
-                            file.scanResult = '100';
-                            const doneCount = processStages.findIndex(s => s.id === stage.id) + 1;
-                            file.progress = String(Math.round((doneCount / processStages.length) * 100));
-                        }
-
-                        addActivity(serviceId, `${file.name} > ${stage.name}`, 'Completed');
-                        refreshServicePage(serviceId);
-                        setTimeout(() => waitIfPaused(serviceId, () => processNextFile(serviceId, fileIndex, stageIndex + 1)), 300);
-                    }, 800);
-                });
-            }
-
             // ============================================================
             // 15b. LEASE ABSTRACTION - REAL PROCESSING PIPELINE (section 14)
             // Backed by the /api/lease/* routes in py/server.py. Progress
             // follows the fixed checkpoints from the spec: 0/20/40/60/80/100.
-            // Translation keeps the original simulated pipeline above.
+            // Translation has its own real pipeline too now (see
+            // runTranslationPipeline/processTranslationFileAt further down),
+            // backed by /api/translation/* - it used to be a setTimeout-only
+            // simulation.
             // ============================================================
             async function runLeaseAbstractionPipeline() {
                 if (processState.stopped) return;
@@ -746,242 +718,462 @@
                 processLeaseFileAt(0);
             }
 
-            async function processLeaseFileAt(fileIndex) {
-                if (processState.stopped) return;
-
-                if (fileIndex >= leaseFiles.length) {
-                    const hasErrors = leaseFiles.some(f => f.status === 'error');
-                    activeAgentId = null;
-                    processState.isRunning = false;
-                    processState.isComplete = true;
-                    addActivity('lease-abstraction',
-                        hasErrors ? 'Processing finished with errors' : 'All files processed successfully',
-                        hasErrors ? 'Error' : 'Completed');
-                    refreshServicePage('lease-abstraction');
-                    persistServiceFiles('lease-abstraction');
-                    showMessage(hasErrors ? '⚠️ Finished with Errors' : '✅ Complete',
-                        hasErrors ?
-                        'Processing finished, but one or more files could not be completed. Check the Action column for details.' :
-                        'All files have been processed successfully!', ['OK']);
-                    return;
-                }
-
-                await waitIfPausedAsync('lease-abstraction');
-                if (processState.stopped) return;
-
-                const file = leaseFiles[fileIndex];
-
-                if (file.status === 'completed') {
-                    return processLeaseFileAt(fileIndex + 1);
-                }
-
-                file.status = 'processing';
-                refreshServicePage('lease-abstraction');
-                await sleep(400);
-                if (processState.stopped) return;
-
-                // ---- Step 0: minimum $1 balance check (real, live balance) ----
-                if (getCurrentBalance() < 1) {
-                    file.status = 'error';
-                    file.errorLabel = 'Error';
-                    file.errorReason = 'Insufficient balance. A minimum of $1 is required to process this file. Please add balance, then click Start again.';
-                    addActivity('lease-abstraction', `${file.name} > Checking Balance`, 'Error');
-                    refreshServicePage('lease-abstraction');
-                    persistServiceFiles('lease-abstraction');
-                    await sleep(300);
-                    return processLeaseFileAt(fileIndex + 1);
-                }
-                addActivity('lease-abstraction', `${file.name} > Checking Balance`, 'Completed');
-                refreshServicePage('lease-abstraction');
-
-                const blob = leaseFileBlobs[file.id];
-                if (!blob) {
-                    file.status = 'error';
-                    file.errorLabel = 'Missing';
-                    file.scanResult = 'File Not Available';
-                    file.errorReason = 'The original file is no longer available in this browser session (this can happen after a page reload). Please remove and re-upload this file, then click Start again.';
-                    addActivity('lease-abstraction', `${file.name} > File not available for processing`, 'Error');
-                    refreshServicePage('lease-abstraction');
-                    persistServiceFiles('lease-abstraction');
-                    await sleep(300);
-                    return processLeaseFileAt(fileIndex + 1);
-                }
-
-                const processAgents = getAgents('lease-abstraction').filter(a => a.phase !== 'scan');
-
-                try {
-                    // ---- 14.2: Input File Scanning - real upload, real progress ----
-                    activeAgentId = null;
-                    const dataUrl = await readFileAsDataURL(blob);
-                    const dataBase64 = dataUrl.split(',')[1];
-
-                    const uploadResult = await uploadWithProgress('/api/lease/upload',
-                        { userId: CURRENT_USER_ID, fileName: file.name, dataBase64: dataBase64 },
-                        (pct) => { file.scanResult = String(pct); refreshServicePage('lease-abstraction'); }
-                    );
-                    file.scanResult = '100';
-                    file.progress = '0';
-                    addActivity('lease-abstraction', `${file.name} > Input File Scanning`, 'Completed');
-                    refreshServicePage('lease-abstraction');
-
-                    const stagingPath = uploadResult.stagingPath;
-                    const originalFileName = uploadResult.originalFileName;
-
-                    await waitIfPausedAsync('lease-abstraction');
+            async function processLeaseFileAt(startIndex) {
+                for (let fileIndex = startIndex; ; fileIndex++) {
                     if (processState.stopped) return;
 
-                    // ---- 20%: data extraction (async job + polling - a
-                    // slow OCR pass can take well over a minute, so this
-                    // never sits inside one single HTTP request, which is
-                    // what was tripping a gateway/proxy timeout before) ----
-                    activeAgentId = processAgents[0] ? processAgents[0].id : null;
-                    refreshServicePage('lease-abstraction');
-                    const extractRes = await runExtractJob(stagingPath, (pagesDone, pagesTotal) => {
-                        if (pagesTotal) {
-                            file.scanResult = `OCR ${pagesDone}/${pagesTotal}`;
-                            refreshServicePage('lease-abstraction');
-                        }
-                    });
-                    file.scanResult = '100';
-                    file.progress = '20';
-                    addActivity('lease-abstraction', `${file.name} > Data extracted from document`, 'Completed');
-                    refreshServicePage('lease-abstraction');
-
-                    await waitIfPausedAsync('lease-abstraction');
-                    if (processState.stopped) return;
-
-                    // ---- 40%: analysis - real OpenAI/OpenRouter call when
-                    // json/llm-config.json has a key configured (using
-                    // json/extraction_prompt.txt + json/rules.json), else
-                    // the heuristic engine - see py/lease_engine.py ----
-                    activeAgentId = processAgents[1] ? processAgents[1].id : null;
-                    refreshServicePage('lease-abstraction');
-                    const analyzeRes = await postJSON('/api/lease/analyze', {
-                        text: extractRes.text,
-                        fallbackName: originalFileName.replace(/\.[^.]+$/, '')
-                    });
-                    file.progress = '40';
-                    const methodLabel = analyzeRes.extractionMethod === 'llm-openai' ? 'OpenAI' :
-                        analyzeRes.extractionMethod === 'llm-openrouter' ? 'OpenRouter' : 'heuristic engine';
-                    addActivity('lease-abstraction', `${file.name} > Data analyzed and interpreted (${methodLabel})`, 'Completed');
-                    const accuracyLabel = analyzeRes.accuracyMethod === 'llm-validation' ? 'QC validated' : 'heuristic estimate';
-                    addActivity('lease-abstraction', `${file.name} > Accuracy: ${analyzeRes.accuracy}% (${accuracyLabel})`, 'Completed');
-                    file.accuracy = analyzeRes.accuracy;
-                    refreshServicePage('lease-abstraction');
-
-                    await waitIfPausedAsync('lease-abstraction');
-                    if (processState.stopped) return;
-
-                    // ---- 60%: document-type + duplicate validation ----
-                    activeAgentId = processAgents[2] ? processAgents[2].id : null;
-                    refreshServicePage('lease-abstraction');
-                    const validateRes = await postJSON('/api/lease/validate', {
-                        userId: CURRENT_USER_ID,
-                        docType: analyzeRes.docType,
-                        leaseName: analyzeRes.leaseName
-                    });
-
-                    if (!validateRes.valid) {
-                        file.status = 'error';
-                        file.progress = '0';
-                        if (validateRes.reason === 'duplicate') {
-                            file.scanResult = 'Already Processed';
-                            file.errorLabel = 'Duplicate';
-                            file.errorReason = `A lease named "${validateRes.leaseName}" has already been processed for your account.`;
-                            addActivity('lease-abstraction', `${file.name} > Already Processed`, 'Error');
-                        } else {
-                            file.scanResult = 'Invalid Document';
-                            file.errorLabel = 'Invalid';
-                            file.errorReason = 'This document does not appear to be a Lease or Amendment.';
-                            addActivity('lease-abstraction', `${file.name} > Invalid Document`, 'Error');
-                        }
+                    const myLeaseFiles = getMyLeaseFiles();
+                    if (fileIndex >= myLeaseFiles.length) {
+                        const hasErrors = myLeaseFiles.some(f => f.status === 'error');
                         activeAgentId = null;
+                        processState.isRunning = false;
+                        processState.isComplete = true;
+                        addActivity('lease-abstraction',
+                            hasErrors ? 'Processing finished with errors' : 'All files processed successfully',
+                            hasErrors ? 'Error' : 'Completed');
+                        refreshServicePage('lease-abstraction');
+                        persistServiceFiles('lease-abstraction');
+                        showMessage(hasErrors ? '⚠️ Finished with Errors' : '✅ Complete',
+                            hasErrors ?
+                            'Processing finished, but one or more files could not be completed. Check the Action column for details.' :
+                            'All files have been processed successfully!', ['OK']);
+                        return;
+                    }
+
+                    await waitIfPausedAsync('lease-abstraction');
+                    if (processState.stopped) return;
+
+                    const file = myLeaseFiles[fileIndex];
+
+                    if (file.status === 'completed') {
+                        continue;
+                    }
+
+                    file.status = 'processing';
+                    refreshServicePage('lease-abstraction');
+                    await sleep(400);
+                    if (processState.stopped) return;
+
+                    // ---- Step 0: minimum $1 balance check (real, live balance) ----
+                    if (getCurrentBalance() < 1) {
+                        file.status = 'error';
+                        file.errorLabel = 'Error';
+                        file.errorReason = 'Insufficient balance. A minimum of $1 is required to process this file. Please add balance, then click Start again.';
+                        addActivity('lease-abstraction', `${file.name} > Checking Balance`, 'Error');
                         refreshServicePage('lease-abstraction');
                         persistServiceFiles('lease-abstraction');
                         await sleep(300);
-                        return processLeaseFileAt(fileIndex + 1);
+                        continue;
+                    }
+                    addActivity('lease-abstraction', `${file.name} > Checking Balance`, 'Completed');
+                    refreshServicePage('lease-abstraction');
+
+                    const blob = leaseFileBlobs[file.id];
+                    if (!blob) {
+                        file.status = 'error';
+                        file.errorLabel = 'Missing';
+                        file.scanResult = 'File Not Available';
+                        file.errorReason = 'The original file is no longer available in this browser session (this can happen after a page reload). Please remove and re-upload this file, then click Start again.';
+                        addActivity('lease-abstraction', `${file.name} > File not available for processing`, 'Error');
+                        refreshServicePage('lease-abstraction');
+                        persistServiceFiles('lease-abstraction');
+                        await sleep(300);
+                        continue;
                     }
 
-                    file.progress = '60';
-                    addActivity('lease-abstraction', `${file.name} > Validation completed (document type + duplicate check)`, 'Completed');
-                    refreshServicePage('lease-abstraction');
+                    const processAgents = getAgents('lease-abstraction').filter(a => a.phase !== 'scan');
 
-                    await waitIfPausedAsync('lease-abstraction');
-                    if (processState.stopped) return;
+                    try {
+                        // ---- 14.2: Input File Scanning - real upload, real progress ----
+                        activeAgentId = null;
+                        const dataUrl = await readFileAsDataURL(blob);
+                        const dataBase64 = dataUrl.split(',')[1];
 
-                    // ---- 80%: Output.json + saved document + LeaseDocuments.json ----
-                    activeAgentId = processAgents[3] ? processAgents[3].id : null;
-                    refreshServicePage('lease-abstraction');
-                    const saveRes = await postJSON('/api/lease/save-output', {
-                        userId: CURRENT_USER_ID,
-                        leaseName: validateRes.leaseName,
-                        docType: analyzeRes.docType,
-                        fields: analyzeRes.fields,
-                        extractionMethod: analyzeRes.extractionMethod,
-                        accuracy: analyzeRes.accuracy,
-                        accuracyMethod: analyzeRes.accuracyMethod,
-                        accuracySummary: analyzeRes.accuracySummary,
-                        missingFields: analyzeRes.missingFields,
-                        lowConfidenceFields: analyzeRes.lowConfidenceFields,
-                        stagingPath: stagingPath,
-                        originalFileName: originalFileName
-                    });
-                    file.progress = '80';
-                    addActivity('lease-abstraction',
-                        `${file.name} > Output.json created, document saved to ${saveRes.leaseFolder}`, 'Completed');
-                    refreshServicePage('lease-abstraction');
+                        const uploadResult = await uploadWithProgress('/api/lease/upload',
+                            { userId: CURRENT_USER_ID, fileName: file.name, dataBase64: dataBase64 },
+                            (pct) => { file.scanResult = String(pct); refreshServicePage('lease-abstraction'); }
+                        );
+                        file.scanResult = '100';
+                        file.progress = '0';
+                        addActivity('lease-abstraction', `${file.name} > Input File Scanning`, 'Completed');
+                        refreshServicePage('lease-abstraction');
 
-                    await waitIfPausedAsync('lease-abstraction');
-                    if (processState.stopped) return;
+                        const stagingPath = uploadResult.stagingPath;
+                        const originalFileName = uploadResult.originalFileName;
 
-                    // ---- 100%: Output.pdf generation ----
-                    activeAgentId = processAgents[4] ? processAgents[4].id : null;
-                    refreshServicePage('lease-abstraction');
-                    const pdfRes = await postJSON('/api/lease/generate-pdf', {
-                        userId: CURRENT_USER_ID,
-                        leaseName: validateRes.leaseName,
-                        templateName: selectedTemplateFile || 'Default.pdf'
-                    });
-                    file.progress = '100';
-                    addActivity('lease-abstraction', `${file.name} > ${pdfRes.outputPdf} generated successfully`, 'Completed');
+                        await waitIfPausedAsync('lease-abstraction');
+                        if (processState.stopped) return;
 
-                    // ---- $1 processing fee (kept from the original simulation) ----
-                    const now = new Date();
-                    const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
-                    paymentHistory.push({
-                        id: txnId,
-                        date: now.toISOString().split('T')[0],
-                        time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
-                        userId: CURRENT_USER_ID,
-                        paymentType: 'Service Fee',
-                        paymentMode: 'Wallet Balance',
-                        description: `Lease Abstraction - ${file.name}`,
-                        credit: 0,
-                        debit: 1
-                    });
-                    addActivity('lease-abstraction', `${file.name} > Deduct $1 Balance (${txnId})`, 'Completed');
+                        // ---- 20%: data extraction (async job + polling - a
+                        // slow OCR pass can take well over a minute, so this
+                        // never sits inside one single HTTP request, which is
+                        // what was tripping a gateway/proxy timeout before) ----
+                        activeAgentId = processAgents[0] ? processAgents[0].id : null;
+                        refreshServicePage('lease-abstraction');
+                        const extractRes = await runExtractJob(stagingPath, (pagesDone, pagesTotal) => {
+                            if (pagesTotal) {
+                                file.scanResult = `OCR ${pagesDone}/${pagesTotal}`;
+                                file.progress = String(Math.min(20, Math.round((pagesDone / pagesTotal) * 20)));
+                                refreshServicePage('lease-abstraction');
+                            }
+                        });
+                        file.scanResult = '100';
+                        file.progress = '20';
+                        addActivity('lease-abstraction', `${file.name} > Data extracted from document`, 'Completed');
+                        refreshServicePage('lease-abstraction');
 
-                    file.status = 'completed';
-                    activeAgentId = null;
-                    delete leaseFileBlobs[file.id];
-                    refreshServicePage('lease-abstraction');
-                    persistPaymentHistory();
-                    persistServiceFiles('lease-abstraction');
+                        await waitIfPausedAsync('lease-abstraction');
+                        if (processState.stopped) return;
 
-                } catch (err) {
-                    console.error('Lease processing error:', err);
-                    file.status = 'error';
-                    file.errorLabel = 'Error';
-                    file.errorReason = 'Processing failed: ' + (err && err.message ? err.message :
-                        'Unknown error. Make sure py/server.py is running with its dependencies installed (pip install -r requirements.txt).');
-                    activeAgentId = null;
-                    addActivity('lease-abstraction', `${file.name} > Processing failed`, 'Error');
-                    refreshServicePage('lease-abstraction');
-                    persistServiceFiles('lease-abstraction');
+                        // ---- 40%: analysis - real OpenAI/OpenRouter call when
+                        // .env has a key configured (using
+                        // json/extraction_prompt.txt + json/rules.json), else
+                        // the heuristic engine - see py/lease_engine.py ----
+                        activeAgentId = processAgents[1] ? processAgents[1].id : null;
+                        refreshServicePage('lease-abstraction');
+                        const analyzeRes = await postJSON('/api/lease/analyze', {
+                            text: extractRes.text,
+                            fallbackName: originalFileName.replace(/\.[^.]+$/, '')
+                        });
+                        file.progress = '40';
+                        const methodLabel = analyzeRes.extractionMethod === 'llm-openai' ? 'OpenAI' :
+                            analyzeRes.extractionMethod === 'llm-openrouter' ? 'OpenRouter' : 'heuristic engine';
+                        addActivity('lease-abstraction', `${file.name} > Data analyzed and interpreted (${methodLabel})`, 'Completed');
+                        const accuracyLabel = analyzeRes.accuracyMethod === 'llm-validation' ? 'QC validated' : 'heuristic estimate';
+                        addActivity('lease-abstraction', `${file.name} > Accuracy: ${analyzeRes.accuracy}% (${accuracyLabel})`, 'Completed');
+                        file.accuracy = analyzeRes.accuracy;
+                        refreshServicePage('lease-abstraction');
+
+                        await waitIfPausedAsync('lease-abstraction');
+                        if (processState.stopped) return;
+
+                        // ---- 60%: document-type + duplicate validation ----
+                        activeAgentId = processAgents[2] ? processAgents[2].id : null;
+                        refreshServicePage('lease-abstraction');
+                        const validateRes = await postJSON('/api/lease/validate', {
+                            userId: CURRENT_USER_ID,
+                            docType: analyzeRes.docType,
+                            leaseName: analyzeRes.leaseName
+                        });
+
+                        if (!validateRes.valid) {
+                            file.status = 'error';
+                            file.progress = '0';
+                            if (validateRes.reason === 'duplicate') {
+                                file.scanResult = 'Already Processed';
+                                file.errorLabel = 'Duplicate';
+                                file.errorReason = `A lease named "${validateRes.leaseName}" has already been processed for your account.`;
+                                addActivity('lease-abstraction', `${file.name} > Already Processed`, 'Error');
+                            } else {
+                                file.scanResult = 'Invalid Document';
+                                file.errorLabel = 'Invalid';
+                                file.errorReason = 'This document does not appear to be a Lease or Amendment.';
+                                addActivity('lease-abstraction', `${file.name} > Invalid Document`, 'Error');
+                            }
+                            activeAgentId = null;
+                            refreshServicePage('lease-abstraction');
+                            persistServiceFiles('lease-abstraction');
+                            await sleep(300);
+                            continue;
+                        }
+
+                        file.progress = '60';
+                        file.leaseName = validateRes.leaseName;
+                        addActivity('lease-abstraction', `${file.name} > Validation completed (document type + duplicate check)`, 'Completed');
+                        refreshServicePage('lease-abstraction');
+
+                        await waitIfPausedAsync('lease-abstraction');
+                        if (processState.stopped) return;
+
+                        // ---- 80%: Output.json + saved document + LeaseDocuments.json ----
+                        activeAgentId = processAgents[3] ? processAgents[3].id : null;
+                        refreshServicePage('lease-abstraction');
+                        const saveRes = await postJSON('/api/lease/save-output', {
+                            userId: CURRENT_USER_ID,
+                            leaseName: validateRes.leaseName,
+                            docType: analyzeRes.docType,
+                            fields: analyzeRes.fields,
+                            extractionMethod: analyzeRes.extractionMethod,
+                            accuracy: analyzeRes.accuracy,
+                            accuracyMethod: analyzeRes.accuracyMethod,
+                            accuracySummary: analyzeRes.accuracySummary,
+                            missingFields: analyzeRes.missingFields,
+                            lowConfidenceFields: analyzeRes.lowConfidenceFields,
+                            stagingPath: stagingPath,
+                            originalFileName: originalFileName
+                        });
+                        file.progress = '80';
+                        addActivity('lease-abstraction',
+                            `${file.name} > Output.json created, document saved to ${saveRes.leaseFolder}`, 'Completed');
+                        refreshServicePage('lease-abstraction');
+
+                        await waitIfPausedAsync('lease-abstraction');
+                        if (processState.stopped) return;
+
+                        // ---- 100%: Output.pdf generation ----
+                        activeAgentId = processAgents[4] ? processAgents[4].id : null;
+                        refreshServicePage('lease-abstraction');
+                        const pdfRes = await postJSON('/api/lease/generate-pdf', {
+                            userId: CURRENT_USER_ID,
+                            leaseName: validateRes.leaseName,
+                            templateName: selectedTemplateFile || 'Default.pdf'
+                        });
+                        file.progress = '100';
+                        addActivity('lease-abstraction', `${file.name} > ${pdfRes.outputPdf} generated successfully`, 'Completed');
+
+                        // ---- $1 processing fee (kept from the original simulation) ----
+                        const now = new Date();
+                        const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                        paymentHistory.push({
+                            id: txnId,
+                            date: now.toISOString().split('T')[0],
+                            time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                            userId: CURRENT_USER_ID,
+                            paymentType: 'Service Fee',
+                            paymentMode: 'Wallet Balance',
+                            description: `Lease Abstraction - ${file.name}`,
+                            credit: 0,
+                            debit: 1
+                        });
+                        addActivity('lease-abstraction', `${file.name} > Deduct $1 Balance (${txnId})`, 'Completed');
+
+                        file.status = 'completed';
+                        activeAgentId = null;
+                        delete leaseFileBlobs[file.id];
+                        refreshServicePage('lease-abstraction');
+                        persistPaymentHistory();
+                        persistServiceFiles('lease-abstraction');
+
+                    } catch (err) {
+                        console.error('Lease processing error:', err);
+                        file.status = 'error';
+                        file.errorLabel = 'Error';
+                        file.errorReason = 'Processing failed: ' + (err && err.message ? err.message :
+                            'Unknown error. Make sure py/server.py is running with its dependencies installed (pip install -r requirements.txt).');
+                        activeAgentId = null;
+                        addActivity('lease-abstraction', `${file.name} > Processing failed`, 'Error');
+                        refreshServicePage('lease-abstraction');
+                        persistServiceFiles('lease-abstraction');
+                    }
+
+                    await sleep(300);
                 }
+            }
 
-                await sleep(300);
-                return processLeaseFileAt(fileIndex + 1);
+            // ============================================================
+            // REAL TRANSLATION PIPELINE (used to be entirely simulated with
+            // setTimeout - now a real backend pipeline, same shape as lease
+            // abstraction: real upload -> real (async, OCR-capable) text
+            // extraction -> real LLM translation -> real saved output +
+            // downloadable PDF).
+            // ============================================================
+            async function runTranslationPipeline() {
+                if (processState.stopped) return;
+                processTranslationFileAt(0);
+            }
+
+            async function processTranslationFileAt(startIndex) {
+                for (let fileIndex = startIndex; ; fileIndex++) {
+                    if (processState.stopped) return;
+
+                    const myFiles = getMyTranslationFiles();
+                    if (fileIndex >= myFiles.length) {
+                        const hasErrors = myFiles.some(f => f.status === 'error');
+                        activeAgentId = null;
+                        processState.isRunning = false;
+                        processState.isComplete = true;
+                        addActivity('translation',
+                            hasErrors ? 'Processing finished with errors' : 'All files processed successfully',
+                            hasErrors ? 'Error' : 'Completed');
+                        refreshServicePage('translation');
+                        persistServiceFiles('translation');
+                        showMessage(hasErrors ? '⚠️ Finished with Errors' : '✅ Complete',
+                            hasErrors ?
+                            'Processing finished, but one or more files could not be completed. Check the Action column for details.' :
+                            'All files have been processed successfully!', ['OK']);
+                        return;
+                    }
+
+                    await waitIfPausedAsync('translation');
+                    if (processState.stopped) return;
+
+                    const file = myFiles[fileIndex];
+                    if (file.status === 'completed') {
+                        continue;
+                    }
+
+                    file.status = 'processing';
+                    refreshServicePage('translation');
+                    await sleep(400);
+                    if (processState.stopped) return;
+
+                    // ---- Step 0: minimum $1 balance check (real, live balance) ----
+                    if (getCurrentBalance() < 1) {
+                        file.status = 'error';
+                        file.errorLabel = 'Error';
+                        file.errorReason = 'Insufficient balance. A minimum of $1 is required to process this file. Please add balance, then click Start again.';
+                        addActivity('translation', `${file.name} > Checking Balance`, 'Error');
+                        refreshServicePage('translation');
+                        persistServiceFiles('translation');
+                        await sleep(300);
+                        continue;
+                    }
+                    addActivity('translation', `${file.name} > Checking Balance`, 'Completed');
+                    refreshServicePage('translation');
+
+                    const blob = translationFileBlobs[file.id];
+                    if (!blob) {
+                        file.status = 'error';
+                        file.errorLabel = 'Missing';
+                        file.scanResult = 'File Not Available';
+                        file.errorReason = 'The original file is no longer available in this browser session (this can happen after a page reload). Please remove and re-upload this file, then click Start again.';
+                        addActivity('translation', `${file.name} > File not available for processing`, 'Error');
+                        refreshServicePage('translation');
+                        persistServiceFiles('translation');
+                        await sleep(300);
+                        continue;
+                    }
+
+                    const targetLanguage = file.targetLang || 'English';
+                    const processAgents = getAgents('translation').filter(a => a.phase !== 'scan');
+
+                    try {
+                        // ---- Input File Scanning - real upload, real progress ----
+                        activeAgentId = null;
+                        const dataUrl = await readFileAsDataURL(blob);
+                        const dataBase64 = dataUrl.split(',')[1];
+
+                        const uploadResult = await uploadWithProgress('/api/translation/upload',
+                            { userId: CURRENT_USER_ID, fileName: file.name, dataBase64: dataBase64 },
+                            (pct) => { file.scanResult = String(pct); refreshServicePage('translation'); }
+                        );
+                        file.scanResult = '100';
+                        file.progress = '0';
+                        addActivity('translation', `${file.name} > Input File Scanning`, 'Completed');
+                        refreshServicePage('translation');
+
+                        const stagingPath = uploadResult.stagingPath;
+                        const originalFileName = uploadResult.originalFileName;
+
+                        await waitIfPausedAsync('translation');
+                        if (processState.stopped) return;
+
+                        // ---- Extracting Text Content (async job + polling, same
+                        // OCR-capable pipeline as lease abstraction) ----
+                        activeAgentId = processAgents[0] ? processAgents[0].id : null;
+                        refreshServicePage('translation');
+                        const extractRes = await runExtractJob(stagingPath, (pagesDone, pagesTotal) => {
+                            if (pagesTotal) {
+                                file.scanResult = `OCR ${pagesDone}/${pagesTotal}`;
+                                file.progress = String(Math.min(20, Math.round((pagesDone / pagesTotal) * 20)));
+                                refreshServicePage('translation');
+                            }
+                        });
+                        file.scanResult = '100';
+                        file.progress = '20';
+                        addActivity('translation', `${file.name} > Text extracted from document`, 'Completed');
+                        refreshServicePage('translation');
+
+                        await waitIfPausedAsync('translation');
+                        if (processState.stopped) return;
+
+                        // ---- Translating Content - real LLM call ----
+                        activeAgentId = processAgents[1] ? processAgents[1].id : null;
+                        refreshServicePage('translation');
+                        const translateRes = await postJSON('/api/translation/translate', {
+                            text: extractRes.text,
+                            targetLanguage: targetLanguage
+                        });
+                        file.progress = '50';
+                        const methodLabel = translateRes.method === 'llm-openai' ? 'OpenAI' :
+                            translateRes.method === 'llm-openrouter' ? 'OpenRouter' : 'heuristic (no LLM configured)';
+                        addActivity('translation', `${file.name} > Translated to ${targetLanguage} (${methodLabel})`, 'Completed');
+                        refreshServicePage('translation');
+
+                        await waitIfPausedAsync('translation');
+                        if (processState.stopped) return;
+
+                        // ---- Applying Formatting Rules (cosmetic checkpoint -
+                        // the real formatting happens in generate_translation_pdf) ----
+                        activeAgentId = processAgents[2] ? processAgents[2].id : null;
+                        file.progress = '65';
+                        refreshServicePage('translation');
+                        await sleep(300);
+                        addActivity('translation', `${file.name} > Formatting applied`, 'Completed');
+                        refreshServicePage('translation');
+
+                        await waitIfPausedAsync('translation');
+                        if (processState.stopped) return;
+
+                        // ---- Prepare Output File - real save ----
+                        activeAgentId = processAgents[3] ? processAgents[3].id : null;
+                        refreshServicePage('translation');
+                        const docName = originalFileName.replace(/\.[^.]+$/, '');
+                        const saveRes = await postJSON('/api/translation/save-output', {
+                            userId: CURRENT_USER_ID,
+                            docName: docName,
+                            originalText: extractRes.text,
+                            translatedText: translateRes.translatedText,
+                            targetLanguage: targetLanguage,
+                            translationMethod: translateRes.method,
+                            stagingPath: stagingPath,
+                            originalFileName: originalFileName
+                        });
+                        file.progress = '85';
+                        file.docName = docName;
+                        addActivity('translation', `${file.name} > Output saved to ${saveRes.docFolder}`, 'Completed');
+                        refreshServicePage('translation');
+
+                        await waitIfPausedAsync('translation');
+                        if (processState.stopped) return;
+
+                        // ---- Create Download Link - real PDF ----
+                        activeAgentId = processAgents[4] ? processAgents[4].id : null;
+                        refreshServicePage('translation');
+                        const pdfRes = await postJSON('/api/translation/generate-pdf', {
+                            userId: CURRENT_USER_ID,
+                            docName: docName
+                        });
+                        file.progress = '100';
+                        addActivity('translation', `${file.name} > ${pdfRes.outputPdf} generated successfully`, 'Completed');
+
+                        // ---- $1 processing fee ----
+                        const now = new Date();
+                        const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                        paymentHistory.push({
+                            id: txnId,
+                            date: now.toISOString().split('T')[0],
+                            time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                            userId: CURRENT_USER_ID,
+                            paymentType: 'Service Fee',
+                            paymentMode: 'Wallet Balance',
+                            description: `Translation - ${file.name}`,
+                            credit: 0,
+                            debit: 1
+                        });
+                        addActivity('translation', `${file.name} > Deduct $1 Balance (${txnId})`, 'Completed');
+
+                        file.status = 'completed';
+                        activeAgentId = null;
+                        delete translationFileBlobs[file.id];
+                        refreshServicePage('translation');
+                        persistPaymentHistory();
+                        persistServiceFiles('translation');
+
+                    } catch (err) {
+                        console.error('Translation processing error:', err);
+                        file.status = 'error';
+                        file.errorLabel = 'Error';
+                        file.errorReason = 'Processing failed: ' + (err && err.message ? err.message :
+                            'Unknown error. Make sure py/server.py is running with its dependencies installed (pip install -r requirements.txt).');
+                        activeAgentId = null;
+                        addActivity('translation', `${file.name} > Processing failed`, 'Error');
+                        refreshServicePage('translation');
+                        persistServiceFiles('translation');
+                    }
+
+                    await sleep(300);
+                }
             }
 
             window.togglePause = function() {
@@ -1009,13 +1201,12 @@
                 showConfirm('🗑️ Clear Files', 'Are you sure you want to clear all uploaded files?', function(confirmed) {
                     if (confirmed) {
                         if (serviceId === 'translation') {
-                            translationFiles = [];
-                            nextTranslationFileId = 1;
-                            translationActivityLog = [];
+                            translationFiles = translationFiles.filter(f => f.userId !== CURRENT_USER_ID);
+                            translationActivityLog = translationActivityLog.filter(a => a.userId !== CURRENT_USER_ID);
+                            translationFileBlobs = {};
                         } else {
-                            leaseFiles = [];
-                            nextLeaseFileId = 1;
-                            leaseActivityLog = [];
+                            leaseFiles = leaseFiles.filter(f => f.userId !== CURRENT_USER_ID);
+                            leaseActivityLog = leaseActivityLog.filter(a => a.userId !== CURRENT_USER_ID);
                             leaseFileBlobs = {};
                         }
                         refreshServicePage(serviceId);
@@ -1030,7 +1221,7 @@
             // ============================================================
             window.downloadActivityLog = function() {
                 const serviceId = activeSubItemId || 'lease-abstraction';
-                const log = serviceId === 'translation' ? translationActivityLog : leaseActivityLog;
+                const log = serviceId === 'translation' ? getMyTranslationActivityLog() : getMyLeaseActivityLog();
 
                 if (log.length === 0) {
                     showWarning('No activities to download.');
@@ -1075,8 +1266,8 @@
                 if (activeSubItemId !== serviceId) return;
 
                 const isTranslation = serviceId === 'translation';
-                const files = isTranslation ? translationFiles : leaseFiles;
-                const activityLog = isTranslation ? translationActivityLog : leaseActivityLog;
+                const files = isTranslation ? getMyTranslationFiles() : getMyLeaseFiles();
+                const activityLog = isTranslation ? getMyTranslationActivityLog() : getMyLeaseActivityLog();
 
                 const fileCountEl = document.getElementById('fileCountText');
                 if (fileCountEl) {
@@ -1166,6 +1357,7 @@
 
                     const newFile = {
                         id: idCounter + i,
+                        userId: CURRENT_USER_ID,
                         name: file.name,
                         status: 'pending',
                         scanResult: '0',
@@ -1185,6 +1377,9 @@
                 if (isTranslation) {
                     translationFiles = translationFiles.concat(newFiles);
                     nextTranslationFileId += newFiles.length;
+                    for (let i = 0; i < files.length; i++) {
+                        translationFileBlobs[newFiles[i].id] = files[i];
+                    }
                 } else {
                     leaseFiles = leaseFiles.concat(newFiles);
                     nextLeaseFileId += newFiles.length;
@@ -1371,19 +1566,28 @@
             function getFilteredHistory() {
                 const fromInput = document.getElementById('historyFromDate');
                 const toInput = document.getElementById('historyToDate');
-                const mine = getMyPaymentHistory();
-                if (!fromInput || !toInput || !fromInput.value || !toInput.value) {
-                    return mine;
+                const userInput = document.getElementById('historyUserFilter');
+
+                let base = getVisiblePaymentHistory();
+
+                if (fromInput && toInput && fromInput.value && toInput.value) {
+                    base = base.filter(t => t.date >= fromInput.value && t.date <= toInput.value);
                 }
-                const from = fromInput.value;
-                const to = toInput.value;
-                return mine.filter(t => t.date >= from && t.date <= to);
+                if (userInput && userInput.value.trim()) {
+                    const q = userInput.value.trim().toLowerCase();
+                    base = base.filter(t => {
+                        const dirEntry = getUserDirectoryEntry(t.userId);
+                        const email = dirEntry ? (dirEntry.email || '').toLowerCase() : '';
+                        return (t.userId || '').toLowerCase().includes(q) || email.includes(q);
+                    });
+                }
+                return base;
             }
 
             function renderHistoryRows(tbody, list) {
                 if (list.length === 0) {
                     tbody.innerHTML =
-                        '<tr><td colspan="7" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions found.</td></tr>';
+                        '<tr><td colspan="8" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions found.</td></tr>';
                     return;
                 }
                 tbody.innerHTML = '';
@@ -1400,6 +1604,7 @@
                     tr.innerHTML = `
                         <td>${dateTimeText}</td>
                         <td><span style="font-weight:500;color:darkblue;">${transaction.id}</span></td>
+                        <td>${escapeHtml(transaction.userId || '')}</td>
                         <td>${transaction.paymentType}</td>
                         <td>${transaction.paymentMode}</td>
                         <td>${transaction.description}</td>
@@ -1544,12 +1749,36 @@
                 };
 
                 paymentHistory.push(newTransaction);
+
+                // Whoever adds balance, the real "money received" also
+                // shows up in the Developer's own Payment History as
+                // revenue - the entry above is what makes the ADDING
+                // user's own spendable balance go up; this one just
+                // records that the Developer's primary account is who
+                // actually received it.
+                const developerId = getDeveloperUserId();
+                if (developerId && developerId !== CURRENT_USER_ID) {
+                    const whoAdded = profileData ? `${profileData.firstName} ${profileData.lastName} (${CURRENT_USER_ID})` : CURRENT_USER_ID;
+                    paymentHistory.push({
+                        id: 'TXN' + String(nextTransactionId++).padStart(3, '0'),
+                        date: newTransaction.date,
+                        time: newTransaction.time,
+                        userId: developerId,
+                        paymentType: 'Balance Received',
+                        paymentMode: newTransaction.paymentMode,
+                        description: `Balance added by ${whoAdded}: ${description}`,
+                        credit: amount,
+                        debit: 0
+                    });
+                }
+
                 amountInput.value = '';
                 descInput.value = '';
 
                 renderPaymentHistory();
                 updateBalanceDisplay();
                 persistPaymentHistory();
+                addNotification(`$${amount.toFixed(2)} was added to your balance (Transaction ID: ${txnId}).`);
                 showMessage('✅ Success', `$${amount.toFixed(2)} added successfully! Transaction ID: ${txnId}`, ['OK']);
             };
 
@@ -1730,7 +1959,7 @@
                 }
 
                 if (actionsEl) {
-                    actionsEl.style.display = activeKey ? 'flex' : 'none';
+                    actionsEl.style.display = 'flex';
                 }
 
                 if (historyEl) {
@@ -1793,21 +2022,23 @@
             function renderSupportRows(tbody, list) {
                 if (list.length === 0) {
                     tbody.innerHTML =
-                        '<tr><td colspan="8" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No submissions found.</td></tr>';
+                        '<tr><td colspan="10" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No submissions found.</td></tr>';
                     return;
                 }
                 // Defensive: backfill an id for any record that's missing one
                 // (e.g. hand-edited via the Admin File Manager) so a row can
                 // never silently fail to open in the message card.
                 list.forEach(item => {
-                    if (!item.id) item.id = 'SUP' + String(nextSupportId++).padStart(3, '0');
+                    if (!item.id) item.id = generateNextSupportId();
                 });
                 const sorted = [...list].sort((a, b) => new Date(b.date) - new Date(a.date));
                 tbody.innerHTML = sorted.map(item => `
                     <tr class="support-row ${selectedSupportIds.has(item.id) ? 'row-checked' : ''} ${selectedSupportId === item.id ? 'selected' : ''}">
                         <td onclick="event.stopPropagation();"><input type="checkbox" class="support-row-check" data-id="${item.id}" ${selectedSupportIds.has(item.id) ? 'checked' : ''} onchange="toggleSupportRowCheck('${item.id}', this)" /></td>
+                        <td onclick="selectSupportRow('${item.id}')"><span style="font-weight:500;color:darkblue;">${escapeHtml(item.id)}</span></td>
                         <td onclick="selectSupportRow('${item.id}')">${item.date}</td>
                         <td onclick="selectSupportRow('${item.id}')">${item.time}</td>
+                        <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.userId || '')}</td>
                         <td onclick="selectSupportRow('${item.id}')">${item.type}</td>
                         <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.subject)}</td>
                         <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.message)}</td>
@@ -1820,13 +2051,26 @@
             function getFilteredSupport() {
                 const fromInput = document.getElementById('supportFromDate');
                 const toInput = document.getElementById('supportToDate');
-                const mine = getMyContactSubmissions();
-                if (!fromInput || !toInput || !fromInput.value || !toInput.value) {
-                    return mine;
+                const statusInput = document.getElementById('supportStatusFilter');
+                const userInput = document.getElementById('supportUserFilter');
+
+                let base = getVisibleContactSubmissions();
+
+                if (fromInput && toInput && fromInput.value && toInput.value) {
+                    base = base.filter(t => t.date >= fromInput.value && t.date <= toInput.value);
                 }
-                const from = fromInput.value;
-                const to = toInput.value;
-                return mine.filter(t => t.date >= from && t.date <= to);
+                if (statusInput && statusInput.value) {
+                    base = base.filter(t => t.status === statusInput.value);
+                }
+                if (userInput && userInput.value.trim()) {
+                    const q = userInput.value.trim().toLowerCase();
+                    base = base.filter(t => {
+                        const dirEntry = getUserDirectoryEntry(t.userId);
+                        const email = dirEntry ? (dirEntry.email || '').toLowerCase() : '';
+                        return (t.userId || '').toLowerCase().includes(q) || email.includes(q);
+                    });
+                }
+                return base;
             }
 
             function renderSupportTable() {
@@ -1924,76 +2168,131 @@
             // 26. CONTACT FORM FUNCTIONS
             // ============================================================
             let selectedSupportId = null;
-            let nextSupportId = 1;
 
             // ID + Status share the top row (ID narrow, Status to its
             // right); Response is full width (same width as Message),
             // placed below the button row - only the editability of
             // Type/Subject/Message and the button row change between modes.
+            // Ticket IDs are YYMMDD + a 5-digit daily sequence (e.g.
+            // 26070200001 for the first ticket on 2026-07-02) so they sort
+            // naturally by date and are sequential within a day.
+            function generateNextSupportId() {
+                const now = new Date();
+                const datePrefix = String(now.getFullYear()).slice(-2) +
+                    String(now.getMonth() + 1).padStart(2, '0') +
+                    String(now.getDate()).padStart(2, '0');
+                let maxSeq = 0;
+                contactSubmissions.forEach(c => {
+                    const id = c.id || '';
+                    if (id.startsWith(datePrefix) && id.length === 11) {
+                        const n = parseInt(id.slice(6), 10);
+                        if (!isNaN(n) && n > maxSeq) maxSeq = n;
+                    }
+                });
+                return datePrefix + String(maxSeq + 1).padStart(5, '0');
+            }
+
+            // opts.mode: 'compose' (Type+Subject+Message+Create only - no
+            // ID/Status/Response at all), 'view-user' (everything readonly,
+            // no buttons), or 'view-admin' (Type/Subject/Message readonly,
+            // but Status is a real dropdown and Response is editable, plus
+            // a Submit button - Developer/Admin can respond and change
+            // status but never touch what the user actually wrote).
             function buildContactCardHTML(opts) {
-                const readonly = !!opts.readonly;
-                const fieldAttrs = readonly ? 'disabled style="opacity:0.7;"' : '';
+                if (opts.mode === 'compose') {
+                    return `
+                        <div class="form-row contact-type-subject-row">
+                            <div class="form-group">
+                                <label>Type</label>
+                                <select id="contactType">
+                                    <option value="Query">Query</option>
+                                    <option value="Inquiry">Inquiry</option>
+                                    <option value="Complaint">Complaint</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Subject *</label>
+                                <input type="text" id="contactSubject" placeholder="Enter subject" />
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Message *</label>
+                            <textarea id="contactMessage" rows="5" placeholder="Type your message here..."></textarea>
+                        </div>
+                        <div style="display:flex;gap:10px;">
+                            <button class="submit-btn" onclick="submitContactForm()">➕ Create</button>
+                        </div>
+                    `;
+                }
+
+                const isAdminEdit = opts.mode === 'view-admin';
                 return `
                     <div class="form-row contact-id-status-row">
                         <div class="form-group">
-                            <label>Message ID</label>
-                            <input type="text" value="${escapeHtml(opts.id)}" disabled style="opacity:0.7;font-weight:600;" />
+                            <label>Ticket ID</label>
+                            <div class="contact-readonly-label">${escapeHtml(opts.id)}</div>
                         </div>
                         <div class="form-group">
                             <label>Status</label>
-                            <input type="text" value="${escapeHtml(opts.status || '')}" disabled style="opacity:0.7;" />
+                            ${isAdminEdit ? `
+                                <select id="contactStatus">
+                                    <option value="Pending" ${opts.status === 'Pending' ? 'selected' : ''}>Pending</option>
+                                    <option value="WIP" ${opts.status === 'WIP' ? 'selected' : ''}>WIP</option>
+                                    <option value="Resolved" ${opts.status === 'Resolved' ? 'selected' : ''}>Resolved</option>
+                                </select>
+                            ` : `<div class="contact-readonly-label">${escapeHtml(opts.status || '-')}</div>`}
+                        </div>
+                    </div>
+                    <div class="form-row contact-type-subject-row">
+                        <div class="form-group">
+                            <label>Type</label>
+                            <div class="contact-readonly-label">${escapeHtml(opts.type)}</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Subject</label>
+                            <div class="contact-readonly-label">${escapeHtml(opts.subject)}</div>
                         </div>
                     </div>
                     <div class="form-group">
-                        <label>Type</label>
-                        <select id="contactType" ${fieldAttrs}>
-                            <option value="Query" ${opts.type === 'Query' ? 'selected' : ''}>Query</option>
-                            <option value="Inquiry" ${opts.type === 'Inquiry' ? 'selected' : ''}>Inquiry</option>
-                            <option value="Complaint" ${opts.type === 'Complaint' ? 'selected' : ''}>Complaint</option>
-                        </select>
+                        <label>Message</label>
+                        <textarea rows="4" disabled style="opacity:0.7;">${escapeHtml(opts.message || '')}</textarea>
                     </div>
-                    <div class="form-group">
-                        <label>Subject *</label>
-                        <input type="text" id="contactSubject" placeholder="Enter subject" value="${escapeHtml(opts.subject || '')}" ${fieldAttrs} />
-                    </div>
-                    <div class="form-group">
-                        <label>Message *</label>
-                        <textarea id="contactMessage" rows="4" placeholder="Type your message here..." ${fieldAttrs}>${escapeHtml(opts.message || '')}</textarea>
-                    </div>
-                    ${readonly ? `
-                        <div style="display:flex;gap:10px;">
-                            <button class="submit-btn" onclick="openMessagePopup('compose')">➕ Create New</button>
-                        </div>
-                    ` : `
-                        <div style="display:flex;gap:10px;">
-                            <button class="submit-btn" onclick="submitContactForm()">📤 Submit</button>
-                            <button class="submit-btn" style="border-color:rgba(0,0,139,0.3);color:rgba(0,0,0,0.6);" onclick="resetContactForm()">↺ Reset</button>
-                        </div>
-                    `}
                     <div class="form-group">
                         <label>Response</label>
-                        <textarea rows="3" disabled style="opacity:0.7;">${opts.response && opts.response !== '-' ? escapeHtml(opts.response) : ''}</textarea>
+                        <textarea id="contactResponse" rows="3" ${isAdminEdit ? `placeholder="Write a response..."` : 'disabled style="opacity:0.7;"'}>${opts.response && opts.response !== '-' ? escapeHtml(opts.response) : ''}</textarea>
                     </div>
+                    ${isAdminEdit ? `
+                        <div style="display:flex;gap:10px;">
+                            <button class="submit-btn" onclick="submitTicketUpdate('${opts.id}')">📤 Submit</button>
+                        </div>
+                    ` : ''}
                 `;
             }
 
-            // ---- "Send us a Message" popup (triggered by a row click or
-            // the "Create New" link - the log table itself is full width
-            // now, with no permanently-visible side card). ----
+            // ---- "Send us a Message" / Ticket Details popup (triggered by
+            // a row click or the "Create New" link - the log table itself
+            // is full width, with no permanently-visible side card). ----
             window.openMessagePopup = function(mode, item) {
-                const readonly = mode === 'view' && !!item;
-                selectedSupportId = readonly ? item.id : null;
-
-                const fieldsHtml = readonly ? buildContactCardHTML({
-                    id: item.id, type: item.type, subject: item.subject, message: item.message,
-                    response: item.response, status: item.status, readonly: true
-                }) : buildContactCardHTML({ id: 'New', type: 'Query', response: '', status: '', readonly: false });
+                let fieldsHtml, title;
+                if (mode === 'compose') {
+                    selectedSupportId = null;
+                    fieldsHtml = buildContactCardHTML({ mode: 'compose' });
+                    title = '✉️ Send us a Message';
+                } else {
+                    selectedSupportId = item.id;
+                    fieldsHtml = buildContactCardHTML({
+                        id: item.id, type: item.type, subject: item.subject, message: item.message,
+                        response: item.response, status: item.status,
+                        mode: isAdminOrDeveloper() ? 'view-admin' : 'view-user'
+                    });
+                    title = '🎫 Ticket Details';
+                }
 
                 const html = `
                     <div class="admin-modal-overlay" id="messagePopupOverlay">
                         <div class="admin-modal-card message-popup-card">
                             <button class="admin-modal-close" onclick="closeMessagePopup()">✕</button>
-                            <h3 class="admin-modal-title" id="contactCardTitle">${readonly ? '✉️ Message Details' : '✉️ Send us a Message'}</h3>
+                            <h3 class="admin-modal-title">${title}</h3>
                             <div class="payment-form" id="contactCardBody">${fieldsHtml}</div>
                         </div>
                     </div>
@@ -2010,28 +2309,6 @@
                 const overlay = document.getElementById('messagePopupOverlay');
                 if (overlay) overlay.remove();
                 selectedSupportId = null;
-                const tbody = document.getElementById('supportTableBody');
-                if (tbody) renderSupportRows(tbody, getFilteredSupport());
-            };
-
-            // Kept for internal re-renders (e.g. after Submit) without
-            // closing/reopening the popup from scratch.
-            window.renderContactCard = function(mode, item) {
-                const wrap = document.getElementById('contactCardBody');
-                const titleEl = document.getElementById('contactCardTitle');
-                if (!wrap) { openMessagePopup(mode, item); return; }
-                if (mode === 'view' && item) {
-                    selectedSupportId = item.id;
-                    wrap.innerHTML = buildContactCardHTML({
-                        id: item.id, type: item.type, subject: item.subject, message: item.message,
-                        response: item.response, status: item.status, readonly: true
-                    });
-                    if (titleEl) titleEl.textContent = '✉️ Message Details';
-                } else {
-                    selectedSupportId = null;
-                    wrap.innerHTML = buildContactCardHTML({ id: 'New', type: 'Query', response: '', status: '', readonly: false });
-                    if (titleEl) titleEl.textContent = '✉️ Send us a Message';
-                }
                 const tbody = document.getElementById('supportTableBody');
                 if (tbody) renderSupportRows(tbody, getFilteredSupport());
             };
@@ -2057,8 +2334,9 @@
                 }
 
                 const now = new Date();
+                const ticketId = generateNextSupportId();
                 contactSubmissions.push({
-                    id: 'SUP' + String(nextSupportId++).padStart(3, '0'),
+                    id: ticketId,
                     userId: CURRENT_USER_ID,
                     date: now.toISOString().split('T')[0],
                     time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
@@ -2071,28 +2349,44 @@
 
                 closeMessagePopup();
                 persistContactSubmissions();
-                sendContactAcknowledgementEmail(type, subject, message);
+                sendContactAcknowledgementEmail(ticketId, type, subject, message);
                 const tbody = document.getElementById('supportTableBody');
                 if (tbody) renderSupportRows(tbody, getFilteredSupport());
-                showMessage('✅ Message Sent', 'Thank you for reaching out! Our team will get back to you shortly.', [
-                    'OK'
-                ]);
+                showMessage('✅ Ticket Created', `Thank you for reaching out! Your ticket ID is <strong>${ticketId}</strong>. Our team will get back to you shortly.`, ['OK']);
+            };
+
+            window.submitTicketUpdate = function(id) {
+                const item = contactSubmissions.find(c => c.id === id);
+                if (!item) return;
+                const statusSelect = document.getElementById('contactStatus');
+                const responseInput = document.getElementById('contactResponse');
+
+                item.status = statusSelect.value;
+                item.response = responseInput.value.trim() || '-';
+
+                persistContactSubmissions();
+                closeMessagePopup();
+                sendTicketUpdateEmail(item);
+                const tbody = document.getElementById('supportTableBody');
+                if (tbody) renderSupportRows(tbody, getFilteredSupport());
+                showMessage('✅ Updated', 'The ticket status and response have been saved.', ['OK']);
             };
 
             // Fires the acknowledgement email in the background via the backend's
-            // SMTP endpoint (json/smtp-config.json). Failures are logged quietly -
-            // the user has already seen the "Message Sent" confirmation, and a
+            // SMTP endpoint (credentials in .env). Failures are logged quietly -
+            // the user has already seen the "Ticket Created" confirmation, and a
             // missing/unreachable SMTP server shouldn't block the submission.
-            function sendContactAcknowledgementEmail(type, subject, message) {
+            function sendContactAcknowledgementEmail(ticketId, type, subject, message) {
                 const recipient = (profileData && profileData.email) || (COMPANY_INFO && COMPANY_INFO.email);
                 if (!recipient) return;
 
-                fetch('/api/send-acknowledgement', {
+                authFetch('/api/send-acknowledgement', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         toEmail: recipient,
                         userName: profileData ? `${profileData.firstName} ${profileData.lastName}` : 'there',
+                        ticketId: ticketId,
                         type: type,
                         subject: subject,
                         message: message
@@ -2100,9 +2394,26 @@
                 }).catch(e => console.warn('Acknowledgement email could not be sent:', e));
             }
 
-            window.resetContactForm = function() {
-                renderContactCard('compose');
-            };
+            // Notifies the ticket's original owner by email once an admin/
+            // developer submits a status/response update.
+            function sendTicketUpdateEmail(item) {
+                const dirEntry = getUserDirectoryEntry(item.userId);
+                const recipient = dirEntry ? dirEntry.email : null;
+                if (!recipient) return;
+
+                authFetch('/api/send-ticket-update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        toEmail: recipient,
+                        userName: dirEntry ? `${dirEntry.firstName} ${dirEntry.lastName}` : 'there',
+                        ticketId: item.id,
+                        status: item.status,
+                        response: item.response,
+                        subject: item.subject
+                    })
+                }).catch(e => console.warn('Ticket update email could not be sent:', e));
+            }
 
             // ============================================================
             // 27. DASHBOARD FUNCTIONS
@@ -2117,7 +2428,7 @@
 
                 if (todayList.length === 0) {
                     tbody.innerHTML =
-                        '<tr><td colspan="7" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions today.</td></tr>';
+                        '<tr><td colspan="8" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions today.</td></tr>';
                 } else {
                     renderHistoryRows(tbody, todayList);
                 }
@@ -2129,6 +2440,96 @@
                 const balanceEl = document.getElementById('dashBalance');
                 if (balanceEl) balanceEl.textContent = '$' + (totalCredit - totalDebit).toFixed(2);
             }
+
+            // Real counts (previously hardcoded placeholder numbers) - Lease
+            // Abstraction count comes from how many lease folders actually
+            // exist on disk for this user (Users/<id>/LeaseAbstraction/*),
+            // Translation count from completed entries in translationFiles
+            // (translation is still a simulated pipeline, no real output
+            // folder to count on disk).
+            async function renderDashboardCounts() {
+                const leaseEl = document.getElementById('dashLeaseCount');
+                const translationEl = document.getElementById('dashTranslationCount');
+
+                if (translationEl) {
+                    translationEl.textContent = getMyTranslationFiles().filter(f => f.status === 'completed').length;
+                }
+
+                if (leaseEl) {
+                    try {
+                        const res = await authFetch('/api/lease/list?userId=' + encodeURIComponent(CURRENT_USER_ID));
+                        const data = await res.json();
+                        leaseEl.textContent = (data.leases || []).length;
+                    } catch (e) {
+                        leaseEl.textContent = '0';
+                    }
+                }
+            }
+
+            async function renderMyLeasesList() {
+                const list = document.getElementById('myLeasesList');
+                if (!list) return;
+
+                try {
+                    const res = await authFetch('/api/lease/list?userId=' + encodeURIComponent(CURRENT_USER_ID));
+                    const data = await res.json();
+                    const leases = data.leases || [];
+
+                    if (leases.length === 0) {
+                        list.innerHTML = '<li class="my-leases-empty">No leases processed yet - run one from Lease Abstraction.</li>';
+                        return;
+                    }
+
+                    list.innerHTML = leases.map(l => `
+                        <li class="my-lease-item">
+                            <a class="my-lease-link" onclick="openLeaseDocsPopup('${l.leaseName.replace(/'/g, "\\'")}')">📄 ${escapeHtml(l.leaseName)}</a>
+                            <span class="my-lease-meta">${l.docType ? escapeHtml(l.docType) : ''} ${l.accuracy != null ? '· ' + l.accuracy + '% accuracy' : ''}</span>
+                        </li>
+                    `).join('');
+                } catch (e) {
+                    list.innerHTML = '<li class="my-leases-empty">Could not load - make sure py/server.py is running.</li>';
+                }
+            }
+
+            window.openLeaseDocsPopup = async function(leaseName) {
+                try {
+                    const res = await authFetch('/api/lease/documents?userId=' + encodeURIComponent(CURRENT_USER_ID) + '&leaseName=' + encodeURIComponent(leaseName));
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not load lease documents.');
+
+                    const docs = data.documents || [];
+                    const rows = docs.map(d => `
+                        <tr>
+                            <td>${escapeHtml(d.fileName)}</td>
+                            <td><button class="filter-btn download-btn" onclick="downloadFile('${d.fileName.replace(/'/g, "\\'")}', '${leaseName.replace(/'/g, "\\'")}')">⬇️ Download</button></td>
+                        </tr>
+                    `).join('') + (data.hasOutputPdf ? `
+                        <tr>
+                            <td><strong>Output.pdf</strong> (generated report)</td>
+                            <td><button class="filter-btn download-btn" onclick="downloadFile('Output.pdf', '${leaseName.replace(/'/g, "\\'")}')">⬇️ Download</button></td>
+                        </tr>
+                    ` : '');
+
+                    const html = `
+                        <div class="admin-modal-overlay" id="leaseDocsPopupOverlay">
+                            <div class="admin-modal-card message-popup-card">
+                                <button class="admin-modal-close" onclick="document.getElementById('leaseDocsPopupOverlay').remove()">✕</button>
+                                <h3 class="admin-modal-title">📁 ${escapeHtml(leaseName)}</h3>
+                                <table class="admin-json-table" style="width:100%;">
+                                    <thead><tr><th>File</th><th>Action</th></tr></thead>
+                                    <tbody>${rows || '<tr><td colspan="2">No documents found.</td></tr>'}</tbody>
+                                </table>
+                            </div>
+                        </div>
+                    `;
+                    const existing = document.getElementById('leaseDocsPopupOverlay');
+                    if (existing) existing.remove();
+                    document.body.insertAdjacentHTML('beforeend', html);
+                } catch (err) {
+                    showWarning(err.message || 'Could not load lease documents.');
+                }
+            };
+
 
             // ============================================================
             // 28. PROFILE FUNCTIONS
@@ -2199,16 +2600,16 @@
                                         </div>
                                         <div class="form-row">
                                             <div class="form-group">
-                                                <label>Password</label>
+                                                <label>New Password</label>
                                                 <div class="password-field-wrapper">
-                                                    <input type="password" id="profilePassword" value="${profileData.password}" />
+                                                    <input type="password" id="profilePassword" placeholder="Leave blank to keep current password" autocomplete="new-password" />
                                                     <span class="password-eye" onclick="togglePasswordVisibility('profilePassword', this)">👁️</span>
                                                 </div>
                                             </div>
                                             <div class="form-group">
-                                                <label>Confirm Password</label>
+                                                <label>Confirm New Password</label>
                                                 <div class="password-field-wrapper">
-                                                    <input type="password" id="profileConfirmPassword" value="${profileData.password}" />
+                                                    <input type="password" id="profileConfirmPassword" placeholder="Leave blank to keep current password" autocomplete="new-password" />
                                                     <span class="password-eye" onclick="togglePasswordVisibility('profileConfirmPassword', this)">👁️</span>
                                                 </div>
                                             </div>
@@ -2273,7 +2674,7 @@
                     // (cover fit, see CSS) rather than a small avatar circle.
                     document.getElementById('profilePhotoPreview').innerHTML = `<img src="${dataUrl}" alt="Profile" />`;
                     try {
-                        const res = await fetch('/api/upload-photo', {
+                        const res = await authFetch('/api/upload-photo', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ userId: CURRENT_USER_ID, fileName: file.name, dataUrl: dataUrl })
@@ -2324,15 +2725,19 @@
                 const password = document.getElementById('profilePassword').value;
                 const confirmPassword = document.getElementById('profileConfirmPassword').value;
 
-                if (password !== confirmPassword) {
-                    showWarning('Password and Confirm Password do not match.');
-                    return;
-                }
-
-                const policyIssues = getPasswordPolicyIssues(password);
-                if (policyIssues.length > 0) {
-                    showWarning('Password must contain ' + policyIssues.join(', ') + '.');
-                    return;
+                if (password || confirmPassword) {
+                    if (password !== confirmPassword) {
+                        showWarning('Password and Confirm Password do not match.');
+                        return;
+                    }
+                    const policyIssues = getPasswordPolicyIssues(password);
+                    if (policyIssues.length > 0) {
+                        showWarning('Password must contain ' + policyIssues.join(', ') + '.');
+                        return;
+                    }
+                    profileData.password = password;
+                } else {
+                    delete profileData.password;
                 }
 
                 profileData.firstName = document.getElementById('profileFirstName').value.trim();
@@ -2340,13 +2745,14 @@
                 profileData.gender = document.getElementById('profileGender').value;
                 profileData.birthdate = document.getElementById('profileBirthdate').value;
                 profileData.mobile = document.getElementById('profileMobile').value.trim();
-                profileData.password = password;
                 profileData.twoFactorAuth = document.getElementById('profileTwoFactorAuth').checked ? 'Yes' : 'No';
 
                 userNameDisplay.textContent = profileData.firstName + ' ' + profileData.lastName;
                 MENU_CONFIG.user.name = profileData.firstName + ' ' + profileData.lastName;
                 updateAvatarDisplay();
                 persistProfile();
+                document.getElementById('profilePassword').value = '';
+                document.getElementById('profileConfirmPassword').value = '';
 
                 showMessage('✅ Profile Updated', 'Your profile information has been saved successfully.', ['OK']);
             };
@@ -2373,6 +2779,331 @@
             let adminCurrentPath = '';
             let adminEntries = [];
             let adminSelectedPaths = new Set();
+
+            // ============================================================
+            // NOTIFICATIONS (generated e.g. when balance is added)
+            // ============================================================
+            function getMyNotifications() {
+                return notifications.filter(n => n.userId === CURRENT_USER_ID);
+            }
+
+            function addNotification(description) {
+                const now = new Date();
+                notifications.push({
+                    id: 'NOTIF' + String(nextNotificationId++).padStart(3, '0'),
+                    userId: CURRENT_USER_ID,
+                    date: now.toISOString().split('T')[0],
+                    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                    description: description,
+                    read: false
+                });
+                persistNotifications();
+                updateNotificationBadge();
+            }
+
+            function updateNotificationBadge() {
+                const badge = document.getElementById('notificationBadge');
+                if (!badge) return;
+                const unread = getMyNotifications().filter(n => !n.read).length;
+                if (unread > 0) {
+                    badge.textContent = unread > 9 ? '9+' : String(unread);
+                    badge.style.display = 'inline-flex';
+                } else {
+                    badge.style.display = 'none';
+                }
+            }
+
+            let selectedNotificationIds = new Set();
+
+            function buildNotificationBody() {
+                return `
+                    <div class="history-card">
+                        <h3>🔔 Notifications</h3>
+                        <div class="card-body">
+                            <table class="history-table" id="notificationTable">
+                                <thead>
+                                    <tr>
+                                        <th style="width:32px;"><input type="checkbox" onchange="toggleNotificationSelectAll(this)" /></th>
+                                        <th>Date &amp; Time</th>
+                                        <th>Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="notificationTableBody"></tbody>
+                            </table>
+                            <div class="support-log-footer-row">
+                                <button class="filter-btn" onclick="bulkMarkNotifications(true)">✅ Mark Read</button>
+                                <button class="filter-btn reset-btn" onclick="bulkMarkNotifications(false)">📩 Mark Unread</button>
+                                <button class="filter-btn delete-btn" onclick="bulkRemoveNotifications()">🗑️ Remove</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function renderNotificationTable() {
+                const tbody = document.getElementById('notificationTableBody');
+                if (!tbody) return;
+                const mine = [...getMyNotifications()].sort((a, b) => new Date(b.date + ' ' + b.time) - new Date(a.date + ' ' + a.time));
+
+                if (mine.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No notifications yet.</td></tr>';
+                    updateNotificationBadge();
+                    return;
+                }
+
+                tbody.innerHTML = mine.map(n => `
+                    <tr class="${n.read ? '' : 'notification-unread'}">
+                        <td onclick="event.stopPropagation();"><input type="checkbox" class="notification-row-check" data-id="${n.id}" ${selectedNotificationIds.has(n.id) ? 'checked' : ''} onchange="toggleNotificationRowCheck('${n.id}', this)" /></td>
+                        <td>${n.date} ${n.time}</td>
+                        <td><a class="notification-desc-link" onclick="openNotificationPopup('${n.id}')">${escapeHtml(n.description)}</a></td>
+                    </tr>
+                `).join('');
+                updateNotificationBadge();
+            }
+
+            window.toggleNotificationRowCheck = function(id, checkbox) {
+                if (checkbox.checked) selectedNotificationIds.add(id);
+                else selectedNotificationIds.delete(id);
+            };
+
+            window.toggleNotificationSelectAll = function(checkbox) {
+                document.querySelectorAll('.notification-row-check').forEach((cb) => {
+                    cb.checked = checkbox.checked;
+                    if (checkbox.checked) selectedNotificationIds.add(cb.dataset.id);
+                    else selectedNotificationIds.delete(cb.dataset.id);
+                });
+            };
+
+            window.bulkMarkNotifications = function(readValue) {
+                if (selectedNotificationIds.size === 0) {
+                    showWarning('Select at least one notification first.');
+                    return;
+                }
+                notifications.forEach(n => {
+                    if (selectedNotificationIds.has(n.id)) n.read = readValue;
+                });
+                persistNotifications();
+                renderNotificationTable();
+            };
+
+            window.bulkRemoveNotifications = function() {
+                if (selectedNotificationIds.size === 0) {
+                    showWarning('Select at least one notification first.');
+                    return;
+                }
+                notifications = notifications.filter(n => !selectedNotificationIds.has(n.id));
+                selectedNotificationIds.clear();
+                persistNotifications();
+                renderNotificationTable();
+            };
+
+            window.openNotificationPopup = function(id) {
+                const n = notifications.find(x => x.id === id);
+                if (!n) return;
+                if (!n.read) {
+                    n.read = true;
+                    persistNotifications();
+                    renderNotificationTable();
+                }
+                const html = `
+                    <div class="admin-modal-overlay" id="notificationPopupOverlay">
+                        <div class="admin-modal-card message-popup-card">
+                            <button class="admin-modal-close" onclick="document.getElementById('notificationPopupOverlay').remove()">✕</button>
+                            <h3 class="admin-modal-title">🔔 Notification</h3>
+                            <p style="font-size:0.75rem;color:rgba(0,0,0,0.5);margin-bottom:10px;">${n.date} ${n.time}</p>
+                            <p style="font-size:0.9rem;line-height:1.6;">${escapeHtml(n.description)}</p>
+                        </div>
+                    </div>
+                `;
+                const existing = document.getElementById('notificationPopupOverlay');
+                if (existing) existing.remove();
+                document.body.insertAdjacentHTML('beforeend', html);
+            };
+
+            // ============================================================
+            // LEASE ABSTRACTION RULES (json/rules.json workflow)
+            // ============================================================
+            let rulesNewRows = [];
+
+            window.openRulesPopup = async function() {
+                try {
+                    const res = await authFetch('/api/rules/list');
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not load rules.');
+                    rulesNewRows = [];
+                    renderRulesPopupHTML(data.approved || [], data.pending || []);
+                } catch (err) {
+                    showWarning(err.message || 'Could not load rules. Make sure py/server.py is running.');
+                }
+            };
+
+            function renderRulesPopupHTML(approved, pending) {
+                const isDeveloper = profileData && profileData.role === 'Developer';
+                const myPending = pending.filter(r => r.userId === CURRENT_USER_ID);
+                const pendingList = isDeveloper ? pending : myPending;
+
+                const approvedRows = approved.map(r => `
+                    <tr>
+                        <td>${escapeHtml(r.id)}</td>
+                        <td>${escapeHtml(r.fieldId)}</td>
+                        <td>${escapeHtml(r.ruleType)}</td>
+                        <td>${escapeHtml(r.ruleText)}</td>
+                        <td>${escapeHtml(r.userId || '')}</td>
+                    </tr>
+                `).join('');
+
+                const newRuleRows = rulesNewRows.map((r, idx) => `
+                    <tr class="rules-new-row">
+                        <td><em>(new)</em></td>
+                        <td><input type="text" class="admin-json-cell-input" placeholder="e.g. tenant_legal_name" value="${escapeHtml(r.fieldId)}" onchange="updateNewRuleField(${idx}, 'fieldId', this.value)" /></td>
+                        <td>
+                            <select onchange="updateNewRuleField(${idx}, 'ruleType', this.value)">
+                                <option value="mapping" ${r.ruleType === 'mapping' ? 'selected' : ''}>mapping</option>
+                                <option value="validation" ${r.ruleType === 'validation' ? 'selected' : ''}>validation</option>
+                                <option value="formatting" ${r.ruleType === 'formatting' ? 'selected' : ''}>formatting</option>
+                            </select>
+                        </td>
+                        <td><input type="text" class="admin-json-cell-input" placeholder="Describe where/how to extract this field..." value="${escapeHtml(r.ruleText)}" onchange="updateNewRuleField(${idx}, 'ruleText', this.value)" /></td>
+                        <td><span class="admin-action-icon delete" onclick="removeNewRuleRow(${idx})">🗑️</span></td>
+                    </tr>
+                `).join('');
+
+                const pendingRows = pendingList.map(r => `
+                    <tr>
+                        <td>${escapeHtml(r.id)}</td>
+                        <td>${escapeHtml(r.fieldId)}</td>
+                        <td>${escapeHtml(r.ruleType)}</td>
+                        <td>${escapeHtml(r.ruleText)}</td>
+                        <td>${escapeHtml(r.userId || '')}</td>
+                        <td>${isDeveloper ? `
+                            <a class="file-action-link" onclick="approveRule('${r.id}')">✅ Approve</a>
+                            &nbsp;|&nbsp;
+                            <a class="file-action-link error-link" onclick="rejectRule('${r.id}')">✖ Reject</a>
+                        ` : '<span class="status-badge status-pending">Awaiting approval</span>'}</td>
+                    </tr>
+                `).join('');
+
+                const html = `
+                    <div class="admin-modal-overlay" id="rulesPopupOverlay">
+                        <div class="admin-modal-card admin-multi-table-modal">
+                            <button class="admin-modal-close" onclick="document.getElementById('rulesPopupOverlay').remove()">✕</button>
+                            <h3 class="admin-modal-title">📐 Lease Abstraction Rules</h3>
+                            <p style="font-size:0.78rem;color:rgba(0,0,0,0.55);margin-bottom:10px;">
+                                All master rules belong to the Developer account. Add a new row below and Submit -
+                                new rules go into "Pending Approval" and only take effect once the Developer approves them.
+                            </p>
+
+                            <div class="admin-section-header-row">
+                                <h4 class="admin-section-title">Master Rules <span class="admin-section-count">(${approved.length})</span></h4>
+                                <div class="admin-section-actions">
+                                    <button class="admin-btn admin-btn-add-file" onclick="addNewRuleRow()">+ Add Row</button>
+                                    ${rulesNewRows.length > 0 ? `<button class="admin-btn admin-btn-save" onclick="submitNewRuleRows()">📤 Submit New Rows for Approval</button>` : ''}
+                                </div>
+                            </div>
+                            <div class="admin-json-table-wrapper admin-section-table" style="max-height:340px;">
+                                <table class="admin-json-table">
+                                    <thead><tr><th>ID</th><th>Field ID</th><th>Type</th><th>Rule Text</th><th>Owner</th></tr></thead>
+                                    <tbody>${newRuleRows}${approvedRows}</tbody>
+                                </table>
+                            </div>
+
+                            <h4 class="admin-section-title">Pending Approval <span class="admin-section-count">(${pendingList.length})</span></h4>
+                            <div class="admin-json-table-wrapper admin-section-table">
+                                <table class="admin-json-table">
+                                    <thead><tr><th>ID</th><th>Field ID</th><th>Type</th><th>Rule Text</th><th>Proposed By</th><th>${isDeveloper ? 'Actions' : 'Status'}</th></tr></thead>
+                                    <tbody>${pendingRows || '<tr><td colspan="6" style="text-align:center;">No pending rules.</td></tr>'}</tbody>
+                                </table>
+                            </div>
+
+                            <div class="admin-modal-actions">
+                                <button class="admin-modal-cancel" onclick="document.getElementById('rulesPopupOverlay').remove()">Close</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                const existing = document.getElementById('rulesPopupOverlay');
+                if (existing) existing.remove();
+                document.body.insertAdjacentHTML('beforeend', html);
+            }
+
+            window.addNewRuleRow = function() {
+                rulesNewRows.push({ fieldId: '', ruleType: 'mapping', ruleText: '' });
+                refreshRulesPopup();
+            };
+
+            window.updateNewRuleField = function(idx, key, value) {
+                if (rulesNewRows[idx]) rulesNewRows[idx][key] = value;
+            };
+
+            window.removeNewRuleRow = function(idx) {
+                rulesNewRows.splice(idx, 1);
+                refreshRulesPopup();
+            };
+
+            async function refreshRulesPopup() {
+                try {
+                    const res = await authFetch('/api/rules/list');
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not load rules.');
+                    renderRulesPopupHTML(data.approved || [], data.pending || []);
+                } catch (err) {
+                    showWarning(err.message || 'Could not refresh rules.');
+                }
+            }
+
+            window.submitNewRuleRows = async function() {
+                const validRows = rulesNewRows.filter(r => r.fieldId.trim() && r.ruleText.trim());
+                if (validRows.length === 0) {
+                    showWarning('Fill in at least Field ID and Rule Text for each new row before submitting.');
+                    return;
+                }
+                try {
+                    for (const row of validRows) {
+                        const res = await authFetch('/api/rules/propose', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ userId: CURRENT_USER_ID, fieldId: row.fieldId.trim(), ruleType: row.ruleType, ruleText: row.ruleText.trim() })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error || 'Could not submit a rule.');
+                    }
+                    rulesNewRows = [];
+                    showMessage('✅ Submitted', `${validRows.length} new rule(s) submitted and pending Developer approval.`, ['OK']);
+                    refreshRulesPopup();
+                } catch (err) {
+                    showWarning(err.message || 'Could not submit the new rules.');
+                }
+            };
+
+            window.approveRule = async function(ruleId) {
+                try {
+                    const res = await authFetch('/api/rules/approve', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ruleId })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not approve the rule.');
+                    refreshRulesPopup();
+                } catch (err) {
+                    showWarning(err.message || 'Could not approve the rule.');
+                }
+            };
+
+            window.rejectRule = async function(ruleId) {
+                try {
+                    const res = await authFetch('/api/rules/reject', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ruleId })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not reject the rule.');
+                    refreshRulesPopup();
+                } catch (err) {
+                    showWarning(err.message || 'Could not reject the rule.');
+                }
+            };
 
             function buildAdminFilesBody() {
                 return `
@@ -2429,7 +3160,7 @@
                 if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">Loading…</td></tr>`;
 
                 try {
-                    const res = await fetch('/api/admin/list?path=' + encodeURIComponent(adminCurrentPath));
+                    const res = await authFetch('/api/admin/list?path=' + encodeURIComponent(adminCurrentPath));
                     const data = await res.json();
                     if (!res.ok) throw new Error(data.error || 'Could not load folder');
                     adminEntries = data.entries || [];
@@ -2491,7 +3222,7 @@
             window.adminAddFolder = function() {
                 const name = prompt('New folder name:');
                 if (!name || !name.trim()) return;
-                fetch('/api/admin/mkdir', {
+                authFetch('/api/admin/mkdir', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ path: adminCurrentPath, name: name.trim() })
@@ -2509,7 +3240,7 @@
                 reader.onload = async function(e) {
                     const dataBase64 = e.target.result.split(',')[1];
                     try {
-                        const res = await fetch('/api/admin/upload', {
+                        const res = await authFetch('/api/admin/upload', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ path: adminCurrentPath, fileName: file.name, dataBase64: dataBase64 })
@@ -2542,7 +3273,7 @@
             };
 
             function adminDeletePaths(paths) {
-                fetch('/api/admin/delete', {
+                authFetch('/api/admin/delete', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ paths: paths })
@@ -2577,7 +3308,7 @@
 
             window.adminOpenFile = async function(path) {
                 try {
-                    const res = await fetch('/api/admin/read?path=' + encodeURIComponent(path));
+                    const res = await authFetch('/api/admin/read?path=' + encodeURIComponent(path));
                     const data = await res.json();
                     if (!res.ok) {
                         showWarning(res.status === 415 ?
@@ -2601,7 +3332,7 @@
                             // (one level of nesting deep) gets extracted into its
                             // own proper table instead of showing as a JSON blob
                             // in a single cell - e.g. rules.json's "approved"
-                            // list, smtp-config.json's "accounts", llm-config.json's
+                            // list, agents.json's
                             // "openai.keys"/"openrouter.keys", agents.json's
                             // "lease-abstraction"/"translation", menu-config.json's
                             // "mainMenu"/"profileMenu". A "dict of same-shaped
@@ -2650,7 +3381,7 @@
             }
 
             // ---- Array-of-objects JSON (e.g. payment-methods.json) AND
-            // single-object JSON (e.g. smtp-config.json, llm-config.json,
+            // single-object JSON (e.g. rules.json, agents.json,
             // agents.json) - the latter is rendered as a one-row table, its
             // keys becoming the column headers (see adminOpenFile above). ----
             // ---- Smart structure analysis for object-root JSON ----
@@ -3100,7 +3831,7 @@
                 }
 
                 try {
-                    const res = await fetch('/api/admin/write', {
+                    const res = await authFetch('/api/admin/write', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ path: path, content: content })
@@ -3253,10 +3984,13 @@
                         data = { body: buildProfileBody() };
                     } else if (action === 'Admin') {
                         data = { body: buildAdminFilesBody() };
+                    } else if (action === 'Notification') {
+                        data = { body: buildNotificationBody() };
                     }
                     updateContent(data, pagePath);
                     contentArea.classList.remove('loading');
                     if (action === 'Admin') loadAdminDirectory('');
+                    if (action === 'Notification') renderNotificationTable();
                 }, 300);
 
                 document.querySelectorAll('.menu-item > a').forEach(el => el.classList.remove('active'));
@@ -3301,6 +4035,8 @@
 
                 if (breadcrumb === '📊 Dashboard') {
                     setTimeout(renderTodayTransactions, 50);
+                    setTimeout(renderDashboardCounts, 50);
+                    setTimeout(renderMyLeasesList, 50);
                 }
 
                 if (breadcrumb && breadcrumb.includes('API Documentation')) {
@@ -3546,12 +4282,12 @@
                             </div>
                             <div class="dash-card">
                                 <div class="dash-card-icon">📄</div>
-                                <div class="dash-card-value">128</div>
+                                <div class="dash-card-value" id="dashLeaseCount">—</div>
                                 <div class="dash-card-label">Total Lease Abstraction</div>
                             </div>
                             <div class="dash-card">
                                 <div class="dash-card-icon">🌐</div>
-                                <div class="dash-card-value">96</div>
+                                <div class="dash-card-value" id="dashTranslationCount">—</div>
                                 <div class="dash-card-label">Total Translation</div>
                             </div>
                         </div>
@@ -3563,6 +4299,7 @@
                                         <tr>
                                             <th>Transaction Date & Time</th>
                                             <th>Transaction ID</th>
+                                            <th>User ID</th>
                                             <th>Payment Type</th>
                                             <th>Payment Mode</th>
                                             <th>Description</th>
@@ -3577,6 +4314,14 @@
                                         </tbody>
                                     </table>
                                 </div>
+                            </div>
+                        </div>
+                        <div class="history-card" style="height:240px;margin-top:20px;">
+                            <h3>📁 My Processed Leases</h3>
+                            <div class="card-body" style="overflow-y:auto;">
+                                <ul class="my-leases-list" id="myLeasesList">
+                                    <li class="my-leases-empty">Loading…</li>
+                                </ul>
                             </div>
                         </div>
                     `
@@ -3713,7 +4458,8 @@
                     `
                 },
                 'payment-history': {
-                    body: `
+                    body: function() {
+                    return `
                         <div class="history-card">
                             <div class="history-filter-bar">
                                 <div class="filter-group">
@@ -3726,6 +4472,12 @@
                                 </div>
                                 <button class="filter-btn" onclick="applyHistoryFilter()">🔍 Filter</button>
                                 <button class="filter-btn reset-btn" onclick="clearHistoryFilter()">✖ Clear</button>
+                                ${isAdminOrDeveloper() ? `
+                                    <div class="filter-group">
+                                        <label>User</label>
+                                        <input type="text" id="historyUserFilter" placeholder="User ID or email" oninput="applyHistoryFilter()" />
+                                    </div>
+                                ` : ''}
                                 <button class="filter-btn download-btn" onclick="downloadHistoryExcel()">⬇️ Download Excel</button>
                             </div>
                             <div class="card-body">
@@ -3734,6 +4486,7 @@
                                         <tr>
                                             <th>Transaction Date & Time</th>
                                             <th>Transaction ID</th>
+                                            <th>User ID</th>
                                             <th>Payment Type</th>
                                             <th>Payment Mode</th>
                                             <th>Description</th>
@@ -3763,20 +4516,23 @@
                                 </div>
                             </div>
                         </div>
-                    `
+                    `;
+                    }
                 },
                 'api-documentation': {
                     body: `
                         <div class="api-key-card">
-                            <h3>🔑 Generate New API Key</h3>
+                            <h3>🔑 API Key</h3>
                             <p style="font-size:0.85rem;color:rgba(0,0,0,0.6);margin-bottom:10px;">Generate a new API key to authenticate your requests. Keep it secret — treat it like a password.</p>
-                            <div class="api-key-box" id="apiKeyDisplay">No API key generated yet.</div>
-                            <div class="api-key-actions" id="apiKeyActions" style="display:none;">
-                                <button class="api-action-btn copy-btn" onclick="copyApiKey()">📋 Copy</button>
-                                <button class="api-action-btn save-btn" onclick="saveApiKey()">💾 Save</button>
-                                <button class="api-action-btn revoke-btn" onclick="revokeApiKey()">🚫 Revoke</button>
+                            <div class="api-key-row">
+                                <div class="api-key-box" id="apiKeyDisplay">No API key generated yet.</div>
+                                <div class="api-key-actions" id="apiKeyActions">
+                                    <button class="api-action-btn generate-btn" onclick="generateApiKey()">⚡ Generate New API Key</button>
+                                    <button class="api-action-btn copy-btn" onclick="copyApiKey()">📋 Copy</button>
+                                    <button class="api-action-btn save-btn" onclick="saveApiKey()">💾 Save</button>
+                                    <button class="api-action-btn revoke-btn" onclick="revokeApiKey()">🗑️ Delete</button>
+                                </div>
                             </div>
-                            <button class="submit-btn" style="width:fit-content;margin-top:10px;" onclick="generateApiKey()">⚡ Generate New API Key</button>
                             <div id="apiKeyHistory"></div>
                         </div>
                         <div class="api-key-card">
@@ -3787,7 +4543,8 @@
                     `
                 },
                 support: {
-                    body: `
+                    body: function() {
+                    return `
                         <div class="history-card support-log-card support-log-full">
                             <div class="support-log-header-row">
                                 <h3>📋 Supports: Log</h3>
@@ -3801,6 +4558,20 @@
                                     <label>To</label>
                                     <input type="date" id="supportToDate" />
                                 </div>
+                                <div class="filter-group">
+                                    <label>Status</label>
+                                    <select id="supportStatusFilter" onchange="applySupportFilter()">
+                                        <option value="">All</option>
+                                        <option value="Pending">Pending</option>
+                                        <option value="Resolved">Resolved</option>
+                                    </select>
+                                </div>
+                                ${isAdminOrDeveloper() ? `
+                                    <div class="filter-group">
+                                        <label>User</label>
+                                        <input type="text" id="supportUserFilter" placeholder="User ID or email" oninput="applySupportFilter()" />
+                                    </div>
+                                ` : ''}
                                 <button class="filter-btn" onclick="applySupportFilter()">🔍 Filter</button>
                                 <button class="filter-btn reset-btn" onclick="resetSupportFilter()">↺ Reset</button>
                             </div>
@@ -3810,8 +4581,10 @@
                                         <thead>
                                             <tr>
                                                 <th><input type="checkbox" onchange="toggleSupportSelectAll(this)" /></th>
+                                                <th>Ticket ID</th>
                                                 <th>Date</th>
                                                 <th>Time</th>
+                                                <th>User ID</th>
                                                 <th>Type</th>
                                                 <th>Subject</th>
                                                 <th>Message</th>
@@ -3829,7 +4602,8 @@
                                 </div>
                             </div>
                         </div>
-                    `
+                    `;
+                    }
                 },
                 'contact-us': {
                     body: function() {
@@ -3872,7 +4646,7 @@
 
             async function saveJSON(name, data) {
                 try {
-                    const res = await fetch('/api/data/' + name, {
+                    const res = await authFetch('/api/data/' + name, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(data)
@@ -3894,6 +4668,7 @@
             function persistPaymentMethods() { return saveJSON('payment-methods', paymentMethods); }
             function persistContactSubmissions() { return saveJSON('contact-submissions', contactSubmissions); }
             function persistApiKeys() { return saveJSON('api-keys', apiKeys); }
+            function persistNotifications() { return saveJSON('notifications', notifications); }
 
             // Patches ONLY the currently logged-in user's own record via
             // /api/profile/update - replaces the old blanket "overwrite all
@@ -3903,7 +4678,7 @@
             async function persistProfile() {
                 if (!profileData || !CURRENT_USER_ID) return;
                 try {
-                    const res = await fetch('/api/profile/update', {
+                    const res = await authFetch('/api/profile/update', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ userId: CURRENT_USER_ID, fields: profileData })
@@ -3940,7 +4715,7 @@
             // 39. INITIALIZE (loads all data from /json/*.json files)
             // ============================================================
             async function fetchJSON(path) {
-                const res = await fetch(path);
+                const res = await authFetch(path);
                 if (!res.ok) throw new Error('Failed to load ' + path);
                 return res.json();
             }
@@ -3960,7 +4735,8 @@
                     leaseFilesData,
                     translationFilesData,
                     leaseActivityLogData,
-                    translationActivityLogData
+                    translationActivityLogData,
+                    notificationsData
                 ] = await Promise.all([
                     fetchJSON('json/menu-config.json'),
                     fetchJSON('json/payment-methods.json'),
@@ -3975,7 +4751,8 @@
                     fetchJSON('json/lease-files.json'),
                     fetchJSON('json/translation-files.json'),
                     fetchJSON('json/lease-activity-log.json'),
-                    fetchJSON('json/translation-activity-log.json')
+                    fetchJSON('json/translation-activity-log.json'),
+                    fetchJSON('json/notifications.json')
                 ]);
 
                 MENU_CONFIG = menuConfig;
@@ -3991,6 +4768,7 @@
                 translationFiles = translationFilesData;
                 leaseActivityLog = leaseActivityLogData;
                 translationActivityLog = translationActivityLogData;
+                notifications = notificationsData;
 
                 // The only user record the browser ever holds - just the
                 // currently logged-in one, fetched fresh from the server.
@@ -4001,22 +4779,41 @@
                 currentSystemConfig = (profileData && profileData.sysConfig) || 'Desktop';
 
                 nextApiKeyId = apiKeys.length ? Math.max(...apiKeys.map(k => k.id)) + 1 : 1;
-                nextLeaseFileId = leaseFiles.length + 1;
-                nextTranslationFileId = translationFiles.length + 1;
+                nextLeaseFileId = leaseFiles.length ? Math.max(...leaseFiles.map(f => Number(f.id) || 0)) + 1 : 1;
+                nextTranslationFileId = translationFiles.length ? Math.max(...translationFiles.map(f => Number(f.id) || 0)) + 1 : 1;
                 nextTransactionId = paymentHistory.length + 1;
                 nextPaymentId = paymentMethods.length + 1;
-                nextSupportId = contactSubmissions.length ?
-                    Math.max(...contactSubmissions.map(c => parseInt((c.id || '').replace('SUP', '')) || 0)) + 1 : 1;
+                nextNotificationId = notifications.length ?
+                    Math.max(...notifications.map(n => parseInt((n.id || '').replace('NOTIF', '')) || 0)) + 1 : 1;
             }
 
             // ============================================================
             // 38c. AUTHENTICATION (login / register / 2FA / forgot password)
-            // Renders into #authScreen (see main.html). Talks to the
-            // /api/auth/* routes in py/server.py. Session is just the
-            // logged-in userId, kept in localStorage so a page refresh
-            // doesn't force a re-login.
+            // Renders into #authScreen (see index.html). Talks to the
+            // /api/auth/* routes in py/server.py. A real server-issued
+            // session token (not just the userId) is what's kept in
+            // localStorage now - the server decides who you are from the
+            // token on every request after login, instead of trusting a
+            // client-supplied userId field (which used to be editable via
+            // devtools/localStorage to silently act as a different user).
             // ============================================================
             const AUTH_SESSION_KEY = 'lexora_session_user_id';
+            const AUTH_TOKEN_KEY = 'lexora_session_token';
+            let AUTH_TOKEN = null;
+
+            // Every authenticated request goes through this instead of a
+            // raw authFetch() - it attaches "Authorization: Bearer <token>"
+            // automatically. The handful of pre-login auth endpoints
+            // (login/register/verify-*/forgot-password/reset-password/
+            // resend-code/email-status) don't have a token yet and use
+            // plain fetch/authPost below instead, since there's nothing to
+            // attach until one of them succeeds.
+            function authFetch(url, options) {
+                options = options || {};
+                const headers = Object.assign({}, options.headers || {});
+                if (AUTH_TOKEN) headers['Authorization'] = 'Bearer ' + AUTH_TOKEN;
+                return authFetch(url, Object.assign({}, options, { headers }));
+            }
 
             let authState = {
                 step: 'login',           // login | register | forgot | verify | newPassword
@@ -4031,7 +4828,7 @@
             };
 
             function authPost(path, payload) {
-                return fetch(path, {
+                return authFetch(path, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
@@ -4151,6 +4948,15 @@
                 `;
             }
 
+            window.copyFallbackCode = function() {
+                const codeEl = document.getElementById('authFallbackCode');
+                const code = codeEl ? codeEl.textContent.trim() : '';
+                if (!code) return;
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(code).catch(() => {});
+                }
+            };
+
             function buildVerifyCard() {
                 const titles = {
                     register: '📝 Verify Registration',
@@ -4160,8 +4966,11 @@
                 const title = titles[authState.verifyPurpose] || 'Verify';
                 const fallbackBox = authState.codeFallback ? `
                     <div class="auth-fallback-box">
-                        ⚠️ Email could not be sent — use this code:
-                        <strong>${authState.codeFallback}</strong>
+                        ⚠️ Email not sent — use this code instead:
+                        <span class="auth-fallback-code-row">
+                            <strong id="authFallbackCode">${authState.codeFallback}</strong>
+                            <button type="button" class="auth-copy-code-btn" onclick="copyFallbackCode()">📋 Copy</button>
+                        </span>
                     </div>
                 ` : '';
                 return `
@@ -4318,6 +5127,33 @@
                 if (box) box.style.display = 'none';
             }
 
+            // Verification emails are now sent in the background (see
+            // py/server.py's _send_verification_email_async) so the verify
+            // card shows up immediately instead of waiting on SMTP. This
+            // polls for the outcome right after, and if the send actually
+            // failed, drops the fallback code into the already-visible
+            // card - "immediately" in wall-clock terms, just not blocking
+            // the initial screen.
+            function pollEmailStatus(userId, attemptsLeft) {
+                if (attemptsLeft === undefined) attemptsLeft = 8;
+                setTimeout(async () => {
+                    try {
+                        const res = await fetch('/api/auth/email-status?userId=' + encodeURIComponent(userId));
+                        const data = await res.json();
+                        if (data.status === 'failed') {
+                            authState.codeFallback = data.code;
+                            console.log('📧 Email not sent - verification code:', data.code);
+                            renderAuthScreen();
+                            return;
+                        }
+                        if (data.status === 'sent') {
+                            return;
+                        }
+                    } catch (e) { /* keep trying */ }
+                    if (attemptsLeft > 1) pollEmailStatus(userId, attemptsLeft - 1);
+                }, 1000);
+            }
+
             window.handleAuthLogin = async function() {
                 hideAuthError();
                 const email = document.getElementById('loginEmail').value.trim();
@@ -4331,10 +5167,11 @@
                         authState.userId = res.userId;
                         authState.email = res.email;
                         authState.expiresInMinutes = res.expiresInMinutes;
-                        authState.codeFallback = res.emailFailed ? res.code : null;
+                        authState.codeFallback = null;
                         authGoTo('verify');
+                        pollEmailStatus(res.userId);
                     } else {
-                        completeLogin(res.userId);
+                        completeLogin(res.userId, res.token);
                     }
                 } catch (err) {
                     showAuthError(err.message);
@@ -4369,8 +5206,9 @@
                     authState.userId = res.userId;
                     authState.email = res.email;
                     authState.expiresInMinutes = res.expiresInMinutes;
-                    authState.codeFallback = res.emailFailed ? res.code : null;
+                    authState.codeFallback = null;
                     authGoTo('verify');
+                    pollEmailStatus(res.userId);
                 } catch (err) {
                     showAuthError(err.message);
                 }
@@ -4387,8 +5225,9 @@
                     authState.userId = res.userId;
                     authState.email = res.email;
                     authState.expiresInMinutes = res.expiresInMinutes;
-                    authState.codeFallback = res.emailFailed ? res.code : null;
+                    authState.codeFallback = null;
                     authGoTo('verify');
+                    pollEmailStatus(res.userId);
                 } catch (err) {
                     showAuthError(err.message);
                 }
@@ -4406,9 +5245,9 @@
                         authGoTo('login');
                         showMessage('✅ Verified', 'Your account has been verified. Please log in.', ['OK']);
                     } else if (authState.verifyPurpose === 'login') {
-                        await authPost('/api/auth/verify-login', { userId: authState.userId, code });
+                        const verifyRes = await authPost('/api/auth/verify-login', { userId: authState.userId, code });
                         clearInterval(authState.countdownInterval);
-                        completeLogin(authState.userId);
+                        completeLogin(authState.userId, verifyRes.token);
                     } else if (authState.verifyPurpose === 'reset') {
                         await authPost('/api/auth/verify-reset-code', { userId: authState.userId, code });
                         authState.resetCode = code;
@@ -4425,8 +5264,9 @@
                 try {
                     const res = await authPost('/api/auth/resend-code', { userId: authState.userId });
                     authState.expiresInMinutes = res.expiresInMinutes;
-                    authState.codeFallback = res.emailFailed ? res.code : null;
+                    authState.codeFallback = null;
                     renderAuthScreen();
+                    pollEmailStatus(authState.userId);
                     showMessage('📨 Code Resent', 'A new verification code has been sent.', ['OK']);
                 } catch (err) {
                     showAuthError(err.message);
@@ -4450,17 +5290,27 @@
                 }
             };
 
-            function completeLogin(userId) {
+            function completeLogin(userId, token) {
                 CURRENT_USER_ID = userId;
+                AUTH_TOKEN = token;
                 localStorage.setItem(AUTH_SESSION_KEY, userId);
+                localStorage.setItem(AUTH_TOKEN_KEY, token);
                 document.getElementById('authScreen').style.display = 'none';
                 document.getElementById('appShell').style.display = '';
                 initializeApp();
             }
 
             function performLogout() {
+                // Fire-and-forget - revokes the token server-side too, not
+                // just locally, so it can't be replayed after logout.
+                if (AUTH_TOKEN) {
+                    authFetch('/api/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+                        .catch(() => {});
+                }
                 localStorage.removeItem(AUTH_SESSION_KEY);
+                localStorage.removeItem(AUTH_TOKEN_KEY);
                 CURRENT_USER_ID = null;
+                AUTH_TOKEN = null;
                 profileData = null;
                 document.getElementById('appShell').style.display = 'none';
                 authState = { step: 'login', verifyPurpose: null, userId: null, email: null,
@@ -4484,9 +5334,14 @@
                 } catch (e) { /* auth screen falls back to a default name */ }
 
                 const savedUserId = localStorage.getItem(AUTH_SESSION_KEY);
-                if (savedUserId) {
+                const savedToken = localStorage.getItem(AUTH_TOKEN_KEY);
+                if (savedUserId && savedToken) {
+                    AUTH_TOKEN = savedToken;
                     try {
-                        const res = await fetch('/api/auth/me?userId=' + encodeURIComponent(savedUserId));
+                        // The server derives identity from the token itself
+                        // now (not the userId in the URL) - this doubles as
+                        // validating the saved token is still good.
+                        const res = await authFetch('/api/auth/me');
                         if (res.ok) {
                             CURRENT_USER_ID = savedUserId;
                             document.getElementById('authScreen').style.display = 'none';
@@ -4494,27 +5349,31 @@
                             return initializeApp();
                         }
                     } catch (e) { /* fall through to login */ }
+                    AUTH_TOKEN = null;
                     localStorage.removeItem(AUTH_SESSION_KEY);
+                    localStorage.removeItem(AUTH_TOKEN_KEY);
                 }
                 showAuthScreen();
             }
             async function initializeApp() {
                 try {
                     await loadAppData();
+                    await loadUserDirectory();
                 } catch (err) {
                     console.error('Failed to load application data:', err);
                     document.getElementById('contentBody').innerHTML =
                         '<div class="content-section"><h3>⚠️ Unable to load data</h3>' +
-                        '<p>Could not load JSON data files. Browsers block local file fetches when you open main.html ' +
+                        '<p>Could not load JSON data files. Browsers block local file fetches when you open index.html ' +
                         'directly (file://) or use a plain static server. Run ' +
                         '<code>python3 py/server.py</code> in the project folder, and open ' +
-                        '<code>http://localhost:8000/main.html</code>.</p></div>';
+                        '<code>http://localhost:8000/</code>.</p></div>';
                     return;
                 }
 
                 setupUserProfile();
                 applyCompanyBranding();
                 renderMenu();
+                updateNotificationBadge();
 
                 const dashboardItem = MENU_CONFIG.mainMenu.find(item => item.id === 'dashboard');
                 if (dashboardItem) {
@@ -4524,8 +5383,8 @@
                 console.log('✅ Menu system ready with JSON configuration!');
                 console.log('Payment Methods:', paymentMethods);
                 console.log('Payment History:', paymentHistory);
-                console.log('Lease Files:', leaseFiles);
-                console.log('Translation Files:', translationFiles);
+                console.log('Lease Files:', getMyLeaseFiles());
+                console.log('Translation Files:', getMyTranslationFiles());
             }
 
             boot();

@@ -11,5 +11,6 @@
   },
 
   "postCreateCommand": "sudo apt-get update && sudo apt-get install -y tesseract-ocr && (pip install -r requirements.txt --break-system-packages || pip install -r requirements.txt)",
-  "postStartCommand": "bash .devcontainer/start-server.sh"
+  "postStartCommand": "bash .devcontainer/start-server.sh",
+  "postAttachCommand": "bash .devcontainer/start-server.sh"
 }

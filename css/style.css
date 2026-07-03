@@ -503,7 +503,7 @@
         }
 
         .file-table-scroll {
-            max-height: 260px;
+            max-height: 280px;
             overflow-y: auto;
         }
 
@@ -642,6 +642,22 @@
         /* ===== SETUP CARD ===== */
         .setup-group {
             margin-bottom: 12px;
+        }
+
+        .setup-row-split {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 12px;
+            align-items: flex-start;
+        }
+
+        .setup-row-split .setup-group {
+            margin-bottom: 0;
+            flex: 1;
+        }
+
+        .setup-row-split .setup-group .filter-btn {
+            width: 100%;
         }
 
         .setup-group:last-child {
@@ -1473,14 +1489,29 @@
             text-decoration: underline;
         }
 
-        .payment-form .contact-id-status-row {
+        .payment-form .contact-id-status-row,
+        .payment-form .contact-type-subject-row {
             grid-template-columns: 1fr 2fr;
         }
 
+        .payment-form .contact-type-subject-row #contactType {
+            width: 100%;
+        }
+
+        .contact-readonly-label {
+            padding: 9px 12px;
+            background: rgba(0,0,139,0.04);
+            border: 1px solid rgba(0,0,139,0.12);
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            color: rgba(0,0,0,0.75);
+        }
+
         .message-popup-card {
-            width: 460px;
-            max-width: 92vw;
-            max-height: 88vh;
+            width: 560px;
+            max-width: 94vw;
+            max-height: 94vh;
             overflow-y: auto;
         }
 
@@ -1506,18 +1537,33 @@
 
         .support-log-table {
             border-collapse: collapse;
-            width: auto;
-            table-layout: auto;
+            width: 100%;
+            table-layout: fixed;
             font-size: 0.78rem;
         }
 
         .support-log-table th,
         .support-log-table td {
-            padding: 8px 12px;
-            white-space: nowrap;
+            padding: 8px 10px;
             border-bottom: 1px solid rgba(0,0,139,0.08);
             text-align: left;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
+
+        /* Short, fixed-content columns stay on one line; the free-text
+           columns (Subject/Message/Response) wrap instead of forcing a
+           horizontal scrollbar. */
+        .support-log-table th:nth-child(1), .support-log-table td:nth-child(1) { width: 32px; white-space: nowrap; }
+        .support-log-table th:nth-child(2), .support-log-table td:nth-child(2) { width: 11%; white-space: nowrap; }
+        .support-log-table th:nth-child(3), .support-log-table td:nth-child(3) { width: 8%; white-space: nowrap; }
+        .support-log-table th:nth-child(4), .support-log-table td:nth-child(4) { width: 7%; white-space: nowrap; }
+        .support-log-table th:nth-child(5), .support-log-table td:nth-child(5) { width: 9%; white-space: nowrap; }
+        .support-log-table th:nth-child(6), .support-log-table td:nth-child(6) { width: 7%; white-space: nowrap; }
+        .support-log-table th:nth-child(7), .support-log-table td:nth-child(7) { width: 14%; white-space: normal; }
+        .support-log-table th:nth-child(8), .support-log-table td:nth-child(8) { width: 16%; white-space: normal; }
+        .support-log-table th:nth-child(9), .support-log-table td:nth-child(9) { width: 8%; white-space: nowrap; }
+        .support-log-table th:nth-child(10), .support-log-table td:nth-child(10) { width: 14%; white-space: normal; }
 
         .support-log-table thead th {
             position: sticky;
@@ -1983,6 +2029,18 @@
             font-size: 1rem;
         }
 
+        .api-key-row {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            flex-wrap: wrap;
+        }
+
+        .api-key-row .api-key-box {
+            flex: 1;
+            min-width: 200px;
+        }
+
         .api-key-box {
             padding: 12px 14px;
             border: 1px dashed rgba(0,0,139,0.3);
@@ -2010,10 +2068,21 @@
             color: darkblue;
             transition: 0.15s;
             font-size: 0.75rem;
+            white-space: nowrap;
         }
 
         .api-action-btn:hover {
             background: darkblue;
+            color: white;
+        }
+
+        .api-action-btn.generate-btn {
+            border-color: #e67e22;
+            color: #e67e22;
+        }
+
+        .api-action-btn.generate-btn:hover {
+            background: #e67e22;
             color: white;
         }
 
@@ -3012,6 +3081,10 @@
     background: #2980b9;
 }
 
+.admin-btn-save {
+    background: #e67e22;
+}
+
 .admin-breadcrumb {
     background: rgba(0,0,139,0.04);
     border: 1px solid rgba(0,0,139,0.12);
@@ -3334,6 +3407,31 @@
 .auth-fallback-box strong {
     font-size: 1.05rem;
     letter-spacing: 1px;
+}
+
+.auth-fallback-code-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 6px;
+}
+
+.auth-copy-code-btn {
+    background: transparent;
+    border: 1px solid #b8963e;
+    color: #7a5b00;
+    border-radius: 5px;
+    padding: 3px 10px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: 0.15s;
+}
+
+.auth-copy-code-btn:hover {
+    background: #b8963e;
+    color: white;
 }
 
 .auth-btn-row {
@@ -3779,4 +3877,102 @@
 
 .profile-2fa-save-row .checkbox-label {
     margin: 0;
+}
+
+/* ===== DASHBOARD: MY PROCESSED LEASES ===== */
+.my-leases-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.my-lease-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 4px;
+    border-bottom: 1px solid rgba(0,0,139,0.06);
+    gap: 10px;
+}
+
+.my-lease-item:last-child {
+    border-bottom: none;
+}
+
+.my-lease-link {
+    color: darkblue;
+    font-weight: 500;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+.my-lease-link:hover {
+    text-decoration: underline;
+}
+
+.my-lease-meta {
+    font-size: 0.72rem;
+    color: rgba(0,0,0,0.45);
+    white-space: nowrap;
+}
+
+.my-leases-empty {
+    text-align: center;
+    padding: 20px;
+    color: rgba(0,0,0,0.4);
+    list-style: none;
+    font-size: 0.85rem;
+}
+
+/* ===== NOTIFICATIONS ===== */
+.notification-badge {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 3px;
+    background: #e74c3c;
+    color: white;
+    border-radius: 8px;
+    font-size: 0.6rem;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1.5px solid #131b3f;
+}
+
+.notification-unread {
+    background: rgba(232, 200, 116, 0.18);
+    font-weight: 600;
+}
+
+.notification-desc-link {
+    color: darkblue;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.notification-desc-link:hover {
+    text-decoration: underline;
+}
+
+/* ===== NOTIFICATION TABLE - override the generic .history-table column
+   widths (designed for the 8-column Payment History table) since this
+   one only has 3 columns and was inheriting a much-too-wide Date column
+   as a result. ===== */
+#notificationTable th:nth-child(1),
+#notificationTable td:nth-child(1) {
+    width: 32px;
+}
+
+#notificationTable th:nth-child(2),
+#notificationTable td:nth-child(2) {
+    width: 150px;
+}
+
+#notificationTable th:nth-child(3),
+#notificationTable td:nth-child(3) {
+    width: auto;
 }

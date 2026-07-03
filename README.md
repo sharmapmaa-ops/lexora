@@ -3,7 +3,7 @@
 ## Folder Structure
 ```
 main/
-├── main.html               ← open this in the browser (auto-loads, see below)
+├── index.html              ← open this in the browser (served at "/" automatically)
 ├── .devcontainer/
 │   ├── devcontainer.json   ← Codespaces config - auto pip install + auto server start
 │   └── start-server.sh     ← idempotent "start the backend if it isn't already running"
@@ -78,30 +78,30 @@ routes in `py/server.py` + `py/auth_store.py`:
   (`lexora_session_user_id`) so a page refresh doesn't force a re-login.
   Logout (Profile menu) clears it and returns to the login screen.
 
-### Important security change this required
-Now that login is real, `users.json` holds live plaintext passwords and
-verification codes for every account - so it can no longer be handed to
-every visitor wholesale the way it was before:
-- `users.json` is blocked from static serving (`GET /json/users.json` →
-  403), same as `smtp-config.json` / `llm-config.json`.
+### Important security notes
+`users.json` holds a hash of every account's password (see "Production-
+readiness upgrades" above) plus verification codes - it can't be handed
+to every visitor wholesale the way the original demo's sample data was:
+- `users.json` is blocked from *unauthenticated* static serving
+  (`GET /json/users.json` → 403).
 - `"users"` was removed from the generic `/api/data/<name>` allowlist
   entirely - there is no more "fetch/overwrite the whole file" route for
-  it.
-- The browser only ever receives **one** user record at a time - either
-  the currently-authenticated account's own data
-  (`GET /api/auth/me?userId=...`, used right after login), or nothing.
-  Profile edits go through `POST /api/profile/update`, which patches only
-  that one account's fields server-side (`role`, `lock`,
-  `emailVerified`/`status`, and the verification-code bookkeeping fields
-  can't be changed this way - only the auth routes above touch those).
-- The Admin File Manager (below) also specifically blocks viewing,
-  editing, or downloading `json/users.json`'s raw contents, even though
-  Developer/Admin can browse/delete it like any other file.
-
-Passwords are still stored in **plaintext** (consistent with the rest of
-this prototype's simple JSON-file architecture, and because there's no
-password hashing anywhere else in the project either) - worth hardening
-(e.g. bcrypt) before this ever goes anywhere near production.
+  it, and that route now requires a valid session token regardless
+  (see "Real sessions" above).
+- The browser only ever receives **one** user record at a time, and never
+  the password field at all (hashed or not) - either the
+  currently-authenticated account's own data (`GET /api/auth/me`, session-
+  derived, used right after login), or a sanitized directory entry
+  (`GET /api/auth/directory` - id/email/name/role only, for Developer/
+  Admin filters). Profile edits go through `POST /api/profile/update`,
+  which patches only that one account's fields server-side (`role`,
+  `lock`, `emailVerified`/`status`, and the verification-code bookkeeping
+  fields can't be changed this way - only the auth routes above touch
+  those).
+- The Admin File Manager (below) *does* allow Developer/Admin to view/
+  edit `users.json` as a table (per explicit request) - each row still
+  shows a password **hash**, never a real password, so there's nothing
+  usable to leak even there.
 
 ## Logged-in user
 `CURRENT_USER_ID` is no longer hardcoded - it's set the moment someone
@@ -137,60 +137,97 @@ which saves the actual image file to `Users/<UserID>/ProfilePhoto/` and
 returns that path - `users.json`'s `photo` field stores the **path**, not
 a base64 blob.
 
-## Lease Abstraction — real processing pipeline
-Starting a batch now runs a real, multi-step backend pipeline (not a pure
-front-end simulation) via `py/lease_engine.py`:
+## Lease Abstraction — the full workflow, step by step
+Starting a batch runs a real, multi-step backend pipeline (not a
+front-end simulation) via `py/lease_engine.py` and `py/server.py`. Every
+step below is a real HTTP call, and every step after upload only ever
+touches the current user's own files/log entries.
 
 1. **Output template scan** (once per batch, not counted in any file's
-   Progress column) — `POST /api/lease/scan-template`
+   Progress column) — `POST /api/lease/scan-template`. If a custom
+   template was selected it's uploaded to
+   `Users/<UserID>/LeaseAbstraction/_templates/`; otherwise the shipped
+   `Template/LeaseAbstraction/Default.pdf` is used as the report layout.
 2. **Input File Scanning** — the file is actually uploaded
    (`POST /api/lease/upload`) with real upload-progress driving the Scan
-   Result column
-3. **20%** — real text extraction from the PDF/DOCX — `POST /api/lease/extract`
-4. **40%** — lease-field analysis — `POST /api/lease/analyze`
-5. **60%** — document-type + duplicate validation — `POST /api/lease/validate`
-6. **80%** — `Output.json` written, document saved to
-   `Users/<UserID>/LeaseAbstraction/<LeaseName>/`, `LeaseDocuments.json`
-   updated — `POST /api/lease/save-output`
-7. **100%** — `Output.pdf` generated from `Output.json` — `POST /api/lease/generate-pdf`
+   Result column, into a `_staging/` folder.
+3. **Checking Balance** — the real per-user balance (own
+   `payment-history.json` entries only) is checked against the $1 minimum
+   before processing starts.
+4. **20% - text extraction** — `POST /api/lease/extract-start` kicks off
+   a **background job** and the client polls
+   `GET /api/lease/extract-status?jobId=...` every 2s until it's done.
+   This is deliberately async (not one blocking call) because OCR on a
+   long scanned PDF can take well over a minute - see below for exactly
+   what happens inside this step.
+5. **40% - data analyzed and interpreted** — `POST /api/lease/analyze`.
+   Tries a real LLM call (OpenAI/OpenRouter, whichever key in
+   `json/llm-config.json` is marked `"primary"`) using
+   `json/extraction_prompt.txt` as the system prompt; falls back to a
+   local heuristic regex/keyword engine if no key is configured or the
+   call fails. Either way, a second lightweight call
+   (`call_llm_validation()`, or a heuristic completeness check without an
+   LLM) produces the accuracy/confidence score logged right after this
+   step ("Accuracy: NN% (...)").
+6. **60% - validation** — `POST /api/lease/validate`: classifies the
+   document as Lease/Amendment/Other and checks it isn't a duplicate of
+   an already-processed lease. Invalid documents show **"Invalid
+   Document"** and already-processed ones show **"Already Processed"**
+   directly in the Scan Result column, and the pipeline moves on to the
+   next file immediately.
+7. **80% - save output** — `POST /api/lease/save-output`: `Output.json`
+   is written and the original document is moved from staging to
+   `Users/<UserID>/LeaseAbstraction/<LeaseName>/`, with
+   `LeaseDocuments.json` updated to list it.
+8. **100% - generate PDF** — `POST /api/lease/generate-pdf`: `Output.pdf`
+   (the human-readable report) is built from `Output.json`.
+9. **Deduct balance** — `$1` is deducted from the user's balance and
+   recorded as a new `payment-history.json` entry for that same file.
 
-Invalid documents show **"Invalid Document"** and already-processed leases
-show **"Already Processed"** directly in the Scan Result column, and move
-on to the next file immediately, per spec.
+**PDF text extraction, in more detail** (this is what step 4 actually
+does): tries pdfplumber, then pypdf if that comes back too thin
+(average characters/page below a threshold - not a flat total, since a
+multi-page document where every page only has a tiny stamp can otherwise
+still clear a flat total by accident), and only falls back to **real
+OCR** (Tesseract, pages rendered via pdfplumber and OCR'd in parallel
+across a thread pool) if neither text-layer method found enough - this is
+what actually recovers text from a scanned/image-only PDF with no real
+text layer, at the cost of being slow (which is why step 4 runs as a
+background job rather than one blocking call).
 
-**About the "GPT prompts" step:** no LLM API key was provided anywhere in
-this project (`agents.json` ships every agent with `"apiKey": null`), so
-step 4 is a deterministic regex/keyword extraction engine instead of a
-live GPT call - it's intentionally isolated in
-`lease_engine.analyze_lease()` as a single drop-in point to swap in a real
-prompt-based call later if a key is added.
+**Rules**: `json/extraction_prompt.txt` is the system prompt sent to the
+LLM; `json/rules.json` is the same rule set in structured form (each rule
+tagged with the userId of whoever proposed it - see "Lease Abstraction
+rules workflow" above for how new rules get added/approved). The
+structured rules aren't currently re-injected into the prompt verbatim
+(the prompt file already encodes the same rules in prose, and doubling
+both would waste tokens) - `rules.json` is there for governance/tracking
+and to drive the Update Rules UI.
 
-**About custom templates:** selecting a template file now really uploads
-it to `Users/<UserID>/LeaseAbstraction/_templates/`, and `Output.pdf` is
-still generated using the same built-in report layout (Field/Value table)
-for every lease — genuinely re-creating an arbitrary uploaded PDF/DOCX's
-exact visual layout automatically isn't feasible without a template
-engine, so the custom file is stored and referenced by name in the
-generated report rather than used as a pixel-for-pixel layout source.
-
-The **Default.pdf** shipped in `Template/LeaseAbstraction/` didn't exist
-anywhere in the original project (nothing was ever actually configured as
-a "default output template" — it was just a text label in the UI), so a
-default template was generated using the same report layout `Output.pdf`
-uses.
-
-Translation keeps its original, purely simulated pipeline — section 14 of
-the spec only covers Lease Abstraction.
+Translation keeps its original, purely simulated pipeline - it's out of
+scope for the real backend work described above.
 
 ## Contact Us / Support emails
 `json/smtp-config.json` holds the SMTP credentials used by
-`POST /api/send-acknowledgement`. Every message submitted from the
-Support page's "Send us a Message" form (moved there from Contact Us)
-triggers an acknowledgement email to the logged-in user's own address,
-sent server-side over SMTP (stdlib `smtplib`, no extra dependency).
-`smtp-config.json` is blocked from ever being served as a static file
-(`GET /json/smtp-config.json` returns 403) so the credentials can't leak
-through the browser.
+`POST /api/send-acknowledgement`. Emails (both this one and every
+verification-code email) are sent as real HTML (with a plaintext
+fallback for clients that don't render HTML) - a branded header, a big
+easy-to-select/copy verification code block, and a clean layout instead
+of a raw plaintext dump. Note that a real "click to copy" button isn't
+possible inside an email itself - virtually every email client (Gmail,
+Outlook, Apple Mail, ...) strips `<script>` entirely for security, so
+there's no way to run JS inside the email. The code is styled to be easy
+to double-click-to-select and copy manually instead. When the email
+itself fails to send, the verification card in the app shows the code
+directly with a real, working **📋 Copy** button (that one's just a
+normal in-app button, so it works properly).
+
+Every message submitted from the Support page's "Send us a Message"
+form (moved there from Contact Us) triggers an acknowledgement email to
+the logged-in user's own address, sent server-side over SMTP (stdlib
+`smtplib`, no extra dependency). `smtp-config.json` is blocked from ever
+being served as a static file (`GET /json/smtp-config.json` returns 403)
+so the credentials can't leak through the browser.
 
 Every submission gets an auto-generated ID (`SUP001`, `SUP002`, ...).
 Clicking a row in the **Supports: Log** table shows that submission's
@@ -318,16 +355,21 @@ several incidental mentions **combined with weak lease evidence**, so a
 couple of stray mentions inside an obviously-complete lease document no
 longer overrides the overwhelming lease-document signal.
 
-## Multiple SMTP accounts / LLM keys, with a primary
-`json/smtp-config.json` now holds an `"accounts"` array (each with its own
-host/port/username/password/sender_email) and `json/llm-config.json` holds
-a `"keys"` array per provider (`openai`/`openrouter`), each entry with its
-own `apiKey`/`model`. Mark exactly one entry `"primary": true` in each
-list - that's the one actually used (falls back to the first entry if
-none is marked). Both are editable as ordinary tables now through the
-Admin File Manager. The provided OpenAI/OpenRouter keys are already in
-place as the primary entry for each provider, in the correct format this
-time (`sk-proj-...` / `sk-or-v1-...`).
+## Secrets live in .env now, not json/ files
+`json/llm-config.json` and `json/smtp-config.json` are gone -
+**committing real API keys/passwords in a tracked JSON file got git
+pushes blocked by GitHub's secret-scanning push protection.** All of
+that now lives in `.env` (already filled in with working values,
+gitignored, never committed) - see `.env.example` for the full list of
+variables and what each does. `.env` is also blocked from the Admin File
+Manager and from direct static access, same as `users.json`.
+
+If you ever need to change the API key, SMTP password, etc., edit `.env`
+directly and restart the server (`python3 py/server.py`) - environment
+variables are only read at startup. For a Render deployment, set these
+under the service's **Environment** tab in the Render dashboard instead
+(see `render.yaml`) - `.env` itself never reaches Render since it isn't
+in the repo.
 
 ## Registration rules
 - One email = one account. Trying to register an email that's already a
@@ -408,6 +450,182 @@ unless you add a paid-plan persistent disk mounted at `/app/Users`.
 - Login screen now shows the actual `Pictures/logo.png` (was a generic
   ⚖️ emoji) on a white background, matching the top bar's logo box.
 
+## Per-user data isolation (Lease/Translation files + activity log)
+`json/lease-files.json`, `translation-files.json`, `lease-activity-log.json`
+and `translation-activity-log.json` all hold **every user's** data in one
+shared file (same pattern as payments/support). Every file/log entry now
+carries a `userId`, and the frontend always reads through
+`getMyLeaseFiles()` / `getMyTranslationFiles()` / `getMyLeaseActivityLog()`
+/ `getMyTranslationActivityLog()` instead of the raw arrays - this was
+missing before, so one user's uploads/processing history could show up in
+another user's session. Clear Files now only clears the current user's
+own entries.
+
+## Dashboard
+"Total Lease Abstraction" / "Total Translation" are real counts now
+(previously hardcoded placeholder numbers) - Lease Abstraction counts
+actual `Users/<id>/LeaseAbstraction/*` folders on disk (via
+`GET /api/lease/list`), Translation counts `completed` entries in
+`translation-files.json` for the current user (translation is still a
+simulated pipeline, so there's no real output folder to count on disk
+for it). A new **My Processed Leases** card lists every lease you've
+processed as a link - clicking one opens a popup showing everything in
+its `LeaseDocuments.json` plus `Output.pdf`, each with a real download
+link (`GET /api/lease/download`). The file table's own "Download" action
+was also fixed - it was still the original demo's placeholder
+(`showMessage('Downloading...')`, no real download ever happened) and now
+actually downloads `Output.pdf` via that same endpoint.
+
+## Balance centralization + Developer/Admin-wide visibility
+Whoever adds balance (User/Admin/Developer), that top-up also books a
+second "Balance Received" entry on the **Developer's** own account
+(revenue), separate from the entry that makes the adding user's own
+spendable balance go up (`getCurrentBalance()` always uses only a
+user's own entries, regardless of role). On the Payment History and
+Support pages, Developer/Admin see **everyone's** entries (with a User ID
+column) plus a User ID/email filter next to Clear/Reset; a plain User
+still only ever sees their own. A new sanitized `GET /api/auth/directory`
+endpoint (id/email/name/role only, never a password) backs the email
+part of that filter and the balance-centralization lookup.
+
+## Notifications
+New **🔔 Notification** item in the profile dropdown (My Profile / Admin
+/ Notification / Logout), with an unread-count badge on the avatar.
+Adding balance generates one automatically. The page is a table (Date &
+Time / Description / Status / Read-Unread + Remove actions); clicking the
+description opens a detail popup and marks it Read. Backed by
+`json/notifications.json`.
+
+## Lease Abstraction rules workflow ("📐 Update Rules")
+New button in the Lease Abstraction Setup card, left of System
+Configuration. All 73 built-in rules in `json/rules.json` now carry a
+`userId` (set to the Developer account). Any user can propose a new rule
+from the popup - it's saved into `rules.json`'s `"pending"` array tagged
+with their own userId and has no effect on extraction until approved.
+Only when logged in as the Developer role does the popup show
+Approve/Reject actions on pending rules (moving one to `"approved"` is
+what actually makes it apply) - `POST /api/rules/propose` /
+`/api/rules/approve` / `/api/rules/reject`, `GET /api/rules/list`.
+
+## Verification emails send in the background now
+Login/register/forgot-password/resend all respond **immediately** (confirmed
+under 0.1s in testing, vs. up to 6s before) instead of waiting on the SMTP
+connection - the email itself sends in a background thread
+(`_send_verification_email_async` in `py/server.py`). The verify card
+shows up right away; the frontend then polls `GET /api/auth/email-status`
+a few times a second apart, and if the send turns out to have failed, the
+fallback code + copy button appear in the (already-visible) card at that
+point instead of blocking the initial screen on it.
+
+## Support tickets
+Ticket IDs are `YYMMDD` + a 5-digit daily sequence (e.g. `26070200001` for
+the first ticket on 2026-07-02), so they sort by date and are sequential
+within a day. **Create New** only ever shows Type/Subject/Message (no
+ID/Status/Response at all) - submitting emails the user an acknowledgement
+with their new ticket ID. Opening an existing ticket shows "🎫 Ticket
+Details": a plain User sees everything read-only with no buttons;
+Developer/Admin can change Status (a real Pending/WIP/Resolved dropdown)
+and write a Response, then Submit - which emails the ticket's original
+owner with the update. Developer/Admin can never edit what the user
+actually wrote (Type/Subject/Message stay read-only for everyone).
+
+## Reliability: server auto-start in Codespaces
+If the Codespace kept needing `python3 py/server.py` typed by hand: the
+background-process detachment now uses `setsid` (not just
+`nohup & disown`, which could still get killed when postStartCommand's
+own shell was torn down in some Codespaces execution contexts), and
+`.devcontainer/devcontainer.json` also runs the start script on
+`postAttachCommand` (every reconnect) as a second safety net, not just
+`postStartCommand` (codespace start/resume only). Static files
+(HTML/CSS/JS) are also now served with `Cache-Control: no-cache` so a
+browser/proxy never serves a stale cached copy after an update.
+
+## Production-readiness upgrades
+Four things flagged as prototype-only gaps are now real:
+
+**Passwords are hashed** - PBKDF2-HMAC-SHA256, 600,000 iterations (stdlib
+`hashlib` only, no bcrypt/argon2 dependency to install - works the same on
+every deployment target this project runs on). All 5 seed users'
+passwords in `json/users.json` are already hashed; any account that
+somehow still had a plaintext password gets transparently upgraded to a
+real hash on its next successful login. `/api/auth/me` and
+`/api/profile/update` never send a password (hashed or not) to the
+browser anymore, and the Profile page's password field is blank by
+default (not pre-filled with the real password) - leave it blank to keep
+the current password.
+
+**Real sessions, not a trusted client-supplied userId** - login (direct or
+after 2FA) now returns a real opaque session token
+(`secrets.token_urlsafe`), which the frontend attaches as
+`Authorization: Bearer <token>` on every request after that (see
+`authFetch()` in `js/app.js`). The server derives *who you are* from that
+token now, not from a `userId` field the client could previously just
+edit in localStorage to act as someone else - every route that acts on a
+specific user's data cross-checks the session against the requested
+userId (matching account, or Admin/Developer). Sessions are in-memory
+only (a server restart naturally logs everyone out - no separate
+revocation-list bookkeeping needed) with a 7-day expiry. Logout now
+actually revokes the token server-side (`POST /api/auth/logout`), not
+just locally.
+
+**Translation has a real pipeline now** - previously entirely
+`setTimeout`-simulated. Real upload → real (OCR-capable, same async job
+as Lease Abstraction) text extraction → real LLM translation
+(`lease_engine.translate_text()`, same OpenAI/OpenRouter key from `.env`)
+→ real saved output (`Users/<id>/Translation/<docName>/`, `Output.json` +
+`Translated.txt` + `Output.pdf`) → real download
+(`GET /api/translation/download`). Falls back to returning the original
+text with a clear "no LLM configured" note if no key is set, same
+convention as lease extraction's heuristic fallback.
+
+**Newly-approved rules apply immediately, not just after editing
+`extraction_prompt.txt` by hand** - the original 73 rules are marked
+`"builtin": true` (already baked into `extraction_prompt.txt`'s prose, so
+they're never re-injected - that would just double token usage for no
+benefit). Anything approved through the 📐 Update Rules UI after that
+doesn't have that flag, and `lease_engine.load_extraction_prompt()` now
+appends those as an extra prompt section on every call, live - approve a
+rule as Developer and the very next extraction already uses it.
+
+## LLM provider failover + heuristic accuracy fixes
+Found via a real test document (a dense 26-page industrial lease) that
+was falling all the way back to the heuristic engine: `call_llm_extraction()`
+/ `call_llm_validation()` / `translate_text()` now all try the *other*
+configured provider (OpenAI ↔ OpenRouter) if the primary one's call
+itself fails, instead of giving up straight to the heuristic engine the
+moment the first provider has a hiccup - verified with a mocked
+primary-fails/fallback-succeeds test. The default OpenRouter model was
+also switched to `anthropic/claude-sonnet-4` (was pointed at another
+OpenAI model) - a fallback to "a different route to the same underlying
+API" doesn't help if that API itself is the problem.
+
+Also fixed two real accuracy bugs in the **heuristic** fallback engine
+(used whenever neither provider is configured or both fail) - verified
+against the actual reference lease document:
+- Lease End Date used to just grab "the 2nd date found anywhere in the
+  document", which easily picked up an unrelated date (e.g. an
+  "Estimated Commencement Date") instead of the real expiration date.
+  Now looks for a date specifically near an "Expiration Date"/"Lease
+  Expiration"/"Termination Date" label first.
+- Party names (Landlord/Tenant) used to cut off at the very first line
+  break, truncating any name that wraps across a PDF table cell's
+  multiple lines (a real one was missing a whole "AND ... LLC" clause).
+  Now captures a few continuation lines and stops at a blank line or the
+  next label - including labels using a curly apostrophe ("LANDLORD'S
+  ADDRESS"), which was silently failing to match as a boundary before
+  and let the value run on into unrelated text.
+
+## Fixed: "Maximum call stack size exceeded"
+`processLeaseFileAt`/`processTranslationFileAt` used to recurse via
+`return processLeaseFileAt(fileIndex + 1)` - harmless most of the time,
+but the fast-path for an already-`'completed'` file hit that recursive
+call with **no `await` before it**, so a batch with many already-completed
+files in a row could build up real JS call-stack frames synchronously
+before ever yielding to the event loop, eventually overflowing the
+stack. Both are now plain iterative `for`/`continue` loops instead of
+recursion - there's no longer any call depth that scales with file count
+at all.
+
 ## Known fixes in this revision
 - **Clear Files** no longer writes an "All files ... cleared" activity
   log entry — the log is simply emptied.
@@ -435,8 +653,8 @@ Opening this repo in a Codespace now does everything automatically:
   scanned-PDF OCR fallback) and `requirements.txt`
 - `postStartCommand` starts `py/server.py` in the background if it isn't
   already running
-- opening the forwarded port's base URL (no `/main.html` needed) redirects
-  straight to `main.html`
+- opening the forwarded port's base URL serves `index.html` directly (it's
+  literally named `index.html`, so no redirect is even needed anymore)
 
 If you ever need to (re)start it by hand:
 ```bash
@@ -450,6 +668,6 @@ cd main
 pip install -r requirements.txt
 python3 py/server.py
 ```
-Then visit **http://localhost:8000/** (redirects to `/main.html`).
+Then visit **http://localhost:8000/**.
 
 (`PORT=3000 python3 py/server.py` to use a different port.)

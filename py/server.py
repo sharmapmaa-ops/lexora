@@ -3,7 +3,7 @@
 Backend for the Lexora / TechCorp Solutions menu system (Python version).
 
 What this is for:
-Opening main.html as a plain static file (or serving it with a plain
+Opening index.html as a plain static file (or serving it with a plain
 static server like `python3 -m http.server`) means the browser can
 fetch() the json/ files, but it can never write back to them - browsers
 are not allowed to touch the server's filesystem. This server adds the
@@ -24,7 +24,7 @@ library; only the Lease Abstraction pipeline routes need those packages.
 Run it with:
     python3 py/server.py
 Then open:
-    http://localhost:8000/          (redirects to /main.html)
+    http://localhost:8000/          (serves index.html directly)
 
 (PORT=3000 python3 py/server.py to use a different port.)
 """
@@ -35,6 +35,7 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import smtplib
 import ssl
@@ -42,6 +43,7 @@ import sys
 import threading
 import uuid
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -52,7 +54,7 @@ import auth_store  # noqa: E402
 PORT = int(os.environ.get("PORT", 8000))
 
 # server.py lives in py/, but it still needs to serve/read the project root
-# (main.html, css/, json/, Pictures/, Users/) - so ROOT_DIR is one level up
+# (index.html, css/, json/, Pictures/, Users/) - so ROOT_DIR is one level up
 # from this file, not the py/ folder itself.
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JSON_DIR = os.path.join(ROOT_DIR, "json")
@@ -60,9 +62,90 @@ USERS_DIR = os.path.join(ROOT_DIR, "Users")
 TEMPLATE_DIR = os.path.join(ROOT_DIR, "Template", "LeaseAbstraction")
 DEFAULT_TEMPLATE_PATH = os.path.join(TEMPLATE_DIR, "Default.pdf")
 
+
+def _load_dotenv(path):
+    """Minimal .env loader (KEY=VALUE per line, '#' comments, optional
+    quotes around the value) - avoids adding python-dotenv as a real pip
+    dependency just for this. Real secrets (API keys, SMTP password) live
+    in .env (gitignored, never committed) instead of a tracked json/ file,
+    since committing real keys in JSON got git pushes blocked by GitHub's
+    secret-scanning push protection."""
+    if not os.path.isfile(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+
+
+_load_dotenv(os.path.join(ROOT_DIR, ".env"))
+
+
+class AuthError(Exception):
+    """Raised for any authentication/authorization failure - mapped to
+    HTTP 401 in do_GET/do_POST's error handling (see below), distinct
+    from ValueError's 400 (a plain bad-request) so the frontend can tell
+    "you typed something wrong" apart from "you're not logged in /
+    allowed to do that"."""
+    pass
+
+
+# ============================================================
+# Real sessions. Every endpoint that used to just trust a client-supplied
+# "userId" field (readable/editable by anyone via devtools or localStorage)
+# now requires a valid session token instead - the server decides who you
+# are, the client no longer gets to assert it. Tokens are opaque random
+# strings (not JWTs - there's no need to encode/verify claims client-side
+# for a same-origin app like this, and an opaque token can be revoked
+# server-side on logout, which a self-contained JWT can't be without an
+# extra blocklist anyway).
+#
+# In-memory only (not persisted to disk) - a server restart naturally logs
+# everyone out, which is a perfectly reasonable default for a token store
+# this simple (no separate revocation-list bookkeeping needed) and avoids
+# ever having live session tokens sitting in a file on disk.
+# ============================================================
+_sessions = {}
+_sessions_lock = threading.Lock()
+SESSION_TTL_HOURS = 24 * 7  # 7 days
+
+
+def _create_session(user_id):
+    token = secrets.token_urlsafe(32)
+    with _sessions_lock:
+        _sessions[token] = {
+            "userId": user_id,
+            "expiresAt": datetime.datetime.now() + datetime.timedelta(hours=SESSION_TTL_HOURS),
+        }
+    return token
+
+
+def _get_session(token):
+    with _sessions_lock:
+        session = _sessions.get(token)
+        if not session:
+            return None
+        if datetime.datetime.now() > session["expiresAt"]:
+            del _sessions[token]
+            return None
+        return session
+
+
+def _destroy_session(token):
+    with _sessions_lock:
+        _sessions.pop(token, None)
+
+
 # Only these json/ files can be read/written through the /api/data/<name>
 # API - this is a hard allowlist so that route can never be used to read or
-# overwrite anything else on disk (app.js, server.py, smtp-config.json,
+# overwrite anything else on disk (app.js, server.py, users.json,
 # the Users/ folder, etc).
 # NOTE: "users" is intentionally NOT in this list. Now that real login
 # exists, users.json holds plaintext passwords and verification codes for
@@ -79,19 +162,25 @@ ALLOWED_RESOURCES = {
     "translation-files",
     "lease-activity-log",
     "translation-activity-log",
+    "notifications",
 }
 
 # json files that must never be served as static files (contain secrets).
-PROTECTED_JSON_FILES = {"smtp-config.json", "llm-config.json", "users.json"}
+# smtp-config.json / llm-config.json no longer exist (real secrets moved
+# to .env - see _load_dotenv above) - only users.json (plaintext
+# passwords) still needs this.
+PROTECTED_JSON_FILES = {"users.json"}
 
 # Relative paths (from ROOT_DIR, forward slashes) the Admin File Manager
 # will never let you *view, edit, or download* the raw contents of, even
 # though it's still visible/manageable (e.g. deletable) in the listing.
-# Currently empty - users.json, smtp-config.json and llm-config.json are
-# all viewable/editable through this (Developer/Admin-only, authenticated)
-# panel per explicit request; they're still blocked from *direct*
-# unauthenticated static-file access (PROTECTED_JSON_FILES, below).
-ADMIN_DOWNLOAD_BLOCKLIST = set()
+# users.json is viewable/editable through this (Developer/Admin-only,
+# authenticated) panel per explicit request, and is still blocked from
+# *direct* unauthenticated static-file access (PROTECTED_JSON_FILES,
+# above). .env holds real secrets and is blocked from this panel entirely
+# - there's no JSON-table view for it anyway (it's not JSON), and it
+# should never be readable through the browser regardless of role.
+ADMIN_DOWNLOAD_BLOCKLIST = {".env"}
 
 MAX_BODY_BYTES = 30 * 1024 * 1024  # generous - lease PDFs / photos are base64
 
@@ -141,6 +230,52 @@ def _run_extract_job(job_id, abs_path):
     except Exception as err:
         print(f"Extraction job {job_id} failed: {err}")
         _set_job(job_id, status="error", error=str(err))
+
+
+# ============================================================
+# Async verification-email sending. SMTP can be slow (or just
+# unreachable, in which case it eats the full connection timeout before
+# failing) - sending it in a background thread means /api/auth/login,
+# /register, /forgot-password and /resend-code all respond immediately
+# so the verification card shows up right away, instead of the UI
+# sitting on a loading spinner for however long the email attempt takes.
+# The frontend polls /api/auth/email-status right after showing the
+# card; if the send ends up failing, that's when the fallback code
+# appears - "immediately" in wall-clock terms, just not blocking the
+# initial screen.
+# ============================================================
+_email_jobs = {}
+_email_jobs_lock = threading.Lock()
+
+
+def _set_email_job(user_id, **fields):
+    with _email_jobs_lock:
+        job = _email_jobs.setdefault(user_id, {})
+        job.update(fields)
+        job["updatedAt"] = datetime.datetime.now()
+
+
+def _get_email_job(user_id):
+    with _email_jobs_lock:
+        return dict(_email_jobs.get(user_id) or {})
+
+
+def _send_verification_email_async(user_id, to_email, user_name, code, purpose, expiry_minutes):
+    _set_email_job(user_id, status="sending")
+    # Always visible in the server's own console/terminal, regardless of
+    # whether the email itself succeeds - handy for local dev/testing
+    # without needing working SMTP or access to the inbox at all.
+    print(f"🔑 Verification code for {to_email} ({purpose}): {code}  (expires in {expiry_minutes} min)")
+
+    def _worker():
+        try:
+            _send_verification_email(to_email, user_name, code, purpose, expiry_minutes)
+            _set_email_job(user_id, status="sent")
+        except Exception as err:
+            print(f"Verification email to {to_email} could not be sent (code is still valid - see above): {err}")
+            _set_email_job(user_id, status="failed", code=code)
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 # ============================================================
@@ -209,58 +344,54 @@ def _human_size(num_bytes):
     return f"{num_bytes:.1f} TB"
 
 
-def _get_primary(items):
-    """Returns the item flagged primary=true, or the first item if none is
-    flagged, or None if the list is empty - shared logic for picking which
-    SMTP account / LLM API key to actually use by default."""
-    if not items:
-        return None
-    for item in items:
-        if item.get("primary"):
-            return item
-    return items[0]
-
-
-def _read_smtp_config():
-    path = os.path.join(JSON_DIR, "smtp-config.json")
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
 def _primary_smtp_account():
-    cfg = _read_smtp_config()
-    account = _get_primary(cfg.get("accounts") or [])
-    if not account:
-        raise ValueError("No SMTP account is configured in json/smtp-config.json")
-    return account
+    """SMTP credentials come from environment variables (.env) now -
+    json/smtp-config.json was removed for the same reason as
+    llm-config.json (see _load_dotenv's docstring above)."""
+    host = os.environ.get("SMTP_HOST")
+    if not host:
+        raise ValueError(
+            "SMTP is not configured - set SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD etc. "
+            "in your .env file (see .env.example)."
+        )
+    username = os.environ.get("SMTP_USERNAME")
+    return {
+        "host": host,
+        "port": int(os.environ.get("SMTP_PORT", "465") or 465),
+        "username": username,
+        "password": os.environ.get("SMTP_PASSWORD"),
+        "sender_email": os.environ.get("SMTP_SENDER_EMAIL") or username,
+        "use_tls": (os.environ.get("SMTP_USE_TLS", "false") or "false").strip().lower() in ("1", "true", "yes"),
+    }
 
 
 def _load_smtp_expiry_minutes():
     try:
-        cfg = _read_smtp_config()
-        return int(cfg.get("expiry_minutes", 10))
-    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return int(os.environ.get("SMTP_EXPIRY_MINUTES", "10") or 10)
+    except (ValueError, TypeError):
         return 10
 
 
-def _send_email(to_email, subject, body):
+def _send_email(to_email, subject, body, html_body=None):
     """Generic SMTP sender shared by the contact-us acknowledgement email
     and every verification-code email (register/login/reset). Uses
-    whichever account in json/smtp-config.json's "accounts" list is
-    flagged primary (falls back to the first one). The account's password
-    is never required to live in the committed JSON file - SMTP_PASSWORD
-    (an env var / Codespace secret / git-ignored .env entry) takes
-    priority, and a literal "password" in the JSON is only used as a
-    last-resort fallback."""
+    the SMTP account configured in .env. When html_body is
+    given, sends a real multipart/alternative message (plain text
+    fallback + a styled HTML version) instead of plain text only."""
     account = _primary_smtp_account()
     host = account["host"]
     port = int(account.get("port", 465))
     username = account.get("username")
-    password = os.environ.get("SMTP_PASSWORD") or account.get("password")
+    password = account.get("password")
     sender = account.get("sender_email", username)
     use_tls = bool(account.get("use_tls", False))
 
-    mime_msg = MIMEText(body, "plain", "utf-8")
+    if html_body:
+        mime_msg = MIMEMultipart("alternative")
+        mime_msg.attach(MIMEText(body, "plain", "utf-8"))
+        mime_msg.attach(MIMEText(html_body, "html", "utf-8"))
+    else:
+        mime_msg = MIMEText(body, "plain", "utf-8")
     mime_msg["Subject"] = subject
     mime_msg["From"] = sender
     mime_msg["To"] = to_email
@@ -280,16 +411,94 @@ def _send_email(to_email, subject, body):
             server.sendmail(sender, [to_email], mime_msg.as_string())
 
 
-def _send_acknowledgement_email(to_email, user_name, msg_type, subject, message):
-    body = (
+def _html_email_wrapper(company_name, preheader, body_html):
+    """Shared branded HTML shell (dark navy header matching the app's own
+    theme, card body, muted footer) - both email types below drop their
+    specific content into this."""
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#f4f5fa;font-family:'Segoe UI',Arial,sans-serif;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">{preheader}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5fa;padding:32px 12px;">
+<tr><td align="center">
+<table role="presentation" width="480" cellpadding="0" cellspacing="0" style="max-width:480px;width:100%;background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 4px 24px rgba(10,15,44,0.1);">
+<tr><td style="background:linear-gradient(135deg,#0a0f2c 0%,#131b3f 55%,#1a2352 100%);padding:22px 30px;">
+<span style="color:#ffffff;font-size:1.15rem;font-weight:700;letter-spacing:0.3px;">{company_name}</span>
+</td></tr>
+<tr><td style="padding:32px 30px;">
+{body_html}
+</td></tr>
+<tr><td style="padding:16px 30px;background:#f9fafc;border-top:1px solid #eee;">
+<span style="color:#9aa0b0;font-size:0.72rem;">This is an automated message from {company_name}. Please don't reply directly to this email.</span>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>"""
+
+
+def _send_acknowledgement_email(to_email, user_name, ticket_id, msg_type, subject, message):
+    company_name = _load_company_name()
+    plain_body = (
         f"Hi {user_name},\n\n"
         f"Thanks for reaching out. We've received your {msg_type.lower()} and "
         f"our team will resolve it as soon as possible.\n\n"
+        f"Ticket ID: {ticket_id}\n"
         f"Subject: {subject}\n"
         f"Your message:\n{message}\n\n"
-        f"— Support Team"
+        f"— Support Team, {company_name}"
     )
-    _send_email(to_email, f"We've received your {msg_type.lower()}: {subject}", body)
+    body_html = f"""
+<p style="font-size:0.95rem;color:#23263a;margin:0 0 14px 0;">Hi {user_name},</p>
+<p style="font-size:0.95rem;color:#23263a;line-height:1.6;margin:0 0 20px 0;">
+Thanks for reaching out. We've received your <strong>{msg_type.lower()}</strong> and our support team will get back to you as soon as possible.
+</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5fa;border-radius:8px;margin-bottom:20px;">
+<tr><td style="padding:16px 18px;">
+<p style="margin:0 0 6px 0;font-size:0.72rem;font-weight:700;color:#8890a5;text-transform:uppercase;letter-spacing:0.5px;">Ticket ID</p>
+<p style="margin:0 0 14px 0;font-size:0.95rem;color:#0a0f2c;font-weight:700;font-family:'Courier New',monospace;">{ticket_id}</p>
+<p style="margin:0 0 6px 0;font-size:0.72rem;font-weight:700;color:#8890a5;text-transform:uppercase;letter-spacing:0.5px;">Subject</p>
+<p style="margin:0 0 14px 0;font-size:0.88rem;color:#23263a;font-weight:600;">{subject}</p>
+<p style="margin:0 0 6px 0;font-size:0.72rem;font-weight:700;color:#8890a5;text-transform:uppercase;letter-spacing:0.5px;">Your Message</p>
+<p style="margin:0;font-size:0.85rem;color:#4a5066;line-height:1.6;white-space:pre-wrap;">{message}</p>
+</td></tr>
+</table>
+<p style="font-size:0.85rem;color:#555;line-height:1.6;margin:0;">— Support Team, {company_name}</p>
+"""
+    html = _html_email_wrapper(company_name, f"We've received your {msg_type.lower()}: {subject}", body_html)
+    _send_email(to_email, f"[Ticket {ticket_id}] We've received your {msg_type.lower()}: {subject}", plain_body, html_body=html)
+
+
+def _send_ticket_update_email(to_email, user_name, ticket_id, status, response, subject):
+    company_name = _load_company_name()
+    plain_body = (
+        f"Hi {user_name},\n\n"
+        f"Your support ticket has been updated.\n\n"
+        f"Ticket ID: {ticket_id}\n"
+        f"Subject: {subject}\n"
+        f"Status: {status}\n"
+        f"Response:\n{response}\n\n"
+        f"— Support Team, {company_name}"
+    )
+    body_html = f"""
+<p style="font-size:0.95rem;color:#23263a;margin:0 0 14px 0;">Hi {user_name},</p>
+<p style="font-size:0.95rem;color:#23263a;line-height:1.6;margin:0 0 20px 0;">Your support ticket has been updated:</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5fa;border-radius:8px;margin-bottom:20px;">
+<tr><td style="padding:16px 18px;">
+<p style="margin:0 0 6px 0;font-size:0.72rem;font-weight:700;color:#8890a5;text-transform:uppercase;letter-spacing:0.5px;">Ticket ID</p>
+<p style="margin:0 0 14px 0;font-size:0.95rem;color:#0a0f2c;font-weight:700;font-family:'Courier New',monospace;">{ticket_id}</p>
+<p style="margin:0 0 6px 0;font-size:0.72rem;font-weight:700;color:#8890a5;text-transform:uppercase;letter-spacing:0.5px;">Status</p>
+<p style="margin:0 0 14px 0;font-size:0.88rem;color:#23263a;font-weight:600;">{status}</p>
+<p style="margin:0 0 6px 0;font-size:0.72rem;font-weight:700;color:#8890a5;text-transform:uppercase;letter-spacing:0.5px;">Response</p>
+<p style="margin:0;font-size:0.85rem;color:#4a5066;line-height:1.6;white-space:pre-wrap;">{response}</p>
+</td></tr>
+</table>
+<p style="font-size:0.85rem;color:#555;line-height:1.6;margin:0;">— Support Team, {company_name}</p>
+"""
+    html = _html_email_wrapper(company_name, f"Your ticket {ticket_id} was updated", body_html)
+    _send_email(to_email, f"[Ticket {ticket_id}] Update: {status}", plain_body, html_body=html)
 
 
 _VERIFICATION_PURPOSE_LABELS = {
@@ -299,24 +508,46 @@ _VERIFICATION_PURPOSE_LABELS = {
 }
 
 
+def _load_company_name():
+    try:
+        with open(os.path.join(JSON_DIR, "company.json"), "r", encoding="utf-8") as f:
+            return json.load(f).get("name", "Lexora AI Solutions")
+    except (OSError, json.JSONDecodeError):
+        return "Lexora AI Solutions"
+
+
 def _send_verification_email(to_email, user_name, code, purpose, expiry_minutes):
+    company_name = _load_company_name()
     label = _VERIFICATION_PURPOSE_LABELS.get(purpose, "verify your account")
-    body = (
+    plain_body = (
         f"Hi {user_name},\n\n"
         f"Use this code to {label}:\n\n"
         f"    {code}\n\n"
         f"This code expires in {expiry_minutes} minute(s).\n\n"
         f"If you didn't request this, you can safely ignore this email.\n\n"
-        f"— Lexora AI Solutions"
+        f"— {company_name}"
     )
-    _send_email(to_email, f"Your verification code: {code}", body)
+    body_html = f"""
+<p style="font-size:0.95rem;color:#23263a;margin:0 0 14px 0;">Hi {user_name},</p>
+<p style="font-size:0.95rem;color:#23263a;line-height:1.6;margin:0 0 22px 0;">Use the verification code below to {label}:</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
+<div style="display:inline-block;background:#f4f5fa;border:2px dashed #131b3f;border-radius:10px;padding:18px 30px;">
+<span style="font-family:'Courier New',Courier,monospace;font-size:2rem;font-weight:700;letter-spacing:8px;color:#0a0f2c;user-select:all;">{code}</span>
+</div>
+</td></tr></table>
+<p style="font-size:0.75rem;color:#9aa0b0;text-align:center;margin:10px 0 24px 0;">Tap or double-click the code above to select it, then copy (Ctrl/Cmd+C)</p>
+<p style="font-size:0.85rem;color:#4a5066;line-height:1.6;margin:0 0 4px 0;">This code expires in <strong>{expiry_minutes} minute(s)</strong>.</p>
+<p style="font-size:0.8rem;color:#9aa0b0;line-height:1.6;margin:0;">If you didn't request this, you can safely ignore this email — your account is still secure.</p>
+"""
+    html = _html_email_wrapper(company_name, f"Your verification code is {code}", body_html)
+    _send_email(to_email, f"Your verification code: {code}", plain_body, html_body=html)
 
 
 # ============================================================
 # HTTP handler
 # ============================================================
 class Handler(SimpleHTTPRequestHandler):
-    """Serves main.html, css/, js/, json/, Pictures/, Users/ exactly like a
+    """Serves index.html, css/, js/, json/, Pictures/, Users/ exactly like a
     normal static file server would (except protected json files), plus
     the /api/... routes below."""
 
@@ -327,6 +558,18 @@ class Handler(SimpleHTTPRequestHandler):
         # Keep the console readable - default logging is very chatty.
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
+    def end_headers(self):
+        # No caching for the app's own static files - CSS/JS/HTML edits
+        # should always show up on the next reload, not sit stale in a
+        # browser or proxy cache (this is a small local dev tool, not a
+        # CDN-fronted production site, so there's no real perf cost).
+        path = urlparse(self.path).path
+        if path == "/" or path.endswith((".html", ".css", ".js")):
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+        super().end_headers()
+
     def _send_json(self, status, payload):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
@@ -334,6 +577,59 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    # ------------------------------------------------------------------
+    # Session-based auth. Every protected route calls _resolve_user_id()
+    # (POST, body-based) or _resolve_user_id_query() (GET, query-string
+    # based) instead of reading body.get("userId")/query.get("userId")
+    # directly - the session token (not the client-supplied field) is now
+    # what actually determines who's making the request. The requested
+    # userId is still accepted and still used (most of this app's routes
+    # are written around "act on this userId"), but it's cross-checked
+    # against the session: it either has to match the logged-in user, or
+    # the logged-in user has to be Admin/Developer (who legitimately act
+    # across users in a few places - Admin File Manager, rules approval).
+    # ------------------------------------------------------------------
+    def _authenticated_user_id(self):
+        auth_header = self.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            raise AuthError("Not authenticated - please log in again.")
+        token = auth_header[7:].strip()
+        session = _get_session(token)
+        if not session:
+            raise AuthError("Your session has expired - please log in again.")
+        return session["userId"]
+
+    def _session_user_role(self, session_user_id):
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, session_user_id)
+        return user.get("role") if user else None
+
+    def _authorize_user(self, requested_user_id):
+        """Returns the session's real userId if it's allowed to act as
+        requested_user_id (either it IS that user, or it's Admin/
+        Developer) - raises AuthError otherwise."""
+        session_user_id = self._authenticated_user_id()
+        if not requested_user_id or session_user_id == requested_user_id:
+            return session_user_id
+        if self._session_user_role(session_user_id) in ("Admin", "Developer"):
+            return session_user_id
+        raise AuthError("You are not authorized to access this account's data.")
+
+    def _resolve_user_id(self, body):
+        return self._authorize_user(body.get("userId"))
+
+    def _resolve_user_id_query(self, query):
+        return self._authorize_user((query.get("userId", [""])[0]))
+
+    def _require_role(self, roles):
+        """For routes that are inherently privileged (Admin File Manager,
+        rule approval) rather than "acting as a specific user" - just
+        requires the session to belong to one of the given roles."""
+        session_user_id = self._authenticated_user_id()
+        if self._session_user_role(session_user_id) not in roles:
+            raise AuthError("You don't have permission to do that.")
+        return session_user_id
 
     def _read_json_body(self):
         length = int(self.headers.get("Content-Length") or 0)
@@ -358,29 +654,44 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        # Section 3: opening the bare forwarded port loads main.html
-        # automatically - no more typing "/main.html" every time.
-        if path == "/" or path == "":
-            self.send_response(302)
-            self.send_header("Location", "/main.html")
-            self.end_headers()
-            return
+        # No custom redirect needed here anymore - the file is named
+        # index.html (see Section 3 notes above), and SimpleHTTPRequestHandler
+        # already serves index.html automatically for "/" on its own.
 
-        if path == "/api/admin/list":
-            return self._handle_admin_list(parse_qs(parsed.query))
-        if path == "/api/admin/download":
-            return self._handle_admin_download(parse_qs(parsed.query))
-        if path == "/api/admin/read":
-            return self._handle_admin_read(parse_qs(parsed.query))
-        if path == "/api/auth/me":
-            return self._handle_auth_me(parse_qs(parsed.query))
-        if path == "/api/lease/extract-status":
-            return self._handle_lease_extract_status(parse_qs(parsed.query))
+        get_routes = {
+            "/api/admin/list": self._handle_admin_list,
+            "/api/admin/download": self._handle_admin_download,
+            "/api/admin/read": self._handle_admin_read,
+            "/api/auth/me": self._handle_auth_me,
+            "/api/auth/directory": self._handle_auth_directory,
+            "/api/auth/email-status": self._handle_auth_email_status,
+            "/api/lease/extract-status": self._handle_lease_extract_status,
+            "/api/lease/list": self._handle_lease_list,
+            "/api/lease/documents": self._handle_lease_documents,
+            "/api/rules/list": self._handle_rules_list,
+            "/api/lease/download": self._handle_lease_download,
+            "/api/translation/list": self._handle_translation_list,
+            "/api/translation/download": self._handle_translation_download,
+        }
+        get_handler = get_routes.get(path)
+        if get_handler:
+            try:
+                return get_handler(parse_qs(parsed.query))
+            except AuthError as err:
+                return self._send_json(401, {"error": str(err)})
+            except lease_engine.LeaseEngineError as err:
+                return self._send_json(500, {"error": str(err)})
+            except ValueError as err:
+                return self._send_json(400, {"error": str(err)})
+            except Exception as err:  # noqa: BLE001 - always answer the client
+                print(f"Unhandled error on {path}: {err}")
+                return self._send_json(500, {"error": "Internal server error"})
 
-        # Never let smtp-config.json (SMTP credentials) be downloaded as a
-        # static file - it's only ever read server-side.
+        # Never let users.json or .env (real secrets) be downloaded as a
+        # static file - they're only ever read server-side. (.env.example
+        # is fine to serve - it has no real values in it.)
         basename = os.path.basename(path)
-        if basename in PROTECTED_JSON_FILES:
+        if basename in PROTECTED_JSON_FILES or basename == ".env":
             return self._send_json(403, {"error": "Forbidden"})
 
         name = self._resource_name()
@@ -389,6 +700,11 @@ class Handler(SimpleHTTPRequestHandler):
 
         if name not in ALLOWED_RESOURCES:
             return self._send_json(404, {"error": f'Unknown resource "{name}"'})
+
+        try:
+            self._authenticated_user_id()
+        except AuthError as err:
+            return self._send_json(401, {"error": str(err)})
 
         file_path = os.path.join(JSON_DIR, f"{name}.json")
         try:
@@ -413,6 +729,11 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send_json(404, {"error": "Not found"})
         if name not in ALLOWED_RESOURCES:
             return self._send_json(404, {"error": f'Unknown resource "{name}"'})
+
+        try:
+            self._authenticated_user_id()
+        except AuthError as err:
+            return self._send_json(401, {"error": str(err)})
 
         length = int(self.headers.get("Content-Length") or 0)
         if length == 0:
@@ -440,6 +761,7 @@ class Handler(SimpleHTTPRequestHandler):
     # Admin File Manager - GET routes
     # ------------------------------------------------------------------
     def _handle_admin_list(self, query):
+        self._require_role(("Admin", "Developer"))
         rel_path = (query.get("path", [""])[0])
         try:
             abs_path = _safe_admin_path(rel_path)
@@ -487,6 +809,7 @@ class Handler(SimpleHTTPRequestHandler):
         return self._send_json(200, {"ok": True, "path": current_rel, "entries": entries})
 
     def _handle_admin_download(self, query):
+        self._require_role(("Admin", "Developer"))
         rel_path = (query.get("path", [""])[0])
         try:
             abs_path = _safe_admin_path(rel_path)
@@ -522,6 +845,7 @@ class Handler(SimpleHTTPRequestHandler):
         routes = {
             "/api/upload-photo": self._handle_upload_photo,
             "/api/send-acknowledgement": self._handle_send_acknowledgement,
+            "/api/send-ticket-update": self._handle_send_ticket_update,
             "/api/lease/scan-template": self._handle_lease_scan_template,
             "/api/lease/upload-template": self._handle_lease_upload_template,
             "/api/lease/upload": self._handle_lease_upload,
@@ -529,7 +853,14 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/lease/analyze": self._handle_lease_analyze,
             "/api/lease/validate": self._handle_lease_validate,
             "/api/lease/save-output": self._handle_lease_save_output,
+            "/api/rules/propose": self._handle_rules_propose,
+            "/api/rules/approve": self._handle_rules_approve,
+            "/api/rules/reject": self._handle_rules_reject,
             "/api/lease/generate-pdf": self._handle_lease_generate_pdf,
+            "/api/translation/upload": self._handle_translation_upload,
+            "/api/translation/translate": self._handle_translation_translate,
+            "/api/translation/save-output": self._handle_translation_save_output,
+            "/api/translation/generate-pdf": self._handle_translation_generate_pdf,
             "/api/admin/mkdir": self._handle_admin_mkdir,
             "/api/admin/upload": self._handle_admin_upload,
             "/api/admin/delete": self._handle_admin_delete,
@@ -543,6 +874,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/auth/reset-password": self._handle_auth_reset_password,
             "/api/auth/resend-code": self._handle_auth_resend_code,
             "/api/profile/update": self._handle_profile_update,
+            "/api/auth/logout": self._handle_auth_logout,
         }
 
         handler = routes.get(path)
@@ -556,6 +888,8 @@ class Handler(SimpleHTTPRequestHandler):
 
         try:
             status, payload = handler(body)
+        except AuthError as err:
+            status, payload = 401, {"error": str(err)}
         except lease_engine.LeaseEngineError as err:
             status, payload = 500, {"error": str(err)}
         except ValueError as err:
@@ -568,7 +902,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ---- Section 2: profile photo storage ----
     def _handle_upload_photo(self, body):
-        user_id = _safe_id(body.get("userId"))
+        user_id = _safe_id(self._resolve_user_id(body))
         data_url = body.get("dataUrl") or ""
         file_name = _safe_filename(body.get("fileName"), "photo")
 
@@ -607,15 +941,30 @@ class Handler(SimpleHTTPRequestHandler):
         _send_acknowledgement_email(
             to_email,
             body.get("userName") or "there",
+            body.get("ticketId") or "-",
             body.get("type") or "Query",
             body.get("subject") or "(no subject)",
             body.get("message") or "",
         )
         return 200, {"ok": True}
 
+    def _handle_send_ticket_update(self, body):
+        to_email = body.get("toEmail")
+        if not to_email:
+            raise ValueError("toEmail is required")
+        _send_ticket_update_email(
+            to_email,
+            body.get("userName") or "there",
+            body.get("ticketId") or "-",
+            body.get("status") or "Pending",
+            body.get("response") or "",
+            body.get("subject") or "(no subject)",
+        )
+        return 200, {"ok": True}
+
     # ---- Section 14.1: output template scan (batch-level, not per file) ----
     def _handle_lease_scan_template(self, body):
-        user_id = _safe_id(body.get("userId"))
+        user_id = _safe_id(self._resolve_user_id(body))
         template_name = body.get("templateName")
 
         if template_name:
@@ -639,7 +988,7 @@ class Handler(SimpleHTTPRequestHandler):
         return 200, {"ok": True, "template": template_name, "pages": pages}
 
     def _handle_lease_upload_template(self, body):
-        user_id = _safe_id(body.get("userId"))
+        user_id = _safe_id(self._resolve_user_id(body))
         file_name = _safe_filename(body.get("fileName"), "template.pdf")
         data_b64 = body.get("dataBase64")
         if not data_b64:
@@ -655,7 +1004,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ---- Section 14.2: input file upload/scanning ----
     def _handle_lease_upload(self, body):
-        user_id = _safe_id(body.get("userId"))
+        user_id = _safe_id(self._resolve_user_id(body))
         original_name = _safe_filename(body.get("fileName"), "document.pdf")
         data_b64 = body.get("dataBase64")
         if not data_b64:
@@ -720,7 +1069,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ---- Section 14.3 (60%): document-type + duplicate validation ----
     def _handle_lease_validate(self, body):
-        user_id = _safe_id(body.get("userId"))
+        user_id = _safe_id(self._resolve_user_id(body))
         doc_type = body.get("docType")
         lease_name = lease_engine.sanitize_lease_name(body.get("leaseName"))
 
@@ -735,7 +1084,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ---- Section 14.3 (80%): Output.json + saved document + LeaseDocuments.json ----
     def _handle_lease_save_output(self, body):
-        user_id = _safe_id(body.get("userId"))
+        user_id = _safe_id(self._resolve_user_id(body))
         lease_name = lease_engine.sanitize_lease_name(body.get("leaseName"))
         doc_type = body.get("docType") or "Lease"
         fields = body.get("fields") or {}
@@ -825,7 +1174,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ---- Section 14.3 (100%): Output.pdf generation ----
     def _handle_lease_generate_pdf(self, body):
-        user_id = _safe_id(body.get("userId"))
+        user_id = _safe_id(self._resolve_user_id(body))
         lease_name = lease_engine.sanitize_lease_name(body.get("leaseName"))
         template_name = body.get("templateName") or "Default.pdf"
 
@@ -840,9 +1189,251 @@ class Handler(SimpleHTTPRequestHandler):
         return 200, {"ok": True, "outputPdf": _rel_to_root(pdf_path)}
 
     # ------------------------------------------------------------------
+    # Translation - a real pipeline now (used to be entirely simulated
+    # with setTimeout on the frontend). Text extraction is generic (not
+    # lease-specific) so this reuses /api/lease/extract-start/-status -
+    # only upload/translate/save/download/list are Translation-specific.
+    # ------------------------------------------------------------------
+    def _handle_translation_upload(self, body):
+        user_id = _safe_id(self._resolve_user_id(body))
+        original_name = _safe_filename(body.get("fileName"), "document.pdf")
+        data_b64 = body.get("dataBase64")
+        if not data_b64:
+            raise ValueError("dataBase64 is required")
+
+        folder = _user_dir(user_id, "Translation", "_staging")
+        os.makedirs(folder, exist_ok=True)
+        staged_name = f"{uuid.uuid4().hex}_{original_name}"
+        out_path = os.path.join(folder, staged_name)
+        with open(out_path, "wb") as f:
+            f.write(base64.b64decode(data_b64))
+
+        return 200, {"ok": True, "stagingPath": _rel_to_root(out_path), "originalFileName": original_name}
+
+    def _handle_translation_translate(self, body):
+        text = body.get("text") or ""
+        target_language = body.get("targetLanguage") or "English"
+        llm_config = lease_engine.load_llm_config()
+
+        try:
+            translated, used_provider = lease_engine.translate_text(text, target_language, llm_config=llm_config)
+        except lease_engine.LeaseEngineError as err:
+            print(f"Translation LLM call failed on every configured provider, falling back: {err}")
+            translated, used_provider = None, None
+
+        if translated is not None:
+            method = f"llm-{used_provider}"
+        else:
+            method = "heuristic"
+            translated = (
+                f"[No LLM is configured, so this is the original text unchanged - "
+                f"set OPENAI_API_KEY/OPENROUTER_API_KEY in .env for a real translation "
+                f"into {target_language}.]\n\n{text[:4000]}"
+            )
+
+        return 200, {"ok": True, "translatedText": translated[:100000], "method": method}
+
+    def _handle_translation_save_output(self, body):
+        user_id = _safe_id(self._resolve_user_id(body))
+        doc_name = lease_engine.sanitize_lease_name(body.get("docName"))
+        original_text = body.get("originalText") or ""
+        translated_text = body.get("translatedText") or ""
+        target_language = body.get("targetLanguage") or ""
+        translation_method = body.get("translationMethod") or "heuristic"
+        staging_path = body.get("stagingPath")
+        original_file_name = _safe_filename(body.get("originalFileName"), "document.pdf")
+
+        staged_abs = self._resolve_staging_path(staging_path)
+        folder = _user_dir(user_id, "Translation", doc_name)
+        os.makedirs(folder, exist_ok=True)
+
+        final_name = original_file_name
+        final_path = os.path.join(folder, final_name)
+        if os.path.exists(final_path):
+            stem, ext = os.path.splitext(final_name)
+            final_name = f"{stem}_{uuid.uuid4().hex[:6]}{ext}"
+            final_path = os.path.join(folder, final_name)
+        shutil.move(staged_abs, final_path)
+
+        translated_txt_path = os.path.join(folder, "Translated.txt")
+        with open(translated_txt_path, "w", encoding="utf-8") as f:
+            f.write(translated_text)
+
+        now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+        output_json_path = os.path.join(folder, "Output.json")
+        with open(output_json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "docName": doc_name,
+                "userId": user_id,
+                "targetLanguage": target_language,
+                "translationMethod": translation_method,
+                "originalText": original_text[:20000],
+                "translatedText": translated_text[:20000],
+                "sourceDocument": _rel_to_root(final_path),
+                "createdAt": now_iso,
+            }, f, indent=2, ensure_ascii=False)
+
+        return 200, {"ok": True, "docFolder": _rel_to_root(folder)}
+
+    def _handle_translation_generate_pdf(self, body):
+        user_id = _safe_id(self._resolve_user_id(body))
+        doc_name = lease_engine.sanitize_lease_name(body.get("docName"))
+
+        folder = _user_dir(user_id, "Translation", doc_name)
+        output_json_path = os.path.join(folder, "Output.json")
+        if not os.path.isfile(output_json_path):
+            raise ValueError("Output.json not found - run save-output first")
+
+        pdf_path = os.path.join(folder, "Output.pdf")
+        lease_engine.generate_translation_pdf(output_json_path, pdf_path)
+
+        return 200, {"ok": True, "outputPdf": _rel_to_root(pdf_path)}
+
+    def _handle_translation_list(self, query):
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        try:
+            base = _user_dir(user_id, "Translation")
+        except ValueError:
+            return self._send_json(400, {"error": "Invalid path"})
+
+        docs = []
+        if os.path.isdir(base):
+            for name in sorted(os.listdir(base)):
+                if name.startswith("_"):
+                    continue
+                folder = os.path.join(base, name)
+                output_json_path = os.path.join(folder, "Output.json")
+                if not os.path.isdir(folder) or not os.path.isfile(output_json_path):
+                    continue
+                try:
+                    with open(output_json_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    data = {}
+                docs.append({
+                    "docName": name,
+                    "targetLanguage": data.get("targetLanguage"),
+                    "createdAt": data.get("createdAt"),
+                    "hasOutputPdf": os.path.isfile(os.path.join(folder, "Output.pdf")),
+                })
+
+        docs.sort(key=lambda d: d.get("createdAt") or "", reverse=True)
+        return self._send_json(200, {"ok": True, "documents": docs})
+
+    def _handle_translation_download(self, query):
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        doc_name = lease_engine.sanitize_lease_name((query.get("docName", [""])[0]))
+        file_name = _safe_filename((query.get("fileName", [""])[0]))
+
+        try:
+            folder = _user_dir(user_id, "Translation", doc_name)
+        except ValueError:
+            return self._send_json(400, {"error": "Invalid path"})
+
+        abs_path = os.path.join(folder, file_name)
+        if not _within(folder, abs_path) or not os.path.isfile(abs_path):
+            return self._send_json(404, {"error": "File not found"})
+
+        with open(abs_path, "rb") as f:
+            data = f.read()
+
+        mime_type = mimetypes.guess_type(abs_path)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", mime_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(abs_path)}"')
+        self.end_headers()
+        self.wfile.write(data)
+
+    # ---- Dashboard "My Processed Leases" card: list + drill-down + download ----
+    def _handle_lease_list(self, query):
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        try:
+            base = _user_dir(user_id, "LeaseAbstraction")
+        except ValueError:
+            return self._send_json(400, {"error": "Invalid path"})
+
+        leases = []
+        if os.path.isdir(base):
+            for name in sorted(os.listdir(base)):
+                if name.startswith("_"):
+                    continue  # skip _staging / _templates internal folders
+                folder = os.path.join(base, name)
+                output_json_path = os.path.join(folder, "Output.json")
+                if not os.path.isdir(folder) or not os.path.isfile(output_json_path):
+                    continue
+                try:
+                    with open(output_json_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    data = {}
+                leases.append({
+                    "leaseName": name,
+                    "docType": data.get("docType"),
+                    "accuracy": data.get("accuracy"),
+                    "createdAt": data.get("createdAt"),
+                    "hasOutputPdf": os.path.isfile(os.path.join(folder, "Output.pdf")),
+                })
+
+        leases.sort(key=lambda l: l.get("createdAt") or "", reverse=True)
+        return self._send_json(200, {"ok": True, "leases": leases})
+
+    def _handle_lease_documents(self, query):
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        lease_name = lease_engine.sanitize_lease_name((query.get("leaseName", [""])[0]))
+        try:
+            folder = _user_dir(user_id, "LeaseAbstraction", lease_name)
+        except ValueError:
+            return self._send_json(400, {"error": "Invalid path"})
+
+        if not os.path.isdir(folder):
+            return self._send_json(404, {"error": "Lease not found"})
+
+        docs_path = os.path.join(folder, "LeaseDocuments.json")
+        docs = []
+        if os.path.isfile(docs_path):
+            try:
+                with open(docs_path, "r", encoding="utf-8") as f:
+                    docs = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                docs = []
+
+        has_output_pdf = os.path.isfile(os.path.join(folder, "Output.pdf"))
+        return self._send_json(200, {"ok": True, "leaseName": lease_name, "documents": docs, "hasOutputPdf": has_output_pdf})
+
+    def _handle_lease_download(self, query):
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        lease_name = lease_engine.sanitize_lease_name((query.get("leaseName", [""])[0]))
+        file_name = _safe_filename((query.get("fileName", [""])[0]))
+
+        try:
+            folder = _user_dir(user_id, "LeaseAbstraction", lease_name)
+        except ValueError:
+            return self._send_json(400, {"error": "Invalid path"})
+
+        abs_path = os.path.join(folder, file_name)
+        if not _within(folder, abs_path) or not os.path.isfile(abs_path):
+            return self._send_json(404, {"error": "File not found"})
+
+        try:
+            with open(abs_path, "rb") as f:
+                data = f.read()
+        except OSError as err:
+            return self._send_json(500, {"error": str(err)})
+
+        mime_type = mimetypes.guess_type(abs_path)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", mime_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(abs_path)}"')
+        self.end_headers()
+        self.wfile.write(data)
+
+    # ------------------------------------------------------------------
     # Admin File Manager - POST routes
     # ------------------------------------------------------------------
     def _handle_admin_mkdir(self, body):
+        self._require_role(("Admin", "Developer"))
         rel_path = body.get("path", "")
         folder_name = _safe_filename(body.get("name"), "New Folder")
         try:
@@ -860,6 +1451,7 @@ class Handler(SimpleHTTPRequestHandler):
         return 200, {"ok": True, "path": _rel_to_root(new_dir)}
 
     def _handle_admin_upload(self, body):
+        self._require_role(("Admin", "Developer"))
         rel_path = body.get("path", "")
         file_name = _safe_filename(body.get("fileName"), "file")
         data_b64 = body.get("dataBase64")
@@ -883,6 +1475,7 @@ class Handler(SimpleHTTPRequestHandler):
         return 200, {"ok": True, "path": _rel_to_root(out_path)}
 
     def _handle_admin_delete(self, body):
+        self._require_role(("Admin", "Developer"))
         paths = body.get("paths") or []
         if not isinstance(paths, list) or not paths:
             raise ValueError("paths must be a non-empty list")
@@ -920,6 +1513,7 @@ class Handler(SimpleHTTPRequestHandler):
     # Admin File Manager - view/edit a single file's content
     # ------------------------------------------------------------------
     def _handle_admin_read(self, query):
+        self._require_role(("Admin", "Developer"))
         rel_path = (query.get("path", [""])[0])
         try:
             abs_path = _safe_admin_path(rel_path)
@@ -961,6 +1555,7 @@ class Handler(SimpleHTTPRequestHandler):
         return self._send_json(200, {"ok": True, "path": rel, "content": content, "isJson": is_json, "jsonKind": json_kind})
 
     def _handle_admin_write(self, body):
+        self._require_role(("Admin", "Developer"))
         rel_path = body.get("path", "")
         content = body.get("content")
         if content is None:
@@ -995,12 +1590,121 @@ class Handler(SimpleHTTPRequestHandler):
     # to the browser (see auth_store.SENSITIVE_FIELDS).
     # ------------------------------------------------------------------
     def _handle_auth_me(self, query):
-        user_id = (query.get("userId", [""])[0])
+        user_id = self._authenticated_user_id()
         users = auth_store.load_users()
         user = auth_store.find_user_by_id(users, user_id)
         if not user:
             return self._send_json(404, {"error": "Account not found"})
-        return self._send_json(200, {"ok": True, "user": user})
+        return self._send_json(200, {"ok": True, "user": auth_store.public_user_view(user)})
+
+    # Sanitized (no password/verification-code fields) user list - used by
+    # Developer/Admin UI features that need to show "which user" something
+    # belongs to (Payment History, Support requests) or filter by user id/
+    # email, without ever sending anyone's password to the browser.
+    def _handle_auth_directory(self, query):
+        self._authenticated_user_id()  # any logged-in user, no role needed
+        users = auth_store.load_users()
+        directory = [auth_store.public_user_view(u) for u in users]
+        return self._send_json(200, {"ok": True, "users": directory})
+
+    def _handle_auth_email_status(self, query):
+        user_id = (query.get("userId", [""])[0])
+        job = _get_email_job(user_id)
+        if not job:
+            return self._send_json(200, {"ok": True, "status": "unknown"})
+        payload = {"ok": True, "status": job.get("status", "unknown")}
+        if job.get("status") == "failed":
+            payload["code"] = job.get("code")
+        return self._send_json(200, payload)
+
+    # ------------------------------------------------------------------
+    # Lease Abstraction rules workflow (json/rules.json).
+    # Any user can propose a new extraction rule - it lands in "pending"
+    # tagged with their own userId. Only an approved rule (userId defaults
+    # to whichever account originally owns it - the Developer, for the
+    # built-in rule set) actually affects extraction; approving/rejecting
+    # is meant for the Developer role, though - consistent with the rest
+    # of this app's trust model - that's enforced by the UI only hiding
+    # the buttons from non-Developer users, not by a real server-side
+    # permission check.
+    # ------------------------------------------------------------------
+    def _rules_path(self):
+        return os.path.join(JSON_DIR, "rules.json")
+
+    def _load_rules(self):
+        try:
+            with open(self._rules_path(), "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {"version": 1, "schema": "lexora_master_rules", "approved": [], "pending": []}
+
+    def _save_rules(self, data):
+        data["totalRules"] = len(data.get("approved", [])) + len(data.get("pending", []))
+        with open(self._rules_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+
+    def _handle_rules_list(self, query):
+        self._authenticated_user_id()
+        return self._send_json(200, {"ok": True, **self._load_rules()})
+
+    def _handle_rules_propose(self, body):
+        user_id = _safe_id(self._resolve_user_id(body))
+        field_id = (body.get("fieldId") or "").strip()
+        rule_type = (body.get("ruleType") or "mapping").strip()
+        rule_text = (body.get("ruleText") or "").strip()
+
+        if not field_id or not rule_text:
+            raise ValueError("Please fill in both Field ID and Rule Text.")
+
+        now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+        new_rule = {
+            "id": f"user_rule_{uuid.uuid4().hex[:10]}",
+            "fieldId": field_id,
+            "ruleType": rule_type,
+            "ruleText": rule_text,
+            "confidence": 0.7,
+            "usageCount": 0,
+            "successCount": 0,
+            "status": "pending",
+            "createdAt": now_iso,
+            "approvedAt": None,
+            "appliedCount": 0,
+            "auditLog": [],
+            "userId": user_id,
+        }
+
+        data = self._load_rules()
+        data.setdefault("pending", []).append(new_rule)
+        self._save_rules(data)
+        return 200, {"ok": True, "rule": new_rule}
+
+    def _handle_rules_approve(self, body):
+        self._require_role(("Developer",))
+        rule_id = body.get("ruleId")
+        data = self._load_rules()
+        pending = data.get("pending", [])
+        match = next((r for r in pending if r.get("id") == rule_id), None)
+        if not match:
+            raise ValueError("That pending rule was not found - it may have already been handled.")
+
+        match["status"] = "approved"
+        match["approvedAt"] = datetime.datetime.now().isoformat(timespec="seconds")
+        data["pending"] = [r for r in pending if r.get("id") != rule_id]
+        data.setdefault("approved", []).append(match)
+        self._save_rules(data)
+        return 200, {"ok": True}
+
+    def _handle_rules_reject(self, body):
+        self._require_role(("Developer",))
+        rule_id = body.get("ruleId")
+        data = self._load_rules()
+        pending = data.get("pending", [])
+        if not any(r.get("id") == rule_id for r in pending):
+            raise ValueError("That pending rule was not found - it may have already been handled.")
+        data["pending"] = [r for r in pending if r.get("id") != rule_id]
+        self._save_rules(data)
+        return 200, {"ok": True}
 
     def _handle_auth_register(self, body):
         first = (body.get("firstName") or "").strip()
@@ -1042,16 +1746,11 @@ class Handler(SimpleHTTPRequestHandler):
                 issues = auth_store.password_policy_issues(password)
                 if issues:
                     raise ValueError("Password must contain " + ", ".join(issues) + ".")
-                existing["password"] = password
+                existing["password"] = auth_store.hash_password(password)
             auth_store.save_users(users)
 
             resp = {"ok": True, "userId": existing["id"], "email": email, "expiresInMinutes": expiry_minutes}
-            try:
-                _send_verification_email(email, existing["firstName"], code, "register", expiry_minutes)
-            except Exception as err:
-                print(f"Could not resend registration verification email: {err}")
-                resp["emailFailed"] = True
-                resp["code"] = code
+            _send_verification_email_async(existing["id"], email, existing["firstName"], code, "register", expiry_minutes)
             return 200, resp
 
         issues = auth_store.password_policy_issues(password)
@@ -1067,7 +1766,7 @@ class Handler(SimpleHTTPRequestHandler):
         new_user = {
             "id": user_id, "photo": None, "firstName": first, "lastName": last,
             "gender": gender, "birthdate": birthdate, "mobile": mobile, "email": email,
-            "password": password, "status": "InActive", "apiKey": None,
+            "password": auth_store.hash_password(password), "status": "InActive", "apiKey": None,
             "verificationCode": code, "verificationCodeExpiresAt": expires_at,
             "verificationPurpose": "register",
             "sessionStatus": "Offline", "role": "User", "lock": "No",
@@ -1078,12 +1777,7 @@ class Handler(SimpleHTTPRequestHandler):
         auth_store.save_users(users)
 
         resp = {"ok": True, "userId": user_id, "email": email, "expiresInMinutes": expiry_minutes}
-        try:
-            _send_verification_email(email, first, code, "register", expiry_minutes)
-        except Exception as err:
-            print(f"Could not send registration verification email: {err}")
-            resp["emailFailed"] = True
-            resp["code"] = code
+        _send_verification_email_async(user_id, email, first, code, "register", expiry_minutes)
         return 200, resp
 
     def _handle_auth_verify_register(self, body):
@@ -1116,8 +1810,12 @@ class Handler(SimpleHTTPRequestHandler):
 
         users = auth_store.load_users()
         user = auth_store.find_user_by_email(users, email)
-        if not user or user.get("password") != password:
+        if not user or not auth_store.verify_password(password, user.get("password")):
             raise ValueError("Invalid email or password.")
+        if not auth_store.is_hashed(user.get("password")):
+            # Transparent migration: the first successful login with a
+            # still-plaintext password upgrades it to a real hash.
+            user["password"] = auth_store.hash_password(password)
         if user.get("lock") == "Yes":
             raise ValueError("This account is locked. Please contact support.")
         if user.get("emailVerified") == "No" or user.get("status") == "InActive":
@@ -1136,17 +1834,13 @@ class Handler(SimpleHTTPRequestHandler):
                 "ok": True, "requires2FA": True, "userId": user["id"],
                 "email": user["email"], "expiresInMinutes": expiry_minutes,
             }
-            try:
-                _send_verification_email(user["email"], user["firstName"], code, "login", expiry_minutes)
-            except Exception as err:
-                print(f"Could not send login verification email: {err}")
-                resp["emailFailed"] = True
-                resp["code"] = code
+            _send_verification_email_async(user["id"], user["email"], user["firstName"], code, "login", expiry_minutes)
             return 200, resp
 
         user["sessionStatus"] = "Online"
         auth_store.save_users(users)
-        return 200, {"ok": True, "requires2FA": False, "userId": user["id"]}
+        token = _create_session(user["id"])
+        return 200, {"ok": True, "requires2FA": False, "userId": user["id"], "token": token}
 
     def _handle_auth_verify_login(self, body):
         user_id = body.get("userId")
@@ -1167,7 +1861,14 @@ class Handler(SimpleHTTPRequestHandler):
         user["verificationPurpose"] = None
         user["sessionStatus"] = "Online"
         auth_store.save_users(users)
-        return 200, {"ok": True, "userId": user_id}
+        token = _create_session(user_id)
+        return 200, {"ok": True, "userId": user_id, "token": token}
+
+    def _handle_auth_logout(self, body):
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            _destroy_session(auth_header[7:].strip())
+        return 200, {"ok": True}
 
     def _handle_auth_forgot_password(self, body):
         email = (body.get("email") or "").strip().lower()
@@ -1191,12 +1892,7 @@ class Handler(SimpleHTTPRequestHandler):
             "ok": True, "userId": user["id"], "email": user["email"],
             "expiresInMinutes": expiry_minutes,
         }
-        try:
-            _send_verification_email(user["email"], user["firstName"], code, "reset", expiry_minutes)
-        except Exception as err:
-            print(f"Could not send password reset email: {err}")
-            resp["emailFailed"] = True
-            resp["code"] = code
+        _send_verification_email_async(user["id"], user["email"], user["firstName"], code, "reset", expiry_minutes)
         return 200, resp
 
     def _handle_auth_verify_reset_code(self, body):
@@ -1236,7 +1932,7 @@ class Handler(SimpleHTTPRequestHandler):
         if issues:
             raise ValueError("Password must contain " + ", ".join(issues) + ".")
 
-        user["password"] = new_password
+        user["password"] = auth_store.hash_password(new_password)
         user["verificationCode"] = None
         user["verificationCodeExpiresAt"] = None
         user["verificationPurpose"] = None
@@ -1261,12 +1957,7 @@ class Handler(SimpleHTTPRequestHandler):
         auth_store.save_users(users)
 
         resp = {"ok": True, "expiresInMinutes": expiry_minutes}
-        try:
-            _send_verification_email(user["email"], user["firstName"], code, purpose, expiry_minutes)
-        except Exception as err:
-            print(f"Could not resend verification email: {err}")
-            resp["emailFailed"] = True
-            resp["code"] = code
+        _send_verification_email_async(user["id"], user["email"], user["firstName"], code, purpose, expiry_minutes)
         return 200, resp
 
     # ------------------------------------------------------------------
@@ -1274,7 +1965,7 @@ class Handler(SimpleHTTPRequestHandler):
     # blanket PUT /api/data/users, which is no longer exposed at all).
     # ------------------------------------------------------------------
     def _handle_profile_update(self, body):
-        user_id = body.get("userId")
+        user_id = self._resolve_user_id(body)
         fields = body.get("fields") or {}
         if not user_id:
             raise ValueError("userId is required")
@@ -1288,6 +1979,11 @@ class Handler(SimpleHTTPRequestHandler):
             issues = auth_store.password_policy_issues(fields["password"])
             if issues:
                 raise ValueError("Password must contain " + ", ".join(issues) + ".")
+            fields["password"] = auth_store.hash_password(fields["password"])
+        else:
+            # Blank/missing means "don't change it" - never let an empty
+            # string overwrite the real hash.
+            fields.pop("password", None)
 
         # Never let a profile-update request touch auth/security bookkeeping
         # fields - those are only ever written by the auth handlers above.
@@ -1297,7 +1993,7 @@ class Handler(SimpleHTTPRequestHandler):
 
         user.update(fields)
         auth_store.save_users(users)
-        return 200, {"ok": True, "user": user}
+        return 200, {"ok": True, "user": auth_store.public_user_view(user)}
 
 
 def main():
@@ -1307,7 +2003,7 @@ def main():
         lease_engine.build_default_template_pdf(DEFAULT_TEMPLATE_PATH)
 
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"✅ Server running — open http://localhost:{PORT}/  (auto-redirects to main.html)")
+    print(f"✅ Server running — open http://localhost:{PORT}/  (serves index.html)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

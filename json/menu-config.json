@@ -1,39 +1,95 @@
 {
     "mainMenu": [
-        { "id": "dashboard", "label": "📊 Dashboard", "subItems": [] },
+        {
+            "id": "dashboard",
+            "label": "📊 Dashboard",
+            "subItems": []
+        },
         {
             "id": "services",
             "label": "🛠️ Services",
             "subItems": [
-                { "id": "lease-abstraction", "label": "Lease Abstraction" },
-                { "id": "translation", "label": "Translation" }
+                {
+                    "id": "lease-abstraction",
+                    "label": "Lease Abstraction"
+                },
+                {
+                    "id": "translation",
+                    "label": "Translation"
+                }
             ]
         },
-        { "id": "plans-offers", "label": "📋 Plans & Offers", "subItems": [] },
+        {
+            "id": "plans-offers",
+            "label": "📋 Plans & Offers",
+            "subItems": []
+        },
         {
             "id": "payment",
             "label": "💳 Payment",
             "subItems": [
-                { "id": "balance", "label": "Balance" },
-                { "id": "payment-mode", "label": "Payment Mode" },
-                { "id": "payment-history", "label": "Payment History" }
+                {
+                    "id": "balance",
+                    "label": "Balance"
+                },
+                {
+                    "id": "payment-mode",
+                    "label": "Payment Mode"
+                },
+                {
+                    "id": "payment-history",
+                    "label": "Payment History"
+                }
             ]
         },
         {
             "id": "help",
             "label": "❓ Help",
             "subItems": [
-                { "id": "api-documentation", "label": "API Documentation" },
-                { "id": "support", "label": "Support" },
-                { "id": "contact-us", "label": "Contact Us" }
+                {
+                    "id": "api-documentation",
+                    "label": "API Documentation"
+                },
+                {
+                    "id": "support",
+                    "label": "Support"
+                },
+                {
+                    "id": "contact-us",
+                    "label": "Contact Us"
+                }
             ]
         }
     ],
     "profileMenu": [
-        { "id": "profile", "label": "👤 My Profile", "action": "Profile" },
-        { "id": "admin", "label": "🗂️ Admin", "action": "Admin", "rolesAllowed": ["Developer", "Admin"] },
-        { "type": "divider" },
-        { "id": "logout", "label": "🚪 Logout", "action": "Logout", "isLogout": true }
+        {
+            "id": "profile",
+            "label": "👤 My Profile",
+            "action": "Profile"
+        },
+        {
+            "id": "admin",
+            "label": "🗂️ Admin",
+            "action": "Admin",
+            "rolesAllowed": [
+                "Developer",
+                "Admin"
+            ]
+        },
+        {
+            "id": "notification",
+            "label": "🔔 Notification",
+            "action": "Notification"
+        },
+        {
+            "type": "divider"
+        },
+        {
+            "id": "logout",
+            "label": "🚪 Logout",
+            "action": "Logout",
+            "isLogout": true
+        }
     ],
     "user": {
         "name": "John Doe",
