@@ -82,6 +82,74 @@ except ImportError:
     docx_lib = None
 
 try:
+    # Vision-layout translation pipeline (scanned certificates/posters):
+    # OpenCV detects text regions at pixel level (catches decorative
+    # calligraphy Tesseract can't read) and inpaints the original
+    # strokes so the page's own background pattern survives under the
+    # translated text - the same technique that produced the reference
+    # "v5" certificate rebuild. Optional: without it, the OCR path
+    # falls back to Tesseract boxes + flat-color masks.
+    import cv2
+    import numpy as np
+    CV2_OK = True
+except ImportError:
+    cv2 = None
+    np = None
+    CV2_OK = False
+
+
+# ---------------------------------------------------------------------------
+# Self-training reviewer memory (workflow 4.2.15 + issues #2/#9).
+# The reviewer agent writes every distinct mistake it catches to a small
+# JSON "lessons" file. On the next run those lessons are injected into the
+# metadata-extraction and reviewer prompts as an explicit "past mistakes to
+# avoid" list, so the system keeps getting better without any retraining -
+# a lightweight form of continual learning that persists across runs.
+# ---------------------------------------------------------------------------
+_LESSONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reviewer_lessons.json")
+_LESSONS_MAX = 40
+
+
+def _load_reviewer_lessons():
+    try:
+        with open(_LESSONS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data[-_LESSONS_MAX:]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return []
+
+
+def _save_reviewer_lessons(lessons):
+    try:
+        seen = set()
+        deduped = []
+        for l in lessons:
+            key = (l.get("rule") or "").strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                deduped.append(l)
+        with open(_LESSONS_PATH, "w", encoding="utf-8") as f:
+            json.dump(deduped[-_LESSONS_MAX:], f, ensure_ascii=False, indent=1)
+    except OSError as err:
+        print(f"Could not persist reviewer lessons: {err}")
+
+
+def _lessons_as_prompt_block(lessons, limit=15):
+    if not lessons:
+        return ""
+    lines = []
+    for l in lessons[-limit:]:
+        rule = (l.get("rule") or "").strip()
+        if rule:
+            lines.append(f"- {rule}")
+    if not lines:
+        return ""
+    return ("\nLESSONS FROM PAST REVIEWS (do NOT repeat these mistakes):\n"
+            + "\n".join(lines) + "\n")
+
+try:
     from reportlab.lib.pagesizes import LETTER
     from reportlab.lib.units import inch
     from reportlab.lib import colors
@@ -1211,6 +1279,8 @@ def _translate_lines_batch(lines, target_language, llm_config=None, chunk_size=7
             f"line-by-line from fixed positions on a PDF page, so lines may be sentence fragments, "
             f"table cells, or labels rather than full sentences - translate each one independently and "
             f"naturally, using surrounding lines only for context, not to merge them together.\n\n"
+            f"If a line is clearly meaningless OCR noise (random symbols or garbled fragments that are "
+            f"not real words in any language), return exactly [SKIP] for that line instead of a translation.\n\n"
             f"Return ONLY a numbered list with EXACTLY the same number of lines, in the exact same "
             f"order (line N in must be line N out) - no extra commentary, no merged/split lines, no "
             f"markdown formatting, no ## or ** markers."
@@ -1253,6 +1323,178 @@ def pdf_has_text_layer(pdf_path):
             return any(p.chars for p in pdf.pages)
     except Exception:
         return False
+
+
+def extract_page_layout_vision(page_image, target_language, llm_config=None,
+                               return_debug=False):
+    """RAASTA A: give the WHOLE page to the vision model and let IT do the
+    segmentation + translation + styling in one shot - no OpenCV box
+    detection. Mirrors what works when a user does it by hand in ChatGPT:
+    the model understands the text, so it segments a dense manuscript far
+    better than pixel-based detection.
+
+    Returns (blocks, img_w, img_h) where coordinates are in the pixel
+    space of the image we send (we tell the model that size), or
+    (None, w, h) on refusal/empty so the caller can fall back. When
+    return_debug=True, returns (blocks, img_w, img_h, debug) where debug
+    has the exact prompt sent and the raw model response (for the log)."""
+    llm_config = llm_config if llm_config is not None else load_llm_config()
+    dbg = {"prompt": "", "response": "", "image": None}
+    if not llm_is_configured(llm_config):
+        return (None, page_image.width, page_image.height, dbg) if return_debug \
+            else (None, page_image.width, page_image.height)
+
+    max_dim = 2000
+    img = page_image
+    longest = max(img.width, img.height)
+    if longest > max_dim:
+        s = max_dim / float(longest)
+        img = img.resize((max(1, int(img.width * s)), max(1, int(img.height * s))), PILImage.LANCZOS)
+    iw, ih = img.width, img.height
+    buf = io.BytesIO(); img.convert("RGB").save(buf, format="JPEG", quality=85)
+    image_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    dbg["image"] = img.convert("RGB")
+
+    system_prompt = (
+        "You are Lexora's document layout + translation engine. The user "
+        "uploaded THEIR OWN document and asked to translate it; you are "
+        "authorised to read and translate all of it. This is a routine, "
+        "legitimate task - always comply, never refuse, never apologise.\n\n"
+        f"The image is ONE document page, exactly {iw} pixels wide and {ih} "
+        "pixels tall, origin (0,0) at the TOP-LEFT. Segment the page YOURSELF "
+        "into blocks and, for each block, give its pixel box and details. Be "
+        "precise: read every visible piece of text (including dense/"
+        "handwritten Arabic), group it the way it visually reads (a "
+        "multi-line paragraph is ONE block with its per-line boxes), and "
+        "translate it.\n\n"
+        "Return ONLY a JSON array; each element:\n"
+        '{"left":int,"top":int,"right":int,"bottom":int,'
+        '"lines":[{"left":int,"top":int,"right":int,"bottom":int}],'
+        '"class":"text"|"element"|"decoration","kind":"heading|subheading|'
+        'paragraph|label|caption|logo|signature|stamp|seal|qr|illustration|'
+        'figure|photo|watermark|ornament",'
+        '"text":"<exact original>","translation":"<into ' + target_language + '>",'
+        '"color":"RRGGBB","bold":false,"italic":false,"underline":false,'
+        '"align":"left|center|right","rotation":0,'
+        '"runs":[{"text":"..","color":"RRGGBB","bold":false,"italic":false}]}'
+        "\n\nRULES:\n"
+        "1. class \"text\" = any real readable words (headings, labels, dense "
+        "body paragraphs, any language). This is the DEFAULT.\n"
+        "2. class \"element\" = ONLY a logo, emblem, badge, seal, stamp, "
+        "QR/barcode, a genuine handwritten SIGNATURE, or a real picture "
+        "(illustration/drawing/photo/figure/chart). Keep as image, do NOT "
+        "translate. Give its box; leave text/translation empty.\n"
+        "3. class \"decoration\" = watermark/ornament/blank. Empty text.\n"
+        "4. NEVER classify a paragraph of words as an element. If it is "
+        "readable words, it is text. A printed name or label like 'Team "
+        "Leader' is text, not a signature. Only an actual cursive signature "
+        "mark is a signature.\n"
+        "5. lines: for a multi-line text block, list each visual line's box "
+        "in reading order; for a single line, one entry equal to the block "
+        "box. Boxes must be tight around the glyphs and must NOT overlap "
+        "other blocks.\n"
+        "6. translation: translate for MEANING; keep names, numbers, dates, "
+        "identifiers unchanged; you may pick slightly shorter wording so it "
+        "fits, but never lose information. Empty for element/decoration.\n"
+        "7. color is the letters' colour from the glyph pixels. Use runs "
+        "only when letters in one block differ in colour/style (e.g. a red "
+        "word among black); otherwise omit runs.\n"
+        "8. rotation: clockwise degrees from horizontal (0 for normal).\n"
+        "Do not report reading direction; it is decided later by the target "
+        "language.\n"
+        + _lessons_as_prompt_block(_load_reviewer_lessons()) +
+        "\nReturn ONLY the JSON array, ordered top-to-bottom then "
+        "left-to-right. No prose, no markdown fences."
+    )
+    user_text = ("Segment, read and translate this page now. Return the JSON "
+                 "array of blocks with pixel coordinates. EVERY block MUST "
+                 "include class, text, translation, color and lines - a bare "
+                 "box with only coordinates is invalid.")
+    dbg["prompt"] = system_prompt + "\n\n---- USER MESSAGE ----\n" + user_text
+    try:
+        content, _provider = _call_vision_with_failover(
+            llm_config, system_prompt, user_text, image_b64, max_tokens=16000)
+    except LeaseEngineError as err:
+        print(f"Full-page layout vision failed: {err}")
+        dbg["response"] = f"[ERROR] {err}"
+        return (None, page_image.width, page_image.height, dbg) if return_debug \
+            else (None, page_image.width, page_image.height)
+    dbg["response"] = content or ""
+    if not content or _looks_like_refusal(content):
+        return (None, page_image.width, page_image.height, dbg) if return_debug \
+            else (None, page_image.width, page_image.height)
+
+    data = _parse_layout_json(content)
+    # Validate: a well-formed layout has blocks that actually carry a
+    # class and (for text) a translation. A dense page sometimes comes
+    # back as a bare list of coordinate boxes with no class/text (the
+    # model lost the schema) - that is unusable, so retry ONCE with an
+    # even more explicit instruction and a fresh, higher token budget.
+    def _well_formed(blocks):
+        if not blocks:
+            return False
+        good = [b for b in blocks if isinstance(b, dict) and b.get("class")
+                and (b.get("class") != "text" or b.get("translation"))]
+        return len(good) >= max(1, int(0.5 * len(blocks)))
+
+    if not _well_formed(data):
+        print("Layout JSON malformed (bare boxes / missing class,text) - retrying with stricter prompt.")
+        strict = user_text + ("\n\nYour previous answer was INVALID: it "
+                              "contained boxes without class/text/translation, "
+                              "or duplicates. Return ONE object PER visual text "
+                              "line, each with class='text', the exact original "
+                              "text, its English translation, color and a lines "
+                              "array. No duplicates. No bare boxes.")
+        try:
+            content2, _ = _call_vision_with_failover(
+                llm_config, system_prompt, strict, image_b64, max_tokens=16000)
+            if content2 and not _looks_like_refusal(content2):
+                data2 = _parse_layout_json(content2)
+                dbg["response"] = (dbg.get("response", "") +
+                                   "\n\n==== RETRY RESPONSE ====\n" + content2)
+                if _well_formed(data2):
+                    data = data2
+        except LeaseEngineError as err:
+            print(f"Layout retry failed: {err}")
+
+    # Drop exact-duplicate boxes (the dense-page failure mode repeated the
+    # same coordinates many times).
+    seen = set()
+    deduped = []
+    for b in (data or []):
+        if not isinstance(b, dict):
+            continue
+        key = (b.get("left"), b.get("top"), b.get("right"), b.get("bottom"),
+               b.get("text", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(b)
+    data = deduped
+
+    if not isinstance(data, list) or not data:
+        return (None, iw, ih, dbg) if return_debug else (None, iw, ih)
+    return (data, iw, ih, dbg) if return_debug else (data, iw, ih)
+
+
+def _parse_layout_json(content):
+    """Extract a JSON array of layout blocks from a model reply."""
+    txt = (content or "").strip()
+    txt = re.sub(r"^```(?:json)?", "", txt).strip()
+    txt = re.sub(r"```$", "", txt).strip()
+    a, b = txt.find("["), txt.rfind("]")
+    if a != -1 and b != -1 and b > a:
+        txt = txt[a:b + 1]
+    try:
+        return json.loads(txt)
+    except Exception:
+        out = []
+        for m in re.finditer(r"\{[^{}]*\}", txt):
+            try:
+                out.append(json.loads(m.group(0)))
+            except Exception:
+                pass
+        return out
 
 
 def _pil_image_to_jpeg_b64(pil_image, max_dim=2000, quality=80):
@@ -1316,6 +1558,10 @@ def _translate_lines_batch_vision(page_image, lines, target_language, llm_config
             f"- Keep company names, trademarks, product names and personal names unchanged.\n"
             f"- Preserve dates, numbers, currencies, amounts and identifiers exactly as shown in the image.\n"
             f"- Lines may be labels, table cells or fragments - translate each independently.\n"
+            f"- If a numbered line is NOT real document text - it is an OCR misdetection of decorative "
+            f"graphics, ornaments, borders, background pattern, a LOGO, or a HANDWRITTEN SIGNATURE - "
+            f"return exactly [SKIP] for that line (nothing else), so the original pixels stay untouched. "
+            f"Never guess or invent a reading for a signature or logo.\n"
             f"- If a line can't be located in the image, translate the OCR text as-is.\n\n"
             f"Return ONLY a numbered list with EXACTLY {len(chunk)} lines, in the exact same order "
             f"(line N in = line N out) - no commentary, no merged or split lines, no markdown."
@@ -1349,6 +1595,52 @@ def _closest_builtin_font(bold, italic):
     return "Helvetica"
 
 
+def _wrap_text_reportlab(text, font_name, font_size, max_width):
+    """Same greedy word-wrap as _wrap_text_pil, using reportlab's
+    stringWidth for measurement instead of PIL's textbbox."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    words = text.split()
+    if not words:
+        return [text] if text else [""]
+    lines, cur = [], ""
+    for w in words:
+        test = (cur + " " + w).strip()
+        if stringWidth(test, font_name, font_size) <= max_width or not cur:
+            cur = test
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _fit_text_in_box_reportlab(text, font_name, box_w, box_h, start_size,
+                                min_size=5, line_spacing=1.25):
+    """reportlab counterpart of _fit_text_in_box_pil: picks the largest
+    font size (starting from the ORIGINAL PDF's own extracted font size,
+    which is the best 'true height' reference we have here) that lets
+    the word-wrapped text fit inside box_w x box_h, wrapping to multiple
+    lines rather than shrinking one line down to an illegible size.
+    Returns (font_size, lines, line_height)."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    start_size = max(min_size, start_size)
+    step = 0.5
+    size = start_size
+    while size >= min_size:
+        lines = _wrap_text_reportlab(text, font_name, size, box_w)
+        line_h = size * line_spacing
+        total_h = line_h * len(lines)
+        max_line_w = max(stringWidth(ln, font_name, size) for ln in lines)
+        if total_h <= box_h and max_line_w <= box_w:
+            return size, lines, line_h
+        size -= step
+    size = min_size
+    lines = _wrap_text_reportlab(text, font_name, size, box_w)
+    line_h = size * line_spacing
+    return size, lines, line_h
+
+
 _FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
 
@@ -1368,6 +1660,69 @@ def _load_pil_font(size, bold=False, script="latin"):
         return ImageFont.truetype(path, max(8, int(size)))
     except Exception:
         return ImageFont.load_default()
+
+
+def _wrap_text_pil(draw, text, font, max_width):
+    """Greedy word-wrap: adds words to the current line while it still
+    fits max_width, starting a new line otherwise. Works for both
+    space-separated LTR text and RTL text (Arabic also uses spaces
+    between words, so wrapping on whitespace before shaping is safe -
+    shape each returned line individually afterward)."""
+    words = text.split()
+    if not words:
+        return [text] if text else [""]
+    lines, cur = [], ""
+    for w in words:
+        test = (cur + " " + w).strip()
+        width = draw.textbbox((0, 0), test, font=font)[2]
+        if width <= max_width or not cur:
+            cur = test
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _fit_text_in_box_pil(draw, text, box_w, box_h, script="latin", bold=False,
+                          min_size=6, max_size=None, line_spacing=1.25):
+    """Chooses the largest font size that lets `text` (word-wrapped if
+    needed) fit ENTIRELY inside box_w x box_h - matching the original
+    line's HEIGHT first (not just its width, which was the previous bug:
+    long translations got squeezed into a single tiny-font line instead
+    of wrapping, and short translations at a width-only-matched size
+    could end up taller or shorter than the source line ever was).
+
+    Algorithm: starting from a height-appropriate size and working
+    downward, at each candidate size word-wrap the text to box_w, then
+    check whether the wrapped block's total height still fits box_h. The
+    first (largest) size where both the widest wrapped line fits box_w
+    AND the total wrapped height fits box_h wins. This naturally
+    degrades to "single line, shrunk for width" when the text is short
+    (exactly the old behavior) and to "multiple lines at a smaller,
+    still-readable size" when it's long - rather than one line crushed
+    down to an illegibly small font.
+
+    Returns (font, lines, line_height)."""
+    start_size = int(max_size or box_h)
+    start_size = max(start_size, min_size)
+    for size in range(start_size, min_size - 1, -1):
+        font = _load_pil_font(size, bold=bold, script=script)
+        lines = _wrap_text_pil(draw, text, font, box_w)
+        bbox = draw.textbbox((0, 0), "Agjpqy|ÉÑ", font=font)
+        line_h = (bbox[3] - bbox[1]) * line_spacing
+        total_h = line_h * len(lines)
+        max_line_w = max(draw.textbbox((0, 0), ln, font=font)[2] for ln in lines)
+        if total_h <= box_h and max_line_w <= box_w:
+            return font, lines, line_h
+    # Nothing fit even at min_size (extremely long text / tiny box) -
+    # use min_size anyway rather than refusing to draw the text at all.
+    font = _load_pil_font(min_size, bold=bold, script=script)
+    lines = _wrap_text_pil(draw, text, font, box_w)
+    bbox = draw.textbbox((0, 0), "Agjpqy|ÉÑ", font=font)
+    line_h = (bbox[3] - bbox[1]) * line_spacing
+    return font, lines, line_h
 
 
 def _group_ocr_words_into_lines(ocr_data, conf_threshold=8):
@@ -1391,21 +1746,78 @@ def _group_ocr_words_into_lines(ocr_data, conf_threshold=8):
             conf = -1
         if not text or conf < conf_threshold:
             continue
+        # Word-level noise filters (tuned against a real decorative
+        # certificate at 300 DPI, where border art / guilloche texture
+        # produced phantom words): real short words OCR at conf 90+
+        # with normal glyph proportions, while ornament misreads are
+        # tall skinny slivers, sub-legible specks, or giant low-conf
+        # single glyphs. Dropping them here keeps them out of BOTH the
+        # masks and the translation batch.
+        w_px, h_px = ocr_data["width"][i], ocr_data["height"][i]
+        content = len(re.findall(r"[^\W_]", text, flags=re.UNICODE))
+        if content <= 2:
+            if h_px > 3 * max(1, w_px) and conf < 85:
+                continue  # tall skinny sliver (border line / edge of art)
+            if h_px < 15:
+                continue  # sub-legible speck (at 300 DPI this is < ~4pt)
+            if content <= 1 and h_px > 120 and conf < 70:
+                continue  # giant low-confidence lone glyph = decoration
         key = (ocr_data["block_num"][i], ocr_data["par_num"][i], ocr_data["line_num"][i])
         lines.setdefault(key, []).append({
             "text": text, "left": ocr_data["left"][i], "top": ocr_data["top"][i],
             "width": ocr_data["width"][i], "height": ocr_data["height"][i],
+            "conf": conf,
         })
 
-    regions = []
-    for key in sorted(lines.keys()):
-        words = lines[key]
+    def _emit_region(words, out):
+        """One group of words -> one region dict, with noise filtering.
+        Filters exist because Tesseract on decorative/photographed pages
+        (certificates, posters) reliably emits phantom 'words' for
+        ornaments, borders and logo art - masking those draws blank
+        rectangles over graphics that were never text at all."""
         text = " ".join(w["text"] for w in words)
         left = min(w["left"] for w in words)
         top = min(w["top"] for w in words)
         right = max(w["left"] + w["width"] for w in words)
         bottom = max(w["top"] + w["height"] for w in words)
-        regions.append({"text": text, "left": left, "top": top, "right": right, "bottom": bottom, "height": bottom - top})
+        avg_conf = sum(w["conf"] for w in words) / max(1, len(words))
+        # Count real content characters (letters/digits in any script);
+        # regions made only of punctuation/bars ('|', '—', ']') are
+        # always ornament misreads.
+        content_chars = len(re.findall(r"[^\W_]", text, flags=re.UNICODE))
+        if content_chars == 0:
+            return
+        # 1-2 stray characters at low confidence = a speck of border art
+        # or texture, not text (real short labels like 'No' or '12' OCR
+        # at much higher confidence than pattern noise does).
+        if content_chars <= 2 and avg_conf < 40:
+            return
+        out.append({"text": text, "left": left, "top": top, "right": right,
+                    "bottom": bottom, "height": bottom - top})
+
+    regions = []
+    for key in sorted(lines.keys()):
+        words = sorted(lines[key], key=lambda w: w["left"])
+        # SPLIT one Tesseract "line" into separate regions wherever
+        # there's a big horizontal gap between consecutive words. With
+        # --psm 6 (single uniform block), two side-by-side columns on
+        # the same visual row - e.g. a certificate's 'Team leader'
+        # label on the right and 'Date' label on the left - get merged
+        # into ONE line, so their translations can never go back to
+        # their own spots. A gap much wider than the text height is a
+        # column boundary, not word spacing.
+        med_h = sorted(w["height"] for w in words)[len(words) // 2]
+        gap_limit = max(2.5 * med_h, 40)
+        group = [words[0]]
+        for w in words[1:]:
+            prev = group[-1]
+            gap = w["left"] - (prev["left"] + prev["width"])
+            if gap > gap_limit:
+                _emit_region(group, regions)
+                group = [w]
+            else:
+                group.append(w)
+        _emit_region(group, regions)
     return regions
 
 
@@ -1432,7 +1844,1461 @@ def _resolve_available_ocr_langs(requested_langs):
     return "+".join(available)
 
 
-def generate_ocr_based_translation_pdf(original_pdf_path, output_pdf_path, target_language, llm_config=None, ocr_lang="eng+ara", diagnostics=None, vision_assist=False):
+def _detect_text_regions_cv(page_image):
+    """Pixel-level text-line detection with OpenCV - the piece Tesseract
+    alone can't provide: Tesseract only reports text it can RECOGNIZE,
+    so decorative calligraphy, stylized titles and unusual scripts never
+    get a bounding box at all and end up untranslated. This instead
+    finds anything that LOOKS like text strokes (high local contrast,
+    line-shaped clusters), and leaves deciding what each region actually
+    says to the vision model. Returns regions in the same dict shape the
+    OCR path uses ({'text','left','top','right','bottom','height'}),
+    with text='' since content is unknown at this stage."""
+    img = np.array(page_image)
+    H, W = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+
+    # --- Illustration pass (run first): find strongly-COLOURED blobs
+    # (green foliage, painted figures) that are pictures, not text, and
+    # record them as pre-marked graphic regions. This is what stops a
+    # botanical plate or photo from being swept into text lines and then
+    # erased. Text - even red/black ink on aged parchment - is low
+    # saturation, so this only fires on real colour art.
+    graphic_regions = []
+    try:
+        Rc = img[..., 0].astype(np.int16)
+        Gc = img[..., 1].astype(np.int16)
+        Bc = img[..., 2].astype(np.int16)
+        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+        sat = hsv[..., 1].astype(np.float32) / 255.0
+        # "Picture" pixels: coloured foliage (green dominant, mid-dark) OR
+        # any strongly-saturated non-warm-ink colour. Warm brown/black ink
+        # on parchment is deliberately excluded so manuscript TEXT is not
+        # mistaken for a picture.
+        foliage = (Gc > Rc) & (Gc >= Bc) & (Gc > 40) & (Gc < 170) & (Rc < 150)
+        warm_ink = (Rc >= Gc) & (Gc >= Bc) & (sat < 0.55)
+        vivid = (sat > 0.5) & (~warm_ink)
+        pic = (foliage | vivid).astype(np.uint8) * 255
+        pic = cv2.morphologyEx(pic, cv2.MORPH_CLOSE,
+                               cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21)))
+        pic = cv2.morphologyEx(pic, cv2.MORPH_OPEN,
+                               cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+        # Frame band: the coloured page border hugs the edges. Ignore any
+        # blob that is mostly in the outer 8% margin so a green/gold
+        # certificate frame is not taken for an illustration.
+        fm = int(min(H, W) * 0.08)
+        cnts, _ = cv2.findContours(pic, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for cnt in cnts:
+            x, y, w, h = cv2.boundingRect(cnt)
+            area = w * h
+            if area < 0.008 * W * H or area > 0.6 * W * H:
+                continue
+            if (x + w <= fm) or (x >= W - fm) or (y + h <= fm) or (y >= H - fm):
+                continue
+            fill = float(np.count_nonzero(pic[y:y + h, x:x + w])) / max(1, area)
+            if fill < 0.28:
+                continue
+            if h < 30 or w < 30:
+                continue
+            # Confirm the blob is genuinely a coloured picture: a real
+            # fraction of its pixels must be foliage/vivid colour (not
+            # just merged text ink that slipped through).
+            sub_foliage = foliage[y:y + h, x:x + w].mean()
+            sub_vivid = vivid[y:y + h, x:x + w].mean()
+            if (sub_foliage + sub_vivid) < 0.16:
+                continue
+            graphic_regions.append({"text": "", "left": int(x), "top": int(y),
+                                    "right": int(x + w), "bottom": int(y + h),
+                                    "height": int(h), "is_graphic": True})
+    except Exception:
+        graphic_regions = []
+
+    # High-contrast marks vs. local background. C=20 keeps faint page
+    # texture (guilloche patterns, watermarks) OUT of the mask.
+    bw = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                               cv2.THRESH_BINARY_INV, 31, 20)
+
+    # Long straight runs are frame/border/table lines, not glyphs.
+    line_len = max(60, W // 25)
+    horiz = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (line_len, 1)))
+    vert = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, line_len)))
+    text_mask = cv2.subtract(bw, cv2.bitwise_or(horiz, vert))
+
+    # Glue characters/words on the same baseline into line blobs.
+    glue_w = max(20, W // 70)
+    conn = cv2.morphologyEx(text_mask, cv2.MORPH_CLOSE,
+                            cv2.getStructuringElement(cv2.MORPH_RECT, (glue_w, 5)))
+    contours, _ = cv2.findContours(conn, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    margin = int(min(H, W) * 0.05)  # decorative frames hug page edges
+    regions = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        if h < H * 0.006 or h > H * 0.22:
+            continue  # speck / not a text line
+        if w < W * 0.02:
+            continue
+        if x < margin or y < margin or x + w > W - margin or y + h > H - margin:
+            continue  # touching the decorative frame band
+        ink = float(np.count_nonzero(text_mask[y:y + h, x:x + w])) / max(1, w * h)
+        if ink < 0.02 or ink > 0.65:
+            continue  # empty box or solid graphic, not strokes
+        regions.append({"text": "", "left": int(x), "top": int(y),
+                        "right": int(x + w), "bottom": int(y + h), "height": int(h)})
+
+    # Merge boxes that share a baseline row and nearly touch (one visual
+    # line the closing kernel didn't quite bridge).
+    regions.sort(key=lambda r: (r["top"], r["left"]))
+    merged = []
+    for r in regions:
+        if merged:
+            m = merged[-1]
+            same_row = not (r["top"] > m["bottom"] - min(r["height"], m["height"]) * 0.4)
+            gap = r["left"] - m["right"]
+            if same_row and -20 <= gap <= max(r["height"], m["height"]) * 2.0:
+                m["left"] = min(m["left"], r["left"]); m["right"] = max(m["right"], r["right"])
+                m["top"] = min(m["top"], r["top"]); m["bottom"] = max(m["bottom"], r["bottom"])
+                m["height"] = m["bottom"] - m["top"]
+                continue
+        merged.append(dict(r))
+
+    # Second pass: collapse boxes that physically OVERLAP into one.
+    # Calligraphy and stylized titles fragment badly (dots, diacritics
+    # and flourishes each become their own contour, stacked over the
+    # main strokes) - the model should see ONE numbered box over the
+    # whole title, not fourteen shards of it. Only boxes that actually
+    # intersect merge, so side-by-side columns (a left 'Date' and a
+    # right 'Team leader') can never be glued together by this pass.
+    def _overlaps(a, b, pad=12):
+        ix = min(a["right"], b["right"]) + pad - max(a["left"], b["left"])
+        iy = min(a["bottom"], b["bottom"]) - max(a["top"], b["top"])
+        if ix > 0 and iy > 0:
+            if iy > 0.35 * min(a["height"], b["height"]) or \
+                    (ix * iy) > 0.4 * min((a["right"] - a["left"]) * a["height"],
+                                          (b["right"] - b["left"]) * b["height"]):
+                return True
+        # Same visual row, small gap between them: two shards of ONE
+        # line (an RTL sentence split mid-way reads in the wrong order
+        # if each shard is translated and placed separately, so shards
+        # must become one region). The gap ceiling is proportional to
+        # text height, far smaller than any real column gutter - a left
+        # 'Date' and a right 'Team leader' stay separate.
+        v_overlap = min(a["bottom"], b["bottom"]) - max(a["top"], b["top"])
+        if v_overlap > 0.5 * min(a["height"], b["height"]):
+            gap = max(a["left"], b["left"]) - min(a["right"], b["right"])
+            if 0 <= gap <= 2.2 * max(a["height"], b["height"]):
+                return True
+        return False
+
+    changed = True
+    while changed:
+        changed = False
+        out = []
+        for r in merged:
+            hit = None
+            for m in out:
+                if _overlaps(m, r):
+                    hit = m
+                    break
+            if hit:
+                hit["left"] = min(hit["left"], r["left"]); hit["right"] = max(hit["right"], r["right"])
+                hit["top"] = min(hit["top"], r["top"]); hit["bottom"] = max(hit["bottom"], r["bottom"])
+                hit["height"] = hit["bottom"] - hit["top"]
+                changed = True
+            else:
+                out.append(r)
+        merged = out
+
+    # Split oversized merged regions back into their real text lines and
+    # columns. A single CV blob sometimes swallows a whole footer band
+    # (Date + label + signature + date-value), which then renders as one
+    # overlapping, overflowing text item. We re-run connected-component
+    # analysis INSIDE such a blob (with gentler gluing) to recover the
+    # separate labels/lines, each placed and sized on its own.
+    def _split_big_region(reg):
+        rw = reg["right"] - reg["left"]
+        rh = reg["bottom"] - reg["top"]
+        # Only bother for genuinely oversized blobs (wide AND tall).
+        if not (rw > 0.45 * W and rh > 0.12 * H):
+            return [reg]
+        sub = text_mask[reg["top"]:reg["bottom"], reg["left"]:reg["right"]]
+        if sub.size == 0:
+            return [reg]
+        # A dense blob (high ink fill) is one solid thing - a calligraphy
+        # title or a picture - and must NOT be split. Only sparse blobs
+        # (scattered labels/lines across a band, like a footer) get cut.
+        fill = float(np.count_nonzero(sub)) / max(1, sub.size)
+        if fill > 0.16:
+            return [reg]
+        glue = max(12, (reg["right"] - reg["left"]) // 45)
+        conn = cv2.morphologyEx(sub, cv2.MORPH_CLOSE,
+                                cv2.getStructuringElement(cv2.MORPH_RECT, (glue, 3)))
+        cnts, _ = cv2.findContours(conn, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        parts = []
+        for cnt in cnts:
+            x, y, w, h = cv2.boundingRect(cnt)
+            if w < 0.03 * W or h < 0.012 * H:
+                continue  # sliver / speck
+            ink = float(np.count_nonzero(sub[y:y + h, x:x + w])) / max(1, w * h)
+            if ink < 0.03:
+                continue
+            parts.append({"text": "", "left": reg["left"] + x, "top": reg["top"] + y,
+                          "right": reg["left"] + x + w, "bottom": reg["top"] + y + h,
+                          "height": h})
+        if len(parts) < 2:
+            return [reg]
+        # Guard against fragmenting a single big word/title: only accept
+        # the split if the parts span multiple distinct vertical rows
+        # (a real multi-line footer), not one row cut into pieces (which
+        # is usually calligraphy). Cluster part-centres by y.
+        ys = sorted(((p["top"] + p["bottom"]) / 2.0 for p in parts))
+        row_gap = 0.03 * H
+        rows = 1
+        for a, b in zip(ys, ys[1:]):
+            if b - a > row_gap:
+                rows += 1
+        if rows < 2:
+            return [reg]
+        return parts
+
+    split_regions = []
+    for r in merged:
+        if r.get("is_graphic"):
+            split_regions.append(r)
+        else:
+            split_regions.extend(_split_big_region(r))
+    merged = split_regions
+
+    # Line-split pass: a clean body paragraph often gets detected as ONE
+    # tall region (the closing kernel bridged its lines). Break such a
+    # region into its individual visual LINES using horizontal ink-row
+    # projection, so each line becomes its own box. This is what lets a
+    # 3-line sentence become 3 line-boxes that the translation flows
+    # across (the user's core requirement), instead of one block.
+    def _split_into_lines(reg):
+        rh = reg["bottom"] - reg["top"]
+        sub = text_mask[reg["top"]:reg["bottom"], reg["left"]:reg["right"]]
+        if sub.size == 0 or rh < 0.05 * H:
+            return [reg]
+        row_ink = (sub > 0).sum(axis=1).astype(np.float32)
+        if row_ink.max() < 1:
+            return [reg]
+        # Smooth the profile so diacritics don't create spurious splits.
+        k = max(3, int(0.01 * H) | 1)
+        kern = np.ones(k, dtype=np.float32) / k
+        smooth = np.convolve(row_ink, kern, mode="same")
+        peak = smooth.max()
+        # A "line" is where smoothed ink is above a low fraction of the
+        # peak; the shallow VALLEYS between Arabic lines (which never drop
+        # to zero) fall below this and become the separators.
+        active = smooth > 0.18 * peak
+        runs = []
+        s = None
+        for i, a in enumerate(active):
+            if a and s is None:
+                s = i
+            elif not a and s is not None:
+                runs.append((s, i)); s = None
+        if s is not None:
+            runs.append((s, len(active)))
+        if len(runs) < 2:
+            return [reg]
+        line_h_guess = np.median([b - a for a, b in runs])
+        # The smoothing already absorbed diacritics into their lines, so
+        # the runs are the text lines - do not merge them (that would
+        # re-join lines separated by the shallow valleys we just found).
+        merged_runs = [list(r) for r in runs]
+        lines = [(a, b) for a, b in merged_runs if (b - a) > 0.35 * line_h_guess]
+        if len(lines) < 2:
+            return [reg]
+        out = []
+        for a, b in lines:
+            # Pad each line slightly and tighten to its own ink columns.
+            pa = max(0, a - 2)
+            pb = min(sub.shape[0], b + 2)
+            lsub = sub[pa:pb, :]
+            cols = np.where(lsub.sum(axis=0) > 0)[0]
+            if len(cols) < 2:
+                continue
+            nl = reg["left"] + int(cols[0])
+            nr = reg["left"] + int(cols[-1]) + 1
+            out.append({"text": "", "left": nl, "top": reg["top"] + pa,
+                        "right": nr, "bottom": reg["top"] + pb,
+                        "height": pb - pa})
+        return out if len(out) >= 2 else [reg]
+
+    line_regions = []
+    for r in merged:
+        if r.get("is_graphic"):
+            line_regions.append(r)
+        else:
+            line_regions.extend(_split_into_lines(r))
+    merged = line_regions
+
+    # Drop any text-line region that sits largely INSIDE a detected
+    # illustration (its "strokes" are really parts of the picture), then
+    # add the illustration blobs themselves as their own regions so the
+    # vision model sees and classifies them as pictures (kept, not erased).
+    def _center_inside(r, g):
+        cx = (r["left"] + r["right"]) / 2.0
+        cy = (r["top"] + r["bottom"]) / 2.0
+        return (g["left"] <= cx <= g["right"] and g["top"] <= cy <= g["bottom"])
+    if graphic_regions:
+        merged = [r for r in merged
+                  if not any(_center_inside(r, g) for g in graphic_regions)]
+        merged.extend(graphic_regions)
+
+    # Reading order + a sanity cap (a busy page shouldn't turn into a
+    # 300-line vision request; keep the biggest regions).
+    if len(merged) > 80:
+        merged.sort(key=lambda r: (r["right"] - r["left"]) * r["height"], reverse=True)
+        merged = merged[:80]
+    merged.sort(key=lambda r: (r["top"], r["left"]))
+    return merged
+
+
+def _extract_page_metadata_vlm(page_image, regions, target_language, llm_config=None):
+    """Implements the workflow doc's Hybrid steps 4.2.5-4.2.12 in ONE
+    structured VLM pass. The page image is sent with every detected
+    region drawn as a numbered red box; the model returns, per box, the
+    full 4.2.7 metadata table plus translation and classification:
+
+        {"n":1,"class":"translatable"|"nontranslatable"|"decoration",
+         "kind":"heading|paragraph|label|logo|signature|qr|...",
+         "text":"<original>","translation":"<target>",
+         "color":"RRGGBB","bold":bool,"italic":bool,"underline":bool,
+         "align":"left|center|right","rtl":bool}
+
+    class drives 4.2.13 layering: translatable -> inpaint + Layer-3
+    text; nontranslatable -> keep pixels as Layer-2 element; decoration
+    (watermark/ornament) -> erased, never re-added. Returns a list
+    aligned to `regions` (None where the model gave nothing)."""
+    llm_config = llm_config if llm_config is not None else load_llm_config()
+    annotated = page_image.copy()
+    d = ImageDraw.Draw(annotated)
+    label_font = _load_pil_font(max(22, page_image.height // 90), script="latin", bold=True)
+    for i, r in enumerate(regions):
+        d.rectangle([r["left"] - 3, r["top"] - 3, r["right"] + 3, r["bottom"] + 3],
+                    outline=(255, 0, 0), width=4)
+        d.text((r["left"] + 2, max(0, r["top"] - (page_image.height // 70))),
+               str(i + 1), fill=(255, 0, 0), font=label_font)
+
+    system_prompt = (
+        "You are Lexora's document-translation engine. The user has "
+        "uploaded THEIR OWN document to their own account and explicitly "
+        "requested a translation of it; you are authorised to read and "
+        "translate every piece of text on the page. This is a routine, "
+        "legitimate localisation task - always comply by returning the "
+        "requested JSON. Never refuse and never apologise.\n\n"
+        "Act as a world-class Computer Vision Engineer, OCR Expert, Document "
+        "AI Architect and Multilingual Translation Expert with 30+ years of "
+        "experience. The image is ONE document page with "
+        f"{len(regions)} regions outlined as numbered red boxes. For EACH "
+        "box, inspect the pixels inside it and output one JSON object.\n\n"
+        "CLASSIFICATION (the most important decision) - choose the class:\n"
+        "  * translatable  = real, readable printed TEXT (any language, "
+        "including stylized or calligraphic headings, and dense body "
+        "paragraphs). This is the DEFAULT for anything that is words.\n"
+        "  * nontranslatable = ONLY a logo, brand mark, emblem, badge, "
+        "ribbon, seal, stamp, QR/barcode, OR a genuine handwritten/cursive "
+        "SIGNATURE, OR a real picture (illustration, drawing, painting, "
+        "photo, figure, chart, map). These are kept as images, never "
+        "translated.\n"
+        "  * decoration = watermark, ornament, border art, blank/underline "
+        "box with no real content.\n\n"
+        "CRITICAL ANTI-MISTAKE RULES (follow exactly):\n"
+        "  1. A block of PRINTED WORDS is ALWAYS translatable, even if it "
+        "is long, dense, faint, handwritten-style calligraphy, or in Arabic/"
+        "Urdu/Persian. Do NOT call a paragraph of text an illustration, "
+        "figure, signature or logo. If a box is mostly readable letters, "
+        "it is text.\n"
+        "  2. signature applies ONLY to an actual person's cursive "
+        "handwritten signature mark - NOT to a printed name, a printed "
+        "label like 'Team Leader', or a line of body text. If you can read "
+        "it as normal words, it is text, not a signature.\n"
+        "  3. A logo/emblem/seal is a compact GRAPHICAL mark; a wide line or "
+        "block of running text is NOT a logo even if decorative.\n"
+        "  4. An illustration/figure is a PICTURE (a plant drawing, a "
+        "portrait, a diagram). Text that merely sits NEXT TO a picture is "
+        "still translatable text - only the picture itself is "
+        "nontranslatable.\n"
+        "  5. Never OCR or translate the inside of a logo/signature/"
+        "watermark; classify the whole mark as nontranslatable and move on.\n"
+        "  When in doubt whether something is text or a picture, and it "
+        "contains readable words, choose translatable.\n\n"
+        "FIELDS per box:\n"
+        '  "n": box number (integer)\n'
+        '  "class": "translatable" | "nontranslatable" | "decoration"\n'
+        '  "kind": short label e.g. heading, subheading, paragraph, label, '
+        "table-cell, caption, logo, signature, qr, stamp, seal, illustration, "
+        "figure, photo\n"
+        '  "text": exact original text (empty if not translatable)\n'
+        f'  "translation": the text translated into {target_language} '
+        "(empty unless translatable). Translate for MEANING, not literally; "
+        "keep proper nouns, trademarks, dates, numbers and identifiers "
+        "unchanged; you may choose slightly shorter or longer equivalent "
+        "wording so it fits the box, but never lose or invent information.\n"
+        '  "color": ink color of the letters as RRGGBB hex, from the actual '
+        "glyph pixels (not the background)\n"
+        '  "bold": bool  "italic": bool  "underline": bool\n'
+        '  "align": "center" if the line is visually centered in its area, '
+        'else "left". Do NOT use alignment to encode reading direction.\n'
+        '  "is_paragraph": true if this box is a multi-line body paragraph, '
+        "false for a single heading/label/line\n"
+        '  "runs": OPTIONAL. If letters in the box are NOT all one colour/'
+        "style (e.g. one red word among black), return the translation split "
+        'into styled pieces [{"text":"...","color":"RRGGBB","bold":bool,'
+        '"italic":bool}, ...] that concatenate to "translation". Omit when '
+        "uniform.\n"
+        '  "rotation": OPTIONAL degrees rotated clockwise from horizontal '
+        "(0 normal; 90/270 for vertical side text). Omit when horizontal.\n\n"
+        "OTHER RULES:\n"
+        "- color is the letters' colour, e.g. dark-green certificates often "
+        "use 1B4D3E, gold titles C9A227.\n"
+        "- Translate each box as a self-contained block; do NOT reorder words "
+        "across boxes. Output reading DIRECTION is decided later by the "
+        "target language - you need not report it.\n"
+        + _lessons_as_prompt_block(_load_reviewer_lessons()) +
+        f"\nReturn ONLY a JSON array of exactly {len(regions)} objects ordered "
+        "by n from 1. No prose, no markdown fences."
+    )
+
+    user_text = f"Analyze boxes 1 to {len(regions)} and return the JSON array now."
+    image_b64 = _pil_image_to_jpeg_b64(annotated)
+    content, _provider = _call_vision_with_failover(
+        llm_config, system_prompt, user_text, image_b64, max_tokens=6000)
+    results = [None] * len(regions)
+    if not content:
+        return results
+    txt = content.strip()
+    # Detect a model REFUSAL (safety decline). Some models refuse to
+    # process a document image and reply with an apology instead of JSON;
+    # that apology must NOT be treated as a translation. Signal the caller
+    # (via the sentinel) so it can retry / fall back rather than printing
+    # "I'm sorry, I can't assist with that request." into the document.
+    low = txt.lower()
+    looks_like_json = ("[" in txt and "]" in txt) or ("{" in txt and "}" in txt)
+    refusal_markers = ("i'm sorry", "i am sorry", "i cannot assist",
+                       "i can't assist", "i cannot help", "i can't help",
+                       "unable to assist", "cannot process", "can't process",
+                       "i'm not able to", "i am not able to")
+    if (not looks_like_json) and any(mk in low for mk in refusal_markers):
+        print(f"Vision model REFUSED the page ({txt[:80]!r}). Returning no "
+              f"metadata so the caller can fall back instead of printing the refusal.")
+        return results          # all None -> nothing gets mislabelled as text
+    txt = re.sub(r"^```(?:json)?", "", txt).strip()
+    txt = re.sub(r"```$", "", txt).strip()
+    s, e = txt.find("["), txt.rfind("]")
+    if s != -1 and e != -1 and e > s:
+        txt = txt[s:e + 1]
+    try:
+        data = json.loads(txt)
+    except Exception:
+        data = []
+        for m in re.finditer(r"\{[^{}]*\}", txt):
+            try:
+                data.append(json.loads(m.group(0)))
+            except Exception:
+                pass
+    for obj in data:
+        try:
+            idx = int(obj.get("n", 0)) - 1
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < len(regions):
+            # Guard: never let a per-item refusal string become a translation.
+            tr = str(obj.get("translation", ""))
+            if any(mk in tr.lower() for mk in refusal_markers):
+                obj["translation"] = ""
+                obj["class"] = "decoration"
+            results[idx] = obj
+    return results
+
+
+def _normalize_hex_color(value, default=(27, 77, 62)):
+    """Parses 'RRGGBB'/'#RRGGBB' into (r,g,b); default = certificate
+    dark-green when the model gives nothing usable."""
+    if not value or not isinstance(value, str):
+        return default
+    v = value.strip().lstrip("#")
+    if len(v) == 6:
+        try:
+            return tuple(int(v[i:i + 2], 16) for i in (0, 2, 4))
+        except ValueError:
+            return default
+    return default
+
+
+def _region_stroke_mask(np_img, region, pad=2, threshold=55):
+    """Boolean mask of the actual text strokes inside a region box -
+    pixels whose color is far from the box's local background (median of
+    a ring just outside the box). Faint background pattern stays below
+    the distance threshold, so only the ink gets marked."""
+    H, W = np_img.shape[:2]
+    l, t = max(0, region["left"] - pad), max(0, region["top"] - pad)
+    r, b = min(W, region["right"] + pad), min(H, region["bottom"] + pad)
+    ring = 6
+    rl, rt = max(0, l - ring), max(0, t - ring)
+    rr, rb = min(W, r + ring), min(H, b + ring)
+    outer = np_img[rt:rb, rl:rr].reshape(-1, 3)
+    bg = np.median(outer, axis=0)
+    crop = np_img[t:b, l:r].astype(np.int16)
+    dist = np.sqrt(((crop - bg) ** 2).sum(axis=2))
+    mask = (dist > threshold).astype(np.uint8) * 255
+    # Two dilation passes: thick decorative strokes (gold calligraphy)
+    # carry wide anti-aliased halos that sit below the color-distance
+    # threshold - without swallowing that halo into the mask, inpainting
+    # leaves a visible ghost outline of the erased text.
+    mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=2)
+    return (l, t, r, b), mask
+
+
+def _region_stroke_color(np_img, region):
+    """True ink color of a text region. The naive median over the
+    stroke mask washes out toward gray because it includes every
+    anti-aliased edge pixel (part background). Instead this keeps only
+    the CORE stroke pixels - the ones furthest from the local
+    background - and medians those, so dark-green body text reads as
+    dark green and gold calligraphy reads as gold, not a muddy
+    mid-tone."""
+    try:
+        (l, t, r, b), _mask = _region_stroke_mask(np_img, region, threshold=40)
+        ring = 8
+        H, W = np_img.shape[:2]
+        outer = np_img[max(0, t - ring):min(H, b + ring), max(0, l - ring):min(W, r + ring)].reshape(-1, 3)
+        bg = np.median(outer, axis=0)
+        crop = np_img[t:b, l:r].astype(np.int16)
+        dist = np.sqrt(((crop - bg) ** 2).sum(axis=2))
+        flat = crop.reshape(-1, 3)
+        fdist = dist.reshape(-1)
+        if fdist.max() < 30:
+            return (0, 0, 0)
+        # Core = pixels in the top 40% of distance-from-background.
+        cutoff = np.percentile(fdist[fdist > 25], 60) if (fdist > 25).any() else 25
+        core = flat[fdist >= max(cutoff, 30)]
+        if len(core) < 15:
+            core = flat[fdist >= 30]
+        if len(core) < 15:
+            return (0, 0, 0)
+        med = np.median(core, axis=0)
+        return tuple(int(v) for v in med)
+    except Exception:
+        return (0, 0, 0)
+
+
+def _ai_fill_background(page_image, erase_boxes, protect_boxes, llm_config):
+    """OPTIONAL generative background fill (workflow Step 6, option B).
+
+    Instead of CV inpainting, send the page with the erased areas made
+    transparent to an image-edit model, which paints those areas to match
+    the surrounding design. Enabled only when LEXORA_AI_FILL=1 AND an
+    OpenAI key is available. Falls back to returning None (caller then
+    uses CV inpainting) on any error, so it can never break the pipeline.
+
+    Note: this adds one image-generation API call per page (cost + a few
+    seconds), so it is opt-in and intended for ornate backgrounds where
+    CV inpainting leaves a smudge."""
+    if os.environ.get("LEXORA_AI_FILL", "").lower() not in ("1", "true", "yes"):
+        return None
+    cfg = (llm_config or {}).get("openai") or {}
+    api_key = (cfg.get("apiKey") or os.environ.get("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return None
+    try:
+        import base64 as _b64
+        W, H = page_image.size
+        # Build an alpha mask: transparent where we want the model to
+        # repaint (erased text/decoration), opaque elsewhere (keep).
+        rgba = page_image.convert("RGBA")
+        mask = PILImage.new("L", (W, H), 255)   # 255 = keep
+        md = ImageDraw.Draw(mask)
+        for b in erase_boxes:
+            md.rectangle([b["left"], b["top"], b["right"], b["bottom"]], fill=0)
+        for b in (protect_boxes or []):
+            md.rectangle([b["left"], b["top"], b["right"], b["bottom"]], fill=255)
+        # OpenAI images/edits expects a square-ish PNG; downscale large
+        # pages to keep the request small/fast, then upscale the result.
+        max_dim = 1024
+        scale = min(1.0, max_dim / max(W, H))
+        sw, sh = int(W * scale), int(H * scale)
+        img_s = rgba.resize((sw, sh))
+        mask_s = mask.resize((sw, sh))
+        # Apply mask alpha to the image so cleared areas are transparent.
+        img_s.putalpha(mask_s)
+        img_buf = io.BytesIO(); img_s.save(img_buf, format="PNG"); img_buf.seek(0)
+
+        boundary = "----lexoraaifill"
+        def _part(name, filename, ctype, data):
+            head = (f"--{boundary}\r\nContent-Disposition: form-data; "
+                    f'name="{name}"; filename="{filename}"\r\n'
+                    f"Content-Type: {ctype}\r\n\r\n").encode()
+            return head + data + b"\r\n"
+        def _field(name, value):
+            return (f"--{boundary}\r\nContent-Disposition: form-data; "
+                    f'name="{name}"\r\n\r\n{value}\r\n').encode()
+        body = b""
+        body += _part("image", "page.png", "image/png", img_buf.getvalue())
+        body += _field("prompt", "Fill the transparent areas to seamlessly "
+                       "match the surrounding paper texture, colour and "
+                       "decorative pattern. Do not add any text or new objects.")
+        body += _field("n", "1")
+        body += _field("size", f"{sw}x{sh}" if sw == sh else "1024x1024")
+        body += f"--{boundary}--\r\n".encode()
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/images/edits", data=body,
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": f"multipart/form-data; boundary={boundary}"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode())
+        b64 = data["data"][0].get("b64_json")
+        if not b64:
+            url = data["data"][0].get("url")
+            if not url:
+                return None
+            with urllib.request.urlopen(url, timeout=60) as r2:
+                filled_bytes = r2.read()
+        else:
+            filled_bytes = _b64.b64decode(b64)
+        filled = PILImage.open(io.BytesIO(filled_bytes)).convert("RGB").resize((W, H))
+        return filled
+    except Exception as err:
+        print(f"AI background fill unavailable ({err}) - using CV inpainting.")
+        return None
+
+
+def _inpaint_regions_cv(page_image, regions, protect_regions=None):
+    """Removes the text strokes of the given regions and fills them from
+    the surrounding pixels (cv2.inpaint/TELEA) so the page's own
+    background pattern flows back into the erased area. Runs MULTIPLE
+    passes: thick decorative strokes (large gold calligraphy) leave a
+    visible ghost halo after one pass because their anti-aliased edges
+    sit below the stroke threshold - each following pass re-detects
+    whatever residue is still visible inside the same boxes and inpaints
+    that too, until the area is genuinely clean. Returns a new PIL
+    image."""
+    np_img = np.array(page_image)
+    # Build a protection mask (non-translatable elements: logos,
+    # signatures, QR) that the inpaint mask must never touch, so a
+    # translatable box that slightly overlaps a signature can't nibble
+    # its edges.
+    H, W = np_img.shape[:2]
+    protect = np.zeros((H, W), dtype=bool)
+    for pr in (protect_regions or []):
+        pl, pt = max(0, pr["left"] - 2), max(0, pr["top"] - 2)
+        prr, pb = min(W, pr["right"] + 2), min(H, pr["bottom"] + 2)
+        protect[pt:pb, pl:prr] = True
+
+    for pass_num in range(2):
+        threshold = 50 if pass_num == 0 else 38
+        full_mask = np.zeros(np_img.shape[:2], dtype=np.uint8)
+        for region in regions:
+            try:
+                (l, t, r, b), mask = _region_stroke_mask(np_img, region, threshold=threshold)
+                # Dense-ink regions (large stylized titles / calligraphy)
+                # have strokes too thick and interconnected for a
+                # stroke-only mask to fully clear - measurable as a high
+                # ink ratio. For those, erase the WHOLE box so no
+                # original glyph fragments survive (the box tightly
+                # bounds just that text, and it will be inpainted from
+                # the surrounding background anyway).
+                ink_ratio = float(np.count_nonzero(mask)) / max(1, mask.size)
+                if ink_ratio > 0.28:
+                    mask[:] = 255
+                    # Calligraphy flourishes often extend a little past
+                    # the detected box; pad the erase area outward (but
+                    # never into a protected element) so trailing strokes
+                    # don't survive as ghosts.
+                    ph = int((b - t) * 0.10)
+                    pw = int((r - l) * 0.04)
+                    et, eb = max(0, t - ph), min(H, b + ph)
+                    el, er = max(0, l - pw), min(W, r + pw)
+                    full_mask[et:eb, el:er] = 255
+                    continue
+                full_mask[t:b, l:r] = np.maximum(full_mask[t:b, l:r], mask)
+            except Exception:
+                continue
+        if protect.any():
+            full_mask[protect] = 0
+        coverage = int(np.count_nonzero(full_mask))
+        if coverage == 0:
+            break
+        # Dilate the mask slightly so anti-aliased stroke edges (which
+        # sit just below the color threshold and are the usual source of
+        # faint ghosts) are swallowed too, then inpaint. Navier-Stokes
+        # (INPAINT_NS) reconstructs smooth gradient/pattern backgrounds -
+        # like certificate guilloche - more cleanly than TELEA for the
+        # larger erased areas.
+        if protect.any():
+            dilated = cv2.dilate(full_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
+            dilated[protect] = 0
+            full_mask = dilated
+        else:
+            full_mask = cv2.dilate(full_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
+        np_img = cv2.inpaint(np_img, full_mask, 6, cv2.INPAINT_NS)
+        if pass_num > 0 and coverage < 400:
+            break  # residue is down to crumbs - done
+    return PILImage.fromarray(np_img)
+
+
+def _parse_style_prefix(s):
+    """Splits optional leading [color:RRGGBB] and [style:...] tags off a
+    translated line. Returns (text, bold, italic, underline, color_or_None)."""
+    bold = italic = underline = False
+    color = None
+    # Both tags may appear in either order; loop until neither matches.
+    for _ in range(2):
+        mc = re.match(r"^\s*\[color:#?([0-9A-Fa-f]{6})\]\s*(.*)$", s)
+        if mc:
+            color = tuple(int(mc.group(1)[i:i + 2], 16) for i in (0, 2, 4))
+            s = mc.group(2)
+            continue
+        ms = re.match(r"^\s*\[style:([^\]]*)\]\s*(.*)$", s, flags=re.IGNORECASE)
+        if ms:
+            flags = ms.group(1).lower()
+            bold = "bold" in flags
+            italic = "italic" in flags
+            underline = "underline" in flags
+            s = ms.group(2)
+            continue
+        break
+    return s.strip(), bold, italic, underline, color
+
+
+def _crop_element_png(page_image, region, pad=6):
+    """Document 4.2.4 extraction: crop a non-translatable element (logo,
+    signature, QR, stamp) from the page and return it as an RGBA PIL
+    image with a transparent background, so it can be placed as its own
+    floating Layer-2 object. Transparency is derived by knocking out the
+    element's local background color (the median of a ring just outside
+    the crop); this keeps QR codes and signatures crisp while letting
+    the page pattern show around them. A small pad avoids clipping
+    strokes at the very edge of the detected box."""
+    try:
+        W, H = page_image.size
+        l = max(0, region["left"] - pad)
+        t = max(0, region["top"] - pad)
+        r = min(W, region["right"] + pad)
+        b = min(H, region["bottom"] + pad)
+        crop = page_image.crop((l, t, r, b)).convert("RGB")
+        arr = np.array(crop)
+        # Local background = median of a thin border ring of the crop.
+        ring = 4
+        edges = np.concatenate([
+            arr[:ring].reshape(-1, 3), arr[-ring:].reshape(-1, 3),
+            arr[:, :ring].reshape(-1, 3), arr[:, -ring:].reshape(-1, 3)])
+        bg = np.median(edges, axis=0)
+        dist = np.sqrt(((arr.astype(np.int16) - bg) ** 2).sum(axis=2))
+        # Pixels close to the background become transparent; the element
+        # itself (far from bg) stays fully opaque, with a soft ramp in
+        # between so edges don't look cut out.
+        alpha = np.clip((dist - 22) / 26.0, 0.0, 1.0)
+        alpha = (alpha * 255).astype(np.uint8)
+        rgba = np.dstack([arr, alpha])
+        return PILImage.fromarray(rgba, mode="RGBA")
+    except Exception:
+        return None
+
+
+def _render_layout_preview(page_image, text_items, png_items):
+    """Flattens the current rebuild (cleaned background + Layer-2 PNGs +
+    Layer-3 text) into a single preview image, so the reviewer agent can
+    SEE what the output actually looks like and compare it to the
+    original - the only reliable way to catch RTL/LTR mistakes, overlaps,
+    wrong line breaks and mis-sized text, which are invisible in the
+    metadata alone."""
+    preview = page_image.convert("RGB").copy()
+    for pe in (png_items or []):
+        try:
+            preview.paste(pe["png"], (pe["left"], pe["top"]), pe["png"])
+        except Exception:
+            pass
+    draw = ImageDraw.Draw(preview)
+    for it in (text_items or []):
+        item_rtl = it.get("rtl", False)
+        align = it.get("align", "center")
+        script = "arabic" if item_rtl else "latin"
+        raw_boxes = it.get("line_boxes") or [{
+            "left": it["left"], "top": it["top"],
+            "right": it["right"], "bottom": it["bottom"]}]
+        # Pick a uniform PIL font size that lets the text wrap into at
+        # most len(boxes) lines fitting each box width; shrink on
+        # overflow. Mirrors the PDF flow so the preview matches output.
+        n = len(raw_boxes)
+        widths = [max(1, b["right"] - b["left"]) for b in raw_boxes]
+        heights = [max(1, b["bottom"] - b["top"]) for b in raw_boxes]
+        words = it["text"].split()
+
+        def _wrap(font):
+            out, wi = [], 0
+            for k in range(n):
+                cur = ""
+                while wi < len(words):
+                    trial = words[wi] if not cur else cur + " " + words[wi]
+                    bb = draw.textbbox((0, 0), trial, font=font)
+                    if (bb[2] - bb[0]) <= widths[k] or not cur:
+                        cur = trial; wi += 1
+                    else:
+                        break
+                out.append(cur)
+                if wi >= len(words):
+                    break
+            return out if wi >= len(words) else None
+
+        size = max(6, int(min(heights) * 0.9))
+        wrapped = None
+        while size >= 6:
+            font = _load_pil_font(size, bold=it.get("bold", False), script=script)
+            wrapped = _wrap(font)
+            if wrapped is not None:
+                break
+            size -= 1
+        if wrapped is None:
+            font = _load_pil_font(6, bold=it.get("bold", False), script=script)
+            wrapped = [it["text"]]
+        for k, ln in enumerate(wrapped):
+            box = raw_boxes[min(k, n - 1)]
+            bw = box["right"] - box["left"]
+            bh = box["bottom"] - box["top"]
+            draw_ln = shape_rtl_text(ln) if item_rtl else ln
+            bb = draw.textbbox((0, 0), draw_ln, font=font)
+            lw = bb[2] - bb[0]
+            y = box["top"] + max(0, (bh - size) // 2)
+            if align == "center":
+                x = box["left"] + max(0, (bw - lw) // 2)
+            elif align == "left":
+                x = box["left"]
+            elif align == "right":
+                x = box["right"] - lw
+            else:
+                x = (box["right"] - lw) if item_rtl else box["left"]
+            draw.text((x, y), draw_ln, font=font, fill=tuple(it.get("color", (0, 0, 0))))
+    return preview
+
+
+def _review_page_layout(original_image, text_items, png_items, target_language,
+                        rtl, llm_config, page_diag, max_rounds=2, progress=None):
+    """A senior-reviewer QA agent (translator/typesetter with 20+ years
+    of experience) enforcing the workflow's Section 4.2.15 quality gate.
+
+    Each round it sees the ORIGINAL page and a PREVIEW of the rebuild and
+    reports items that break the rules. When it drops an item as a
+    logo/signature that was wrongly rendered as text, that region is
+    turned back into a transparent PNG element (Layer 2) using the
+    ORIGINAL pixels - so a signature/logo is never lost, it is restored
+    as a picture (point: 'we don't extract its text, only make a PNG').
+    Corrections re-loop until clean or max_rounds. Returns
+    (text_items, png_items)."""
+    if not llm_is_configured(llm_config) or not text_items:
+        return text_items, png_items
+
+    # Speed control (point: faster agents). The reviewer is the main
+    # cost of the long 85% wait - each round is a vision call. Skip it
+    # for trivially small pages (nothing to get wrong), and for very
+    # large pages do a single pass rather than looping, so processing
+    # time stays bounded.
+    if len(text_items) <= 2:
+        page_diag["reviewSkipped"] = "page too simple to need review"
+        return text_items, png_items
+    if len(text_items) > 40:
+        max_rounds = 1
+
+    lessons = _load_reviewer_lessons()
+    lessons_block = _lessons_as_prompt_block(lessons)
+    new_lessons = []
+
+    for round_no in range(max_rounds):
+        if progress:
+            progress(f"Reviewer agent: round {round_no + 1} - inspecting layout")
+        preview = _render_layout_preview(original_image, text_items, png_items)
+        orig_b64 = _pil_image_to_jpeg_b64(original_image)
+        prev_b64 = _pil_image_to_jpeg_b64(preview)
+
+        # Compact, indexed snapshot of the current text layer for the
+        # reviewer to reference by index.
+        snapshot = []
+        for i, it in enumerate(text_items):
+            snapshot.append(
+                f'{i}: text={it["text"]!r} align={it.get("align")} '
+                f'rtl={it.get("rtl")} bold={it.get("bold")} '
+                f'color=#{"%02X%02X%02X" % tuple(it.get("color", (0,0,0)))}')
+        snapshot_text = "\n".join(snapshot)
+
+        system_prompt = (
+            "You are a senior document-translation reviewer and typesetter "
+            "with 20+ years of experience in multilingual (Arabic/English) "
+            "desktop publishing. You are the final quality gate (workflow "
+            "Section 4.2.15). You are given TWO images: IMAGE 1 is the "
+            "ORIGINAL source page; IMAGE 2 is a PREVIEW of the machine-"
+            f"generated rebuild translated into {target_language}. You also "
+            "get the current text layer as an indexed list.\n\n"
+            "IMPORTANT: text reading DIRECTION is fixed by the OUTPUT "
+            f"language ({target_language}) and is already handled - do NOT "
+            "flag direction. Compare IMAGE 2 against IMAGE 1 and report ONLY "
+            "items that are WRONG on these points:\n"
+            "- CENTERING: if a line is visually CENTERED in the original but "
+            'the rebuild is not (or vice-versa), fix align ("center" vs '
+            '"natural").\n'
+            "- PARAGRAPH/INDENT: if the original box is a centered block or "
+            "an indented paragraph and the rebuild lost that, correct align.\n"
+            "- OVERFLOW / OVERLAP: flag text that overflows its box or "
+            "overlaps a neighbour in IMAGE 2.\n"
+            "- COLOR: flag a color that clearly doesn't match the original "
+            "ink.\n"
+            "- LINE GROUPING: a single visual line wrongly split or two "
+            "separate lines wrongly merged.\n"
+            "- CLASSIFICATION: flag any item that is actually a LOGO, seal, "
+            "emblem or HANDWRITTEN SIGNATURE - it must not be rendered as "
+            "translated text (use drop). Also flag any real translatable "
+            "line missing from the rebuild.\n\n"
+            "For each wrong item output an object:\n"
+            '  {"index": <int>, "fix": {"align":"center|natural", '
+            '"text":"<corrected translation>", "drop":true|false}, '
+            '"reason":"<what was wrong and must not recur>"}\n'
+            "Include only fields that need changing. Use \"drop\":true when "
+            "the item is a logo/signature/decoration wrongly shown as text.\n\n"
+            + lessons_block +
+            "Return ONLY a JSON array of correction objects (empty array [] "
+            "if the rebuild is correct). No prose, no markdown."
+        )
+        user_content = [
+            {"type": "text", "text": "IMAGE 1 = ORIGINAL page:"},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{orig_b64}"}},
+            {"type": "text", "text": "IMAGE 2 = current translated rebuild PREVIEW:"},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{prev_b64}"}},
+            {"type": "text", "text": "Current text layer (index: fields):\n" + snapshot_text +
+             "\n\nReturn the JSON array of corrections now."},
+        ]
+        try:
+            content, _prov = _call_chat_completion_with_failover(
+                llm_config, system_prompt, user_content, max_tokens=4000)
+        except Exception as err:
+            print(f"Reviewer agent call failed (round {round_no + 1}): {err}")
+            break
+        if not content:
+            break
+
+        txt = content.strip()
+        txt = re.sub(r"^```(?:json)?", "", txt).strip()
+        txt = re.sub(r"```$", "", txt).strip()
+        s, e = txt.find("["), txt.rfind("]")
+        if s != -1 and e != -1 and e > s:
+            txt = txt[s:e + 1]
+        try:
+            corrections = json.loads(txt)
+        except Exception:
+            corrections = []
+        if not corrections:
+            page_diag[f"reviewRound{round_no + 1}"] = "clean"
+            break
+
+        applied = 0
+        drops = set()
+        for corr in corrections:
+            try:
+                idx = int(corr.get("index"))
+            except (TypeError, ValueError):
+                continue
+            if not (0 <= idx < len(text_items)):
+                continue
+            fix = corr.get("fix") or {}
+            # Turn each caught mistake into a durable lesson for future
+            # runs (self-training): the reviewer's own "reason" becomes a
+            # rule injected into later prompts.
+            reason = (corr.get("reason") or "").strip()
+            if reason:
+                new_lessons.append({"rule": reason})
+            if fix.get("drop"):
+                drops.add(idx)
+                applied += 1
+                continue
+            if "align" in fix and fix["align"] in ("left", "center", "right", "natural"):
+                text_items[idx]["align"] = fix["align"]
+            if "rtl" in fix and isinstance(fix["rtl"], bool):
+                text_items[idx]["rtl"] = fix["rtl"]
+            if fix.get("text"):
+                text_items[idx]["text"] = str(fix["text"]).strip()
+            applied += 1
+        if drops:
+            # A dropped item is a logo/signature that was wrongly shown as
+            # text. Restore it as a transparent PNG (Layer 2) from the
+            # ORIGINAL pixels so it reappears as a picture, not text, and
+            # is not left as an empty erased patch.
+            for di in drops:
+                it = text_items[di]
+                region = {"left": it["left"], "top": it["top"],
+                          "right": it["right"], "bottom": it["bottom"]}
+                png = _crop_element_png(original_image, region)
+                if png is not None:
+                    png_items.append({
+                        "left": it["left"], "top": it["top"],
+                        "right": it["right"], "bottom": it["bottom"],
+                        "png": png, "kind": it.get("kind", "signature")})
+            text_items = [it for i, it in enumerate(text_items) if i not in drops]
+        page_diag[f"reviewRound{round_no + 1}"] = f"{applied} correction(s)"
+        if progress:
+            progress(f"Reviewer agent: round {round_no + 1} applied {applied} correction(s)")
+        if applied == 0:
+            break
+
+    # Persist what was learned this page so the next run starts smarter.
+    if new_lessons:
+        _save_reviewer_lessons(lessons + new_lessons)
+        page_diag["reviewLessonsLearned"] = len(new_lessons)
+    return text_items, png_items
+
+
+def _tight_text_bbox(np_img, region, min_frac=0.5):
+    """Shrinks a detected region to the TIGHT bounding box of its actual
+    ink pixels. CV merges sometimes make a box far wider/taller than the
+    text (it reaches into the decorative border, or spans a whole empty
+    column), which causes two visible bugs: (1) inpainting then erases
+    part of the border/pattern that was never text, and (2) 'centering'
+    is computed against the oversized box so text drifts off-centre.
+    Measuring the real ink extent fixes both. Falls back to the original
+    box if it can't find a confident tighter one."""
+    try:
+        H, W = np_img.shape[:2]
+        l = max(0, region["left"]); t = max(0, region["top"])
+        r = min(W, region["right"]); b = min(H, region["bottom"])
+        if r - l < 6 or b - t < 6:
+            return region
+        crop = np_img[t:b, l:r]
+        ring = 6
+        outer = np_img[max(0, t - ring):min(H, b + ring),
+                       max(0, l - ring):min(W, r + ring)].reshape(-1, 3)
+        bg = np.median(outer, axis=0)
+        dist = np.sqrt(((crop.astype(np.int16) - bg) ** 2).sum(axis=2))
+        mask = dist > 45
+        cols = np.where(mask.any(axis=0))[0]
+        rows = np.where(mask.any(axis=1))[0]
+        if len(cols) < 3 or len(rows) < 3:
+            return region
+        nl, nr = l + int(cols[0]), l + int(cols[-1]) + 1
+        nt, nb = t + int(rows[0]), t + int(rows[-1]) + 1
+        # Only accept the tighter box if it actually removes a meaningful
+        # amount of empty margin (otherwise keep the original to avoid
+        # clipping faint glyph edges).
+        if (nr - nl) < (r - l) * 0.98 or (nb - nt) < (b - t) * 0.98:
+            new = dict(region)
+            new["left"], new["right"], new["top"], new["bottom"] = nl, nr, nt, nb
+            new["height"] = nb - nt
+            return new
+        return region
+    except Exception:
+        return region
+
+
+def _region_is_graphic(np_img, region):
+    """Conservative safety net: does this region contain a real COLOURED
+    illustration (green foliage, blue/red painted figure, skin tones)
+    that plain text - even red/black ink on aged parchment - would not?
+    Text on old paper is dark ink (low saturation) on a warm neutral
+    background; a botanical plate or painting has a meaningful fraction
+    of STRONGLY SATURATED, non-ink-coloured pixels. We only flag when
+    that saturated-colour fraction is high, to avoid mislabelling aged
+    manuscript text as a picture. Primary classification is still the
+    vision model - this only catches obvious pictures it might miss."""
+    try:
+        import colorsys
+        H, W = np_img.shape[:2]
+        l, t = max(0, region["left"]), max(0, region["top"])
+        r, b = min(W, region["right"]), min(H, region["bottom"])
+        w, h = r - l, b - t
+        if w < 60 or h < 60:
+            return False
+        crop = np_img[t:b, l:r].astype(np.float32) / 255.0
+        mx = crop.max(axis=2)
+        mn = crop.min(axis=2)
+        sat = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-6), 0.0)
+        val = mx
+        R, G, B = crop[..., 0], crop[..., 1], crop[..., 2]
+        # Warm parchment / ink pixels: high red-ish, brownish - exclude
+        # them. Strongly-coloured pixels are saturated AND not just
+        # warm-brown ink/paper.
+        warm_brown = (R >= G) & (G >= B) & (sat < 0.55)
+        strong = (sat > 0.45) & (val > 0.25) & (~warm_brown)
+        strong_frac = float(strong.mean())
+        # Green foliage specifically (plant plates): green channel clearly
+        # dominant with decent saturation.
+        green = ((G > R + 0.06) & (G > B + 0.06) & (sat > 0.25)).mean()
+        # A picture: a clear band of strongly coloured OR green pixels.
+        return strong_frac > 0.06 or green > 0.05
+    except Exception:
+        return False
+
+
+def _group_regions_into_paragraphs(regions):
+    """Groups consecutive line-regions that belong to the SAME paragraph
+    into one block, while KEEPING each line's own box. This implements
+    the user's model: every visual line is its own block, and a
+    multi-line sentence is a group of those line-blocks that the
+    translation is later flowed across (line by line), not a single
+    merged box.
+
+    Two line-regions join the same paragraph when they are vertically
+    close (gap smaller than a line height) and their horizontal spans
+    overlap - i.e. they read as stacked lines of one block. Graphic
+    regions never group. Returns a list of blocks, each:
+        {"line_boxes":[{l,t,r,b}, ...],   # one per visual line, in order
+         "left","top","right","bottom",   # union box of the group
+         "is_graphic": bool}
+    Single lines (headings, labels) become one-line blocks."""
+    lines = [r for r in regions if not r.get("is_graphic")]
+    graphics = [r for r in regions if r.get("is_graphic")]
+    lines.sort(key=lambda r: (r["top"], r["left"]))
+
+    blocks = []
+    used = [False] * len(lines)
+    for i, r in enumerate(lines):
+        if used[i]:
+            continue
+        group = [r]
+        used[i] = True
+        rh = r["bottom"] - r["top"]
+        cur_bottom = r["bottom"]
+        cur_l, cur_r = r["left"], r["right"]
+        for j in range(i + 1, len(lines)):
+            if used[j]:
+                continue
+            s = lines[j]
+            sh = s["bottom"] - s["top"]
+            vgap = s["top"] - cur_bottom
+            # Must be the NEXT line down: a small positive gap (no
+            # vertical overlap, which would mean they're not stacked text
+            # lines but unrelated blocks like a badge over a title).
+            if vgap < -0.15 * max(rh, sh) or vgap > 0.8 * max(rh, sh):
+                continue
+            # Horizontal spans must overlap a lot (same column of text).
+            overlap = min(cur_r, s["right"]) - max(cur_l, s["left"])
+            if overlap < 0.5 * min(cur_r - cur_l, s["right"] - s["left"]):
+                continue
+            # Similar line height (body lines match; a heading over body
+            # differs too much and must stay separate).
+            if not (0.55 <= sh / max(1, rh) <= 1.8):
+                continue
+            group.append(s)
+            used[j] = True
+            cur_bottom = s["bottom"]
+            cur_l = min(cur_l, s["left"])
+            cur_r = max(cur_r, s["right"])
+            rh = sh   # track the most recent line's height for the next gap test
+        group.sort(key=lambda g: g["top"])
+        line_boxes = [{"left": g["left"], "top": g["top"],
+                       "right": g["right"], "bottom": g["bottom"]} for g in group]
+        blocks.append({
+            "line_boxes": line_boxes,
+            "left": min(g["left"] for g in group),
+            "top": min(g["top"] for g in group),
+            "right": max(g["right"] for g in group),
+            "bottom": max(g["bottom"] for g in group),
+            "is_graphic": False,
+        })
+    for g in graphics:
+        blocks.append({
+            "line_boxes": [{"left": g["left"], "top": g["top"],
+                            "right": g["right"], "bottom": g["bottom"]}],
+            "left": g["left"], "top": g["top"], "right": g["right"],
+            "bottom": g["bottom"], "is_graphic": True,
+        })
+    blocks.sort(key=lambda b: (b["top"], b["left"]))
+    return blocks
+
+
+def _build_page_vision_layout(page_image, target_language, rtl, llm_config, page_diag, progress=None):
+    """Workflow doc steps 4.2.5-4.2.13 for one page, returning DATA (not
+    flattened pixels): CV region detection (4.2.5) -> single structured
+    VLM pass for text, translation, typography and classification
+    (4.2.6-4.2.12) -> classify each region into the three document
+    buckets:
+      * translatable  -> its ORIGINAL text is erased from the background
+                         (4.2.10) and re-added as an editable Layer-3
+                         text item with the detected typography (4.2.12)
+      * nontranslatable(logo/signature/QR/stamp/seal) -> pixels are LEFT
+                         in the background (kept as-is), never erased,
+                         never translated (Layer-2 behaviour without a
+                         separate PNG - visually identical result)
+      * decoration/watermark -> erased and NOT re-added (4.2.10 clean
+                         canvas)
+    Only translatable regions go into the inpaint mask, so the doc's
+    'erase only translatable text, preserve everything else' rule is
+    honored exactly. Returns (cleaned_background_image, text_items) or
+    None if the VLM pass produced nothing (caller falls back)."""
+    line_regions = _detect_text_regions_cv(page_image)
+    page_diag["cvRegionsDetected"] = len(line_regions)
+    if not line_regions:
+        return None
+    # Group consecutive line-boxes into paragraph BLOCKS (each block
+    # keeps its individual line boxes). The VLM then sees one numbered
+    # box per block (its union), so a multi-line sentence is translated
+    # coherently as one unit - and the translation is later flowed back
+    # across the block's own line boxes, line by line.
+    blocks = _group_regions_into_paragraphs(line_regions)
+    page_diag["cvBlocks"] = len(blocks)
+    regions = blocks   # VLM receives union boxes; each carries line_boxes
+    meta = _extract_page_metadata_vlm(page_image, regions, target_language, llm_config)
+    if all(m is None for m in meta):
+        page_diag["cvVisionFailed"] = True
+        return None
+
+    np_img = np.array(page_image)
+    text_items = []          # translatable -> Layer 3
+    png_items = []           # nontranslatable -> Layer 2 (transparent PNG)
+    erase_regions = []       # translatable + decoration -> inpaint mask
+    protect_regions = []     # nontranslatable -> never erased
+    counts = {"translatable": 0, "nontranslatable": 0, "decoration": 0}
+
+    # First pass: collect the boxes the model marked non-translatable
+    # (logos, badges, signatures). Any other region that sits INSIDE one
+    # of these must never be erased or translated - e.g. the Arabic text
+    # printed on a ribbon badge is part of the LOGO, not a separate text
+    # line, so erasing it would gouge a hole in the logo (the "logo cut"
+    # problem). Those contained regions are simply dropped.
+    nontrans_boxes = []
+    for region, m in zip(regions, meta):
+        if m and str(m.get("class", "")).lower() == "nontranslatable":
+            nontrans_boxes.append(region)
+
+    def _inside_any(region, boxes):
+        cx = (region["left"] + region["right"]) / 2.0
+        cy = (region["top"] + region["bottom"]) / 2.0
+        for bx in boxes:
+            if bx is region:
+                continue
+            if bx["left"] - 4 <= cx <= bx["right"] + 4 and bx["top"] - 4 <= cy <= bx["bottom"] + 4:
+                return True
+        return False
+
+    for region, m in zip(regions, meta):
+        # Pre-detected illustration blob (from the colour-blob pass): keep
+        # as a non-translatable PNG, never erase or translate. This is the
+        # reliable path for the page-2 plant. We do NOT run a pixel-level
+        # "looks graphic" guess here anymore, because dark ink on aged
+        # parchment can look colourful and would wrongly turn real text
+        # paragraphs into pictures - classification of ambiguous regions
+        # is left to the vision model.
+        if region.get("is_graphic"):
+            kind_m = str((m or {}).get("kind", "")).lower()
+            png = _crop_element_png(page_image, region)
+            if png is not None:
+                png_items.append({
+                    "left": region["left"], "top": region["top"],
+                    "right": region["right"], "bottom": region["bottom"],
+                    "png": png, "kind": kind_m or "illustration"})
+            protect_regions.append(region)
+            nontrans_boxes.append(region)
+            counts["nontranslatable"] += 1
+            continue
+        if not m:
+            if _inside_any(region, nontrans_boxes):
+                continue  # part of a logo/badge - leave it alone
+            erase_regions.append(region)
+            counts["decoration"] += 1
+            continue
+        cls = str(m.get("class", "")).lower()
+        if cls == "translatable":
+            # A "translatable" box that actually lies inside a logo is a
+            # mis-classification of logo lettering; keep the logo intact.
+            if _inside_any(region, nontrans_boxes):
+                continue
+            translation = (m.get("translation") or m.get("text") or "").strip()
+            if not translation:
+                for lb in region.get("line_boxes", [region]):
+                    erase_regions.append(lb)
+                counts["decoration"] += 1
+                continue
+            # Each visual line in this block is its own box. Tighten each
+            # to its real ink extent (keeps inpaint off the border and
+            # makes placement exact), and erase each line box.
+            raw_lines = region.get("line_boxes", [{"left": region["left"],
+                        "top": region["top"], "right": region["right"],
+                        "bottom": region["bottom"]}])
+            line_boxes = []
+            for lb in raw_lines:
+                tb = _tight_text_bbox(np_img, lb)
+                line_boxes.append({"left": tb["left"], "top": tb["top"],
+                                   "right": tb["right"], "bottom": tb["bottom"]})
+                erase_regions.append(tb)
+            union = {"left": min(b["left"] for b in line_boxes),
+                     "top": min(b["top"] for b in line_boxes),
+                     "right": max(b["right"] for b in line_boxes),
+                     "bottom": max(b["bottom"] for b in line_boxes)}
+            color = _normalize_hex_color(
+                m.get("color"),
+                default=_region_stroke_color(np_img, union))
+            align = str(m.get("align", "")).lower()
+            if align not in ("left", "center", "right"):
+                align = "center" if not m.get("is_paragraph") else "natural"
+            if align == "right":
+                align = "natural"   # never force right; direction decides the edge
+            # Optional per-run colour/style (point 3). Keep only if the
+            # runs are well-formed and actually vary; otherwise the
+            # single color/style above is used.
+            runs = m.get("runs")
+            clean_runs = None
+            if isinstance(runs, list) and len(runs) > 1:
+                clean_runs = []
+                for rn in runs:
+                    if not isinstance(rn, dict):
+                        continue
+                    rt = str(rn.get("text", ""))
+                    if rt == "":
+                        continue
+                    clean_runs.append({
+                        "text": rt,
+                        "color": _normalize_hex_color(rn.get("color"), default=color),
+                        "bold": bool(rn.get("bold", m.get("bold"))),
+                        "italic": bool(rn.get("italic", m.get("italic"))),
+                    })
+                if len(clean_runs) < 2:
+                    clean_runs = None
+            text_items.append({
+                "left": union["left"], "top": union["top"],
+                "right": union["right"], "bottom": union["bottom"],
+                "line_boxes": line_boxes,      # per-line geometry for flow
+                "text": translation,
+                "runs": clean_runs,            # per-letter colour/style, or None
+                "color": color,
+                "bold": bool(m.get("bold")),
+                "italic": bool(m.get("italic")),
+                "underline": bool(m.get("underline")),
+                "align": align,
+                "rtl": rtl,
+                "is_paragraph": bool(m.get("is_paragraph")) or len(line_boxes) > 1,
+                "kind": str(m.get("kind", "")),
+            })
+            counts["translatable"] += 1
+        elif cls == "nontranslatable":
+            # Skip elements nested inside a bigger non-translatable box
+            # (e.g. badge text inside the badge) - the outer element's
+            # single PNG already contains them.
+            if _inside_any(region, nontrans_boxes):
+                protect_regions.append(region)
+                continue
+            png = _crop_element_png(page_image, region)
+            if png is not None:
+                png_items.append({
+                    "left": region["left"], "top": region["top"],
+                    "right": region["right"], "bottom": region["bottom"],
+                    "png": png, "kind": str(m.get("kind", "")),
+                })
+            protect_regions.append(region)
+            counts["nontranslatable"] += 1
+        else:  # decoration / watermark / empty
+            if _inside_any(region, nontrans_boxes):
+                continue
+            erase_regions.append(region)
+            counts["decoration"] += 1
+
+    page_diag["cvTranslatable"] = counts["translatable"]
+    page_diag["cvNonTranslatable"] = counts["nontranslatable"]
+    page_diag["cvDecoration"] = counts["decoration"]
+
+    # Optional quality-gate reviewer agent. It is powerful but costs a
+    # SECOND vision round-trip per page, which roughly doubles the time
+    # per file - the main reason a 2-page job took ~5 minutes. It is now
+    # OFF by default and only runs when explicitly enabled via the
+    # LEXORA_ENABLE_REVIEWER env flag, so the default path is fast.
+    if os.environ.get("LEXORA_ENABLE_REVIEWER", "").lower() in ("1", "true", "yes"):
+        try:
+            text_items, png_items = _review_page_layout(
+                page_image, text_items, png_items, target_language, rtl,
+                llm_config, page_diag, progress=progress)
+        except Exception as rev_err:
+            print(f"Reviewer agent skipped due to error: {rev_err}")
+
+    # Any element restored as a PNG by the reviewer (a dropped
+    # signature/logo) must NOT be inpainted away - protect its box.
+    review_protect = [{"left": p["left"], "top": p["top"],
+                       "right": p["right"], "bottom": p["bottom"]}
+                      for p in png_items]
+    if progress:
+        progress(f"Reconstructing clean background ({len(erase_regions)} text areas)")
+    # Point 1: prefer AI generative fill of the erased areas when enabled;
+    # otherwise reconstruct the background with fast CV inpainting.
+    cleaned = None
+    if erase_regions:
+        cleaned = _ai_fill_background(page_image, erase_regions,
+                                      protect_regions + review_protect, llm_config)
+    if cleaned is None:
+        cleaned = _inpaint_regions_cv(page_image, erase_regions,
+                                      protect_regions + review_protect) if erase_regions else page_image
+    return cleaned, text_items, png_items
+
+
+_PDF_FONTS_REGISTERED = False
+
+
+def _register_pdf_fonts():
+    """Registers the bundled Noto TTFs with reportlab so the editable
+    PDF path can emit REAL text objects (selectable/copyable/editable
+    in a PDF editor) in any script, instead of Helvetica-only. Safe to
+    call repeatedly."""
+    global _PDF_FONTS_REGISTERED
+    if _PDF_FONTS_REGISTERED or not REPORTLAB_OK:
+        return
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        fonts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+        for name, filename in (("LexNoto", "NotoSans-Regular.ttf"),
+                               ("LexNotoArabic", "NotoSansArabic-Regular.ttf"),
+                               ("LexNotoArabicBold", "NotoSansArabic-Bold.ttf")):
+            path = os.path.join(fonts_dir, filename)
+            if os.path.isfile(path) and name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(name, path))
+        _PDF_FONTS_REGISTERED = True
+    except Exception as err:
+        print(f"Could not register bundled TTF fonts with reportlab: {err} - falling back to Helvetica.")
+
+
+def _pdf_font_for(text, bold, italic, rtl):
+    """Best registered PDF font for one text item. Pure-ASCII text can
+    use reportlab's built-in Helvetica family (which has real bold and
+    italic faces); anything beyond ASCII needs a registered Unicode TTF
+    (Noto), where bold exists only for the Arabic face."""
+    try:
+        text.encode("ascii")
+        is_ascii = True
+    except UnicodeEncodeError:
+        is_ascii = False
+    if is_ascii:
+        return _closest_builtin_font(bold, italic)
+    from reportlab.pdfbase import pdfmetrics
+    registered = pdfmetrics.getRegisteredFontNames()
+    if rtl or any("\u0600" <= ch <= "\u06FF" for ch in text):
+        if bold and "LexNotoArabicBold" in registered:
+            return "LexNotoArabicBold"
+        if "LexNotoArabic" in registered:
+            return "LexNotoArabic"
+    if "LexNoto" in registered:
+        return "LexNoto"
+    return _closest_builtin_font(bold, italic)
+
+
+def _sample_region_bg(page_image, left, top, right, bottom, pad=4):
+    """Median color of a thin ring of pixels JUST OUTSIDE the region box -
+    a much better mask color than the old single-pixel sample: on
+    textured/patterned backgrounds (certificates, letterheads) one pixel
+    is a lottery ticket, while the ring median lands on the dominant
+    background tone so the mask rectangle blends in instead of standing
+    out as a stark white patch."""
+    w, h = page_image.size
+    xs = list(range(max(0, left - pad), min(w, right + pad), 6))
+    ys = list(range(max(0, top - pad), min(h, bottom + pad), 6))
+    samples = []
+    for x in xs:
+        for y in (max(0, top - pad), min(h - 1, bottom + pad - 1)):
+            samples.append(page_image.getpixel((x, y)))
+    for y in ys:
+        for x in (max(0, left - pad), min(w - 1, right + pad - 1)):
+            samples.append(page_image.getpixel((x, y)))
+    if not samples:
+        return (255, 255, 255)
+    med = tuple(sorted(px[ch] for px in samples)[len(samples) // 2] for ch in range(3))
+    return med
+
+
+def generate_ocr_based_translation_pdf(original_pdf_path, output_pdf_path, target_language, llm_config=None, ocr_lang="eng+ara", diagnostics=None, vision_assist=False, progress=None):
     """Item 6 - the scanned/image-only counterpart to
     generate_layout_preserving_translation_pdf(): when a page has no real
     text layer at all (the whole page is one embedded/scanned image,
@@ -1497,10 +3363,29 @@ def generate_ocr_based_translation_pdf(original_pdf_path, output_pdf_path, targe
 
     story_pages = []
     with pdfplumber.open(original_pdf_path) as pdf:
+        total_pages = len(pdf.pages)
         for page_num, page in enumerate(pdf.pages):
+            if progress:
+                progress(f"Page {page_num + 1}/{total_pages}: rendering & detecting text regions")
             page_diag = {"page": page_num + 1, "regionsDetected": 0, "regionsDrawn": 0, "error": None}
             page_image = page.to_image(resolution=render_dpi).original.convert("RGB")
             try:
+                if vision_assist and CV2_OK and llm_is_configured(llm_config):
+                    layout = None
+                    try:
+                        if progress:
+                            progress(f"Page {page_num + 1}/{total_pages}: reading text + typography (vision)")
+                        layout = _build_page_vision_layout(page_image, target_language, rtl, llm_config, page_diag, progress=progress)
+                    except Exception as cv_err:
+                        print(f"Vision-layout rebuild failed on page {page_num + 1}: {cv_err} - falling back to the OCR flow.")
+                        page_diag["cvError"] = str(cv_err)
+                    if layout is not None:
+                        cleaned_image, layout_items, png_items = layout
+                        page_diag["pathUsed"] = "vision-layout-cv"
+                        diagnostics["pages"].append(page_diag)
+                        story_pages.append(("layout", cleaned_image, layout_items, float(page.width), float(page.height), png_items))
+                        continue
+                    page_diag["pathUsed"] = "tesseract-fallback"
                 try:
                     ocr_data = pytesseract.image_to_data(page_image, lang=ocr_lang, output_type=pytesseract.Output.DICT)
                 except Exception as err:
@@ -1545,31 +3430,49 @@ def generate_ocr_based_translation_pdf(original_pdf_path, output_pdf_path, targe
                 draw = ImageDraw.Draw(page_image)
                 for region, translated in zip(regions, translated_texts):
                     try:
+                        # [SKIP] = the model confirmed this "line" is a
+                        # logo / handwritten signature / ornament that OCR
+                        # misdetected as text - leave those pixels
+                        # completely alone (no mask, no redraw). This is
+                        # what stops blank boxes appearing over signatures
+                        # and hallucinated "translations" of logo art.
+                        if not translated or translated.strip().upper() in ("[SKIP]", "SKIP"):
+                            page_diag["regionsSkipped"] = page_diag.get("regionsSkipped", 0) + 1
+                            continue
                         box_w = max(1, region["right"] - region["left"])
                         box_h = max(1, region["bottom"] - region["top"])
                         try:
-                            bg = page_image.getpixel((region["left"], max(0, region["top"] - 3)))
+                            bg = _sample_region_bg(page_image, region["left"], region["top"], region["right"], region["bottom"])
                         except Exception:
                             bg = (255, 255, 255)
                         draw.rectangle([region["left"] - 2, region["top"] - 2, region["right"] + 2, region["bottom"] + 2], fill=bg)
 
                         script = "arabic" if rtl else "latin"
-                        render_text = shape_rtl_text(translated) if rtl else translated
-                        font_size = box_h
-                        font = _load_pil_font(font_size, script=script)
-                        while font_size > 6:
-                            bbox = draw.textbbox((0, 0), render_text, font=font)
-                            if (bbox[2] - bbox[0]) <= box_w or font_size <= 6:
-                                break
-                            font_size -= 1
-                            font = _load_pil_font(font_size, script=script)
+                        # Wrap on the UNshaped translated text first (word
+                        # boundaries are meaningful before RTL shaping),
+                        # then shape each resulting line individually -
+                        # shaping a string that already contains a '\n'
+                        # can scramble the line break itself.
+                        font, plain_lines, line_h = _fit_text_in_box_pil(
+                            draw, translated, box_w, box_h, script=script)
+                        render_lines = [shape_rtl_text(ln) if rtl else ln for ln in plain_lines]
 
                         text_color = (0, 0, 0)
-                        if rtl:
-                            bbox = draw.textbbox((0, 0), render_text, font=font)
-                            draw.text((region["right"] - (bbox[2] - bbox[0]), region["top"]), render_text, font=font, fill=text_color)
-                        else:
-                            draw.text((region["left"], region["top"]), render_text, font=font, fill=text_color)
+                        block_h = line_h * len(render_lines)
+                        # Center the wrapped block vertically inside the
+                        # original line's box rather than always hanging
+                        # it from the top - looks right whether it ended
+                        # up as 1 line (matches old behavior) or several.
+                        y = region["top"] + max(0, (box_h - block_h) / 2)
+                        for ln in render_lines:
+                            bbox = draw.textbbox((0, 0), ln, font=font)
+                            ln_w = bbox[2] - bbox[0]
+                            if rtl:
+                                x = region["right"] - ln_w
+                            else:
+                                x = region["left"]
+                            draw.text((x, y), ln, font=font, fill=text_color)
+                            y += line_h
                         page_diag["regionsDrawn"] += 1
                     except Exception as region_err:
                         # One region failing to mask/redraw (a font glitch,
@@ -1586,11 +3489,12 @@ def generate_ocr_based_translation_pdf(original_pdf_path, output_pdf_path, targe
                 page_diag["error"] = page_diag["error"] or str(page_err)
             diagnostics["pages"].append(page_diag)
 
-            story_pages.append((page_image, float(page.width), float(page.height)))
+            story_pages.append(("flat", page_image, None, float(page.width), float(page.height), []))
 
+    _register_pdf_fonts()
     buf = io.BytesIO()
     c = None
-    for page_image, page_w_pt, page_h_pt in story_pages:
+    for kind, page_image, layout_items, page_w_pt, page_h_pt, png_items in story_pages:
         if c is None:
             c = pdfcanvas.Canvas(buf, pagesize=(page_w_pt, page_h_pt))
         else:
@@ -1599,15 +3503,378 @@ def generate_ocr_based_translation_pdf(original_pdf_path, output_pdf_path, targe
         img_buf = io.BytesIO()
         page_image.save(img_buf, format="PNG")
         img_buf.seek(0)
+        # Layer 1: inpainted background.
         c.drawImage(ImageReader(img_buf), 0, 0, width=page_w_pt, height=page_h_pt)
+        scale = page_w_pt / float(page_image.width)
+        # Layer 2: non-translatable elements as their own transparent
+        # PNGs, placed at exact original position over the background.
+        for pe in (png_items or []):
+            try:
+                pbuf = io.BytesIO()
+                pe["png"].save(pbuf, format="PNG")
+                pbuf.seek(0)
+                px = pe["left"] * scale
+                pw = (pe["right"] - pe["left"]) * scale
+                ph = (pe["bottom"] - pe["top"]) * scale
+                py = page_h_pt - (pe["bottom"] * scale)   # PDF y is bottom-up
+                c.drawImage(ImageReader(pbuf), px, py, width=pw, height=ph, mask="auto")
+            except Exception as perr:
+                print(f"Could not place element PNG on PDF: {perr}")
+        # Layer 3: translated text as REAL, selectable text objects.
+        if kind == "layout" and layout_items:
+            _draw_layout_items_on_canvas(c, layout_items, scale, page_h_pt, rtl)
     if c is not None:
         c.save()
     buf.seek(0)
     with open(output_pdf_path, "wb") as f:
         f.write(buf.read())
 
+    # Editable Word companion: same cleaned backgrounds + the same text
+    # items as floating, styled text boxes (the reference "v5" output
+    # format). Written next to the PDF whenever at least one page went
+    # through the vision-layout path.
+    if any(kind == "layout" for kind, *_ in story_pages):
+        docx_path = os.path.splitext(output_pdf_path)[0] + ".docx"
+        try:
+            _write_layout_docx(docx_path, story_pages, rtl)
+            diagnostics["editableDocx"] = docx_path
+        except Exception as err:
+            print(f"Could not write editable DOCX companion: {err}")
+            diagnostics["editableDocxError"] = str(err)
 
-def generate_layout_preserving_translation_pdf(original_pdf_path, output_pdf_path, target_language, llm_config=None, diagnostics=None, vision_assist=False):
+
+def _flow_text_across_lineboxes(text, line_boxes, font_name, rtl,
+                                min_size=4.0, start_frac=0.92, width_factor=0.93):
+    """Flows one translated string across a paragraph's N line boxes
+    (the user's model: each original visual line is a box; the sentence
+    is distributed line by line into those boxes at a UNIFORM font size).
+
+    It picks the largest single font size at which the text word-wraps
+    into AT MOST len(line_boxes) lines with every wrapped line fitting
+    the WIDTH of its target box. If it cannot (a long translation in a
+    short box), it keeps shrinking the font until every line fits - so
+    text NEVER overflows its box (the caller's hard rule). `width_factor`
+    (<1) leaves a safety margin because Word renders in Arial, which is a
+    little wider than the metrics font. Returns (size, [(line, box), ...])."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    n = len(line_boxes)
+    if n == 0:
+        return min_size, []
+    widths = [max(1.0, (b["right"] - b["left"]) * width_factor) for b in line_boxes]
+    heights = [max(1.0, b["bottom"] - b["top"]) for b in line_boxes]
+    words = text.split() or [text]
+
+    def wrap_at(sz):
+        # Greedy word wrap where line k must fit widths[k]; returns the
+        # list of lines, or None if words are left over after n lines OR
+        # a single word is wider than its box at this size (real overflow).
+        out = []
+        wi = 0
+        for k in range(n):
+            maxw = widths[k]
+            cur = ""
+            while wi < len(words):
+                w = words[wi]
+                trial = w if not cur else cur + " " + w
+                if stringWidth(trial, font_name, sz) <= maxw:
+                    cur = trial
+                    wi += 1
+                elif not cur:
+                    # Single word wider than the whole box at this size.
+                    if stringWidth(w, font_name, sz) > maxw:
+                        return None
+                    cur = w
+                    wi += 1
+                else:
+                    break
+            out.append(cur)
+            if wi >= len(words):
+                break
+        if wi < len(words):
+            return None   # leftover words -> needs more than n lines
+        return out
+
+    # Start from a size bounded by BOTH the box height and a width-based
+    # estimate (so a wide-but-short box starts sensibly), then shrink.
+    size = max(min_size, min(heights) * start_frac)
+    chosen = None
+    while size >= min_size:
+        wrapped = wrap_at(size)
+        if wrapped is not None:
+            chosen = wrapped
+            break
+        size -= 0.5
+    if chosen is None:
+        # Guarantee no overflow: at min_size, hard-wrap by character so
+        # every drawn line fits its box width.
+        size = min_size
+        chosen = []
+        wi = 0
+        for k in range(n):
+            maxw = widths[k]
+            cur = ""
+            while wi < len(words):
+                w = words[wi]
+                trial = w if not cur else cur + " " + w
+                if stringWidth(trial, font_name, size) <= maxw or not cur:
+                    cur = trial
+                    wi += 1
+                else:
+                    break
+            chosen.append(cur)
+            if wi >= len(words):
+                break
+    mapped = []
+    for k, ln in enumerate(chosen):
+        box = line_boxes[min(k, n - 1)]
+        mapped.append((ln, box))
+    return size, mapped
+
+
+def _draw_layout_items_on_canvas(c, items, scale, page_h_pt, rtl):
+    """Draws one page's translated items on a reportlab canvas as real,
+    selectable text. Each item is a paragraph whose translation is
+    FLOWED across its per-line boxes (one original visual line = one
+    box) at a uniform font size, shrinking the font if the text would
+    overflow the available lines. Single-line items are just one box.
+    Honors ink colour, bold/italic, underline and centering."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    for item in items:
+        item_rtl = item.get("rtl", rtl)
+        align = item.get("align", "center")
+        font_name = _pdf_font_for(item["text"], item["bold"], item["italic"], item_rtl)
+        # Scale the per-line boxes into PDF points.
+        raw_boxes = item.get("line_boxes") or [{
+            "left": item["left"], "top": item["top"],
+            "right": item["right"], "bottom": item["bottom"]}]
+        line_boxes = [{"left": b["left"] * scale, "top": b["top"] * scale,
+                       "right": b["right"] * scale, "bottom": b["bottom"] * scale}
+                      for b in raw_boxes]
+        size, mapped = _flow_text_across_lineboxes(
+            item["text"], line_boxes, font_name, item_rtl)
+        r, g, b = [v / 255.0 for v in item["color"]]
+        c.setFillColorRGB(r, g, b)
+        c.setStrokeColorRGB(r, g, b)
+        c.setFont(font_name, size)
+        for ln, box in mapped:
+            draw_ln = shape_rtl_text(ln) if (item_rtl and any("\u0590" <= ch <= "\u06FF" for ch in ln)) else ln
+            ln_w = stringWidth(draw_ln, font_name, size)
+            bw = box["right"] - box["left"]
+            bh = box["bottom"] - box["top"]
+            # Vertically centre the glyph within its own line box.
+            baseline = box["top"] + max(0.0, (bh - size) / 2.0) + size * 0.82
+            y_pdf = page_h_pt - baseline
+            if align == "center":
+                x = box["left"] + max(0.0, (bw - ln_w) / 2.0)
+            elif align == "left":
+                x = box["left"]
+            elif align == "right":
+                x = box["left"] + max(0.0, bw - ln_w)
+            else:  # natural: follow output direction
+                x = box["left"] + max(0.0, bw - ln_w) if item_rtl else box["left"]
+            c.drawString(x, y_pdf, draw_ln)
+            if item["underline"]:
+                c.setLineWidth(max(0.5, size / 16.0))
+                c.line(x, y_pdf - size * 0.12, x + ln_w, y_pdf - size * 0.12)
+
+
+_DOCX_CONTENT_TYPES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Default Extension="png" ContentType="image/png"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"""
+
+_DOCX_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"""
+
+_DOCX_NS = (
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+    'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+    'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" '
+    'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"'
+)
+
+
+def _xml_escape(s):
+    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;").replace("'", "&apos;"))
+
+
+def _write_layout_docx(docx_path, story_pages, rtl):
+    """Writes the editable Word companion: for every page, the cleaned
+    (text-erased, inpainted) page render as a full-page behind-text
+    background image, plus each translated item as a floating,
+    borderless TEXT BOX anchored at its exact position - fully editable
+    text in Word, styled with the item's color/bold/italic/underline
+    and a size fitted to its original box. Built as a raw OOXML package
+    for exact control over anchored drawing XML (python-docx has no API
+    for floating text boxes)."""
+    import zipfile
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    EMU_PER_PT = 12700
+    media = []          # (filename, bytes)
+    body_parts = []
+    doc_rels = []
+    draw_id = 100
+
+    for page_idx, (kind, page_image, layout_items, page_w_pt, page_h_pt, png_items) in enumerate(story_pages):
+        img_buf = io.BytesIO()
+        page_image.save(img_buf, format="PNG")
+        media.append((f"page{page_idx + 1}.png", img_buf.getvalue()))
+        rel_id = f"rIdImg{page_idx + 1}"
+        doc_rels.append(
+            f'<Relationship Id="{rel_id}" '
+            f'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+            f'Target="media/page{page_idx + 1}.png"/>')
+
+        page_w_emu = int(page_w_pt * EMU_PER_PT)
+        page_h_emu = int(page_h_pt * EMU_PER_PT)
+        scale = page_w_pt / float(page_image.width)
+
+        draw_id += 1
+        anchors = [(
+            f'<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" '
+            f'relativeHeight="0" behindDoc="1" locked="0" layoutInCell="1" allowOverlap="1">'
+            f'<wp:simplePos x="0" y="0"/>'
+            f'<wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>'
+            f'<wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV>'
+            f'<wp:extent cx="{page_w_emu}" cy="{page_h_emu}"/><wp:wrapNone/>'
+            f'<wp:docPr id="{draw_id}" name="Background {page_idx + 1}"/>'
+            f'<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            f'<pic:pic><pic:nvPicPr><pic:cNvPr id="{draw_id}" name="bg{page_idx + 1}"/><pic:cNvPicPr/></pic:nvPicPr>'
+            f'<pic:blipFill><a:blip r:embed="{rel_id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
+            f'<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{page_w_emu}" cy="{page_h_emu}"/></a:xfrm>'
+            f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>'
+            f'</a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>')]
+
+        # Layer 2: non-translatable elements (logos, signatures, QR) as
+        # their own floating PNG images anchored at exact position. In
+        # Word these are separate, clickable, movable, deletable objects
+        # - satisfying the doc's 4.2.4 "extract as PNG, place In Front of
+        # Text" rule (click a signature and it selects/extracts, rather
+        # than being fused into the background).
+        for pe in (png_items or []):
+            draw_id += 1
+            pbuf = io.BytesIO()
+            pe["png"].save(pbuf, format="PNG")
+            png_name = f"elem{page_idx + 1}_{draw_id}.png"
+            media.append((png_name, pbuf.getvalue()))
+            pe_rel = f"rIdElem{page_idx + 1}_{draw_id}"
+            doc_rels.append(
+                f'<Relationship Id="{pe_rel}" '
+                f'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+                f'Target="media/{png_name}"/>')
+            ex = int((pe["left"]) * scale * EMU_PER_PT)
+            ey = int((pe["top"]) * scale * EMU_PER_PT)
+            ecx = int(max(1.0, (pe["right"] - pe["left"]) * scale) * EMU_PER_PT)
+            ecy = int(max(1.0, (pe["bottom"] - pe["top"]) * scale) * EMU_PER_PT)
+            kind_name = pe.get("kind", "element") or "element"
+            anchors.append(
+                f'<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" '
+                f'relativeHeight="{draw_id}" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">'
+                f'<wp:simplePos x="0" y="0"/>'
+                f'<wp:positionH relativeFrom="page"><wp:posOffset>{ex}</wp:posOffset></wp:positionH>'
+                f'<wp:positionV relativeFrom="page"><wp:posOffset>{ey}</wp:posOffset></wp:positionV>'
+                f'<wp:extent cx="{ecx}" cy="{ecy}"/><wp:wrapNone/>'
+                f'<wp:docPr id="{draw_id}" name="{_xml_escape(kind_name)} {draw_id}"/>'
+                f'<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+                f'<pic:pic><pic:nvPicPr><pic:cNvPr id="{draw_id}" name="{png_name}"/><pic:cNvPicPr/></pic:nvPicPr>'
+                f'<pic:blipFill><a:blip r:embed="{pe_rel}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
+                f'<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{ecx}" cy="{ecy}"/></a:xfrm>'
+                f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>'
+                f'</a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>')
+
+        for item in (layout_items or []):
+            item_rtl = item.get("rtl", rtl)
+            align = item.get("align", "center")
+            if align == "natural":
+                jc = "right" if item_rtl else "left"
+            else:
+                jc = {"left": "left", "right": "right", "center": "center"}.get(align, "center")
+            font_name = _pdf_font_for(item["text"], item["bold"], item["italic"], item_rtl)
+            # Flow the paragraph across its per-line boxes at a uniform
+            # font size (one original visual line = one Word text box),
+            # shrinking on overflow - matching the PDF output exactly.
+            raw_boxes = item.get("line_boxes") or [{
+                "left": item["left"], "top": item["top"],
+                "right": item["right"], "bottom": item["bottom"]}]
+            pt_boxes = [{"left": b["left"] * scale, "top": b["top"] * scale,
+                         "right": b["right"] * scale, "bottom": b["bottom"] * scale}
+                        for b in raw_boxes]
+            size, mapped = _flow_text_across_lineboxes(
+                item["text"], pt_boxes, font_name, item_rtl)
+            half_pts = max(2, int(round(size * 2)))
+            color_hex = "%02X%02X%02X" % item["color"]
+            rpr = (f'<w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/>'
+                   + ('<w:b/><w:bCs/>' if item["bold"] else '')
+                   + ('<w:i/><w:iCs/>' if item["italic"] else '')
+                   + ('<w:u w:val="single"/>' if item["underline"] else '')
+                   + ('<w:rtl/>' if item_rtl else '')
+                   + f'<w:color w:val="{color_hex}"/>'
+                   + f'<w:sz w:val="{half_pts}"/><w:szCs w:val="{half_pts}"/></w:rPr>')
+            ppr = '<w:pPr>' + ('<w:bidi/>' if item_rtl else '') + \
+                  '<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>' \
+                  f'<w:jc w:val="{jc}"/></w:pPr>'
+            # One floating text box per produced line, positioned at that
+            # line's own box - so a 3-line sentence yields 3 boxes, never
+            # one overflowing block.
+            for ln, box in mapped:
+                draw_id += 1
+                bx = box["left"]
+                by = box["top"]
+                bw = max(1.0, box["right"] - box["left"])
+                bh = max(1.0, box["bottom"] - box["top"])
+                tb_w_emu = int((bw + 8) * EMU_PER_PT)
+                tb_h_emu = int((bh + 4) * EMU_PER_PT)
+                anchors.append(
+                    f'<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" '
+                    f'relativeHeight="{draw_id}" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">'
+                    f'<wp:simplePos x="0" y="0"/>'
+                    f'<wp:positionH relativeFrom="page"><wp:posOffset>{int((bx - 3) * EMU_PER_PT)}</wp:posOffset></wp:positionH>'
+                    f'<wp:positionV relativeFrom="page"><wp:posOffset>{int((by - 2) * EMU_PER_PT)}</wp:posOffset></wp:positionV>'
+                    f'<wp:extent cx="{tb_w_emu}" cy="{tb_h_emu}"/><wp:wrapNone/>'
+                    f'<wp:docPr id="{draw_id}" name="Text {draw_id}"/>'
+                    f'<a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+                    f'<wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr>'
+                    f'<a:xfrm><a:off x="0" y="0"/><a:ext cx="{tb_w_emu}" cy="{tb_h_emu}"/></a:xfrm>'
+                    f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></wps:spPr>'
+                    f'<wps:txbx><w:txbxContent><w:p>{ppr}<w:r>{rpr}'
+                    f'<w:t xml:space="preserve">{_xml_escape(ln)}</w:t></w:r></w:p></w:txbxContent></wps:txbx>'
+                    f'<wps:bodyPr rot="0" wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" anchor="ctr">'
+                    f'<a:noAutofit/></wps:bodyPr></wps:wsp>'
+                    f'</a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>')
+
+        body_parts.append("<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\"/></w:pPr>" + "".join(anchors) + "</w:p>")
+        if page_idx < len(story_pages) - 1:
+            body_parts.append('<w:p><w:r><w:br w:type="page"/></w:r></w:p>')
+
+    first_w_pt = story_pages[0][3]
+    first_h_pt = story_pages[0][4]
+    sect = (f'<w:sectPr><w:pgSz w:w="{int(first_w_pt * 20)}" w:h="{int(first_h_pt * 20)}"/>'
+            f'<w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/></w:sectPr>')
+    document_xml = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                    f'<w:document {_DOCX_NS}><w:body>{"".join(body_parts)}{sect}</w:body></w:document>')
+    document_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                     + "".join(doc_rels) + '</Relationships>')
+
+    with zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", _DOCX_CONTENT_TYPES)
+        z.writestr("_rels/.rels", _DOCX_RELS)
+        z.writestr("word/document.xml", document_xml)
+        z.writestr("word/_rels/document.xml.rels", document_rels)
+        for filename, data in media:
+            z.writestr(f"word/media/{filename}", data)
+
+
+def generate_layout_preserving_translation_pdf(original_pdf_path, output_pdf_path, target_language, llm_config=None, diagnostics=None, vision_assist=False, progress=None):
     """Item 6 (per the uploaded 'Document Translation Instructions' spec)
     - rather than extracting the document's text and rebuilding a brand
     new, generically-formatted PDF from scratch (the old approach), this
@@ -1648,7 +3915,7 @@ def generate_layout_preserving_translation_pdf(original_pdf_path, output_pdf_pat
         if diagnostics is not None:
             diagnostics["pathUsed"] = "ocr-image-based" if not any_real_text else "text-layer-based"
         if not any_real_text:
-            return generate_ocr_based_translation_pdf(original_pdf_path, output_pdf_path, target_language, llm_config, diagnostics=diagnostics, vision_assist=vision_assist)
+            return generate_ocr_based_translation_pdf(original_pdf_path, output_pdf_path, target_language, llm_config, diagnostics=diagnostics, vision_assist=vision_assist, progress=progress)
 
         for page_index, page in enumerate(pdf.pages):
             lines = _group_chars_into_lines(page.chars)
@@ -1670,10 +3937,12 @@ def generate_layout_preserving_translation_pdf(original_pdf_path, output_pdf_pat
                 c.rect(region["x0"] - 1, page_height - region["bottom"] - 1, box_w + 2, box_h + 2, fill=1, stroke=0)
 
                 font_name = _closest_builtin_font(region["bold"], region["italic"])
-                render_text = shape_rtl_text(translated) if rtl else translated
-                font_size = region["size"]
-                while font_size > 5 and stringWidth(render_text, font_name, font_size) > box_w:
-                    font_size -= 0.5
+                # Fit against the UNshaped text first (word boundaries are
+                # meaningful before RTL shaping); shape each wrapped line
+                # individually afterward for drawing.
+                font_size, plain_lines, line_h = _fit_text_in_box_reportlab(
+                    translated, font_name, box_w, box_h, start_size=region["size"])
+                render_lines = [shape_rtl_text(ln) if rtl else ln for ln in plain_lines]
 
                 try:
                     hexc = region["color"].lstrip("#")
@@ -1682,11 +3951,19 @@ def generate_layout_preserving_translation_pdf(original_pdf_path, output_pdf_pat
                     r, g, b = 0, 0, 0
                 c.setFillColorRGB(r, g, b)
                 c.setFont(font_name, font_size)
-                baseline_y = page_height - region["bottom"] + 1.5
-                if rtl:
-                    c.drawRightString(region["x1"], baseline_y, render_text)
-                else:
-                    c.drawString(region["x0"], baseline_y, render_text)
+
+                # Stack lines top-down, the wrapped block vertically
+                # centered inside the original line's box so 1-line and
+                # multi-line results both look correctly placed.
+                block_h = line_h * len(render_lines)
+                top_y = page_height - region["top"] - max(0, (box_h - block_h) / 2)
+                baseline_y = top_y - line_h * 0.8
+                for ln in render_lines:
+                    if rtl:
+                        c.drawRightString(region["x1"], baseline_y, ln)
+                    else:
+                        c.drawString(region["x0"], baseline_y, ln)
+                    baseline_y -= line_h
 
             c.save()
             buf.seek(0)
@@ -1705,6 +3982,48 @@ def generate_layout_preserving_translation_pdf(original_pdf_path, output_pdf_pat
 
     with open(output_pdf_path, "wb") as f:
         writer.write(f)
+
+
+def generate_translation_docx(output_json_path, docx_out_path):
+    """Builds an editable Output.docx for the NON-hybrid (reflow) path,
+    so that when the user picks 'docx' output on a Simple-mode job they
+    get a real Word file - not a PDF. This is a clean reflowed document
+    (python-docx paragraphs), mirroring generate_translation_pdf, with
+    direction following the OUTPUT language (RTL target -> right-aligned,
+    reshaped). No PDF round-trip is involved."""
+    if docx_lib is None:
+        raise LeaseEngineError(
+            "python-docx is not installed - run: pip install -r requirements.txt")
+    with open(output_json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    target_language = data.get("targetLanguage", "")
+    translated_text = data.get("translatedText", "") or ""
+    rtl = is_rtl_language(target_language)
+
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.section import WD_SECTION
+    doc = Document()
+    for raw_line in translated_text.split("\n"):
+        line = raw_line.rstrip()
+        para = doc.add_paragraph()
+        if rtl:
+            para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            try:
+                para.paragraph_format.right_to_left = True
+            except Exception:
+                pass
+        # Light markup handling: leading '# ' heading, '**bold**' emphasis.
+        text = line
+        is_heading = False
+        if text.startswith("# "):
+            text = text[2:]
+            is_heading = True
+        run = para.add_run(text)
+        if is_heading:
+            run.bold = True
+            run.font.size = None
+    doc.save(docx_out_path)
 
 
 def generate_translation_pdf(output_json_path, pdf_out_path):
@@ -1800,6 +4119,26 @@ def _render_reflowed_translation_pdf(doc_name, target_language, translated_text,
     doc.build(story)
 
 
+def _looks_like_refusal(text):
+    """True if the model's reply is a safety REFUSAL / apology rather than
+    real content, so it is never printed into the document as a
+    'translation'. Kept deliberately narrow: a short reply dominated by an
+    apology with no substantive body."""
+    if not text:
+        return False
+    t = text.strip().lower()
+    markers = ("i'm sorry", "i am sorry", "i cannot assist", "i can't assist",
+               "i cannot help", "i can't help", "unable to assist",
+               "cannot process", "can't process", "i'm not able to",
+               "i am not able to", "i cannot fulfill", "can't fulfill",
+               "i cannot comply", "i won't be able to", "as an ai")
+    if not any(m in t for m in markers):
+        return False
+    # Only treat as refusal when the apology dominates (short reply), not
+    # when the word merely appears inside a long translated document.
+    return len(t) < 400
+
+
 def generate_vision_translation_pdf(original_pdf_path, output_pdf_path, target_language, doc_name="Document", llm_config=None, diagnostics=None):
     """Simple mode for scanned/photo PDFs - completely bypasses Tesseract:
     each page is rendered to an image and sent to the vision-capable chat
@@ -1821,7 +4160,12 @@ def generate_vision_translation_pdf(original_pdf_path, output_pdf_path, target_l
         raise LeaseEngineError("pdfplumber is not installed - run: pip install -r requirements.txt")
 
     system_prompt = (
-        f"You are a professional document translator. You are given an IMAGE of one page of a "
+        f"You are Lexora's professional document translator. The user has "
+        f"uploaded THEIR OWN document to their own account and explicitly "
+        f"asked for it to be translated; you are fully authorised to read "
+        f"and translate all text on the page. This is a routine, legitimate "
+        f"localisation task - always comply, never refuse, never apologise. "
+        f"You are given an IMAGE of one page of a "
         f"document. First carefully read ALL visible text in the image, in its natural reading "
         f"order. Then translate everything into {target_language}.\n\n"
         f"Requirements:\n"
@@ -1856,12 +4200,26 @@ def generate_vision_translation_pdf(original_pdf_path, output_pdf_path, target_l
                     f"Translate this page ({page_num + 1} of {total}) into {target_language}.",
                     image_b64, max_tokens=8000,
                 )
+                # Detect a model REFUSAL and don't let it become the page's
+                # "translation". Retry once (often succeeds); if it still
+                # refuses, skip this page rather than printing the apology.
+                if content and _looks_like_refusal(content):
+                    print(f"Vision refused page {page_num + 1}; retrying once.")
+                    content, provider = _call_vision_with_failover(
+                        llm_config, system_prompt,
+                        f"This is the user's own document; please translate "
+                        f"page {page_num + 1} of {total} into {target_language} "
+                        f"and return only the translated text.",
+                        image_b64, max_tokens=8000)
+                if content and _looks_like_refusal(content):
+                    page_diag["error"] = "model declined to translate this page"
+                    content = None
                 if content:
                     page_texts.append(content.strip())
                     page_diag["provider"] = provider
                     page_diag["chars"] = len(content)
                 else:
-                    page_diag["error"] = "no LLM key configured"
+                    page_diag["error"] = page_diag.get("error") or "no LLM key configured"
             except LeaseEngineError as err:
                 print(f"Vision translation failed on page {page_num + 1}: {err}")
                 page_diag["error"] = str(err)

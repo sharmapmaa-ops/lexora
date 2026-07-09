@@ -1970,6 +1970,12 @@ class Handler(SimpleHTTPRequestHandler):
         source_abs = os.path.join(ROOT_DIR, source_rel) if source_rel else None
         target_language = output_data.get("targetLanguage", "")
         hybrid_mode = bool(body.get("hybrid"))
+        # Output file format the user picked in the UI: "docx" (default,
+        # keep the editable Word file as the deliverable) or "pdf". When
+        # docx is requested we do NOT run the final DOCX->PDF conversion.
+        output_format = str(body.get("outputFormat", "docx")).lower()
+        if output_format not in ("docx", "pdf"):
+            output_format = "docx"
         source_is_pdf = bool(source_abs and os.path.isfile(source_abs) and source_abs.lower().endswith(".pdf"))
         used_layout_preserving = False
         mode_used = "reflow"
@@ -1982,12 +1988,26 @@ class Handler(SimpleHTTPRequestHandler):
             # through the vision LLM (page image = ground truth), which
             # is what makes this path usable on photographs at all.
             try:
-                lease_engine.generate_layout_preserving_translation_pdf(
+                progress_msgs = []
+                def _prog(msg):
+                    progress_msgs.append(msg)
+                    print(f"[translation:{doc_name}] {msg}")
+                # New layout-preserving pipeline (12-step flow). It writes
+                # the editable DOCX itself and, for pdf output, converts.
+                import translate_pipeline
+                out_path = translate_pipeline.translate_document(
                     source_abs, pdf_path, target_language,
-                    diagnostics=translation_diagnostics, vision_assist=True)
+                    output_format=output_format,
+                    diagnostics=translation_diagnostics, progress=_prog)
+                translation_diagnostics["progressLog"] = progress_msgs
+                # The pipeline may return a .docx even if pdf_path was a
+                # .pdf name; record what was actually produced.
+                if out_path.lower().endswith(".docx"):
+                    translation_diagnostics["editableDocx"] = out_path
                 used_layout_preserving = True
                 mode_used = "hybrid-layout-preserving"
             except Exception as err:
+                import traceback; traceback.print_exc()
                 print(f"Hybrid layout-preserving translation not possible for {doc_name}, falling back to reflow: {err}")
                 translation_diagnostics["fatalError"] = str(err)
         elif not hybrid_mode and source_is_pdf and not lease_engine.pdf_has_text_layer(source_abs) and lease_engine.llm_is_configured():
@@ -2009,13 +2029,50 @@ class Handler(SimpleHTTPRequestHandler):
         if mode_used == "reflow" and not used_layout_preserving:
             lease_engine.generate_translation_pdf(output_json_path, pdf_path)
 
+        # The hybrid layout-preserving path also writes an editable
+        # Output.docx next to Output.pdf. When the user asked for docx,
+        # that Word file IS the deliverable and no DOCX->PDF conversion
+        # is needed (the PDF is still generated as a preview/fallback but
+        # the download defaults to the docx).
+        docx_path = os.path.join(folder, "Output.docx")
+        has_docx = os.path.isfile(docx_path)
+        # NON-hybrid paths (reflow / simple-vision) don't produce a
+        # layout docx. If the user asked for docx there, build a clean
+        # reflowed Word file directly from the translated text - so a
+        # Simple-mode job also honours the docx choice instead of always
+        # returning a PDF.
+        if output_format == "docx" and not has_docx:
+            try:
+                lease_engine.generate_translation_docx(output_json_path, docx_path)
+                has_docx = os.path.isfile(docx_path)
+            except Exception as err:
+                print(f"Could not build reflow DOCX for {doc_name}: {err}")
+                translation_diagnostics["docxError"] = str(err)
+        deliver_format = output_format if (output_format == "pdf" or has_docx) else "pdf"
+        primary_path = docx_path if (deliver_format == "docx" and has_docx) else pdf_path
+
         threading.Thread(
             target=_push_file_to_connected_storage,
-            args=(user_id, pdf_path, f"{doc_name} - Translation.pdf"),
+            args=(user_id, primary_path, f"{doc_name} - Translation.{deliver_format}"),
             daemon=True,
         ).start()
 
-        return 200, {"ok": True, "outputPdf": _rel_to_root(pdf_path), "layoutPreserving": used_layout_preserving, "mode": mode_used, "diagnostics": translation_diagnostics}
+        # Turn each debug artifact's disk path into a web-relative URL so
+        # the activity log can link to it (original page images, the exact
+        # prompt sent to the model, the raw model response, the parsed JSON
+        # layout, and the reconstructed clean background).
+        for art in translation_diagnostics.get("artifacts", []):
+            try:
+                if art.get("path"):
+                    art["url"] = "/" + _rel_to_root(art["path"]).lstrip("/")
+            except Exception:
+                pass
+
+        return 200, {"ok": True, "outputPdf": _rel_to_root(pdf_path),
+                     "outputDocx": _rel_to_root(docx_path) if has_docx else None,
+                     "outputFormat": deliver_format,
+                     "layoutPreserving": used_layout_preserving, "mode": mode_used,
+                     "diagnostics": translation_diagnostics}
 
     def _handle_translation_download(self, query):
         user_id = _safe_id(self._resolve_user_id_query(query))
@@ -2040,7 +2097,7 @@ class Handler(SimpleHTTPRequestHandler):
         # original filename + " - Translation.pdf", not the generic
         # internal name.
         download_name = os.path.basename(abs_path)
-        if file_name == "Output.pdf":
+        if file_name in ("Output.pdf", "Output.docx"):
             output_json_path = os.path.join(folder, "Output.json")
             if os.path.isfile(output_json_path):
                 try:
@@ -2048,7 +2105,8 @@ class Handler(SimpleHTTPRequestHandler):
                         source_rel = json.load(f2).get("sourceDocument")
                     if source_rel:
                         base_name = os.path.splitext(os.path.basename(source_rel))[0]
-                        download_name = f"{base_name} - Translation.pdf"
+                        ext = os.path.splitext(file_name)[1]
+                        download_name = f"{base_name} - Translation{ext}"
                 except (OSError, json.JSONDecodeError):
                     pass
 

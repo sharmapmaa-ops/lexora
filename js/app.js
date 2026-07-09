@@ -296,8 +296,13 @@
                     const actionLabel = file.status === 'error' ? (file.errorLabel || 'Error') : null;
                     const docFolder = file.leaseName || file.docName || '';
                     const downloadKind = file.docName ? 'translation' : 'lease';
+                    // Download the file in the format the user selected for
+                    // this document (defaults to docx for translations).
+                    const dlFormat = (file.outputFormat === 'pdf') ? 'pdf'
+                        : (downloadKind === 'translation' ? 'docx' : 'pdf');
+                    const dlFile = dlFormat === 'docx' ? 'Output.docx' : 'Output.pdf';
                     const actionLink = file.status === 'completed' ?
-                        `<a class="file-action-link" onclick="downloadFile('Output.pdf', '${docFolder.replace(/'/g, "\\'")}', '${downloadKind}')">Download</a>` :
+                        `<a class="file-action-link" onclick="downloadFile('${dlFile}', '${docFolder.replace(/'/g, "\\'")}', '${downloadKind}')">Download</a>` :
                         file.status === 'needs_review' ?
                         `<a class="file-action-link review-link" onclick="openLeaseReviewModal('${file.id}')">🔍 Review</a>` :
                         file.status === 'error' ?
@@ -481,6 +486,12 @@
                                    onchange="setTranslationHybridMode(this.checked)" />
                             <span>Hybrid</span>
                         </label>
+                        <label style="display:block;margin-top:10px;">Output Format</label>
+                        <select id="translationOutputFormat" onchange="setTranslationOutputFormat(this.value)"
+                                title="DOCX: editable Word file (recommended). PDF: the same layout as a PDF.">
+                            <option value="docx" ${translationOutputFormat !== 'pdf' ? 'selected' : ''}>Word (.docx)</option>
+                            <option value="pdf" ${translationOutputFormat === 'pdf' ? 'selected' : ''}>PDF (.pdf)</option>
+                        </select>
                     </div>
                 ` : `
                     <div class="setup-group">
@@ -663,6 +674,15 @@
             let translationHybridMode = false;
             window.setTranslationHybridMode = function(checked) {
                 translationHybridMode = !!checked;
+            };
+
+            // Translation output file format: 'docx' (default) or 'pdf'.
+            // When 'docx' is chosen, the workflow keeps the editable Word
+            // file as the deliverable and skips the final DOCX->PDF
+            // conversion step entirely.
+            let translationOutputFormat = 'docx';
+            window.setTranslationOutputFormat = function(fmt) {
+                translationOutputFormat = (fmt === 'pdf') ? 'pdf' : 'docx';
             };
 
             // ============================================================
@@ -1725,13 +1745,17 @@
                         await blinkAgentThenDone('translation', processAgents[4] ? processAgents[4].id : null);
                         stepId = addActivity('translation', `${fl}System > Generate Output`, 'Pending');
                         refreshServicePage('translation');
+                        const outputFormatNow = document.getElementById('translationOutputFormat');
+                        const outFmt = outputFormatNow ? outputFormatNow.value : translationOutputFormat;
                         const pdfRes = await postJSON('/api/translation/generate-pdf', {
                             userId: CURRENT_USER_ID,
                             docName: docName,
-                            hybrid: hybridMode
+                            hybrid: hybridMode,
+                            outputFormat: outFmt
                         });
                         addActivity('translation', `${fl}System > Output Mode > ${pdfRes.mode || (hybridMode ? 'hybrid' : 'simple')}`, 'Success');
                         file.progress = '100';
+                        file.outputFormat = pdfRes.outputFormat || outFmt;
                         updateActivity('translation', stepId, 'Success', `${fl}System > Generate Output > ${_shortPath(pdfRes.outputPdf, 2)} generated successfully`);
                         markAgentDone(processAgents[4] ? processAgents[4].id : null);
 
@@ -1745,9 +1769,31 @@
                         // report just from what's already on screen.
                         if (pdfRes.diagnostics) {
                             const d = pdfRes.diagnostics;
+                            // Per-step progress the engine reported while
+                            // working (region detection, vision read,
+                            // reviewer rounds) - so the long 85% wait now
+                            // shows what's happening instead of looking stuck.
+                            (d.progressLog || []).forEach(msg => {
+                                addActivity('translation', `${fl}Progress > ${msg}`, 'Success');
+                            });
                             addActivity('translation', `${fl}Diagnostics > Path: ${d.pathUsed || 'unknown'}, OCR lang: ${d.ocrLangUsed || 'n/a'}, Tesseract: ${d.tesseractVersion || 'n/a'}, pdfium: ${d.pypdfium2Version || 'n/a'}`, 'Success');
                             (d.pages || []).forEach(p => {
-                                addActivity('translation', `${fl}Diagnostics > Page ${p.page}: ${p.regionsDetected} region(s) detected, ${p.regionsDrawn} drawn${p.error ? ' - ERROR: ' + p.error : ''}${p.sampleOriginal ? ` (e.g. "${p.sampleOriginal}" -> "${p.sampleTranslated || p.sampleOriginal}")` : ''}`, p.error ? 'Failed' : 'Success');
+                                const revInfo = Object.keys(p).filter(k => k.startsWith('review')).map(k => `${k}=${p[k]}`).join(', ');
+                                addActivity('translation', `${fl}Diagnostics > Page ${p.page}: ${p.cvRegionsDetected ?? p.regionsDetected ?? 'n/a'} block(s), text=${p.cvTranslatable ?? 'n/a'}, elements=${p.cvNonTranslatable ?? 'n/a'}, skippedTooSmall=${p.skippedTooSmall ?? 0}${revInfo ? ', ' + revInfo : ''}${p.error ? ' - ERROR: ' + p.error : ''}`, p.error ? 'Failed' : 'Success');
+                            });
+                            // Debug artifacts (original page images, the exact
+                            // prompt sent to the model, the raw model response,
+                            // the parsed JSON layout, and the reconstructed
+                            // clean background) - each as a downloadable link so
+                            // every step can be inspected.
+                            (d.artifacts || []).forEach(a => {
+                                const url = a.url || (a.path ? ('/' + String(a.path).replace(/^\/+/, '')) : '');
+                                const label = a.name + (a.kind ? ` [${a.kind}]` : '');
+                                if (url) {
+                                    addActivity('translation', `${fl}Artifact > <a href="${url}" target="_blank" rel="noopener">${label}</a>`, 'Success');
+                                } else {
+                                    addActivity('translation', `${fl}Artifact > ${label}`, 'Success');
+                                }
                             });
                             if (d.fatalError) {
                                 addActivity('translation', `${fl}Diagnostics > Fell back to plain reflow - fatal error: ${d.fatalError}`, 'Failed');
