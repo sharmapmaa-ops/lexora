@@ -208,26 +208,24 @@ def background_is_complex(page_image, erase_boxes):
 # ─────────────────────────────────────────────────────────────────────
 def build_clean_background(page_image, erase_boxes, protect_boxes,
                            llm_config, log):
-    """Erase text+element ink and reconstruct the background. Uses
-    OpenAI generative fill when the background is complex and a key is
-    available, otherwise fast CV inpainting."""
+    """Erase text ink and reconstruct the background. Prefers AI
+    generative fill (OpenRouter image model - the approach the user
+    validated) when an OpenRouter key is available and AI fill is not
+    disabled; otherwise fast CV inpainting."""
     if not erase_boxes:
         return page_image
-    use_ai = False
-    if background_is_complex(page_image, erase_boxes):
-        cfg = (llm_config or {}).get("openai") or {}
-        if (cfg.get("apiKey") or os.environ.get("OPENAI_API_KEY")):
-            use_ai = True
-    if use_ai:
-        log("background looks ornate -> AI generative fill")
-        os.environ.setdefault("LEXORA_AI_FILL", "1")
+    ai_disabled = os.environ.get("LEXORA_AI_FILL", "1").lower() in ("0", "false", "no", "off")
+    cfg = (llm_config or {}).get("openrouter") or {}
+    have_key = bool(cfg.get("apiKey") or os.environ.get("OPENROUTER_API_KEY"))
+    if have_key and not ai_disabled:
+        log("reconstructing background via AI image fill (OpenRouter)")
         filled = le._ai_fill_background(page_image, erase_boxes,
                                         protect_boxes, llm_config)
         if filled is not None:
             return filled
         log("AI fill unavailable -> CV inpaint fallback")
     else:
-        log("background looks simple -> CV inpaint")
+        log("reconstructing background via CV inpaint")
     return le._inpaint_regions_cv(page_image, erase_boxes, protect_boxes)
 
 

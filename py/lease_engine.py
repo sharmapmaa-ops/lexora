@@ -2387,83 +2387,98 @@ def _region_stroke_color(np_img, region):
 
 
 def _ai_fill_background(page_image, erase_boxes, protect_boxes, llm_config):
-    """OPTIONAL generative background fill (workflow Step 6, option B).
+    """Generative background fill via OpenRouter's image API (the approach
+    the user validated: text is removed and the paper/pattern is painted
+    back by an image model). Uses the whole page plus an inpainting prompt.
 
-    Instead of CV inpainting, send the page with the erased areas made
-    transparent to an image-edit model, which paints those areas to match
-    the surrounding design. Enabled only when LEXORA_AI_FILL=1 AND an
-    OpenAI key is available. Falls back to returning None (caller then
-    uses CV inpainting) on any error, so it can never break the pipeline.
+    Enabled when LEXORA_AI_FILL is not explicitly disabled AND an
+    OpenRouter key is available. Returns a filled PIL image, or None on any
+    error so the caller falls back to CV inpainting (never breaks the run).
 
-    Note: this adds one image-generation API call per page (cost + a few
-    seconds), so it is opt-in and intended for ornate backgrounds where
-    CV inpainting leaves a smudge."""
-    if os.environ.get("LEXORA_AI_FILL", "").lower() not in ("1", "true", "yes"):
+    Model + endpoint come from the working proof of concept:
+      POST https://openrouter.ai/api/v1/images
+      { model: "black-forest-labs/flux.2-pro", prompt, input_references:[
+        {type:"image_url", image_url:{url:<dataURL>}}], output_format:"png" }
+    Response: data[0].url (fetch it) or data[0].b64_json.
+    """
+    if os.environ.get("LEXORA_AI_FILL", "1").lower() in ("0", "false", "no", "off"):
         return None
-    cfg = (llm_config or {}).get("openai") or {}
-    api_key = (cfg.get("apiKey") or os.environ.get("OPENAI_API_KEY") or "").strip()
+    cfg = (llm_config or {}).get("openrouter") or {}
+    api_key = (cfg.get("apiKey") or os.environ.get("OPENROUTER_API_KEY") or "").strip()
     if not api_key:
         return None
+    model = (os.environ.get("LEXORA_IMAGE_MODEL")
+             or "black-forest-labs/flux.2-pro").strip()
     try:
         import base64 as _b64
         W, H = page_image.size
-        # Build an alpha mask: transparent where we want the model to
-        # repaint (erased text/decoration), opaque elsewhere (keep).
-        rgba = page_image.convert("RGBA")
-        mask = PILImage.new("L", (W, H), 255)   # 255 = keep
-        md = ImageDraw.Draw(mask)
-        for b in erase_boxes:
-            md.rectangle([b["left"], b["top"], b["right"], b["bottom"]], fill=0)
-        for b in (protect_boxes or []):
-            md.rectangle([b["left"], b["top"], b["right"], b["bottom"]], fill=255)
-        # OpenAI images/edits expects a square-ish PNG; downscale large
-        # pages to keep the request small/fast, then upscale the result.
-        max_dim = 1024
-        scale = min(1.0, max_dim / max(W, H))
-        sw, sh = int(W * scale), int(H * scale)
-        img_s = rgba.resize((sw, sh))
-        mask_s = mask.resize((sw, sh))
-        # Apply mask alpha to the image so cleared areas are transparent.
-        img_s.putalpha(mask_s)
-        img_buf = io.BytesIO(); img_s.save(img_buf, format="PNG"); img_buf.seek(0)
+        # Downscale large pages to keep the request light and fast; the
+        # returned fill is scaled back up to the page size.
+        max_dim = 1536
+        img = page_image.convert("RGB")
+        longest = max(W, H)
+        if longest > max_dim:
+            s = max_dim / float(longest)
+            img = img.resize((max(1, int(W * s)), max(1, int(H * s))), PILImage.LANCZOS)
+        buf = io.BytesIO(); img.save(buf, format="PNG")
+        data_url = "data:image/png;base64," + _b64.b64encode(buf.getvalue()).decode("ascii")
 
-        boundary = "----lexoraaifill"
-        def _part(name, filename, ctype, data):
-            head = (f"--{boundary}\r\nContent-Disposition: form-data; "
-                    f'name="{name}"; filename="{filename}"\r\n'
-                    f"Content-Type: {ctype}\r\n\r\n").encode()
-            return head + data + b"\r\n"
-        def _field(name, value):
-            return (f"--{boundary}\r\nContent-Disposition: form-data; "
-                    f'name="{name}"\r\n\r\n{value}\r\n').encode()
-        body = b""
-        body += _part("image", "page.png", "image/png", img_buf.getvalue())
-        body += _field("prompt", "Fill the transparent areas to seamlessly "
-                       "match the surrounding paper texture, colour and "
-                       "decorative pattern. Do not add any text or new objects.")
-        body += _field("n", "1")
-        body += _field("size", f"{sw}x{sh}" if sw == sh else "1024x1024")
-        body += f"--{boundary}--\r\n".encode()
+        prompt = (
+            "You are an expert image editor. Remove ONLY the text characters "
+            "from this document page and fill those areas with the surrounding "
+            "background (paper texture, colour, gradient and pattern). "
+            "PRESERVE EVERYTHING ELSE EXACTLY: borders, frames, decorative "
+            "lines, dividers, signature lines, logos, seals, illustrations - "
+            "same positions, same appearance. Do NOT add any new lines, text, "
+            "or elements. Do NOT create phantom or ghost lines. Return a PNG "
+            "of the same page with only the text removed and the background "
+            "seamlessly reconstructed."
+        )
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "input_references": [
+                {"type": "image_url", "image_url": {"url": data_url}}
+            ],
+            "output_format": "png",
+        }
         req = urllib.request.Request(
-            "https://api.openai.com/v1/images/edits", data=body,
+            "https://openrouter.ai/api/v1/images",
+            data=json.dumps(payload).encode("utf-8"),
             headers={"Authorization": f"Bearer {api_key}",
-                     "Content-Type": f"multipart/form-data; boundary={boundary}"})
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode())
-        b64 = data["data"][0].get("b64_json")
-        if not b64:
-            url = data["data"][0].get("url")
-            if not url:
-                return None
-            with urllib.request.urlopen(url, timeout=60) as r2:
+                     "Content-Type": "application/json",
+                     "HTTP-Referer": "https://lexora.ai",
+                     "X-Title": "Lexora"})
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        arr = result.get("data") or []
+        if not arr:
+            print("AI fill: image API returned no data; using CV inpaint.")
+            return None
+        obj = arr[0]
+        if obj.get("b64_json"):
+            filled_bytes = _b64.b64decode(obj["b64_json"])
+        elif obj.get("url"):
+            with urllib.request.urlopen(obj["url"], timeout=120) as r2:
                 filled_bytes = r2.read()
         else:
-            filled_bytes = _b64.b64decode(b64)
-        filled = PILImage.open(io.BytesIO(filled_bytes)).convert("RGB").resize((W, H))
+            return None
+        filled = PILImage.open(io.BytesIO(filled_bytes)).convert("RGB")
+        if filled.size != (W, H):
+            filled = filled.resize((W, H), PILImage.LANCZOS)
         return filled
-    except Exception as err:
-        print(f"AI background fill unavailable ({err}) - using CV inpainting.")
+    except urllib.error.HTTPError as err:
+        detail = ""
+        try:
+            detail = err.read().decode()[:200]
+        except Exception:
+            pass
+        print(f"AI background fill HTTP {err.code} ({detail}) - using CV inpaint.")
         return None
+    except Exception as err:
+        print(f"AI background fill unavailable ({err}) - using CV inpaint.")
+        return None
+
 
 
 def _inpaint_regions_cv(page_image, regions, protect_regions=None):
