@@ -247,6 +247,81 @@ def _rotation_xml(rot):
 # ─────────────────────────────────────────────────────────────────────
 # Per-page processing (Steps 3-10)
 # ─────────────────────────────────────────────────────────────────────
+def _group_line_blocks(raw_text_blocks, page_image):
+    """Merge consecutive single-line text blocks that belong to the same
+    paragraph into one block (so the translation flows across them at a
+    uniform font size). raw_text_blocks is a list of (dict, scaled_box).
+    Blocks the model already returned as multi-line (>=2 lines) are kept
+    as-is. Grouping is conservative: same column (x-overlap), small
+    vertical gap, similar height, and it never merges across a big style
+    change."""
+    if not raw_text_blocks:
+        return raw_text_blocks
+    # Keep already-multi-line blocks untouched; only group the singletons.
+    singles = []
+    multis = []
+    for d, box in raw_text_blocks:
+        nlines = len(d.get("_scaled_lines") or [])
+        if nlines >= 2:
+            multis.append((d, box))
+        else:
+            singles.append((d, box))
+    singles.sort(key=lambda db: (db[1]["top"], db[1]["left"]))
+
+    used = [False] * len(singles)
+    grouped = []
+    for i, (d, box) in enumerate(singles):
+        if used[i]:
+            continue
+        group = [(d, box)]
+        used[i] = True
+        cur = box
+        h = box["bottom"] - box["top"]
+        for j in range(i + 1, len(singles)):
+            if used[j]:
+                continue
+            d2, b2 = singles[j]
+            h2 = b2["bottom"] - b2["top"]
+            vgap = b2["top"] - cur["bottom"]
+            # next line down: small positive gap (<0.8 line height), no big overlap
+            if vgap < -0.3 * max(h, h2) or vgap > 0.8 * max(h, h2):
+                continue
+            # same column: horizontal overlap
+            ov = min(cur["right"], b2["right"]) - max(cur["left"], b2["left"])
+            if ov < 0.5 * min(cur["right"] - cur["left"], b2["right"] - b2["left"]):
+                continue
+            # similar height
+            if not (0.6 <= h2 / max(1, h) <= 1.7):
+                continue
+            # similar colour (don't merge a red heading into black body)
+            if str(d.get("color", "")).lower() != str(d2.get("color", "")).lower():
+                # allow if either is missing
+                if d.get("color") and d2.get("color"):
+                    continue
+            group.append((d2, b2))
+            used[j] = True
+            cur = {"left": min(cur["left"], b2["left"]), "top": min(cur["top"], b2["top"]),
+                   "right": max(cur["right"], b2["right"]), "bottom": max(cur["bottom"], b2["bottom"])}
+            h = h2
+        if len(group) == 1:
+            grouped.append(group[0])
+        else:
+            # Build one merged paragraph block (all in page-pixel space).
+            lines = [b for _, b in group]
+            union = {"left": min(b["left"] for b in lines), "top": min(b["top"] for b in lines),
+                     "right": max(b["right"] for b in lines), "bottom": max(b["bottom"] for b in lines)}
+            first = group[0][0]
+            merged_translation = " ".join(
+                (g.get("translation") or g.get("text") or "").strip() for g, _ in group).strip()
+            merged = dict(first)
+            merged["translation"] = merged_translation
+            merged["_scaled_lines"] = [dict(b) for b in lines]
+            merged["is_paragraph"] = True
+            merged.pop("runs", None)      # runs from a single line no longer apply
+            grouped.append((merged, union))
+    return multis + grouped
+
+
 def process_page(page_image, page_w_pt, page_h_pt, target_language,
                  llm_config, page_no, total_pages, log, debug=None):
     """Run steps 3-10 for one page and return a page-plan dict:
@@ -311,10 +386,26 @@ def process_page(page_image, page_w_pt, page_h_pt, target_language,
         elif cls == "decoration":
             continue                      # erased into the background, no text
         else:
+            # Pre-scale the model's per-line boxes into page-pixel space
+            # once, so grouping and item-building all use one space.
+            sl = [_scaled_box(lb) for lb in (d.get("lines") or []) if isinstance(lb, dict)]
+            if not sl:
+                sl = [box]
+            d = dict(d)
+            d["_scaled_lines"] = sl
             raw_text_blocks.append((d, box))
     elements = _merge_overlapping_elements(elements)
     log(f"Page {page_no}/{total_pages}: {len(elements)} element(s) (logo/signature/illustration), "
         f"{len(raw_text_blocks)} text block(s)")
+
+    # SAFETY NET for our "uniform paragraph font" rule: the model sometimes
+    # returns each visual line as its OWN block, which would make every line
+    # flow at a different size. Merge consecutive single-line text blocks
+    # that clearly belong to the same paragraph (same column, close
+    # vertically, similar height, same colour) into ONE block whose
+    # translation is the joined text and whose line_boxes are the originals.
+    raw_text_blocks = _group_line_blocks(raw_text_blocks, page_image)
+    log(f"Page {page_no}/{total_pages}: {len(raw_text_blocks)} block(s) after paragraph grouping")
 
     np_img = np.array(page_image)
     text_items = []
@@ -326,11 +417,8 @@ def process_page(page_image, page_w_pt, page_h_pt, target_language,
         translation = (d.get("translation") or d.get("text") or "").strip()
         if not translation:
             continue
-        # Per-line boxes from the model, scaled; fall back to the block box.
-        line_boxes = []
-        for lb in (d.get("lines") or []):
-            if isinstance(lb, dict):
-                line_boxes.append(_scaled_box(lb))
+        # Per-line boxes (already scaled to page-pixel space).
+        line_boxes = [dict(lb) for lb in (d.get("_scaled_lines") or [])]
         if not line_boxes:
             line_boxes = [box]
         color = le._normalize_hex_color(

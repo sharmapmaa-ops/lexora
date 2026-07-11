@@ -1375,7 +1375,7 @@ def extract_page_layout_vision(page_image, target_language, llm_config=None,
         'figure|photo|watermark|ornament",'
         '"text":"<exact original>","translation":"<into ' + target_language + '>",'
         '"color":"RRGGBB","bold":false,"italic":false,"underline":false,'
-        '"align":"left|center|right","rotation":0,'
+        '"align":"left|center|right","rotation":0,"is_paragraph":false,'
         '"runs":[{"text":"..","color":"RRGGBB","bold":false,"italic":false}]}'
         "\n\nRULES:\n"
         "1. class \"text\" = any real readable words (headings, labels, dense "
@@ -1389,17 +1389,29 @@ def extract_page_layout_vision(page_image, target_language, llm_config=None,
         "readable words, it is text. A printed name or label like 'Team "
         "Leader' is text, not a signature. Only an actual cursive signature "
         "mark is a signature.\n"
-        "5. lines: for a multi-line text block, list each visual line's box "
-        "in reading order; for a single line, one entry equal to the block "
-        "box. Boxes must be tight around the glyphs and must NOT overlap "
-        "other blocks.\n"
+        "5. GROUPING (very important): consecutive lines of the SAME "
+        "paragraph MUST be returned as ONE block, with each visual line as "
+        "an entry in that block's \"lines\" array (in reading order). Do NOT "
+        "output each line as a separate block. A block's \"translation\" is "
+        "the full paragraph; its \"lines\" give the box of each original "
+        "line so the translation can flow across them at ONE uniform font "
+        "size. Only start a new block at a real paragraph break, a heading, "
+        "a different column, or a clearly different text size/style. Every "
+        "box must be tight around the glyphs and must NOT overlap another "
+        "block.\n"
         "6. translation: translate for MEANING; keep names, numbers, dates, "
         "identifiers unchanged; you may pick slightly shorter wording so it "
         "fits, but never lose information. Empty for element/decoration.\n"
-        "7. color is the letters' colour from the glyph pixels. Use runs "
-        "only when letters in one block differ in colour/style (e.g. a red "
-        "word among black); otherwise omit runs.\n"
-        "8. rotation: clockwise degrees from horizontal (0 for normal).\n"
+        "7. color MUST be the real ink colour of the letters, read from the "
+        "glyph pixels (e.g. black 000000, dark-green 1B4D3E, gold C9A227). "
+        "If some words in a block are a DIFFERENT colour (e.g. a red word "
+        "among black), you MUST return a \"runs\" array splitting the "
+        "translation into pieces with each piece's colour; the pieces "
+        "concatenated equal the translation. Never default everything to "
+        "black if the original uses colour.\n"
+        "8. is_paragraph: true for a multi-line body block, false for a "
+        "single heading/label/line. rotation: clockwise degrees from "
+        "horizontal (0 for normal).\n"
         "Do not report reading direction; it is decided later by the target "
         "language.\n"
         + _lessons_as_prompt_block(_load_reviewer_lessons()) +
