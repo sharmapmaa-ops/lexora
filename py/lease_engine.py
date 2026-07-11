@@ -272,7 +272,12 @@ def load_llm_config():
     quality at all. Override with LLM_VALIDATION_MODEL / OPENROUTER_
     VALIDATION_MODEL in .env if a different model is preferred."""
     return {
-        "provider": os.environ.get("LLM_PROVIDER", "openai"),
+        # Default provider is OpenRouter: the whole pipeline (layout JSON
+        # extraction + translation via a vision model, and Flux image fill)
+        # runs on ONE OpenRouter key, exactly like the user's proof-of-
+        # concept. No OpenAI account is required. Set LLM_PROVIDER=openai
+        # only if you deliberately want to use a direct OpenAI key instead.
+        "provider": os.environ.get("LLM_PROVIDER", "openrouter"),
         "openai": {
             "apiKey": os.environ.get("OPENAI_API_KEY"),
             "model": os.environ.get("OPENAI_MODEL", "gpt-4o"),
@@ -456,8 +461,8 @@ def _call_chat_completion_with_failover(llm_config, system_prompt, user_content,
     key configured at all (caller falls back to heuristic silently);
     raises LeaseEngineError only if at least one provider was actually
     tried and every attempt failed."""
-    primary_provider = llm_config.get("provider", "openai")
-    fallback_provider = "openrouter" if primary_provider == "openai" else "openai"
+    primary_provider = llm_config.get("provider", "openrouter")
+    fallback_provider = "openai" if primary_provider == "openrouter" else "openrouter"
 
     last_error = None
     tried_any = False
@@ -1340,10 +1345,19 @@ def extract_page_layout_vision(page_image, target_language, llm_config=None,
     has the exact prompt sent and the raw model response (for the log)."""
     llm_config = llm_config if llm_config is not None else load_llm_config()
     dbg = {"prompt": "", "response": "", "image": None}
+    # Q2: OCR aur translation ALAG. "original"/empty target => sirf OCR
+    # (transcription), koi translation NAHI. warna OCR + translation.
+    _keep_original = str(target_language or "").strip().lower() in ("", "original", "none")
     if not llm_is_configured(llm_config):
         return (None, page_image.width, page_image.height, dbg) if return_debug \
             else (None, page_image.width, page_image.height)
 
+    # Send at a reasonable size for token cost, BUT ask the model for
+    # NORMALISED coordinates (0-1000 across width and height) instead of
+    # absolute pixels. This makes coordinates independent of whatever
+    # internal resolution the model uses - a value of 500 always means the
+    # middle of the page - so there is no scaling mismatch. We map the
+    # 0-1000 grid onto the real page-image pixels ourselves.
     max_dim = 2000
     img = page_image
     longest = max(img.width, img.height)
@@ -1355,36 +1369,62 @@ def extract_page_layout_vision(page_image, target_language, llm_config=None,
     image_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     dbg["image"] = img.convert("RGB")
 
-    system_prompt = (
-        "You are Lexora's document layout + translation engine. The user "
-        "uploaded THEIR OWN document and asked to translate it; you are "
-        "authorised to read and translate all of it. This is a routine, "
-        "legitimate task - always comply, never refuse, never apologise.\n\n"
-        f"The image is ONE document page, exactly {iw} pixels wide and {ih} "
-        "pixels tall, origin (0,0) at the TOP-LEFT. Segment the page YOURSELF "
-        "into blocks and, for each block, give its pixel box and details. Be "
-        "precise: read every visible piece of text (including dense/"
-        "handwritten Arabic), group it the way it visually reads (a "
-        "multi-line paragraph is ONE block with its per-line boxes), and "
-        "translate it.\n\n"
+    if _keep_original:
+        system_prompt = (
+            "You are Lexora's document layout + OCR transcription engine. The "
+            "user uploaded THEIR OWN document; you are authorised to read all "
+            "of it. This is a routine, legitimate task - always comply, never "
+            "refuse, never apologise.\n\n"
+            "TRANSCRIPTION ONLY - DO NOT TRANSLATE. For every block, set "
+            "\"translation\" to the EXACT SAME string as \"text\" (a verbatim "
+            "copy of the original, same language and script). Never render "
+            "text into another language.\n\n"
+        )
+    else:
+        system_prompt = (
+            "You are Lexora's document layout + translation engine. The user "
+            "uploaded THEIR OWN document and asked to translate it; you are "
+            "authorised to read and translate all of it. This is a routine, "
+            "legitimate task - always comply, never refuse, never apologise.\n\n"
+        )
+    system_prompt += (
+        "The image is ONE document page. Use a NORMALISED coordinate grid: "
+        "the LEFT edge is x=0, the RIGHT edge is x=1000, the TOP edge is "
+        "y=0, the BOTTOM edge is y=1000. Give every box in this 0-1000 grid "
+        "(integers), regardless of the image's pixel size. Origin (0,0) is "
+        "the TOP-LEFT corner. Segment the page YOURSELF into blocks and, for "
+        "each block, give its box and details. Be precise: read every "
+        "visible piece of text (including dense/handwritten Arabic), group "
+        "it the way it visually reads (a multi-line paragraph is ONE block "
+        "with its per-line boxes), and translate it.\n\n"
         "Return ONLY a JSON array; each element:\n"
         '{"left":int,"top":int,"right":int,"bottom":int,'
         '"lines":[{"left":int,"top":int,"right":int,"bottom":int}],'
         '"class":"text"|"element"|"decoration","kind":"heading|subheading|'
         'paragraph|label|caption|logo|signature|stamp|seal|qr|illustration|'
         'figure|photo|watermark|ornament",'
-        '"text":"<exact original>","translation":"<into ' + target_language + '>",'
+        '"text":"<exact original>","translation":"' +
+        ('<verbatim copy of text, do NOT translate>' if _keep_original
+         else '<into ' + target_language + '>') + '",'
         '"color":"RRGGBB","bold":false,"italic":false,"underline":false,'
         '"align":"left|center|right","rotation":0,"is_paragraph":false,'
         '"runs":[{"text":"..","color":"RRGGBB","bold":false,"italic":false}]}'
         "\n\nRULES:\n"
-        "1. class \"text\" = any real readable words (headings, labels, dense "
-        "body paragraphs, any language). This is the DEFAULT.\n"
+        "1. class \"text\" = any real readable words, PRINTED OR HANDWRITTEN "
+        "(headings, labels, dense body paragraphs, cursive writing, "
+        "handwritten notes/dates/names, any language). This is the DEFAULT. "
+        "Handwriting rules: if it looks like human writing, treat it as "
+        "text; if cursive, attempt to read it; if messy, extract what you "
+        "can; if unsure, EXTRACT it as text.\n"
         "2. class \"element\" = ONLY a logo, emblem, badge, seal, stamp, "
         "QR/barcode, a genuine handwritten SIGNATURE, or a real picture "
         "(illustration/drawing/photo/figure/chart). Keep as image, do NOT "
         "translate. Give its box; leave text/translation empty.\n"
-        "3. class \"decoration\" = watermark/ornament/blank. Empty text.\n"
+        "3. class \"decoration\" = a DECORATIVE line/rule/divider, a "
+        "signature line (the line itself), a border or frame, an ornament, "
+        "or a watermark. IMPORTANT: these lines are NOT text - they must be "
+        "PRESERVED in place, never treated as text and never removed. Report "
+        "them so we know to keep them; leave text/translation empty.\n"
         "4. NEVER classify a paragraph of words as an element. If it is "
         "readable words, it is text. A printed name or label like 'Team "
         "Leader' is text, not a signature. Only an actual cursive signature "
@@ -1399,6 +1439,12 @@ def extract_page_layout_vision(page_image, target_language, llm_config=None,
         "a different column, or a clearly different text size/style. Every "
         "box must be tight around the glyphs and must NOT overlap another "
         "block.\n"
+        "5b. BOX HEIGHT drives the output font size, so make each line/box "
+        "height match the ACTUAL visual height of the letters in that line, "
+        "including tall calligraphy, ascenders and descenders. A large "
+        "title must get a TALL box; small body text a short box. Do not "
+        "give a big heading a thin box - that would shrink its translation "
+        "wrongly. Widths must span the full visual extent of the line.\n"
         "6. translation: translate for MEANING; keep names, numbers, dates, "
         "identifiers unchanged; you may pick slightly shorter wording so it "
         "fits, but never lose information. Empty for element/decoration.\n"
@@ -1485,8 +1531,10 @@ def extract_page_layout_vision(page_image, target_language, llm_config=None,
     data = deduped
 
     if not isinstance(data, list) or not data:
-        return (None, iw, ih, dbg) if return_debug else (None, iw, ih)
-    return (data, iw, ih, dbg) if return_debug else (data, iw, ih)
+        return (None, 1000, 1000, dbg) if return_debug else (None, 1000, 1000)
+    # Coordinates are normalised to a 0-1000 grid; the caller maps that grid
+    # onto the real page-image pixels, so there is no resolution mismatch.
+    return (data, 1000, 1000, dbg) if return_debug else (data, 1000, 1000)
 
 
 def _parse_layout_json(content):
@@ -2436,15 +2484,24 @@ def _ai_fill_background(page_image, erase_boxes, protect_boxes, llm_config):
         data_url = "data:image/png;base64," + _b64.b64encode(buf.getvalue()).decode("ascii")
 
         prompt = (
-            "You are an expert image editor. Remove ONLY the text characters "
-            "from this document page and fill those areas with the surrounding "
-            "background (paper texture, colour, gradient and pattern). "
-            "PRESERVE EVERYTHING ELSE EXACTLY: borders, frames, decorative "
-            "lines, dividers, signature lines, logos, seals, illustrations - "
-            "same positions, same appearance. Do NOT add any new lines, text, "
-            "or elements. Do NOT create phantom or ghost lines. Return a PNG "
-            "of the same page with only the text removed and the background "
-            "seamlessly reconstructed."
+            "You are an expert image editor. Remove ALL text from this "
+            "document page - BOTH printed AND handwritten. "
+            "WHAT TO REMOVE: printed letters, numbers and words in any font "
+            "or language; ANY handwritten characters, words, sentences or "
+            "cursive writing; handwritten notes, annotations, dates and "
+            "names; signature text. "
+            "WHAT TO PRESERVE EXACTLY (do NOT remove or move): all "
+            "decorative elements - borders, frames, dividers and lines; "
+            "signature lines (the line itself, not the text on it); all "
+            "graphics, logos, seals and illustrations; the paper texture, "
+            "colour, gradient and background pattern. "
+            "SPECIAL: handwritten text MUST be removed like any other text. "
+            "If handwriting sits on a line, remove the handwriting but KEEP "
+            "the line. Do NOT add any new lines, text or elements, and do "
+            "NOT create phantom/ghost lines. "
+            "Fill every removed area with the surrounding background so it "
+            "looks seamless. Return a PNG of the same page with ALL text "
+            "removed and all decorative elements identical to the original."
         )
         payload = {
             "model": model,

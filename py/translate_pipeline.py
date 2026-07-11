@@ -335,9 +335,44 @@ def process_page(page_image, page_w_pt, page_h_pt, target_language,
     # (this is what works when done by hand in ChatGPT). Coordinates come
     # back in the pixel space of the image the model was shown; we scale
     # them to this page-image's pixels.
-    log(f"STEP 4-5: Page {page_no}/{total_pages}: sending whole page to the model to read, segment & translate")
-    blocks, iw, ih, dbg = le.extract_page_layout_vision(
-        page_image, target_language, llm_config, return_debug=True)
+    options = (globals().get('_ACTIVE_OPTIONS') or {})
+    # KEEP ORIGINAL (No Translation): prompt-level instruction — model ko
+    # "translate" ki jagah exact source echo karne ko bolo; neeche
+    # belt-and-braces override bhi hai (translation = text).
+    keep_original = str(target_language or '').strip().lower() in ('original', 'none', '')
+    effective_lang = ("the SAME language and script as the source — copy the "
+                      "exact original text verbatim, do NOT translate"
+                      ) if keep_original else target_language
+    ensemble_on = bool(options.get('ensemble'))
+    high_acc = bool(options.get('highAccuracy', True))
+    # HIGH ACCURACY: extraction ke liye preprocessed CLONE (bg removal +
+    # CLAHE + soft Sauvola + despeckle). plan['background'] / crops sab
+    # ORIGINAL page_image se hi bante hain — sirf model ko crisp copy jaati
+    # hai. Dimensions same → coordinates 1:1 valid.
+    ocr_image = page_image
+    if high_acc:
+        try:
+            import preprocess
+            ocr_image = preprocess.enhance_for_ocr(page_image)
+            log(f"Page {page_no}: OCR image preprocessed (bg-removal + CLAHE + Sauvola + despeckle)")
+        except Exception as _pp_err:
+            log(f"Page {page_no}: preprocessing skipped ({_pp_err})")
+    log(f"STEP 4-5: Page {page_no}/{total_pages}: sending whole page to the model to read, segment & translate"
+        + (" [ENSEMBLE]" if ensemble_on else ""))
+    blocks = None; iw = page_image.width; ih = page_image.height; dbg = {}
+    if ensemble_on:
+        # ENSEMBLE OCR: 4 vision models + weighted voting + token/char fusion.
+        # Kisi bhi failure par single-model path par graceful fallback.
+        try:
+            import ocr_ensemble
+            blocks, iw, ih = ocr_ensemble.extract_page_ensemble(
+                le, ocr_image, effective_lang, llm_config, log, deep=high_acc)
+        except Exception as _ens_err:
+            log(f"Page {page_no}: ensemble failed ({_ens_err}) — single-model fallback")
+            blocks = None
+    if not blocks:
+        blocks, iw, ih, dbg = le.extract_page_layout_vision(
+            ocr_image, effective_lang, llm_config, return_debug=True)
     if debug:
         debug["save_text"](f"page_{page_no}_prompt.txt", dbg.get("prompt", ""))
         debug["save_text"](f"page_{page_no}_model_response.txt", dbg.get("response", ""))
@@ -346,7 +381,7 @@ def process_page(page_image, page_w_pt, page_h_pt, target_language,
     if not blocks:
         log(f"STEP 4-5: Page {page_no}/{total_pages}: no usable result; retrying once")
         blocks, iw, ih, dbg = le.extract_page_layout_vision(
-            page_image, target_language, llm_config, return_debug=True)
+            ocr_image, effective_lang, llm_config, return_debug=True)
         if debug and dbg.get("response"):
             debug["save_text"](f"page_{page_no}_model_response_retry.txt", dbg.get("response", ""))
     if not blocks:
@@ -371,11 +406,16 @@ def process_page(page_image, page_w_pt, page_h_pt, target_language,
             b = min(H, t + 1)
         return {"left": l, "top": t, "right": r, "bottom": b}
 
+    if keep_original and blocks:
+        for _b in blocks:
+            if (_b.get('class') or 'text') == 'text' and _b.get('text'):
+                _b['translation'] = _b['text']    # original preserve — no translation
     log(f"Page {page_no}/{total_pages}: {len(blocks)} block(s) returned by vision")
 
     # Split blocks into elements (logo/signature/illustration) and text.
     elements = []
     raw_text_blocks = []
+    decorations = []
     for d in blocks:
         if not isinstance(d, dict):
             continue
@@ -384,7 +424,10 @@ def process_page(page_image, page_w_pt, page_h_pt, target_language,
         if cls == "element":
             elements.append(dict(box, kind=str(d.get("kind", "element"))))
         elif cls == "decoration":
-            continue                      # erased into the background, no text
+            # Decorative lines / rules / borders / signature lines must be
+            # PRESERVED, never treated as text and never erased (the user's
+            # rule). Keep them as protected regions so no erase touches them.
+            decorations.append(dict(box, kind=str(d.get("kind", "decoration"))))
         else:
             # Pre-scale the model's per-line boxes into page-pixel space
             # once, so grouping and item-building all use one space.
@@ -480,7 +523,11 @@ def process_page(page_image, page_w_pt, page_h_pt, target_language,
     kept = []
     occupied = []
     for it in ordered:
-        collide = any(_box_overlap(db, ob) > 0.2
+        # Only drop an item when it HEAVILY overlaps something already kept
+        # (a true duplicate / stacked box). Adjacent lines that merely touch
+        # or overlap a little must both survive - otherwise a real line of
+        # text goes missing. So use a high threshold.
+        collide = any(_box_overlap(db, ob) > 0.6
                       for db in it["_draw_boxes"] for ob in occupied)
         if collide:
             continue
@@ -488,7 +535,7 @@ def process_page(page_image, page_w_pt, page_h_pt, target_language,
         occupied.extend(it["_draw_boxes"])
     text_items = sorted(kept, key=lambda t: (t["top"], t["left"]))
     if before != len(text_items):
-        log(f"Page {page_no}/{total_pages}: removed {before - len(text_items)} overlapping text box(es)")
+        log(f"Page {page_no}/{total_pages}: removed {before - len(text_items)} duplicate/overlapping text box(es)")
 
     # STEP 7 — collect erase boxes (text lines + elements' ink) & protects.
     # The model's boxes tend to run a little tight around the glyphs, so we
@@ -507,6 +554,9 @@ def process_page(page_image, page_w_pt, page_h_pt, target_language,
             erase_boxes.append(_pad(lb, pad_x, pad_y))
     protect_boxes = [{"left": e["left"], "top": e["top"],
                       "right": e["right"], "bottom": e["bottom"]} for e in elements]
+    # Decorative lines/rules/borders are also protected from erasure.
+    protect_boxes += [{"left": e["left"], "top": e["top"],
+                       "right": e["right"], "bottom": e["bottom"]} for e in decorations]
 
     # STEP 8 — clean background.
     background = build_clean_background(page_image, erase_boxes, protect_boxes,
@@ -528,8 +578,49 @@ def process_page(page_image, page_w_pt, page_h_pt, target_language,
         it["_orig_crop"] = page_image.crop((it["left"], it["top"], it["right"], it["bottom"])).convert("RGB")
 
     log(f"STEP 10: Page {page_no}/{total_pages}: {len(text_items)} text box(es) ready to place")
+
+    # Rich, human-readable layout record for the debug JSON: the page
+    # dimensions the coordinates map to, plus a full list of everything
+    # REMOVED from the page (text ink + elements) and everything PLACED
+    # back (translated text boxes + element images). This is what the user
+    # asked for so the JSON documents exactly what was taken out and where.
+    layout_record = {
+        "page": page_no,
+        "page_image_width_px": page_image.width,
+        "page_image_height_px": page_image.height,
+        "coordinate_space": "0-1000 normalized from model, mapped to page pixels above",
+        "removed_from_page": {
+            "text_lines": [
+                {"left": b["left"], "top": b["top"], "right": b["right"],
+                 "bottom": b["bottom"]}
+                for it in text_items for b in it["line_boxes"]
+            ],
+            "elements_cut_as_images": [
+                {"kind": e.get("kind", "element"), "left": e["left"],
+                 "top": e["top"], "right": e["right"], "bottom": e["bottom"]}
+                for e in elements
+            ],
+        },
+        "placed_back": {
+            "translated_text_boxes": [
+                {"text": it["text"][:120], "left": it["left"], "top": it["top"],
+                 "right": it["right"], "bottom": it["bottom"],
+                 "color": "%02X%02X%02X" % it["color"], "align": it["align"],
+                 "rtl": it["rtl"], "is_paragraph": it["is_paragraph"],
+                 "lines": len(it["line_boxes"])}
+                for it in text_items
+            ],
+            "element_images": [
+                {"kind": e.get("kind", "element"), "left": e["left"],
+                 "top": e["top"], "right": e["right"], "bottom": e["bottom"]}
+                for e in element_pngs
+            ],
+        },
+        "raw_model_blocks": layout_json,
+    }
+
     return {"background": background, "elements": element_pngs, "texts": text_items,
-            "regions_detected": len(blocks), "layout_json": layout_json,
+            "regions_detected": len(blocks), "layout_json": layout_record,
             "skipped_small": 0}
 
 
@@ -568,6 +659,79 @@ def _flow_or_fallback(item, scale, log_overflow):
     return size, mapped, font, ok
 
 
+def _layout_fit_pass(placed, pw_pt, ph_pt, rtl_page, log, page_no):
+    """Word-render accuracy pass over the already-flowed text boxes.
+    placed: list of dicts {"left","top","right","bottom" (pt), "size" (pt), ...}
+    - Page-bounds clamp: koi box page ke bahar render nahi hota.
+    - Collision resolution: genuinely overlapping boxes (side-by-side
+      columns NAHI) pehle gently shift, warna upar wale ki bbox-slop trim.
+    - Reading order: boxes ko visual order me sort karta hai (top->bottom,
+      row ke andar page-direction ke hisaab se) taaki docx anchor order =
+      logical flow rahe. Sab measurements se dynamic - kuch hardcoded nahi.
+    Returns (placed_sorted, stats_dict)."""
+    moved = trimmed = clamped = 0
+
+    # -- page-bounds clamp --
+    for b in placed:
+        if b["left"] < 0:
+            b["right"] -= b["left"]; b["left"] = 0.0; clamped += 1
+        if b["top"] < 0:
+            b["bottom"] -= b["top"]; b["top"] = 0.0; clamped += 1
+        if b["right"] > pw_pt:
+            over = b["right"] - pw_pt
+            b["left"] = max(0.0, b["left"] - over); b["right"] = pw_pt; clamped += 1
+        if b["bottom"] > ph_pt:
+            over = b["bottom"] - ph_pt
+            b["top"] = max(0.0, b["top"] - over); b["bottom"] = ph_pt; clamped += 1
+
+    # -- collision resolution (top->bottom cascade, max 3 passes) --
+    order = sorted(range(len(placed)), key=lambda i: (placed[i]["top"], placed[i]["left"]))
+    for _ in range(3):
+        any_change = False
+        for ii in range(len(order)):
+            A = placed[order[ii]]
+            for jj in range(ii + 1, len(order)):
+                B = placed[order[jj]]
+                if B["top"] >= A["bottom"]:
+                    break                                   # top-sorted -> aage sab neeche
+                hx = min(A["right"], B["right"]) - max(A["left"], B["left"])
+                if hx <= min(A["right"] - A["left"], B["right"] - B["left"]) * 0.3:
+                    continue                                # side-by-side columns - theek
+                ah = A["bottom"] - A["top"]; bh = B["bottom"] - B["top"]
+                overlap = A["bottom"] - B["top"]
+                if overlap <= min(ah, bh) * 0.18:
+                    continue                                # chhota OCR jitter - visually ok
+                shift = overlap + 0.5
+                if shift <= bh * 0.9:
+                    B["top"] += shift; B["bottom"] += shift  # gently neeche
+                    moved += 1; any_change = True
+                else:
+                    # native bbox slop: A ko B ke shuru tak trim karo agar
+                    # A ka font phir bhi fit rehta hai - position nahi hilti
+                    trim_to = B["top"] - 0.5
+                    if trim_to - A["top"] >= A.get("size", 8) * 1.05:
+                        A["bottom"] = trim_to; trimmed += 1; any_change = True
+                    else:
+                        nb = A["bottom"] + 0.5 - B["top"]
+                        B["top"] += nb; B["bottom"] += nb    # resolve guaranteed
+                        moved += 1; any_change = True
+        if not any_change:
+            break
+        order = sorted(range(len(placed)), key=lambda i: (placed[i]["top"], placed[i]["left"]))
+
+    # -- reading order (anchor emit order = logical flow) --
+    def _key(b):
+        return (b["top"] + b["bottom"]) / 2.0
+    placed_sorted = sorted(
+        placed,
+        key=lambda b: (round(_key(b) / 6.0),                 # ~6pt row bands
+                       (-b["left"] if rtl_page else b["left"])))
+    if moved or trimmed or clamped:
+        log(f"Page {page_no}: layout-fit {moved} repositioned, "
+            f"{trimmed} trimmed, {clamped} page-clamped")
+    return placed_sorted, {"moved": moved, "trimmed": trimmed, "clamped": clamped}
+
+
 def build_docx(docx_path, pages_plan, page_sizes_pt, target_language, log):
     """pages_plan: list per page of {background, elements, texts}.
        page_sizes_pt: list of (w_pt, h_pt) per page."""
@@ -580,10 +744,16 @@ def build_docx(docx_path, pages_plan, page_sizes_pt, target_language, log):
     for pi, (plan, (pw_pt, ph_pt)) in enumerate(zip(pages_plan, page_sizes_pt)):
         bg = plan["background"]
         scale = pw_pt / float(bg.width)          # px -> pt
+        # WITH IMAGE off: text ke alawa page ke background/graphics layers
+        # output me nahi jaate — sirf clean white page par reconstructed text
+        with_image = (globals().get('_ACTIVE_OPTIONS') or {}).get('withImage', True)
         pw_emu = int(pw_pt * EMU_PER_PT)
         ph_emu = int(ph_pt * EMU_PER_PT)
 
         # STEP 3 — full-page background image ("Main").
+        if not with_image:
+            import PIL.Image as _PI
+            bg = _PI.new("RGB", (bg.width, bg.height), (255, 255, 255))
         bbuf = io.BytesIO(); bg.convert("RGB").save(bbuf, format="PNG")
         media.append((f"Main_{pi+1}.png", bbuf.getvalue()))
         bg_rel = f"rIdMain{pi+1}"
@@ -607,7 +777,7 @@ def build_docx(docx_path, pages_plan, page_sizes_pt, target_language, log):
             f'</a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>')
 
         # STEP 9 — element PNGs (Layer 2, in front of background).
-        for el in plan["elements"]:
+        for el in (plan["elements"] if with_image else []):
             draw_id += 1
             pbuf = io.BytesIO(); el["png"].save(pbuf, format="PNG")
             nm = f"elem{pi+1}_{draw_id}.png"
@@ -635,6 +805,7 @@ def build_docx(docx_path, pages_plan, page_sizes_pt, target_language, log):
 
         # STEP 10 — translated text boxes (Layer 3), or original-crop fallback.
         skipped = 0
+        pending_texts = []   # layout-fit pass ke liye collect hote hain
         for it in plan["texts"]:
             size, mapped, font, ok = _flow_or_fallback(it, scale, log)
             if not ok:
@@ -666,10 +837,22 @@ def build_docx(docx_path, pages_plan, page_sizes_pt, target_language, log):
                     f'</a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>')
                 continue
 
-            # Normal path: one transparent text box PER produced line.
+            # Normal path: collect kar lo - emit layout-fit pass ke BAAD hoga
             for ln, box in mapped:
                 if not ln.strip():
                     continue
+                pending_texts.append({
+                    "left": box["left"], "top": box["top"],
+                    "right": box["right"], "bottom": box["bottom"],
+                    "size": size, "line": ln, "item": it,
+                })
+        # LAYOUT-FIT: clamp + collision + reading order, phir emit
+        if pending_texts:
+            rtl_page = sum(1 for b in pending_texts if b["item"]["rtl"]) > len(pending_texts) / 2
+            pending_texts, _stats = _layout_fit_pass(pending_texts, pw_pt, ph_pt, rtl_page, log, pi + 1)
+            for b in pending_texts:
+                it = b["item"]; ln = b["line"]; size = b["size"]
+                box = {"left": b["left"], "top": b["top"], "right": b["right"], "bottom": b["bottom"]}
                 draw_id += 1
                 bx = int(box["left"] * EMU_PER_PT); by = int(box["top"] * EMU_PER_PT)
                 bcx = int(max(1.0, box["right"] - box["left"]) * EMU_PER_PT)
@@ -791,9 +974,13 @@ def _write_docx_zip(docx_path, body_parts, media, doc_rels, page_sizes_pt):
 # ─────────────────────────────────────────────────────────────────────
 # STEP 1-12 — top-level entry
 # ─────────────────────────────────────────────────────────────────────
+_ACTIVE_OPTIONS = {}
+
+
 def translate_document(input_pdf_path, output_path, target_language,
                        output_format="docx", llm_config=None,
-                       diagnostics=None, progress=None, render_dpi=300):
+                       diagnostics=None, progress=None, render_dpi=300,
+                       options=None):
     """Run the full 12-step flow for one file and write the deliverable.
 
     output_format: "docx" (default) or "pdf".
@@ -810,6 +997,9 @@ def translate_document(input_pdf_path, output_path, target_language,
     diagnostics.setdefault("pages", [])
     diagnostics.setdefault("artifacts", [])
     logs = []
+
+    global _ACTIVE_OPTIONS
+    _ACTIVE_OPTIONS = dict(options or {})
 
     def log(msg):
         logs.append(msg)

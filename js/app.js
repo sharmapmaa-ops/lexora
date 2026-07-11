@@ -469,29 +469,51 @@
                 // Output Template (lease-abstraction) OR Output Language (translation) - shown in Setup card
                 const outputFieldHTML = isTranslation ? `
                     <div class="setup-group">
-                        <label>Output Language</label>
-                        <select id="translationLangSelect">
-                            <option value="English" selected>English</option>
-                            <option value="Spanish">Spanish</option>
-                            <option value="French">French</option>
-                            <option value="German">German</option>
-                            <option value="Chinese">Chinese</option>
-                            <option value="Japanese">Japanese</option>
-                            <option value="Arabic">Arabic</option>
-                            <option value="Hindi">Hindi</option>
-                        </select>
-                        <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;font-weight:normal;"
-                               title="Checked: layout-preserving output - translated text is drawn back at the original positions on the original page (Hybrid). Unchecked: the vision model reads the page directly and produces a clean reflowed document (Simple).">
-                            <input type="checkbox" id="translationHybridCheck" style="width:auto;margin:0;" ${translationHybridMode ? 'checked' : ''}
-                                   onchange="setTranslationHybridMode(this.checked)" />
-                            <span>Hybrid</span>
-                        </label>
-                        <label style="display:block;margin-top:10px;">Output Format</label>
-                        <select id="translationOutputFormat" onchange="setTranslationOutputFormat(this.value)"
-                                title="DOCX: editable Word file (recommended). PDF: the same layout as a PDF.">
-                            <option value="docx" ${translationOutputFormat !== 'pdf' ? 'selected' : ''}>Word (.docx)</option>
-                            <option value="pdf" ${translationOutputFormat === 'pdf' ? 'selected' : ''}>PDF (.pdf)</option>
-                        </select>
+                        <div style="display:flex;gap:12px;align-items:flex-start;">
+                          <div style="flex:1;">
+                            <label>Output Language</label>
+                            <select id="translationLangSelect" style="width:100%;">
+                                <option value="original">Original (No Translation)</option>
+                                <option value="English" selected>English</option>
+                                <option value="Spanish">Spanish</option>
+                                <option value="French">French</option>
+                                <option value="German">German</option>
+                                <option value="Chinese">Chinese</option>
+                                <option value="Japanese">Japanese</option>
+                                <option value="Arabic">Arabic</option>
+                                <option value="Hindi">Hindi</option>
+                                <option value="Gujarati">Gujarati</option>
+                                <option value="Urdu">Urdu</option>
+                                <option value="Portuguese">Portuguese</option>
+                                <option value="Russian">Russian</option>
+                            </select>
+                          </div>
+                          <div style="flex:1;">
+                            <label>Output Format</label>
+                            <select id="translationOutputFormat" onchange="setTranslationOutputFormat(this.value)" style="width:100%;"
+                                    title="DOCX: editable Word file (recommended). PDF: same layout as PDF.">
+                                <option value="docx" ${translationOutputFormat !== 'pdf' ? 'selected' : ''}>Word (.docx)</option>
+                                <option value="pdf" ${translationOutputFormat === 'pdf' ? 'selected' : ''}>PDF (.pdf)</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:20px;margin-top:10px;">
+                            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
+                                   title="Checked: full API processing (Vision + High Accuracy + Ensemble OCR, all internally ON). Unchecked: WITHOUT API — text-based PDFs only, text extraction only, no translation.">
+                                <input type="checkbox" id="translationHybridCheck" style="width:auto;margin:0;" ${translationHybridMode ? 'checked' : ''}
+                                       onchange="setTranslationHybridMode(this.checked)" />
+                                <span>Hybrid</span>
+                            </label>
+                            <label id="translationWithImageWrap" style="display:${translationHybridMode ? 'flex' : 'none'};align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
+                                   title="Checked: the page background/graphics/logos are preserved in the output (original text is removed and the cleaned image is placed behind). Unchecked: only reconstructed text on a clean white page.">
+                                <input type="checkbox" id="translationWithImageCheck" style="width:auto;margin:0;" ${translationWithImage ? 'checked' : ''}
+                                       onchange="setTranslationWithImage(this.checked)" />
+                                <span>With Image</span>
+                            </label>
+                        </div>
+                        <div id="translationOfflineMsg" style="display:${translationHybridMode ? 'none' : 'block'};margin-top:6px;padding:8px 10px;border:1px solid #e0a800;background:#fff8e1;border-radius:6px;font-size:12.5px;color:#7a5c00;">
+                            Without API mode: only <b>Text-based PDFs</b> can be processed (not scanned/photo), and the output will contain only the <b>extracted original text</b> — no translation. Output Language is locked to "Original (No Translation)".
+                        </div>
                     </div>
                 ` : `
                     <div class="setup-group">
@@ -554,17 +576,7 @@
                                         </div>
                                         ` : ''}
                                     </div>
-                                    ` : `
-                                    <div class="setup-group">
-                                        <label>System Configuration</label>
-                                        <div class="system-config-row">
-                                            <select id="systemConfigSelect" onchange="verifySystemConnection()">
-                                                ${systemOptions}
-                                            </select>
-                                            <span id="connectionStatusWrap">${buildConnectionStatusHTML()}</span>
-                                        </div>
-                                    </div>
-                                    `}
+                                    ` : ``}
 
                                     <div class="setup-group" style="margin-top:8px;">
                                         <div class="process-controls" id="processControls">
@@ -653,14 +665,16 @@
                         </div>
                     </div>
 
+                    ${isTranslation ? '' : `
                     <div class="history-card" style="height:240px;margin-top:20px;">
-                        <h3>${isTranslation ? '🌐 My Processed Translations' : '📁 My Processed Leases'}</h3>
+                        <h3>📁 My Processed Leases</h3>
                         <div class="card-body" style="overflow-y:auto;">
-                            <ul class="my-leases-list" id="${isTranslation ? 'myTranslationsList' : 'myLeasesList'}">
+                            <ul class="my-leases-list" id="myLeasesList">
                                 <li class="my-leases-empty">Loading…</li>
                             </ul>
                         </div>
                     </div>
+                    `}
                 `;
             }
 
@@ -671,9 +685,22 @@
             // refreshServicePage, which would otherwise reset the
             // checkbox). true = Hybrid (layout-preserving), false =
             // Simple (vision reads the page, clean reflowed output).
-            let translationHybridMode = false;
+            let translationHybridMode = true;   // default: API mode ON
+            let translationWithImage = true;
+            window.setTranslationWithImage = function(c){ translationWithImage = !!c; };
             window.setTranslationHybridMode = function(checked) {
                 translationHybridMode = !!checked;
+                // Hybrid OFF = offline: With Image chhipao, offline message
+                // dikhao, Output Language ko "original" par lock karo
+                const wiWrap = document.getElementById('translationWithImageWrap');
+                const offMsg = document.getElementById('translationOfflineMsg');
+                const langSel = document.getElementById('translationLangSelect');
+                if (wiWrap) wiWrap.style.display = checked ? 'flex' : 'none';
+                if (offMsg) offMsg.style.display = checked ? 'none' : 'block';
+                if (langSel){
+                    if (!checked){ langSel.value = 'original'; langSel.disabled = true; }
+                    else { langSel.disabled = false; }
+                }
             };
 
             // Translation output file format: 'docx' (default) or 'pdf'.
@@ -882,6 +909,23 @@
             // before it got the async-job treatment. onTick (optional) fires
             // on every poll so the caller can show a "still working..."
             // indicator even though there's no percentage to report mid-call.
+            // generate-pdf ka async-job wrapper — sync call multi-minute
+            // hybrid/ensemble pipeline par timeout ho jaata tha (permanent fix)
+            async function runGeneratePdfJob(payload, onTick) {
+                const startRes = await postJSON('/api/translation/generate-pdf-start', payload);
+                const jobId = startRes.jobId;
+                while (true) {
+                    await sleep(1500);
+                    const res = await authFetch('/api/translation/generate-pdf-status?jobId=' + encodeURIComponent(jobId));
+                    let status;
+                    try { status = await res.json(); } catch (e) { status = {}; }
+                    if (!res.ok) throw new Error(status.error || 'Could not check document generation status');
+                    if (status.status === 'done') return status.result || status;
+                    if (status.status === 'error') throw new Error(status.error || 'Document generation failed');
+                    if (typeof onTick === 'function') onTick();
+                }
+            }
+
             async function runAnalyzeJob(text, fallbackName, onTick) {
                 const startRes = await postJSON('/api/lease/analyze-start', { text, fallbackName });
                 const jobId = startRes.jobId;
@@ -1602,8 +1646,11 @@
                     file.targetLang = targetLanguage;
                     // Read the Hybrid checkbox fresh too, for the same
                     // reason as the language above.
+                    // Hybrid + With Image — render ke waqt fresh read
                     const hybridCheckNow = document.getElementById('translationHybridCheck');
                     const hybridMode = hybridCheckNow ? !!hybridCheckNow.checked : translationHybridMode;
+                    const _wiNow = document.getElementById('translationWithImageCheck');
+                    const withImageOpt = _wiNow ? !!_wiNow.checked : translationWithImage;
                     const processAgents = getAgents('translation').filter(a => a.phase !== 'scan');
                     const agentName = (list, idx) => (list[idx] && list[idx].name) || 'Unassigned';
 
@@ -1623,6 +1670,186 @@
 
                         await waitIfPausedAsync('translation');
                         if (processState.stopped) return;
+
+                        // ============================================================
+                        // OFFLINE (Hybrid OFF) — WITHOUT API. Test.html ka EXACT
+                        // offline logic browser me chalta hai (translation-offline.js):
+                        // pdf.js se text extract + JSZip se docx. Server pe sirf
+                        // save hota hai (folder + billing + download link). Koi
+                        // extraction/vision/translate API call NAHI.
+                        // ============================================================
+                        // Browser-side deliverable banega jab:
+                        //  (a) Hybrid OFF  -> offline text-layer (no API), YA
+                        //  (b) Hybrid ON + Original(No Translation) -> vision OCR
+                        //      browser me (Box-tool jaisa line-level, tez),
+                        //      koi translation nahi, image sirf With Image par.
+                        // Hybrid ON -> sab kuch browser vision path me (OCR-only
+                        // ya OCR+translate, dono Test.html criteria ke saath:
+                        // page-type detect + tone). Hybrid OFF -> offline text-layer.
+                        const browserBuild = true;
+                        if (browserBuild) {
+                            const baseName = originalFileName.replace(/\.[^.]+$/, '');
+                            const isTranslate = hybridMode && targetLanguage !== 'original';
+                            // OUTPUT FILENAME (user spec):
+                            //  Hybrid OFF (text-based, no API): "<name> No Hybrid - Without Translation - Translation"
+                            //  Hybrid ON + Original:            "<name> Hybrid - Without Translation - Translation"
+                            //  Hybrid ON + <language>:          "<name> Hybrid - <language> - Translation"
+                            let docName;
+                            if (!hybridMode) {
+                                docName = baseName + ' No Hybrid - Without Translation - Translation';
+                            } else if (!isTranslate) {
+                                docName = baseName + ' Hybrid - Without Translation - Translation';
+                            } else {
+                                docName = baseName + ' Hybrid - ' + targetLanguage + ' - Translation';
+                            }
+                            const modeLabel = !hybridMode ? 'Offline (no API)'
+                                : (isTranslate ? ('Hybrid - Vision OCR + Translate -> ' + targetLanguage)
+                                               : 'Hybrid - Vision OCR only');
+                            // ACTIVITY LOG FIX: har distinct step apni ALAG line
+                            // banata hai (updateActivity se overwrite NAHI). Error
+                            // aaye to wo line rehti hai; solve/agla step nayi line.
+                            addActivity('translation', `${fl}File Processing > ${file.name} > Started (${modeLabel})`, 'Started');
+                            refreshServicePage('translation');
+
+                            // SCANNING: pehle poora scan (100%) — tabhi aage process.
+                            let scanId = addActivity('translation', `${fl}File Scanning > 0%`, 'Pending');
+                            refreshServicePage('translation');
+                            let offlineBlob;
+                            let lastLoggedMsg = '';
+                            // ACTIVITY LOG: extraction/translation ke liye ALAG lines
+                            // banane ki jagah EK updating counter line rakho.
+                            //   "File(x/y): Text(N) extracted"  — N badhta rehta hai
+                            //   "File(x/y): Text(N) translated"
+                            let extractedCount = 0, translatedCount = 0;
+                            let extractLineId = null, translateLineId = null;
+                            try {
+                                const onLog = (m) => {
+                                    // PROGRESS BAR: "Vision OCR: X/Y pages" se real progress
+                                    const mm = m.match(/Vision OCR:\s*(\d+)\/(\d+)\s*pages/);
+                                    if (mm) {
+                                        const done = parseInt(mm[1], 10), total = parseInt(mm[2], 10) || 1;
+                                        const pct = Math.min(95, Math.round((done / total) * 95));
+                                        file.progress = String(pct);
+                                        updateActivity('translation', scanId, 'Pending', `${fl}File Scanning > ${pct}%`);
+                                        refreshServicePage('translation');
+                                        return;
+                                    }
+                                    // EXTRACTION: "P{n}: {count} line-boxes ..." → ek counter line
+                                    const em = m.match(/P\d+:\s*(\d+)\s*line-boxes/);
+                                    if (em) {
+                                        extractedCount += parseInt(em[1], 10) || 0;
+                                        if (!extractLineId) extractLineId = addActivity('translation', `${fl}Text(${extractedCount}) extracted`, 'Info');
+                                        else updateActivity('translation', extractLineId, 'Info', `${fl}Text(${extractedCount}) extracted`);
+                                        refreshServicePage('translation');
+                                        return;
+                                    }
+                                    // TRANSLATION: "Translation: {N} line(s) translated" → counter line
+                                    const tm = m.match(/Translation:\s*(\d+)\s*line\(s\) translated/);
+                                    if (tm) {
+                                        translatedCount += parseInt(tm[1], 10) || 0;
+                                        if (!translateLineId) translateLineId = addActivity('translation', `${fl}Text(${translatedCount}) translated`, 'Info');
+                                        else updateActivity('translation', translateLineId, 'Info', `${fl}Text(${translatedCount}) translated`);
+                                        refreshServicePage('translation');
+                                        return;
+                                    }
+                                    // OFFLINE: "P{n}: {count} text line(s) extracted (no API)"
+                                    const om = m.match(/P\d+:\s*(\d+)\s*text line\(s\) extracted/);
+                                    if (om) {
+                                        extractedCount += parseInt(om[1], 10) || 0;
+                                        if (!extractLineId) extractLineId = addActivity('translation', `${fl}Text(${extractedCount}) extracted`, 'Info');
+                                        else updateActivity('translation', extractLineId, 'Info', `${fl}Text(${extractedCount}) extracted`);
+                                        refreshServicePage('translation');
+                                        return;
+                                    }
+                                    // baaki important messages (background removed, warnings,
+                                    // page-summary, errors) apni alag line — lekin duplicate skip.
+                                    if (m === lastLoggedMsg) return;
+                                    lastLoggedMsg = m;
+                                    addActivity('translation', `${fl}${m}`, 'Info');
+                                    refreshServicePage('translation');
+                                };
+                                if (hybridMode) {
+                                    if (window.setVisionAuthToken) window.setVisionAuthToken(AUTH_TOKEN || '');
+                                    if (window.setVisionStopCheck) window.setVisionStopCheck(function () { return processState.stopped; });
+                                    offlineBlob = await window.buildHybridDocxBlob(blob, {
+                                        withImage: withImageOpt,
+                                        targetLang: targetLanguage
+                                    }, onLog);
+                                } else {
+                                    offlineBlob = await window.buildOfflineDocxBlob(blob, onLog);
+                                }
+                            } catch (offErr) {
+                                // ERROR LINE: rehti hai (hatti nahi), aur File Processing
+                                // ki alag failed line bhi.
+                                updateActivity('translation', scanId, 'Failed', `${fl}File Scanning > FAILED`);
+                                addActivity('translation', `${fl}Error > ${offErr.message}`, 'Failed');
+                                file.status = 'error';
+                                file.errorLabel = 'Error';
+                                file.errorReason = offErr.message || 'Processing failed';
+                                addActivity('translation', `${fl}File Processing > ${file.name} > Aborted: ${file.errorReason}`, 'Failed');
+                                refreshServicePage('translation');
+                                persistServiceFiles('translation');
+                                continue;
+                            }
+                            // SCANNING 100% — ab hi process aage badha
+                            updateActivity('translation', scanId, 'Success', `${fl}File Scanning > 100%`);
+                            addActivity('translation', `${fl}File Scanning > Extraction complete`, 'Success');
+                            file.progress = '40';
+                            refreshServicePage('translation');
+
+                            // save-output: folder + Output.json (billing/File Manager parity)
+                            await postJSON('/api/translation/save-output', {
+                                userId: CURRENT_USER_ID,
+                                docName: docName,
+                                originalText: '',
+                                translatedText: '',
+                                targetLanguage: (hybridMode ? targetLanguage : 'original'),
+                                translationMethod: (hybridMode && targetLanguage !== 'original') ? 'llm-openrouter' : 'none',
+                                stagingPath: stagingPath,
+                                originalFileName: originalFileName
+                            });
+
+                            // browser docx -> base64 -> server save
+                            const offB64 = await new Promise((res, rej) => {
+                                const r = new FileReader();
+                                r.onload = () => res(String(r.result).split(',')[1]);
+                                r.onerror = () => rej(new Error('Could not read generated docx'));
+                                r.readAsDataURL(offlineBlob);
+                            });
+                            const offSave = await postJSON('/api/translation/save-offline-docx', {
+                                userId: CURRENT_USER_ID, docName: docName, docxBase64: offB64
+                            });
+                            file.progress = '85';
+
+                            // billing — same principle as hybrid path
+                            const chargeAmount = getServicePrice('translation', file.pageCount);
+                            const now = new Date();
+                            const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                            paymentHistory.push({
+                                id: txnId,
+                                date: now.toISOString().split('T')[0],
+                                time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                                userId: CURRENT_USER_ID,
+                                service: 'Translation', description: `${docName} (${!hybridMode ? 'offline, no API' : (isTranslate ? 'Hybrid Vision+Translate' : 'Hybrid Vision OCR-only')})`,
+                                amount: chargeAmount, pages: file.pageCount || 1
+                            });
+
+                            file.docName = docName;
+                            file.outputFormat = 'docx';
+                            file.progress = '100';
+                            addActivity('translation', `${fl}System > Output Mode > ${!hybridMode ? 'offline (no API)' : (isTranslate ? 'Hybrid Vision + Translate' : 'Hybrid Vision OCR-only')}`, 'Success');
+                            addActivity('translation', `${fl}System > Generate Output > ${_shortPath(offSave.outputDocx, 2)} generated successfully`, 'Success');
+                            addActivity('translation', `${fl}File Processing > ${file.name}`, 'Finished');
+                            notifyProcessCompletion('Translation', file.name, chargeAmount, txnId);
+                            file.status = 'completed';
+                            activeAgentId = null;
+                            delete translationFileBlobs[file.id];
+                            refreshServicePage('translation');
+                            persistPaymentHistory();
+                            persistServiceFiles('translation');
+                            await sleep(120);
+                            continue;
+                        }
 
                         // ---- Extracting Text Content (async job + polling, same
                         // OCR-capable pipeline as lease abstraction) ----
@@ -1664,13 +1891,18 @@
                         stepId = addActivity('translation', `${fl}API Request > Translation to ${targetLanguage}`, 'Pending');
                         refreshServicePage('translation');
                         let translateTicks = 0;
-                        const translateRes = await runTranslateJob(extractRes.text, targetLanguage, () => {
-                            translateTicks++;
-                            file.progress = String(Math.min(49, 20 + translateTicks));
-                            refreshServicePage('translation');
-                        });
+                        // "Original (No Translation)" ya offline (Hybrid off):
+                        // koi translate API call NAHI — extracted text hi output hai
+                        const translateRes = (targetLanguage === 'original' || !hybridMode)
+                            ? { translated: extractRes.text, translatedText: extractRes.text, text: extractRes.text, method: 'none' }
+                            : await runTranslateJob(extractRes.text, targetLanguage, () => {
+                                translateTicks++;
+                                file.progress = String(Math.min(49, 20 + translateTicks));
+                                refreshServicePage('translation');
+                            });
                         file.progress = '50';
-                        const methodLabel = translateRes.method === 'llm-openai' ? 'OpenAI' :
+                        const methodLabel = translateRes.method === 'none' ? 'no translation (original preserved)' :
+                            translateRes.method === 'llm-openai' ? 'OpenAI' :
                             translateRes.method === 'llm-openrouter' ? 'OpenRouter' : 'heuristic (no LLM configured)';
                         updateActivity('translation', stepId, 'Success', `${fl}API Request > Translated to ${targetLanguage} via ${methodLabel}`);
                         refreshServicePage('translation');
@@ -1747,10 +1979,11 @@
                         refreshServicePage('translation');
                         const outputFormatNow = document.getElementById('translationOutputFormat');
                         const outFmt = outputFormatNow ? outputFormatNow.value : translationOutputFormat;
-                        const pdfRes = await postJSON('/api/translation/generate-pdf', {
+                        const pdfRes = await runGeneratePdfJob({
                             userId: CURRENT_USER_ID,
                             docName: docName,
                             hybrid: hybridMode,
+                            withImage: withImageOpt,
                             outputFormat: outFmt
                         });
                         addActivity('translation', `${fl}System > Output Mode > ${pdfRes.mode || (hybridMode ? 'hybrid' : 'simple')}`, 'Success');
@@ -2087,6 +2320,18 @@
                     for (let i = 0; i < pdfFiles.length; i++) {
                         translationFileBlobs[newFiles[i].id] = pdfFiles[i];
                     }
+                    // PAGE COUNT: Uploaded Files card me no-of-pages dikhane ke liye
+                    // pdf.js se numPages nikaalo (async, non-blocking).
+                    newFiles.forEach(function (nf, idx) {
+                        const blobFile = pdfFiles[idx];
+                        if (typeof pdfjsLib === 'undefined') return;
+                        blobFile.arrayBuffer().then(function (buf) {
+                            return pdfjsLib.getDocument({ data: buf }).promise;
+                        }).then(function (pdf) {
+                            nf.pageCount = pdf.numPages;
+                            refreshServicePage('translation');
+                        }).catch(function () { /* ignore — count optional */ });
+                    });
                 } else {
                     leaseFiles = leaseFiles.concat(newFiles);
                     nextLeaseFileId += newFiles.length;

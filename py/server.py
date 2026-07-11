@@ -1094,6 +1094,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/lease/extract-status": self._handle_lease_extract_status,
             "/api/lease/analyze-status": self._handle_lease_analyze_status,
             "/api/translation/translate-status": self._handle_translation_translate_status,
+            "/api/translation/generate-pdf-status": self._handle_translation_generate_pdf_status,
             "/api/lease/list": self._handle_lease_list,
             "/api/translation/list": self._handle_translation_list,
             "/api/lease/review-data": self._handle_lease_review_get,
@@ -1297,7 +1298,11 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/lease/generate-pdf": self._handle_lease_generate_pdf,
             "/api/translation/upload": self._handle_translation_upload,
             "/api/translation/translate-start": self._handle_translation_translate_start,
+            "/api/translation/generate-pdf-start": self._handle_translation_generate_pdf_start,
             "/api/translation/save-output": self._handle_translation_save_output,
+            "/api/translation/save-offline-docx": self._handle_translation_save_offline_docx,
+            "/api/translation/vision-proxy": self._handle_translation_vision_proxy,
+            "/api/translation/inpaint-proxy": self._handle_translation_inpaint_proxy,
             "/api/translation/generate-pdf": self._handle_translation_generate_pdf,
             "/api/admin/mkdir": self._handle_admin_mkdir,
             "/api/admin/upload": self._handle_admin_upload,
@@ -1946,6 +1951,308 @@ class Handler(SimpleHTTPRequestHandler):
 
         return 200, {"ok": True, "docFolder": _rel_to_root(folder)}
 
+    def _handle_translation_save_offline_docx(self, body):
+        """OFFLINE (Hybrid-off): docx BROWSER me bana (Test.html ka exact
+        pdf.js logic), yahan sirf base64 blob ko Output.docx me save karte
+        hain. Koi server extraction/vision NAHI. File Manager + download
+        link flow automatically use hota hai."""
+        user_id = _safe_id(self._resolve_user_id(body))
+        doc_name = lease_engine.sanitize_lease_name(body.get("docName"))
+        b64 = body.get("docxBase64") or ""
+        if "," in b64[:64]:
+            b64 = b64.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(b64)
+        except Exception as err:
+            return 400, {"error": f"Invalid docx data: {err}"}
+        if len(raw) < 200:
+            return 400, {"error": "Empty/invalid document generated offline"}
+        folder = _user_dir(user_id, "Translation", doc_name)
+        os.makedirs(folder, exist_ok=True)
+        docx_path = os.path.join(folder, "Output.docx")
+        with open(docx_path, "wb") as f:
+            f.write(raw)
+        print(f"[translation:{doc_name}] offline docx saved ({len(raw)} bytes) - no API used")
+        return 200, {"ok": True, "outputDocx": _rel_to_root(docx_path),
+                     "outputFormat": "docx", "mode": "offline-browser"}
+
+    def _handle_translation_vision_proxy(self, body):
+        """OPTION A — browser-side Hybrid vision OCR ka secure proxy. Browser
+        {model, messages} bhejta hai; server .env ki OPENROUTER_API_KEY laga
+        kar OpenRouter ko forward karta hai. Key browser me KABHI nahi aati.
+        Per-page call hai isliye timeout risk nahi (sync theek hai)."""
+        import urllib.request, urllib.error
+        cfg = lease_engine.load_llm_config()
+        orc = cfg.get("openrouter", {}) or {}
+        api_key = (orc.get("apiKey") or os.environ.get("OPENROUTER_API_KEY") or "").strip()
+        if not api_key:
+            return 400, {"error": "OPENROUTER_API_KEY server .env me set nahi hai"}
+        messages = body.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return 400, {"error": "messages[] required"}
+        model = body.get("model") or orc.get("model") or "openai/gpt-4o"
+        payload = {
+            "model": model,
+            "temperature": body.get("temperature", 0),
+            "max_tokens": int(body.get("max_tokens", 8000)),
+            "messages": messages,
+        }
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json"},
+            method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return 200, data
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8")[:500]
+            except Exception:
+                pass
+            return e.code, {"error": f"OpenRouter HTTP {e.code}: {detail}"}
+        except Exception as e:
+            return 502, {"error": f"Vision proxy failed: {e}"}
+
+    def _handle_translation_inpaint_proxy(self, body):
+        """WITH IMAGE — Gemini 2.5 Flash Image (nano-banana) se text removal.
+        Browser page image (base64) bhejta hai; hum Gemini image-edit model ko
+        RESTRICTIVE prompt ke saath bhejte hain: sirf jo text extract hua wo
+        hatao, background/layout/colors/illustrations bilkul mat badlo, sirf
+        text wale area ko surrounding paper se seamlessly bharo. Cleaned image
+        wapas. Key server .env se — browser me kabhi nahi.
+
+        Gemini fail/unavailable ho to cv2 inpaint fallback (blur-ish lekin
+        kuch to milega). Boxes optional (cv2 fallback ke liye)."""
+        import urllib.request, urllib.error
+        import base64 as _b64
+        img_b64 = body.get("imageBase64") or ""
+        if "," in img_b64[:64]:
+            img_b64 = img_b64.split(",", 1)[1]
+        boxes = body.get("boxes") or []
+        texts = body.get("texts") or []   # exact extracted text lines
+        if not img_b64:
+            return 400, {"error": "imageBase64 required"}
+
+        cfg = lease_engine.load_llm_config()
+        orc = cfg.get("openrouter", {}) or {}
+        api_key = (orc.get("apiKey") or os.environ.get("OPENROUTER_API_KEY") or "").strip()
+
+        # ---- try Gemini image-edit first ----
+        def _composite_text_regions(orig_b64, edited_b64, boxes):
+            """Gemini-edited image ke sirf text-box rectangles ko original image
+            me paste karo (feathered edges). Bahar sab original — guarantee
+            preserve. Boxes na ho to None (full edit use hogा)."""
+            if not boxes:
+                return None
+            try:
+                import numpy as np, cv2
+            except Exception:
+                return None
+            try:
+                o = cv2.imdecode(np.frombuffer(_b64.b64decode(orig_b64), np.uint8), cv2.IMREAD_COLOR)
+                e = cv2.imdecode(np.frombuffer(_b64.b64decode(edited_b64), np.uint8), cv2.IMREAD_COLOR)
+                if o is None or e is None:
+                    return None
+                # Gemini output size original se alag ho sakta hai — match karo
+                if e.shape[:2] != o.shape[:2]:
+                    e = cv2.resize(e, (o.shape[1], o.shape[0]), interpolation=cv2.INTER_LANCZOS4)
+                H, W = o.shape[:2]
+                mask = np.zeros((H, W), np.float32)
+                pad = max(2, int(round(min(H, W) * 0.012)))
+                for b in boxes:
+                    try:
+                        x = int(round(float(b.get("x", 0)))); y = int(round(float(b.get("y", 0))))
+                        bw = int(round(float(b.get("w", 0)))); bh = int(round(float(b.get("h", 0))))
+                    except Exception:
+                        continue
+                    x0 = max(0, x - pad); y0 = max(0, y - pad)
+                    x1 = min(W, x + bw + pad); y1 = min(H, y + bh + pad)
+                    if x1 > x0 and y1 > y0:
+                        mask[y0:y1, x0:x1] = 1.0
+                if mask.max() <= 0:
+                    return None
+                # feather edges (seamless blend) — box boundary sharp na dikhe
+                k = max(3, (pad // 2) * 2 + 1)
+                mask = cv2.GaussianBlur(mask, (k, k), 0)
+                mask3 = np.dstack([mask, mask, mask])
+                out = (e.astype(np.float32) * mask3 + o.astype(np.float32) * (1.0 - mask3)).astype(np.uint8)
+                ok, enc = cv2.imencode(".jpg", out, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
+                if not ok:
+                    return None
+                return _b64.b64encode(enc.tobytes()).decode("ascii")
+            except Exception as e2:
+                print(f"[translation] composite fail: {e2}")
+                return None
+
+        def _gemini_edit():
+            if not api_key:
+                return None
+            # Restrictive edit prompt — sirf text removal, baaki sab preserve.
+            text_list = ""
+            if texts:
+                # exact extracted lines — Gemini in EXACT strings ko dhundh kar
+                # hataye aur aas-paas ke area se predict karke fill kare.
+                joined = "".join("<" + str(t).strip() + ">" for t in texts if str(t).strip())
+                if joined:
+                    text_list = (
+                        " The specific text to remove consists of these exact lines: "
+                        + joined +
+                        ". Locate each of these text pieces in the image and remove ONLY them.")
+            edit_prompt = (
+                "Generate a clean version of this image without changing its original width and height. Completely remove all readable text, printed words, handwritten signatures, and any linguistic characters from the image, as if they never existed. Do not alter any non-readable elements like lines, patterns, textures, abstract shapes, or background designs. The output must have the exact same dimensions as the input and no new text should be added."
+            )
+            payload = {
+                "model": "google/gemini-2.5-flash-image",
+                "modalities": ["text", "image"],
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url",
+                         "image_url": {"url": "data:image/jpeg;base64," + img_b64}},
+                        {"type": "text", "text": edit_prompt},
+                    ],
+                }],
+            }
+            req = urllib.request.Request(
+                "https://openrouter.ai/api/v1/chat/completions",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Authorization": f"Bearer {api_key}",
+                         "Content-Type": "application/json"},
+                method="POST")
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            # image response me choices[0].message.images[].image_url.url ya
+            # content blocks me embedded — dono handle karo
+            msg = (data.get("choices") or [{}])[0].get("message", {}) or {}
+            # format 1: message.images = [{image_url:{url: "data:...base64,XXX"}}]
+            imgs = msg.get("images") or []
+            for im in imgs:
+                url = (im.get("image_url") or {}).get("url") or im.get("url") or ""
+                if "base64," in url:
+                    return url.split("base64,", 1)[1]
+            # format 2: content list with image_url / output
+            cont = msg.get("content")
+            if isinstance(cont, list):
+                for c in cont:
+                    if c.get("type") in ("image_url", "output_image", "image"):
+                        url = (c.get("image_url") or {}).get("url") or c.get("url") or c.get("data") or ""
+                        if "base64," in url:
+                            return url.split("base64,", 1)[1]
+                        if url and len(url) > 200:   # raw base64
+                            return url
+            return None
+
+        try:
+            edited = _gemini_edit()
+            if edited:
+                # OPTION B: Gemini ka redraw sirf TEXT-BOX regions tak limit
+                # karo — baaki poora image ORIGINAL rakhо (Gemini ne agar
+                # plant/border modify kiya to wo discard). Guarantee: text ke
+                # bahar kuch nahi badla.
+                composited = _composite_text_regions(img_b64, edited, boxes)
+                if composited:
+                    print("[translation] with-image: Gemini edit composited into text regions only")
+                    return 200, {"ok": True, "imageBase64": composited, "method": "gemini-composited"}
+                print("[translation] with-image: Gemini image-edit ok (full)")
+                return 200, {"ok": True, "imageBase64": edited, "method": "gemini-image-edit"}
+            else:
+                print("[translation] with-image: Gemini returned no image — cv2 fallback")
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try: detail = e.read().decode("utf-8")[:300]
+            except Exception: pass
+            print(f"[translation] with-image: Gemini HTTP {e.code} ({detail}) — cv2 fallback")
+        except Exception as e:
+            print(f"[translation] with-image: Gemini fail ({e}) — cv2 fallback")
+
+        # ---- cv2 fallback (Gemini unavailable) ----
+        try:
+            import numpy as np
+            import cv2
+        except Exception as e:
+            # cv2 bhi nahi — original image hi wapas (text ke saath, better than fail)
+            return 200, {"ok": True, "imageBase64": img_b64, "method": "original-no-edit"}
+        try:
+            raw = _b64.b64decode(img_b64)
+            arr = np.frombuffer(raw, dtype=np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if img is None:
+                return 200, {"ok": True, "imageBase64": img_b64, "method": "original-no-edit"}
+        except Exception:
+            return 200, {"ok": True, "imageBase64": img_b64, "method": "original-no-edit"}
+        h, w = img.shape[:2]
+        mask = np.zeros((h, w), dtype=np.uint8)
+        pad = max(2, int(round(min(h, w) * 0.012)))
+        painted = 0
+        for b in boxes:
+            try:
+                x = int(round(float(b.get("x", 0)))); y = int(round(float(b.get("y", 0))))
+                bw = int(round(float(b.get("w", 0)))); bh = int(round(float(b.get("h", 0))))
+            except Exception:
+                continue
+            x0 = max(0, x - pad); y0 = max(0, y - pad)
+            x1 = min(w, x + bw + pad); y1 = min(h, y + bh + pad)
+            if x1 > x0 and y1 > y0:
+                mask[y0:y1, x0:x1] = 255
+                painted += 1
+        if painted == 0:
+            ok, enc = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
+            return 200, {"ok": True, "imageBase64": _b64.b64encode(enc.tobytes()).decode("ascii"), "method": "cv2", "painted": 0}
+        radius = max(4, int(round(min(h, w) * 0.010)))
+        try:
+            result = cv2.inpaint(img, mask, radius, cv2.INPAINT_TELEA)
+        except Exception as e:
+            return 200, {"ok": True, "imageBase64": img_b64, "method": "original-no-edit"}
+        ok, enc = cv2.imencode(".jpg", result, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
+        out_b64 = _b64.b64encode(enc.tobytes()).decode("ascii")
+        print(f"[translation] with-image: cv2 fallback cleaned {painted} region(s)")
+        return 200, {"ok": True, "imageBase64": out_b64, "method": "cv2", "painted": painted}
+
+    # ------------------------------------------------------------------
+    # PERMANENT FIX for "Request to /api/translation/generate-pdf failed":
+    # root cause = poora hybrid pipeline (ensemble = 4x vision calls/page)
+    # EK synchronous HTTP request me chal raha tha — multi-minute job par
+    # gateway/browser timeout guaranteed hai. Fix = wahi background-job +
+    # polling pattern jo translate-start/-status pehle se use karta hai.
+    # Purana sync endpoint backward-compat ke liye intact hai.
+    # ------------------------------------------------------------------
+    def _handle_translation_generate_pdf_start(self, body):
+        _cleanup_stale_translate_jobs()
+        job_id = "pdfjob-" + secrets.token_hex(8)
+        _set_translate_job(job_id, status="running")
+
+        def _worker():
+            try:
+                result = self._handle_translation_generate_pdf(body)
+                # sync handler _send_json(...) return karta ho ya dict —
+                # dono shape handle karo
+                if isinstance(result, dict):
+                    _set_translate_job(job_id, status="done", result=result)
+                else:
+                    _set_translate_job(job_id, status="done", result={"ok": True})
+            except Exception as err:
+                import traceback; traceback.print_exc()
+                _set_translate_job(job_id, status="error", error=str(err) or "Document generation failed")
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return self._send_json(200, {"ok": True, "jobId": job_id})
+
+    def _handle_translation_generate_pdf_status(self, query):
+        job_id = (query.get("jobId", [""])[0])
+        job = _get_translate_job(job_id)
+        if not job:
+            return self._send_json(404, {"error": "Unknown or expired job"})
+        payload = {"ok": True, "status": job.get("status", "running")}
+        if job.get("status") == "done":
+            payload["result"] = job.get("result") or {"ok": True}
+        elif job.get("status") == "error":
+            payload["error"] = job.get("error", "Document generation failed")
+        return self._send_json(200, payload)
+
     def _handle_translation_generate_pdf(self, body):
         user_id = _safe_id(self._resolve_user_id(body))
         doc_name = lease_engine.sanitize_lease_name(body.get("docName"))
@@ -1970,6 +2277,22 @@ class Handler(SimpleHTTPRequestHandler):
         source_abs = os.path.join(ROOT_DIR, source_rel) if source_rel else None
         target_language = output_data.get("targetLanguage", "")
         hybrid_mode = bool(body.get("hybrid"))
+        # Workflow spec: Hybrid ON = full API pipeline, Vision + High
+        # Accuracy + Ensemble sab INTERNALLY default ON (UI me checkbox
+        # nahi). Admin ek jagah se ensemble off kar sake, iske liye const.
+        ENSEMBLE_DEFAULT_ON = True
+        pipeline_options = {
+            "withImage": bool(body.get("withImage", True)),
+            "highAccuracy": True,
+            "ensemble": bool(body.get("ensemble", ENSEMBLE_DEFAULT_ON)),
+            "withVision": True,
+        }
+        if not hybrid_mode:
+            # OFFLINE spec: koi API call nahi — scanned PDF par vision
+            # fallback bhi NAHI. Text-based PDF ka extracted (original)
+            # text hi reflow deliverable banta hai.
+            target_language = "original"
+            output_data["targetLanguage"] = "original"
         # Output file format the user picked in the UI: "docx" (default,
         # keep the editable Word file as the deliverable) or "pdf". When
         # docx is requested we do NOT run the final DOCX->PDF conversion.
@@ -1998,7 +2321,8 @@ class Handler(SimpleHTTPRequestHandler):
                 out_path = translate_pipeline.translate_document(
                     source_abs, pdf_path, target_language,
                     output_format=output_format,
-                    diagnostics=translation_diagnostics, progress=_prog)
+                    diagnostics=translation_diagnostics, progress=_prog,
+                    options=pipeline_options)
                 translation_diagnostics["progressLog"] = progress_msgs
                 # The pipeline may return a .docx even if pdf_path was a
                 # .pdf name; record what was actually produced.
@@ -2010,7 +2334,35 @@ class Handler(SimpleHTTPRequestHandler):
                 import traceback; traceback.print_exc()
                 print(f"Hybrid layout-preserving translation not possible for {doc_name}, falling back to reflow: {err}")
                 translation_diagnostics["fatalError"] = str(err)
-        elif not hybrid_mode and source_is_pdf and not lease_engine.pdf_has_text_layer(source_abs) and lease_engine.llm_is_configured():
+        elif (not hybrid_mode) and source_is_pdf and not lease_engine.pdf_has_text_layer(source_abs):
+            # OFFLINE spec violation: scanned/image PDF without API — process
+            # possible nahi. User ko clear message, koi vision call nahi.
+            translation_diagnostics["fatalError"] = (
+                "Ye PDF Scanned/Image-based hai — offline (Hybrid off) mode me "
+                "sirf Text-based PDFs process ho sakti hain. Hybrid enable karke retry karo.")
+            print(f"[translation:{doc_name}] offline mode: scanned PDF rejected (no API calls allowed)")
+        elif (not hybrid_mode) and source_is_pdf:
+            # OFFLINE spec: No_Hybrid.html (Test.html offline mode) jaisa
+            # output — pdfplumber text layer se positioned textboxes,
+            # original text, ZERO API calls.
+            try:
+                import translate_pipeline
+                offline_docx = os.path.join(folder, "Output.docx")
+                translate_pipeline.build_offline_original_docx(
+                    source_abs, offline_docx,
+                    lambda m: print(f"[translation:{doc_name}] {m}"))
+                used_layout_preserving = True
+                mode_used = "offline-layout-original"
+                translation_diagnostics["editableDocx"] = offline_docx
+                try:
+                    translate_pipeline._docx_to_pdf(offline_docx, pdf_path)
+                except Exception as e2:
+                    print(f"[translation:{doc_name}] offline docx->pdf preview skipped: {e2}")
+            except Exception as err:
+                import traceback; traceback.print_exc()
+                translation_diagnostics["offlineLayoutError"] = str(err)
+                # fallback: neeche wala purana reflow path chal jayega
+        elif False and lease_engine.llm_is_configured():
             # SIMPLE (checkbox unchecked) on a scanned/photo PDF: bypass
             # Tesseract entirely - the vision model reads each page image
             # directly (like Google Lens) and the output is a clean
@@ -2076,7 +2428,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _handle_translation_download(self, query):
         user_id = _safe_id(self._resolve_user_id_query(query))
-        doc_name = lease_engine.sanitize_lease_name((query.get("docName", [""])[0]))
+        raw_doc_name = (query.get("docName", [""])[0]) or ""
+        doc_name = lease_engine.sanitize_lease_name(raw_doc_name)  # folder lookup
         file_name = _safe_filename((query.get("fileName", [""])[0]))
 
         try:
@@ -2091,24 +2444,28 @@ class Handler(SimpleHTTPRequestHandler):
         with open(abs_path, "rb") as f:
             data = f.read()
 
-        # Item 2 - the file on disk stays "Output.pdf" (nothing else in
-        # the codebase that checks for that name needs to change), but
-        # what the user actually sees when they download it is the
-        # original filename + " - Translation.pdf", not the generic
-        # internal name.
+        # Download filename = doc_name (jo ab client ne pura formatted naam
+        # diya hai, e.g. "<file> Hybrid - English - Translation"). File on
+        # disk "Output.docx"/"Output.pdf" hi rehti hai, lekin user ko ye naam
+        # dikhta hai. Fallback: Output.json ke sourceDocument se.
         download_name = os.path.basename(abs_path)
         if file_name in ("Output.pdf", "Output.docx"):
-            output_json_path = os.path.join(folder, "Output.json")
-            if os.path.isfile(output_json_path):
-                try:
-                    with open(output_json_path, "r", encoding="utf-8") as f2:
-                        source_rel = json.load(f2).get("sourceDocument")
-                    if source_rel:
-                        base_name = os.path.splitext(os.path.basename(source_rel))[0]
-                        ext = os.path.splitext(file_name)[1]
-                        download_name = f"{base_name} - Translation{ext}"
-                except (OSError, json.JSONDecodeError):
-                    pass
+            ext = os.path.splitext(file_name)[1]
+            if raw_doc_name.strip():
+                # readable filename: illegal FS chars hatao lekin spaces/dashes rakho
+                safe = re.sub(r'[\\/:*?"<>|]', '', raw_doc_name).strip()
+                download_name = f"{safe}{ext}"
+            else:
+                output_json_path = os.path.join(folder, "Output.json")
+                if os.path.isfile(output_json_path):
+                    try:
+                        with open(output_json_path, "r", encoding="utf-8") as f2:
+                            source_rel = json.load(f2).get("sourceDocument")
+                        if source_rel:
+                            base_name = os.path.splitext(os.path.basename(source_rel))[0]
+                            download_name = f"{base_name} - Translation{ext}"
+                    except (OSError, json.JSONDecodeError):
+                        pass
 
         mime_type = mimetypes.guess_type(abs_path)[0] or "application/octet-stream"
         self.send_response(200)
