@@ -685,7 +685,7 @@
             // refreshServicePage, which would otherwise reset the
             // checkbox). true = Hybrid (layout-preserving), false =
             // Simple (vision reads the page, clean reflowed output).
-            let translationHybridMode = true;   // default: API mode ON
+            let translationHybridMode = false;   // default: UNCHECKED (user spec)
             let translationWithImage = true;
             window.setTranslationWithImage = function(c){ translationWithImage = !!c; };
             window.setTranslationHybridMode = function(checked) {
@@ -1728,7 +1728,7 @@
                                     const mm = m.match(/Vision OCR:\s*(\d+)\/(\d+)\s*pages/);
                                     if (mm) {
                                         const done = parseInt(mm[1], 10), total = parseInt(mm[2], 10) || 1;
-                                        const pct = Math.min(95, Math.round((done / total) * 95));
+                                        const pct = Math.min(80, Math.round((done / total) * 80));
                                         file.progress = String(pct);
                                         updateActivity('translation', scanId, 'Pending', `${fl}File Scanning > ${pct}%`);
                                         refreshServicePage('translation');
@@ -1794,7 +1794,7 @@
                             // SCANNING 100% — ab hi process aage badha
                             updateActivity('translation', scanId, 'Success', `${fl}File Scanning > 100%`);
                             addActivity('translation', `${fl}File Scanning > Extraction complete`, 'Success');
-                            file.progress = '40';
+                            file.progress = '85';   // monotonic: scan(0-80) -> build 85
                             refreshServicePage('translation');
 
                             // save-output: folder + Output.json (billing/File Manager parity)
@@ -1819,7 +1819,7 @@
                             const offSave = await postJSON('/api/translation/save-offline-docx', {
                                 userId: CURRENT_USER_ID, docName: docName, docxBase64: offB64
                             });
-                            file.progress = '85';
+                            file.progress = '95';
 
                             // billing — same principle as hybrid path
                             const chargeAmount = getServicePrice('translation', file.pageCount);
