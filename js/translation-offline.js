@@ -249,7 +249,7 @@
       '<w:p><w:pPr>' +
       '<w:spacing w:before="0" w:after="0" w:line="' + lineTw + '" w:lineRule="exact"/>' +
       (line.rtl ? '<w:bidi/>' : '') +
-      '<w:jc w:val="' + (line.rtl ? 'right' : 'left') + '"/></w:pPr>' + runsXml + '</w:p>' +
+      '<w:jc w:val="both"/></w:pPr>' + runsXml + '</w:p>' +
       '</w:txbxContent></wps:txbx>' +
       // wrap="none": text apni width se wrap NAHI hoga, box size exact rahega
       '<wps:bodyPr rot="0" vert="horz" wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t"><a:noAutofit/></wps:bodyPr>' +
@@ -665,7 +665,11 @@ STRICT RULES:
 
     const buf = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-    const CONCURRENCY = 2;   // stop pe kam in-flight calls; cost spikes kam
+    // CONCURRENCY 1: har page POORA process (OCR -> translate -> background)
+    // phir agla page. Isse (a) image har page ke turant baad banti hai (na
+    // ki sab pages ke baad), (b) stop dabane par jitne pages complete hue
+    // unka full output milta hai, adhoora background nahi.
+    const CONCURRENCY = 1;
     const pageNums = Array.from({ length: pdf.numPages }, function (_, i) { return i + 1; });
     _newAbort();   // fresh AbortController is run ke liye
 
@@ -720,7 +724,11 @@ STRICT RULES:
           const resp = await _inpaintFetch(jpegBase64, boxesPx, texts);
           if (resp.ok) {
             const j = await resp.json();
-            if (j && j.imageBase64) { bgBase64 = j.imageBase64; log('P' + p + ': background text removed (' + (j.method || 'edit') + ')'); }
+            if (j && j.imageBase64) {
+              bgBase64 = j.imageBase64;
+              if (j.prompt) log('P' + p + ' image-edit prompt: ' + j.prompt);
+              log('P' + p + ': background text removed (' + (j.method || 'edit') + ')');
+            }
           } else {
             log('P' + p + ': inpaint skip (server) — original image use hogi', 'warn');
           }
