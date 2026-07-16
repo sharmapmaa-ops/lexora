@@ -2091,19 +2091,14 @@ class Handler(SimpleHTTPRequestHandler):
         def _gemini_edit():
             if not api_key:
                 return None
-            # Restrictive edit prompt — sirf text removal, baaki sab preserve.
-            text_list = ""
-            if texts:
-                # exact extracted lines — Gemini in EXACT strings ko dhundh kar
-                # hataye aur aas-paas ke area se predict karke fill kare.
-                joined = "".join("<" + str(t).strip() + ">" for t in texts if str(t).strip())
-                if joined:
-                    text_list = (
-                        " The specific text to remove consists of these exact lines: "
-                        + joined +
-                        ". Locate each of these text pieces in the image and remove ONLY them.")
+            # User-tested simple prompt (Google AI Studio me sahi output diya).
+            # Lamba/over-restrictive prompt Gemini ko confuse karta tha —
+            # ye 3 clear requirements best kaam karti hain.
             edit_prompt = (
-                "Generate a clean version of this image without changing its original width and height. Completely remove all readable text, printed words, handwritten signatures, and any linguistic characters from the image, as if they never existed. Do not alter any non-readable elements like lines, patterns, textures, abstract shapes, or background designs. The output must have the exact same dimensions as the input and no new text should be added."
+                "Requirement:\n"
+                "1) Text Removal Only\n"
+                "2) Keep the original illustration\n"
+                "3) Fill with matching background"
             )
             payload = {
                 "model": "google/gemini-2.5-flash-image",
@@ -2149,16 +2144,12 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             edited = _gemini_edit()
             if edited:
-                # OPTION B: Gemini ka redraw sirf TEXT-BOX regions tak limit
-                # karo — baaki poora image ORIGINAL rakhо (Gemini ne agar
-                # plant/border modify kiya to wo discard). Guarantee: text ke
-                # bahar kuch nahi badla.
-                composited = _composite_text_regions(img_b64, edited, boxes)
-                if composited:
-                    print("[translation] with-image: Gemini edit composited into text regions only")
-                    return 200, {"ok": True, "imageBase64": composited, "method": "gemini-composited"}
-                print("[translation] with-image: Gemini image-edit ok (full)")
-                return 200, {"ok": True, "imageBase64": edited, "method": "gemini-image-edit"}
+                # Simple prompt se Gemini poora sahi output deta hai — full
+                # image use karo (composite/blend nahi, wo quality kharab
+                # karta tha aur box-region artifacts laata tha).
+                print("[translation] with-image: Gemini image-edit ok")
+                return 200, {"ok": True, "imageBase64": edited, "method": "gemini-image-edit",
+                             "prompt": "Requirement: 1) Text Removal Only 2) Keep the original illustration 3) Fill with matching background"}
             else:
                 print("[translation] with-image: Gemini returned no image — cv2 fallback")
         except urllib.error.HTTPError as e:
