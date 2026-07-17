@@ -472,8 +472,9 @@
                         <div style="display:flex;gap:12px;align-items:flex-start;">
                           <div style="flex:1;">
                             <label>Output Language</label>
-                            <select id="translationLangSelect" style="width:100%;">
-                                <option value="original">Original (No Translation)</option>
+                            <select id="translationLangSelect" style="width:100%;" ${translationHybridMode ? '' : 'disabled'}>
+                                <option value="original" ${translationHybridMode ? '' : 'selected'}>Original (No Translation)</option>
+                                ${translationHybridMode ? `
                                 <option value="English" selected>English</option>
                                 <option value="Spanish">Spanish</option>
                                 <option value="French">French</option>
@@ -486,6 +487,7 @@
                                 <option value="Urdu">Urdu</option>
                                 <option value="Portuguese">Portuguese</option>
                                 <option value="Russian">Russian</option>
+                                ` : ''}
                             </select>
                           </div>
                           <div style="flex:1;">
@@ -698,8 +700,29 @@
                 if (wiWrap) wiWrap.style.display = checked ? 'flex' : 'none';
                 if (offMsg) offMsg.style.display = checked ? 'none' : 'block';
                 if (langSel){
-                    if (!checked){ langSel.value = 'original'; langSel.disabled = true; }
-                    else { langSel.disabled = false; }
+                    if (!checked){
+                        // Hybrid OFF: sirf Original, baaki languages hatao + lock
+                        langSel.innerHTML = '<option value="original" selected>Original (No Translation)</option>';
+                        langSel.value = 'original';
+                        langSel.disabled = true;
+                    } else {
+                        // Hybrid ON: saari languages wapas
+                        langSel.innerHTML =
+                            '<option value="original">Original (No Translation)</option>' +
+                            '<option value="English" selected>English</option>' +
+                            '<option value="Spanish">Spanish</option>' +
+                            '<option value="French">French</option>' +
+                            '<option value="German">German</option>' +
+                            '<option value="Chinese">Chinese</option>' +
+                            '<option value="Japanese">Japanese</option>' +
+                            '<option value="Arabic">Arabic</option>' +
+                            '<option value="Hindi">Hindi</option>' +
+                            '<option value="Gujarati">Gujarati</option>' +
+                            '<option value="Urdu">Urdu</option>' +
+                            '<option value="Portuguese">Portuguese</option>' +
+                            '<option value="Russian">Russian</option>';
+                        langSel.disabled = false;
+                    }
                 }
             };
 
@@ -845,8 +868,8 @@
                     // with no status field at all, i.e. pre-existing service
                     // fee debits) count toward the real balance.
                     if (t.status === 'pending_approval' || t.status === 'cancelled') return;
-                    totalCredit += t.credit;
-                    totalDebit += t.debit;
+                    totalCredit += Number(t.credit) || 0;
+                    totalDebit += Number(t.debit) || 0;
                 });
                 return totalCredit - totalDebit;
             }
@@ -1830,8 +1853,11 @@
                                 date: now.toISOString().split('T')[0],
                                 time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
                                 userId: CURRENT_USER_ID,
-                                service: 'Translation', description: `${docName} (${!hybridMode ? 'offline, no API' : (isTranslate ? 'Hybrid Vision+Translate' : 'Hybrid Vision OCR-only')})`,
-                                amount: chargeAmount, pages: file.pageCount || 1
+                                paymentType: 'Service Fee',
+                                paymentMode: 'Wallet Balance',
+                                description: `Translation - ${file.name} (${!hybridMode ? 'No Hybrid' : (isTranslate ? 'Hybrid ' + targetLanguage : 'Hybrid Original')})`,
+                                credit: 0,
+                                debit: chargeAmount
                             });
 
                             file.docName = docName;
@@ -2675,8 +2701,8 @@
                     totalDebit = 0;
                 data.forEach(t => {
                     if (t.status === 'pending_approval' || t.status === 'cancelled') return;
-                    totalCredit += t.credit;
-                    totalDebit += t.debit;
+                    totalCredit += Number(t.credit) || 0;
+                    totalDebit += Number(t.debit) || 0;
                 });
                 const balance = totalCredit - totalDebit;
 
@@ -2693,8 +2719,8 @@
                     totalDebit = 0;
                 getMyPaymentHistory().forEach(t => {
                     if (t.status === 'pending_approval' || t.status === 'cancelled') return;
-                    totalCredit += t.credit;
-                    totalDebit += t.debit;
+                    totalCredit += Number(t.credit) || 0;
+                    totalDebit += Number(t.debit) || 0;
                 });
                 const balance = totalCredit - totalDebit;
 
@@ -3800,8 +3826,8 @@
 
                 let totalCredit = 0,
                     totalDebit = 0;
-                myHistory.forEach(t => { totalCredit += t.credit;
-                    totalDebit += t.debit; });
+                myHistory.forEach(t => { totalCredit += Number(t.credit) || 0;
+                    totalDebit += Number(t.debit) || 0; });
                 const balanceEl = document.getElementById('dashBalance');
                 if (balanceEl) balanceEl.textContent = '$' + (totalCredit - totalDebit).toFixed(2);
             }
