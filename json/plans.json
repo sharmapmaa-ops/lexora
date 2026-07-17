@@ -2,7 +2,7 @@
   {
     "id": "free",
     "name": "Free",
-    "icon": "\ud83c\udd93",
+    "icon": "🆓",
     "monthlyPrice": 0,
     "pricePerLeaseAbstraction": 10,
     "pricePerTranslation": 5,
@@ -13,12 +13,13 @@
       "Community Support",
       "Basic Dashboard Access"
     ],
-    "billingUnit": "document"
+    "billingUnit": "document",
+    "translationBillingUnit": "page"
   },
   {
     "id": "standard",
     "name": "Standard",
-    "icon": "\u2b50",
+    "icon": "⭐",
     "monthlyPrice": 29,
     "pricePerLeaseAbstraction": 8,
     "pricePerTranslation": 2,
@@ -29,12 +30,13 @@
       "Email Support",
       "Standard Dashboard Access"
     ],
-    "billingUnit": "document"
+    "billingUnit": "document",
+    "translationBillingUnit": "page"
   },
   {
     "id": "professional",
     "name": "Professional",
-    "icon": "\ud83d\ude80",
+    "icon": "🚀",
     "monthlyPrice": 79,
     "pricePerLeaseAbstraction": 5,
     "pricePerTranslation": 1,
@@ -45,6 +47,7 @@
       "Priority Support",
       "Advanced Dashboard Access"
     ],
-    "billingUnit": "document"
+    "billingUnit": "document",
+    "translationBillingUnit": "page"
   }
 ]
