@@ -665,11 +665,12 @@ STRICT RULES:
 
     const buf = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-    // CONCURRENCY 1: har page POORA process (OCR -> translate -> background)
-    // phir agla page. Isse (a) image har page ke turant baad banti hai (na
-    // ki sab pages ke baad), (b) stop dabane par jitne pages complete hue
-    // unka full output milta hai, adhoora background nahi.
-    const CONCURRENCY = 1;
+    // Bug 7 SPEED: With Image OFF -> pages parallel (fast, koi image call
+    // nahi to order matter nahi karta). With Image ON -> sequential (1),
+    // taaki har page ka Gemini background apne page ke turant baad bane
+    // aur stop-safe rahe. Sequence har haal me preserve (OCR->translate
+    // ->image per page andar sequential hi hai).
+    const CONCURRENCY = withImage ? 1 : 3;
     const pageNums = Array.from({ length: pdf.numPages }, function (_, i) { return i + 1; });
     _newAbort();   // fresh AbortController is run ke liye
 
