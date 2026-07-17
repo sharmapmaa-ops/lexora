@@ -469,7 +469,7 @@
                 const myPlanForEstimate = getMyPlan();
                 const batchChargeEstimate = billableFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
                 const chargeEstimateHtml = billableFiles.length > 0 ?
-                    `💰 Est. charge: $${batchChargeEstimate.toFixed(2)}${myPlanForEstimate.billingUnit === 'page' ? ' (per page)' : ' (per document)'}` : '';
+                    `💰 Est. charge: $${batchChargeEstimate.toFixed(2)}${(serviceId === 'translation' ? (myPlanForEstimate.translationBillingUnit || 'page') : myPlanForEstimate.billingUnit) === 'page' ? ' (per page)' : ' (per document)'}` : '';
                 const controlButtons = buildControlButtonsHTML(serviceId, files.length > 0);
 
                 // File count text for drop zone
@@ -1119,7 +1119,7 @@
                 // completed/needs_review ones are skipped by the loop below.
                 const billable = files.filter(f => f.status !== 'completed' && f.status !== 'needs_review');
                 const myPlan = getMyPlan();
-                const isPerPage = myPlan.billingUnit === 'page';
+                const isPerPage = (serviceId === 'translation' ? (myPlan.translationBillingUnit || 'page') : myPlan.billingUnit) === 'page';
                 // Item 7 - a per-page plan can't know the EXACT charge for a
                 // not-yet-scanned file up front (page count isn't known
                 // until OCR runs) - this uses each file's already-known
@@ -2293,7 +2293,7 @@
                     const myPlanForEstimate = getMyPlan();
                     const batchChargeEstimate = billableFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
                     chargeEstimateEl.innerHTML = billableFiles.length > 0 ?
-                        `💰 Est. charge: $${batchChargeEstimate.toFixed(2)}${myPlanForEstimate.billingUnit === 'page' ? ' (per page)' : ' (per document)'}` : '';
+                        `💰 Est. charge: $${batchChargeEstimate.toFixed(2)}${(serviceId === 'translation' ? (myPlanForEstimate.translationBillingUnit || 'page') : myPlanForEstimate.billingUnit) === 'page' ? ' (per page)' : ' (per document)'}` : '';
                 }
 
                 const activityListEl = document.getElementById('activityList');
