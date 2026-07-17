@@ -799,10 +799,30 @@ ${JSON.stringify(texts)}`;
       const a = raw.indexOf('['), b = raw.lastIndexOf(']');
       if (a !== -1 && b > a) raw = raw.slice(a, b + 1);
       try {
-        const arr = JSON.parse(raw);
-        if (!Array.isArray(arr) || arr.length !== texts.length) throw new Error('length mismatch');
+        let arr = null;
+        try {
+          arr = JSON.parse(raw);
+        } catch (pe) {
+          // SALVAGE: poora JSON toota (ek line ka malformed {s,t} object) —
+          // individual objects regex se nikaalo taaki poore page ki
+          // translation na jaye. (page 2 ka "parse fail" issue ka fix)
+          const objs = raw.match(/\{[^{}]*"t"\s*:[^{}]*\}/g);
+          if (objs && objs.length){
+            const salv = [];
+            objs.forEach(function(o){ try { salv.push(JSON.parse(o)); } catch (e2){ salv.push(null); } });
+            if (salv.length){ arr = salv; log('Translation: JSON partial tha — ' + salv.filter(Boolean).length + ' line(s) salvage ki', 'warn'); }
+          }
+          if (!arr) throw pe;
+        }
+        // length mismatch par bhi kaam chalao: jitne mile utne map karo,
+        // baaki original (poora page mat girao)
+        if (!Array.isArray(arr)) throw new Error('not an array');
+        if (arr.length !== texts.length){
+          log('Translation: ' + arr.length + '/' + texts.length + ' line(s) aaye — baaki original rakhe', 'warn');
+        }
         let misaligned = 0;
-        const out = arr.map(function(m, i){
+        const out = texts.map(function(srcTxt, i){
+          const m = arr[i];
           if (m == null) return texts[i];
           if (typeof m === 'string') return m === '' ? texts[i] : m; // fallback: plain string array bhi chalega
           const s = (m.s == null) ? '' : String(m.s);
