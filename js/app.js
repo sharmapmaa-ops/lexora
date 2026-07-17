@@ -62,7 +62,12 @@
                 const perUnit = serviceId === 'translation' ?
                     (plan.pricePerTranslation != null ? plan.pricePerTranslation : 1) :
                     (plan.pricePerLeaseAbstraction != null ? plan.pricePerLeaseAbstraction : 1);
-                if (plan.billingUnit === 'page') {
+                // translation ka apna billing unit (per-page). lease ke liye
+                // plan.billingUnit. Translation = per-page (user spec).
+                const unit = serviceId === 'translation'
+                    ? (plan.translationBillingUnit || 'page')
+                    : (plan.billingUnit || 'document');
+                if (unit === 'page') {
                     return perUnit * Math.max(1, pageCount || 1);
                 }
                 return perUnit;
@@ -301,8 +306,13 @@
                     const dlFormat = (file.outputFormat === 'pdf') ? 'pdf'
                         : (downloadKind === 'translation' ? 'docx' : 'pdf');
                     const dlFile = dlFormat === 'docx' ? 'Output.docx' : 'Output.pdf';
+                    // Bug 4: translation output browser-only (session blob) —
+                    // server download nahi. Blob is session me ho to usse download.
+                    const isSessionDl = file.sessionDownload && translationBlobStore[file.id];
                     const actionLink = file.status === 'completed' ?
-                        `<a class="file-action-link" onclick="downloadFile('${dlFile}', '${docFolder.replace(/'/g, "\\'")}', '${downloadKind}')">Download</a>` :
+                        (isSessionDl
+                          ? `<a class="file-action-link" onclick="downloadSessionBlob('${file.id}')">Download</a>`
+                          : `<a class="file-action-link" onclick="downloadFile('${dlFile}', '${docFolder.replace(/'/g, "\\'")}', '${downloadKind}')">Download</a>`) :
                         file.status === 'needs_review' ?
                         `<a class="file-action-link review-link" onclick="openLeaseReviewModal('${file.id}')">🔍 Review</a>` :
                         file.status === 'error' ?
@@ -327,6 +337,7 @@
 
                     return `
                         <tr>
+                            <td><input type="checkbox" class="file-select-checkbox" data-file-id="${file.id}" ${file.selected !== false ? 'checked' : ''} onchange="toggleFileSelect('${file.id}', this.checked)" ${processState.running ? 'disabled' : ''} /></td>
                             <td class="file-name"><a class="file-name-link" onclick="openFilePreview('${file.id}')">${escapeHtml(file.name)}</a></td>
                             <td>${file.pageCount || '-'}</td>
                             <td>${scanCell}</td>
@@ -472,7 +483,7 @@
                         <div style="display:flex;gap:12px;align-items:flex-start;">
                           <div style="flex:1;">
                             <label>Output Language</label>
-                            <select id="translationLangSelect" style="width:100%;" ${translationHybridMode ? '' : 'disabled'}>
+                            <select id="translationLangSelect" style="width:100%;" ${(translationHybridMode && !processState.running) ? '' : 'disabled'}>
                                 <option value="original" ${translationHybridMode ? '' : 'selected'}>Original (No Translation)</option>
                                 ${translationHybridMode ? `
                                 <option value="English" selected>English</option>
@@ -492,7 +503,7 @@
                           </div>
                           <div style="flex:1;">
                             <label>Output Format</label>
-                            <select id="translationOutputFormat" onchange="setTranslationOutputFormat(this.value)" style="width:100%;"
+                            <select id="translationOutputFormat" onchange="setTranslationOutputFormat(this.value)" style="width:100%;" ${processState.running ? 'disabled' : ''}
                                     title="DOCX: editable Word file (recommended). PDF: same layout as PDF.">
                                 <option value="docx" ${translationOutputFormat !== 'pdf' ? 'selected' : ''}>Word (.docx)</option>
                                 <option value="pdf" ${translationOutputFormat === 'pdf' ? 'selected' : ''}>PDF (.pdf)</option>
@@ -502,16 +513,19 @@
                         <div style="display:flex;align-items:center;gap:20px;margin-top:10px;">
                             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
                                    title="Checked: full API processing (Vision + High Accuracy + Ensemble OCR, all internally ON). Unchecked: WITHOUT API — text-based PDFs only, text extraction only, no translation.">
-                                <input type="checkbox" id="translationHybridCheck" style="width:auto;margin:0;" ${translationHybridMode ? 'checked' : ''}
+                                <input type="checkbox" id="translationHybridCheck" style="width:auto;margin:0;" ${translationHybridMode ? 'checked' : ''} ${processState.running ? 'disabled' : ''}
                                        onchange="setTranslationHybridMode(this.checked)" />
                                 <span>Hybrid</span>
                             </label>
                             <label id="translationWithImageWrap" style="display:${translationHybridMode ? 'flex' : 'none'};align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
                                    title="Checked: the page background/graphics/logos are preserved in the output (original text is removed and the cleaned image is placed behind). Unchecked: only reconstructed text on a clean white page.">
-                                <input type="checkbox" id="translationWithImageCheck" style="width:auto;margin:0;" ${translationWithImage ? 'checked' : ''}
+                                <input type="checkbox" id="translationWithImageCheck" style="width:auto;margin:0;" ${translationWithImage ? 'checked' : ''} ${processState.running ? 'disabled' : ''}
                                        onchange="setTranslationWithImage(this.checked)" />
                                 <span>With Image</span>
                             </label>
+                        </div>
+                        <div id="translationWithImageMsg" style="display:${translationHybridMode && translationWithImage ? 'block' : 'none'};margin-top:6px;padding:8px 10px;border:1px solid #7aa7cc;background:#eef5fb;border-radius:6px;font-size:12.5px;color:#2c5777;">
+                            Note: With Image uses an AI-predicted background (the original text is removed and the empty area is filled by prediction). The reconstructed background is not a pixel-perfect copy, so some changes in image quality and layout may occur.
                         </div>
                         <div id="translationOfflineMsg" style="display:${translationHybridMode ? 'none' : 'block'};margin-top:6px;padding:8px 10px;border:1px solid #e0a800;background:#fff8e1;border-radius:6px;font-size:12.5px;color:#7a5c00;">
                             Without API mode: only <b>Text-based PDFs</b> can be processed (not scanned/photo), and the output will contain only the <b>extracted original text</b> — no translation. Output Language is locked to "Original (No Translation)".
@@ -540,7 +554,7 @@
                             <div class="service-card">
                                 <h3>📤 Upload File(s)</h3>
                                 <div class="card-body">
-                                    <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+                                    <div class="drop-zone" id="dropZone" onclick="${processState.running ? 'void(0)' : "document.getElementById('fileInput').click()"}" style="${processState.running ? 'opacity:0.5;pointer-events:none;' : ''}">
                                         <div class="drop-icon">📤</div>
                                         <div class="drop-text">Drag & drop files here</div>
                                         <div class="drop-sub">or click to browse (PDF only)</div>
@@ -599,10 +613,11 @@
                                 <div class="file-table-wrapper">
                                     <table class="file-table file-table-files">
                                         <colgroup>
-                                            <col style="width:38%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;">
+                                            <col style="width:5%;"><col style="width:33%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;">
                                         </colgroup>
                                         <thead>
                                             <tr>
+                                                <th><input type="checkbox" id="translationSelectAll" onchange="toggleSelectAllFiles('${serviceId}', this.checked)" title="Select all" /></th>
                                                 <th>File Name</th>
                                                 <th>Pages</th>
                                                 <th>Scan Result</th>
@@ -614,7 +629,7 @@
                                     <div class="file-table-scroll">
                                         <table class="file-table file-table-files">
                                             <colgroup>
-                                                <col style="width:38%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;">
+                                                <col style="width:5%;"><col style="width:33%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;">
                                             </colgroup>
                                             <tbody id="fileTableBody">
                                                 ${fileRows || '<tr><td colspan="5" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No files uploaded yet.</td></tr>'}
@@ -689,7 +704,11 @@
             // Simple (vision reads the page, clean reflowed output).
             let translationHybridMode = false;   // default: UNCHECKED (user spec)
             let translationWithImage = true;
-            window.setTranslationWithImage = function(c){ translationWithImage = !!c; };
+            window.setTranslationWithImage = function(c){
+                translationWithImage = !!c;
+                var wiMsg = document.getElementById('translationWithImageMsg');
+                if (wiMsg) wiMsg.style.display = (c ? 'block' : 'none');
+            };
             window.setTranslationHybridMode = function(checked) {
                 translationHybridMode = !!checked;
                 // Hybrid OFF = offline: With Image chhipao, offline message
@@ -698,6 +717,8 @@
                 const offMsg = document.getElementById('translationOfflineMsg');
                 const langSel = document.getElementById('translationLangSelect');
                 if (wiWrap) wiWrap.style.display = checked ? 'flex' : 'none';
+                var wiMsg2 = document.getElementById('translationWithImageMsg');
+                if (wiMsg2) wiMsg2.style.display = (checked && translationWithImage) ? 'block' : 'none';
                 if (offMsg) offMsg.style.display = checked ? 'none' : 'block';
                 if (langSel){
                     if (!checked){
@@ -885,6 +906,8 @@
             // the user to re-upload it (see processLeaseFileAt below).
             let leaseFileBlobs = {};
             let translationFileBlobs = {};
+            // Bug 4: browser-only output blobs (session download, no server save)
+            let translationBlobStore = {};
 
             function sleep(ms) {
                 return new Promise(resolve => setTimeout(resolve, ms));
@@ -1060,10 +1083,22 @@
                     showWarning('Processing is already running for this batch.');
                     return;
                 }
-                const files = serviceId === 'translation' ? getMyTranslationFiles() : getMyLeaseFiles();
+                let files = serviceId === 'translation' ? getMyTranslationFiles() : getMyLeaseFiles();
                 if (files.length === 0) {
                     showWarning('No files to process. Please upload files first.');
                     return;
+                }
+                // Bug 3: sirf SELECTED files process karo (checkbox). Agar
+                // kisi ne select nahi kiya to sab (backward compatible).
+                const anySelected = files.some(f => f.selected === true);
+                const anyUnselected = files.some(f => f.selected === false);
+                if (anySelected || anyUnselected) {
+                    const sel = files.filter(f => f.selected !== false);
+                    if (sel.length === 0) {
+                        showWarning('No files selected. Tick at least one file to process.');
+                        return;
+                    }
+                    files = sel;
                 }
 
                 // Item 6 - plan status/expiry is checked BEFORE the wallet
@@ -1820,28 +1855,11 @@
                             file.progress = '85';   // monotonic: scan(0-80) -> build 85
                             refreshServicePage('translation');
 
-                            // save-output: folder + Output.json (billing/File Manager parity)
-                            await postJSON('/api/translation/save-output', {
-                                userId: CURRENT_USER_ID,
-                                docName: docName,
-                                originalText: '',
-                                translatedText: '',
-                                targetLanguage: (hybridMode ? targetLanguage : 'original'),
-                                translationMethod: (hybridMode && targetLanguage !== 'original') ? 'llm-openrouter' : 'none',
-                                stagingPath: stagingPath,
-                                originalFileName: originalFileName
-                            });
-
-                            // browser docx -> base64 -> server save
-                            const offB64 = await new Promise((res, rej) => {
-                                const r = new FileReader();
-                                r.onload = () => res(String(r.result).split(',')[1]);
-                                r.onerror = () => rej(new Error('Could not read generated docx'));
-                                r.readAsDataURL(offlineBlob);
-                            });
-                            const offSave = await postJSON('/api/translation/save-offline-docx', {
-                                userId: CURRENT_USER_ID, docName: docName, docxBase64: offB64
-                            });
+                            // Bug 4: translation output ab SERVER PE SAVE NAHI hota.
+                            // Browser me bana docx blob ko sirf is session me rakhte
+                            // hain — user isi process ke dauran download karta hai.
+                            // Koi server file, koi Output.docx disk pe nahi.
+                            translationBlobStore[file.id] = { blob: offlineBlob, name: docName + '.docx' };
                             file.progress = '95';
 
                             // billing — same principle as hybrid path
@@ -1862,9 +1880,10 @@
 
                             file.docName = docName;
                             file.outputFormat = 'docx';
+                            file.sessionDownload = true;   // browser-only download
                             file.progress = '100';
                             addActivity('translation', `${fl}System > Output Mode > ${!hybridMode ? 'offline (no API)' : (isTranslate ? 'Hybrid Vision + Translate' : 'Hybrid Vision OCR-only')}`, 'Success');
-                            addActivity('translation', `${fl}System > Generate Output > ${_shortPath(offSave.outputDocx, 2)} generated successfully`, 'Success');
+                            addActivity('translation', `${fl}System > Generate Output > ${docName}.docx ready for download (this session only)`, 'Success');
                             addActivity('translation', `${fl}File Processing > ${file.name}`, 'Finished');
                             notifyProcessCompletion('Translation', file.name, chargeAmount, txnId);
                             file.status = 'completed';
@@ -2128,9 +2147,60 @@
                 persistServiceFiles(serviceId);
             };
 
+            // File selection (checkbox) — user specific files run/clear kar sake
+            window.toggleFileSelect = function(fileId, checked) {
+                const arr = (activeServiceId === 'translation') ? translationFiles : leaseFiles;
+                const f = arr.find(x => String(x.id) === String(fileId));
+                if (f) f.selected = !!checked;
+            };
+            window.toggleSelectAllFiles = function(serviceId, checked) {
+                const arr = (serviceId === 'translation') ? translationFiles : leaseFiles;
+                arr.filter(f => f.userId === CURRENT_USER_ID).forEach(f => { f.selected = !!checked; });
+                refreshServicePage(serviceId);
+            };
+
+            // Bug 4: translation output browser-only download (session blob)
+            window.downloadSessionBlob = function(fileId) {
+                const entry = translationBlobStore[fileId];
+                if (!entry || !entry.blob) {
+                    showWarning('This file is only available during the session it was processed in. Please run it again to download.');
+                    return;
+                }
+                const url = URL.createObjectURL(entry.blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = entry.name || 'Translation.docx';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            };
+
             window.clearFiles = function(serviceId) {
-                showConfirm('🗑️ Clear Files', 'Are you sure you want to clear all files from this list? Your processed history stays safe on the Dashboard.', function(confirmed) {
+                const arrForCount = (serviceId === 'translation') ? translationFiles : leaseFiles;
+                const mine = arrForCount.filter(f => f.userId === CURRENT_USER_ID);
+                const selected = mine.filter(f => f.selected !== false);
+                const onlySelected = selected.length > 0 && selected.length < mine.length;
+                const msg = onlySelected
+                    ? `Remove the ${selected.length} selected file(s) from this list?`
+                    : 'Are you sure you want to clear all files from this list? Your processed history stays safe on the Dashboard.';
+                showConfirm('🗑️ Clear Files', msg, function(confirmed) {
                     if (confirmed) {
+                        if (onlySelected) {
+                            // sirf selected hatao
+                            const selIds = new Set(selected.map(f => String(f.id)));
+                            if (serviceId === 'translation') {
+                                translationFiles = translationFiles.filter(f => !(f.userId === CURRENT_USER_ID && selIds.has(String(f.id))));
+                                selected.forEach(f => { delete translationFileBlobs[f.id]; });
+                            } else {
+                                leaseFiles = leaseFiles.filter(f => !(f.userId === CURRENT_USER_ID && selIds.has(String(f.id))));
+                                selected.forEach(f => { delete leaseFileBlobs[f.id]; });
+                            }
+                            refreshServicePage(serviceId);
+                            persistServiceFiles(serviceId);
+                            showMessage('🗑️ Cleared', `${selected.length} file(s) removed.`, ['OK']);
+                            return;
+                        }
                         // Full clear - safe to remove completed entries too now,
                         // since the Dashboard's "My Processed Leases"/"My
                         // Processed Translations" cards read from the server
@@ -3830,6 +3900,10 @@
                     totalDebit += Number(t.debit) || 0; });
                 const balanceEl = document.getElementById('dashBalance');
                 if (balanceEl) balanceEl.textContent = '$' + (totalCredit - totalDebit).toFixed(2);
+                // Bug 10: dashboard Current Plan hardcoded tha — actual plan
+                // se update karo (plan switch ke baad stale na dikhe).
+                const planEl = document.getElementById('dashCurrentPlan');
+                if (planEl) planEl.textContent = getMyPlan().name + ' Plan';
             }
 
             // Real counts (previously hardcoded placeholder numbers) - Lease
@@ -6294,7 +6368,7 @@
                         <div class="dashboard-grid">
                             <div class="dash-card">
                                 <div class="dash-card-icon">📋</div>
-                                <div class="dash-card-value" id="dashCurrentPlan">Professional Plan</div>
+                                <div class="dash-card-value" id="dashCurrentPlan">—</div>
                                 <div class="dash-card-label">Current Plan</div>
                             </div>
                             <div class="dash-card">
@@ -6940,7 +7014,7 @@
                 document.getElementById('authScreen').style.display = '';
                 authState.step = 'login';
                 renderAuthScreen();
-                showWarning('Your session has expired due to inactivity. Please log in again.');
+                showWarning('You have been logged out. This can happen if your account was signed in from another device or after a period of inactivity. Please log in again.');
             }
 
             function authFetch(url, options) {
