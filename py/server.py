@@ -157,6 +157,11 @@ def _create_session(user_id):
     token = secrets.token_urlsafe(32)
     now = datetime.datetime.now()
     with _sessions_lock:
+        # Bug 5 SINGLE-SESSION: ek user ke SAB purane sessions invalidate karo
+        # taaki ek jagah login karne par doosri jagah auto-logout ho jaye.
+        stale = [t for t, s in _sessions.items() if s.get("userId") == user_id]
+        for t in stale:
+            del _sessions[t]
         _sessions[token] = {
             "userId": user_id,
             "createdAt": now,
