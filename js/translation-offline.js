@@ -555,23 +555,167 @@
     return results;
   }
 
-  async function extractApiPage(apiKey, model, dataUrl, wPt, hPt, pageNo){
+
+  // detectCoordUnits — HTML se. coords ka scale pehchano (fraction/percent/permille/pixel)
+  function detectCoordUnits(blocks){
+    let maxVal = 0;
+    for (const b of blocks){
+      const l = parseFloat(b.left != null ? b.left : b.x) || 0;
+      const t = parseFloat(b.top  != null ? b.top  : b.y) || 0;
+      const w = parseFloat(b.width  != null ? b.width  : b.w) || 0;
+      const h = parseFloat(b.height != null ? b.height : b.h) || 0;
+      maxVal = Math.max(maxVal, l + w, t + h);
+    }
+    if (maxVal <= 1.5) return 'fraction';
+    if (maxVal <= 110) return 'percent';
+    if (maxVal <= 1010) return 'permille';
+    return 'pixel';
+  }
+
+  // refineBlocksWithInk — HTML reference se verbatim core. Model ki approx
+  // box lekar image ke ACTUAL ink pixels ko flood-fill se measure karta hai:
+  // exact bounding box, color (median), font-size (= measured height * 0.8).
+  // Isse coords/width/size/color guess se MEASUREMENT ban jaate hain.
+  // Canvas-based (sync) — Image load nahi.
+  function refineBlocksWithInk(srcCanvas, textBlocks){
+    const W = srcCanvas.width, H = srcCanvas.height;
+    const ctx = srcCanvas.getContext('2d');
+    const d = ctx.getImageData(0, 0, W, H).data;
+    const units = detectCoordUnits(textBlocks);
+    const toPx = (v, total) =>
+      units === 'fraction' ? v * total :
+      units === 'percent'  ? v / 100 * total :
+      units === 'permille' ? v / 1000 * total : v;
+    const clampV = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+    return textBlocks.map(function(blk){
+      const L = (blk.left != null ? blk.left : blk.x);
+      const T = (blk.top  != null ? blk.top  : blk.y);
+      const Wd= (blk.width  != null ? blk.width  : blk.w);
+      const Ht= (blk.height != null ? blk.height : blk.h);
+      const bx = toPx(parseFloat(L) || 0, W);
+      const by = toPx(parseFloat(T) || 0, H);
+      const bw = toPx(parseFloat(Wd) || 0, W);
+      const bh = toPx(parseFloat(Ht) || 0, H);
+      if (bw <= 0 || bh <= 0) return blk;
+
+      const ex = Math.max(10, Math.round(bw * 0.05 + bh * 0.5));
+      const ey = Math.max(6, Math.round(bh * 0.3));
+      const x0 = clampV(Math.round(bx - ex), 0, W - 1);
+      const y0 = clampV(Math.round(by - ey), 0, H - 1);
+      const x1 = clampV(Math.round(bx + bw + ex), 0, W - 1);
+      const y1 = clampV(Math.round(by + bh + ey), 0, H - 1);
+      const ww = x1 - x0 + 1, wh = y1 - y0 + 1;
+      if (ww < 4 || wh < 4) return blk;
+
+      const ring = [];
+      for (let x = x0; x <= x1; x++) ring.push((y0 * W + x) * 4, (y1 * W + x) * 4);
+      for (let y = y0; y <= y1; y++) ring.push((y * W + x0) * 4, (y * W + x1) * 4);
+      ring.sort((a, b) => (d[a]+d[a+1]+d[a+2]) - (d[b]+d[b+1]+d[b+2]));
+      const mi = ring[ring.length >> 1];
+      const bg = [d[mi], d[mi+1], d[mi+2]];
+
+      const mask = new Uint8Array(ww * wh);
+      let ink = 0;
+      for (let y = 0; y < wh; y++){
+        for (let x = 0; x < ww; x++){
+          const idx = ((y0 + y) * W + (x0 + x)) * 4;
+          if (Math.abs(d[idx]-bg[0]) + Math.abs(d[idx+1]-bg[1]) + Math.abs(d[idx+2]-bg[2]) > 60){
+            mask[y * ww + x] = 1; ink++;
+          }
+        }
+      }
+      if (ink === 0 || ink / (ww * wh) > 0.6) return blk;
+
+      const seen = new Uint8Array(ww * wh);
+      const qx = new Int32Array(ww * wh), qy = new Int32Array(ww * wh);
+      const seedX0 = bx - x0, seedY0 = by - y0;
+      let tight = null;
+      const colorSamples = [];
+      for (let sy = 0; sy < wh; sy++){
+        for (let sx = 0; sx < ww; sx++){
+          if (mask[sy * ww + sx] && !seen[sy * ww + sx]){
+            let qh = 0, qt = 0;
+            qx[qt] = sx; qy[qt] = sy; qt++; seen[sy * ww + sx] = 1;
+            let mnx = sx, mxx = sx, mny = sy, mxy = sy;
+            const pts = [];
+            while (qh < qt){
+              const x = qx[qh], y = qy[qh]; qh++;
+              pts.push(y * ww + x);
+              if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+              if (y < mny) mny = y; if (y > mxy) mxy = y;
+              const nb = [[x+1,y],[x-1,y],[x,y+1],[x,y-1]];
+              for (const c of nb){
+                const xx = c[0], yy = c[1];
+                if (xx >= 0 && yy >= 0 && xx < ww && yy < wh && mask[yy*ww+xx] && !seen[yy*ww+xx]){
+                  seen[yy*ww+xx] = 1; qx[qt] = xx; qy[qt] = yy; qt++;
+                }
+              }
+            }
+            const cw = mxx - mnx + 1, ch = mxy - mny + 1;
+            const thin = ch <= 5 || cw <= 5;
+            const huge = ch > 3 * Math.max(bh, 20);
+            const intersects = !(mxx < seedX0 || mnx > seedX0 + bw || mxy < seedY0 || mny > seedY0 + bh);
+            if (intersects && !thin && !huge){
+              if (!tight) tight = [mnx, mxx, mny, mxy];
+              else {
+                tight[0] = Math.min(tight[0], mnx); tight[1] = Math.max(tight[1], mxx);
+                tight[2] = Math.min(tight[2], mny); tight[3] = Math.max(tight[3], mxy);
+              }
+              const step = Math.max(1, Math.floor(pts.length / 50));
+              for (let pi = 0; pi < pts.length; pi += step){
+                const idx = ((y0 + Math.floor(pts[pi] / ww)) * W + (x0 + (pts[pi] % ww))) * 4;
+                colorSamples.push([d[idx], d[idx+1], d[idx+2]]);
+              }
+            }
+          }
+        }
+      }
+      if (!tight) return blk;
+
+      const mLeft = x0 + tight[0], mTop = y0 + tight[2];
+      const mW = tight[1] - tight[0] + 1, mH = tight[3] - tight[2] + 1;
+      colorSamples.sort((a, b) => (a[0]+a[1]+a[2]) - (b[0]+b[1]+b[2]));
+      const mc = colorSamples.length ? colorSamples[colorSamples.length >> 1] : [0, 0, 0];
+      const hex = mc.map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
+
+      const out = Object.assign({}, blk);
+      out.left = mLeft / W * 1000;
+      out.top = mTop / H * 1000;
+      out.width = mW / W * 1000;
+      out.height = mH / H * 1000;
+      out.font_size = (mH / H * 1000) * 0.8;
+      out.color = hex;
+      return out;
+    });
+  }
+
+  async function extractApiPage(apiKey, model, dataUrl, wPt, hPt, pageNo, srcCanvas){
+    // HTML reference ka DETAILED coordinate-detection prompt — pixel-by-pixel
+    // exact start/end detect, width/height/align explicit. Isse coords/size
+    // bahut behtar aate hain (aur phir refineBlocksWithInk se aur precise).
     const prompt =
-`You are a precise OCR and layout extraction engine. Analyze this document page image (page size: ${Math.round(wPt)} x ${Math.round(hPt)} points).
+`Return a single JSON object with exactly one top-level key named "text_blocks", whose value is an array of line objects (do NOT use any other key name like text_lines, textBlocks, or lines). Also include a top-level key "page_type" (one short sentence describing this page: document kind, subject, language/script, register — only guides translation tone).
+Process the image line-by-line (row by row) from top to bottom, scanning pixel by pixel. For each row:
+STEP 1 - DETECT TEXT START & END: When text is detected in a row, locate the exact start pixel (leftmost x-coordinate) and end pixel (rightmost x-coordinate) of that text segment. Group consecutive rows that contain the same text to form complete lines.
+STEP 2 - ADD TO JSON: For every complete text line, add its data with these fields:
+	1)top: vertical position on a normalized 0-1000 scale (0 = top edge, 1000 = bottom edge)
+	2)left: horizontal position on a normalized 0-1000 scale (0 = left edge, 1000 = right edge)
+	3)width: this line's bounding box width on the 0-1000 scale (exact start pixel to end pixel)
+	4)height: this line's bounding box height on the 0-1000 scale
+	5)font_size: this line's text height on the 0-1000 scale (relative to image height)
+	6)color: hex color code (e.g., "000000", no #)
+	7)style: "normal", "bold", "italic", or "bold italic"
+	8)align: "left", "center", "right", or "justify"
+	9)text: this line's exact text content (preserve original spelling/script, do NOT translate)
 
-Return ONLY valid JSON, no markdown fences, no explanation:
-{"page_type":"...","lines":[{"text":"...","x":0,"y":0,"w":0,"h":0,"font_size_pt":11,"bold":false,"italic":false,"color":"000000"}]}
-
-STRICT RULES:
-- Each VISUAL LINE of text = one separate entry. NEVER merge multiple lines into one entry. NEVER use \\n inside text.
-- If one visual row contains separate columns/cells with a big horizontal gap, output each column segment as its own entry.
-- x, y = top-left corner of THAT LINE's text, normalized 0-1000 relative to page width/height.
-- w = tight width of exactly that line's text, nothing more. h = height of the tallest character in that line (cap height to descender), nothing more. NO padding.
-- font_size_pt = real font size estimate in points (page is ${Math.round(hPt)} pt tall). Keep it consistent for identically-sized text.
-- OCR text EXACTLY in original language and script. Do NOT translate. Do NOT normalize.
-- color = 6-digit hex of the text color, no #.
-- Include ALL text: headers, footers, stamps, table cells, page numbers.
-- page_type = ONE short free-text sentence describing THIS page from its visible content: what kind of document page it is, its subject domain, language(s)/script, and register/formality. Do not pick from a fixed list — describe what you actually see. (This only guides translation tone; it does not change the OCR.)`;
+Important:
+1)Process rows sequentially top to bottom
+2)For each line, find the EXACT start pixel and end pixel of the text
+3)ALL coordinates use the 0-1000 normalized scale, NOT pixels
+4)Every line must have its own accurate font_size, style and color
+5)Include EVERY text line (even small words, numbers, handwritten)
+6)Preserve original text exactly (don't correct spelling), keep the □ character if a glyph is illegible`;
 
     const body = {
       model: model, temperature: 0, max_tokens: 16000,
@@ -616,22 +760,46 @@ STRICT RULES:
         if (!parsed) throw pe;
       }
       try {
-        const arr = parsed.lines || parsed.blocks;
-        if (!Array.isArray(arr)) throw new Error('no lines array');
-        // normalized 0-1000 → absolute points, same line struct
-        const out = arr.filter(L => L && L.text && String(L.text).trim()).map(function(L){
-          const fs = Math.max(4, Math.min(96, Number(L.font_size_pt) || 11));
+        // HTML schema: text_blocks with top/left/width/height/font_size (0-1000
+        // permille), style, align. Fallbacks: purane lines/blocks bhi chalein.
+        let arr = parsed.text_blocks || parsed.lines || parsed.blocks || parsed.text_lines;
+        if (!Array.isArray(arr)) throw new Error('no text_blocks array');
+        arr = arr.filter(L => L && L.text && String(L.text).trim());
+
+        // INK REFINEMENT: model ke box ko actual image pixels se re-measure
+        // karo (HTML ka refineBlocksWithInk). Ye box/size/color ko guess se
+        // measurement banata hai — coords/width/font bahut precise ho jaate.
+        if (srcCanvas) {
+          try { arr = refineBlocksWithInk(srcCanvas, arr); }
+          catch (re) { log('P' + pageNo + ' ink-refine skip: ' + re.message, 'warn'); }
+        }
+
+        // permille (0-1000) → absolute points
+        const out = arr.map(function(L){
+          const styleStr = String(L.style || '').toLowerCase();
+          const bold = !!L.bold || styleStr.indexOf('bold') !== -1;
+          const italic = !!L.italic || styleStr.indexOf('italic') !== -1;
+          // font_size 0-1000 (image-height relative) OR legacy pt
+          let fs;
+          if (L.font_size != null) fs = (Number(L.font_size) / 1000) * hPt;
+          else fs = Number(L.font_size_pt) || 11;
+          fs = Math.max(4, Math.min(96, fs));
+          const left = (L.left != null ? L.left : L.x) || 0;
+          const top  = (L.top  != null ? L.top  : L.y) || 0;
+          const w    = (L.width  != null ? L.width  : L.w) || 0;
+          const h    = (L.height != null ? L.height : L.h) || 0;
           return {
-            xPt: (L.x / 1000) * wPt,
-            yPt: (L.y / 1000) * hPt,
-            wPt: Math.max(fs * 0.5, (L.w / 1000) * wPt),
-            hPt: Math.max(fs, (L.h / 1000) * hPt),
+            xPt: (left / 1000) * wPt,
+            yPt: (top / 1000) * hPt,
+            wPt: Math.max(fs * 0.5, (w / 1000) * wPt),
+            hPt: Math.max(fs, (h / 1000) * hPt),
+            align: (L.align || '').toLowerCase(),
             rtl: hasRTL(L.text),
             runs: [{
               text: String(L.text).replace(/\n/g, ' '),
               sizePt: fs,
-              bold: !!L.bold, italic: !!L.italic,
-              color: /^[0-9a-fA-F]{6}$/.test(L.color || '') ? L.color : '000000',
+              bold: bold, italic: italic,
+              color: /^#?[0-9a-fA-F]{6}$/.test(L.color || '') ? String(L.color).replace('#','') : '000000',
               family: 'Arial'
             }]
           };
@@ -689,7 +857,7 @@ STRICT RULES:
       const jpegBase64 = withImage ? rawCanvas.toDataURL('image/jpeg', 0.96).split(',')[1] : null;
 
       const ocrDataUrl = rawCanvas.toDataURL('image/jpeg', 0.92);
-      let lines = await extractApiPage(apiKey, model, ocrDataUrl, vp1.width, vp1.height, p);
+      let lines = await extractApiPage(apiKey, model, ocrDataUrl, vp1.width, vp1.height, p, rawCanvas);
 
       // STOP: OCR ke baad translate call se pehle dobara check — extra call bachao
       if (_shouldStop()) { abortVision(); return { lines: lines, wPt: vp1.width, hPt: vp1.height, jpegBase64: withImage ? jpegBase64 : null }; }
