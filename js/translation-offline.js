@@ -633,62 +633,65 @@
   // HTML VERBATIM (processPageCombined): EK call me JSON text_blocks +
   // cleaned image. 0 blocks / image nahi / truncated -> ek retry.
   // Phir refineBlocksWithInk CLEANED image par.
-  async function processPageCombined(dataUrl, cleanCanvas, imgW, imgH, pageNo, prompt1){
-    const combinedPrompt =
-      'You must do TWO things for this image in a single response:\n\n' +
-      'TASK 1 - TEXT DATA: Return valid JSON as your TEXT response with exactly one top-level key "text_blocks" (an array of line objects). Do NOT use any other key name.\n' +
-      prompt1 + '\n\n' +
-      'TASK 2 - CLEANED IMAGE: Also generate and return an EDITED IMAGE (same dimensions as input) with the text removed:\n' +
-      HTML_PROMPT2 + '\n\n' +
-      'Respond with BOTH: the JSON text_blocks data as your text output, AND the edited image as your image output, in this same response.';
+  // TEXT EXTRACTION — Box_Size_and_Exact_Text.html ka simple prompt VERBATIM.
+  // Wahan text lagbhag poora capture hota hai kyunki (a) sirf 8 fields hain,
+  // (b) text pehle image baad me, (c) poore 8000 tokens JSON ko milte hain
+  // (koi image generation nahi). Geometry baad me refineBlocksWithInk se
+  // pixel-measure hoti hai (Cordinates HTML wala part).
+  async function processPageCombined(dataUrl, cleanCanvas, imgW, imgH, pageNo, model, wPt, hPt){
+    const prompt =
+`You are a precise OCR and layout extraction engine. Analyze this document page image (page size: ${Math.round(wPt)} x ${Math.round(hPt)} points).
 
-    async function runAttempt(maxTokens){
-      const body = { model: HTML_MODEL, modalities: ['text','image'],
-        max_tokens: maxTokens, temperature: 0,
-        messages: [{ role: 'user', content: [
-          { type: 'image_url', image_url: { url: dataUrl } },
-          { type: 'text', text: combinedPrompt } ]}] };
+Return ONLY valid JSON, no markdown fences, no explanation:
+{"lines":[{"text":"...","x":0,"y":0,"w":0,"h":0,"font_size_pt":11,"bold":false,"italic":false,"color":"000000"}]}
+
+STRICT RULES:
+- Each VISUAL LINE of text = one separate entry. NEVER merge multiple lines into one entry. NEVER use \\n inside text.
+- If one visual row contains separate columns/cells with a big horizontal gap, output each column segment as its own entry.
+- x, y = top-left corner of THAT LINE's text, normalized 0-1000 relative to page width/height.
+- w = tight width of exactly that line's text, nothing more. h = height of the tallest character in that line (cap height to descender), nothing more. NO padding.
+- font_size_pt = real font size estimate in points (page is ${Math.round(hPt)} pt tall). Keep it consistent for identically-sized text.
+- OCR text EXACTLY in original language and script. Do NOT translate. Do NOT normalize.
+- color = 6-digit hex of the text color, no #.
+- Include ALL text: headers, footers, stamps, table cells, page numbers.`;
+
+    const body = {
+      model: model, temperature: 0, max_tokens: 8000,
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url: dataUrl } }
+      ]}]
+    };
+
+    let blocks = [];
+    for (let attempt = 1; attempt <= 2; attempt++){
+      if (_shouldStop()) break;
       const resp = await _visionFetch(body);
-      if (!resp.ok){ const t = await resp.text();
-        throw new Error('OpenRouter HTTP ' + resp.status + ': ' + t.slice(0,300)); }
-      const data = await resp.json();
-      const choice = (data.choices && data.choices[0]) || {};
-      const textContent = (choice.message && choice.message.content) || '';
-      const wasTruncated = choice.finish_reason === 'length';
-      const imagesArr = (choice.message && choice.message.images) || [];
-      let resultImage = null;
-      if (imagesArr.length > 0)
-        resultImage = (imagesArr[0].image_url && imagesArr[0].image_url.url) || imagesArr[0].url || null;
-      let parsedJson = null;
-      let cleaned = String(textContent).trim()
-        .replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
-      try { parsedJson = JSON.parse(cleaned); }
-      catch (_){
-        const f = cleaned.indexOf('{'), l = cleaned.lastIndexOf('}');
-        if (f !== -1 && l > f){ try { parsedJson = JSON.parse(cleaned.substring(f, l+1)); } catch (_2){} }
+      if (!resp.ok){
+        const t = await resp.text();
+        throw new Error('OpenRouter HTTP ' + resp.status + ': ' + t.slice(0, 300));
       }
-      const tb = parsedJson ? (parsedJson.text_blocks || parsedJson.text_lines ||
-        parsedJson.textBlocks || parsedJson.lines || parsedJson.blocks || []) : [];
-      return { textBlocks: tb, resultImage: resultImage, wasTruncated: wasTruncated };
+      const data = await resp.json();
+      let raw = (data.choices && data.choices[0] && data.choices[0].message.content) || '';
+      raw = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
+      const a = raw.indexOf('{'), b = raw.lastIndexOf('}');
+      if (a !== -1 && b > a) raw = raw.slice(a, b + 1);
+      try {
+        const parsed = JSON.parse(raw);
+        const arr = parsed.lines || parsed.blocks || parsed.text_blocks;
+        if (!Array.isArray(arr)) throw new Error('no lines array');
+        blocks = arr.filter(function(L){ return L && L.text && String(L.text).trim(); });
+        break;
+      } catch (e){
+        log('P' + pageNo + ' parse fail (attempt ' + attempt + '): ' + e.message, 'warn');
+        if (attempt === 2) throw new Error('P' + pageNo + ': malformed JSON twice');
+      }
     }
 
-    let r = await runAttempt(8000);
-    let textBlocks = r.textBlocks, resultImage = r.resultImage;
-    // COST FIX (HTML se chhota deviation): retry SIRF tab jab text data
-    // adhoora ho (0 blocks ya truncated). Image missing par retry NAHI —
-    // model image return karta hi nahi, isliye HTML har page par bekaar ka
-    // dusra call kar raha tha (2x cost, koi fayda nahi).
-    if ((textBlocks.length === 0 || r.wasTruncated) && !_shouldStop()){
-      log('P' + pageNo + ': incomplete response — retry', 'warn');
-      try {
-        const r2 = await runAttempt(r.wasTruncated ? 16000 : 8000);
-        if (r2.textBlocks.length > 0) textBlocks = r2.textBlocks;
-        if (r2.resultImage) resultImage = r2.resultImage;
-      } catch (e){ log('P' + pageNo + ': retry fail — ' + e.message, 'warn'); }
-    }
-    if (textBlocks.length > 0) textBlocks = refineBlocksWithInk(cleanCanvas, textBlocks);
-    log('P' + pageNo + ': ' + textBlocks.length + ' text blocks' + (resultImage ? ', edited image mili' : ', background = original page (model ne edited image nahi di)'));
-    return { textBlocks: textBlocks, image: resultImage };
+    // GEOMETRY: box/size/color actual ink pixels se measure (Cordinates HTML)
+    if (blocks.length > 0) blocks = refineBlocksWithInk(cleanCanvas, blocks);
+    log('P' + pageNo + ': ' + blocks.length + ' text lines extracted');
+    return { textBlocks: blocks, image: null };
   }
 
   function normalizeBlockHtml(block, srcW, srcH, dstW, dstH, units){
@@ -711,6 +714,22 @@
     width = Math.min(width, dstW - left);
     height = Math.min(height, dstH - top);
 
+    // simple schema: font_size_pt already POINTS me hai (permille nahi)
+    if (block.font_size == null && block.font_size_pt != null){
+      const fp = parseFloat(block.font_size_pt) || 0;
+      if (fp > 0){
+        const st2 = String(block.style || '').toLowerCase();
+        let col2 = String(block.color || '000000').replace('#','').trim();
+        if (!/^[0-9a-fA-F]{6}$/.test(col2)) col2 = '000000';
+        const al2 = String(block.align || 'left').toLowerCase();
+        return { left: left, top: top, width: width, height: height,
+                 fontPx: Math.max(4, Math.min(96, fp)), color: col2,
+                 bold: !!block.bold || st2.indexOf('bold') !== -1,
+                 italic: !!block.italic || st2.indexOf('italic') !== -1,
+                 jc: al2==='center'?'center':al2==='right'?'right':al2==='justify'?'both':'left',
+                 text: String(block.text || '') };
+      }
+    }
     let fontPx = parseFloat(block.font_size) || 0;
     if (fontPx > 0){
       if (units === 'fraction') fontPx *= srcH;
@@ -1129,7 +1148,7 @@ Important:
 
       // HTML VERBATIM: ek hi combined call — JSON text_blocks + cleaned image
       const combined = await processPageCombined(cleanedDataUrl, cleanCanvas,
-        cleanCanvas.width, cleanCanvas.height, p, VISION_PROMPT1);
+        cleanCanvas.width, cleanCanvas.height, p, model, vp1.width, vp1.height);
       let lines = combined.textBlocks || [];
       // HTML: finalImage = combined call ki edited image, warna cleaned image
       let finalImageUrl = combined.image || cleanedDataUrl;
