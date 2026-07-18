@@ -596,6 +596,97 @@
   // Canvas-based (sync) — Image load nahi.
   // ==== HTML-PARITY PORT (Cordinates___Font_Size.html se verbatim) ====
   // normalizeBlock: permille/percent/fraction/pixel -> dst POINTS space.
+  // HTML VERBATIM (autoCleanImage): scan ke border/margin auto-crop.
+  // "content" pixel = koi bhi channel < 250. bottom/right par +1 padding.
+  function autoCleanImageCanvas(srcCanvas){
+    const W = srcCanvas.width, H = srcCanvas.height;
+    const d = srcCanvas.getContext('2d').getImageData(0, 0, W, H).data;
+    const hit = (i) => (d[i] < 250 || d[i+1] < 250 || d[i+2] < 250);
+    let top = 0, bottom = H, left = 0, right = W, found = false;
+    for (let y = 0; y < H; y++){ let h=false;
+      for (let x = 0; x < W; x++){ if (hit((y*W+x)*4)){ h=true; break; } }
+      if (h){ top = y; found = true; break; } }
+    for (let y = H-1; y >= 0; y--){ let h=false;
+      for (let x = 0; x < W; x++){ if (hit((y*W+x)*4)){ h=true; break; } }
+      if (h){ bottom = y; break; } }
+    for (let x = 0; x < W; x++){ let h=false;
+      for (let y = 0; y < H; y++){ if (hit((y*W+x)*4)){ h=true; break; } }
+      if (h){ left = x; break; } }
+    for (let x = W-1; x >= 0; x--){ let h=false;
+      for (let y = 0; y < H; y++){ if (hit((y*W+x)*4)){ h=true; break; } }
+      if (h){ right = x; break; } }
+    if (found){ top = Math.max(0, top); left = Math.max(0, left);
+      bottom = Math.min(H, bottom + 1); right = Math.min(W, right + 1); }
+    const nw = right - left, nh = bottom - top;
+    if (nw <= 0 || nh <= 0) return srcCanvas;
+    const out = document.createElement('canvas');
+    out.width = nw; out.height = nh;
+    out.getContext('2d').drawImage(srcCanvas, left, top, nw, nh, 0, 0, nw, nh);
+    return out;
+  }
+
+  // HTML VERBATIM: prompt1 (coordinate-detection), HTML ke textarea se as-is
+  const VISION_PROMPT1 = 'Return a single JSON object with exactly one top-level key named "text_blocks", whose value is an array of line objects (do NOT use any other key name like text_lines, textBlocks, or lines).\nProcess the image line-by-line (row by row) from top to bottom, scanning pixel by pixel. For each row:\nSTEP 1 — DETECT TEXT START & END: When text is detected in a row, locate the exact start pixel (leftmost x-coordinate) and end pixel (rightmost x-coordinate) of that text segment. Group consecutive rows that contain the same text to form complete lines.\nSTEP 2 — ADD TO JSON FIRST: For every complete text line identified, immediately extract and add its data to the JSON object with the following fields:\n\t1)paragraph_id: group reference (e.g. "p1", "p2") — all lines of the same paragraph/sentence share the same id; standalone lines get their own id\n\t2)line_index: line number within the paragraph (1, 2, 3...)\n\t3)top: vertical position on a normalized 0-1000 scale (0 = top edge, 1000 = bottom edge)\n\t4)left: horizontal position on a normalized 0-1000 scale (0 = left edge, 1000 = right edge)\n\t5)width: this line\'s bounding box width on the 0-1000 scale\n\t6)height: this line\'s bounding box height on the 0-1000 scale\n\t7)font_size: this line\'s text height on the 0-1000 scale (relative to image height)\n\t8)color: hex color code (e.g., #000000)\n\t9)style: "normal", "bold", "italic", or "bold italic"\n\t10)text: this line\'s exact text content (preserve original spelling)\n\t11)align: "left", "center", "right", or "justify"\n\nContinue this line-by-line process until ALL text has been detected, added to JSON.\n\nImportant:\n1)Process rows sequentially from top to bottom\n2)For each line, find the exact start pixel and end pixel of the text\n3)ALL coordinates use the 0-1000 normalized scale, NOT pixels — convert pixel positions to 0-1000 scale\n4)Every line must have its own accurate font_size, style and color\n5)Include EVERY text line (even small words, numbers, handwritten)\n6)Preserve original text exactly (don\'t correct spelling)\n7)Return ONLY valid JSON — no extra text, no markdown';
+  const HTML_MODEL = 'google/gemini-3.1-flash-image';
+  const HTML_PROMPT2 = 'Generate a clean version of this image without changing its original width and height. Completely remove all readable text, printed words, handwritten signatures, and any linguistic characters from the image, as if they never existed. Do not alter any non-readable elements like lines, patterns, textures, abstract shapes, or background designs. The output must have the exact same dimensions as the input and no new text should be added.';
+
+  // HTML VERBATIM (processPageCombined): EK call me JSON text_blocks +
+  // cleaned image. 0 blocks / image nahi / truncated -> ek retry.
+  // Phir refineBlocksWithInk CLEANED image par.
+  async function processPageCombined(dataUrl, cleanCanvas, imgW, imgH, pageNo, prompt1){
+    const combinedPrompt =
+      'You must do TWO things for this image in a single response:\n\n' +
+      'TASK 1 - TEXT DATA: Return valid JSON as your TEXT response with exactly one top-level key "text_blocks" (an array of line objects). Do NOT use any other key name.\n' +
+      prompt1 + '\n\n' +
+      'TASK 2 - CLEANED IMAGE: Also generate and return an EDITED IMAGE (same dimensions as input) with the text removed:\n' +
+      HTML_PROMPT2 + '\n\n' +
+      'Respond with BOTH: the JSON text_blocks data as your text output, AND the edited image as your image output, in this same response.';
+
+    async function runAttempt(maxTokens){
+      const body = { model: HTML_MODEL, modalities: ['text','image'],
+        max_tokens: maxTokens, temperature: 0,
+        messages: [{ role: 'user', content: [
+          { type: 'image_url', image_url: { url: dataUrl } },
+          { type: 'text', text: combinedPrompt } ]}] };
+      const resp = await _visionFetch(body);
+      if (!resp.ok){ const t = await resp.text();
+        throw new Error('OpenRouter HTTP ' + resp.status + ': ' + t.slice(0,300)); }
+      const data = await resp.json();
+      const choice = (data.choices && data.choices[0]) || {};
+      const textContent = (choice.message && choice.message.content) || '';
+      const wasTruncated = choice.finish_reason === 'length';
+      const imagesArr = (choice.message && choice.message.images) || [];
+      let resultImage = null;
+      if (imagesArr.length > 0)
+        resultImage = (imagesArr[0].image_url && imagesArr[0].image_url.url) || imagesArr[0].url || null;
+      let parsedJson = null;
+      let cleaned = String(textContent).trim()
+        .replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+      try { parsedJson = JSON.parse(cleaned); }
+      catch (_){
+        const f = cleaned.indexOf('{'), l = cleaned.lastIndexOf('}');
+        if (f !== -1 && l > f){ try { parsedJson = JSON.parse(cleaned.substring(f, l+1)); } catch (_2){} }
+      }
+      const tb = parsedJson ? (parsedJson.text_blocks || parsedJson.text_lines ||
+        parsedJson.textBlocks || parsedJson.lines || parsedJson.blocks || []) : [];
+      return { textBlocks: tb, resultImage: resultImage, wasTruncated: wasTruncated };
+    }
+
+    let r = await runAttempt(8000);
+    let textBlocks = r.textBlocks, resultImage = r.resultImage;
+    if ((textBlocks.length === 0 || !resultImage || r.wasTruncated) && !_shouldStop()){
+      log('P' + pageNo + ': incomplete response — retry', 'warn');
+      try {
+        const r2 = await runAttempt(r.wasTruncated ? 16000 : 8000);
+        if (r2.textBlocks.length > 0) textBlocks = r2.textBlocks;
+        if (r2.resultImage) resultImage = r2.resultImage;
+      } catch (e){ log('P' + pageNo + ': retry fail — ' + e.message, 'warn'); }
+    }
+    if (textBlocks.length > 0) textBlocks = refineBlocksWithInk(cleanCanvas, textBlocks);
+    log('P' + pageNo + ': ' + textBlocks.length + ' text blocks, image ' + (resultImage ? 'mili' : 'NAHI mili'));
+    return { textBlocks: textBlocks, image: resultImage };
+  }
+
   function normalizeBlockHtml(block, srcW, srcH, dstW, dstH, units){
     let left = parseFloat(block.left) || 0;
     let top = parseFloat(block.top) || 0;
@@ -721,8 +812,8 @@
       if (includeBg && pg.jpegBase64){
         const bgId = shapeId++;
         const relId = 'rIdImg' + (idx + 1);
-        relsXml += '<Relationship Id="' + relId + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/page' + (idx+1) + '.jpg"/>';
-        zip.file('word/media/page' + (idx+1) + '.jpg', pg.jpegBase64, { base64: true });
+        relsXml += '<Relationship Id="' + relId + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/page' + (idx+1) + '.png"/>';
+        zip.file('word/media/page' + (idx+1) + '.png', pg.jpegBase64, { base64: true });
         doc += '<w:r><w:rPr><w:noProof/></w:rPr><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" ' +
           'simplePos="0" relativeHeight="1" behindDoc="1" locked="0" layoutInCell="1" allowOverlap="1">' +
           '<wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>' +
@@ -1010,7 +1101,8 @@ Important:
     // taaki har page ka Gemini background apne page ke turant baad bane
     // aur stop-safe rahe. Sequence har haal me preserve (OCR->translate
     // ->image per page andar sequential hi hai).
-    const CONCURRENCY = withImage ? 1 : 3;
+    // HTML VERBATIM: pages strictly SEQUENTIAL (for loop, ek ke baad ek).
+    const CONCURRENCY = 1;
     const pageNums = Array.from({ length: pdf.numPages }, function (_, i) { return i + 1; });
     _newAbort();   // fresh AbortController is run ke liye
 
@@ -1019,67 +1111,38 @@ Important:
       if (_shouldStop()) { abortVision(); return { lines: [], wPt: 0, hPt: 0, jpegBase64: null, skipped: true }; }
       try {
       const page = await pdf.getPage(p);
+      // HTML VERBATIM: render scale 2.0 (fixed), PNG. Page points = scale 1.
       const vp1 = page.getViewport({ scale: 1 });
-      // render page to canvas (vision + optional background)
-      const scale = Math.min(3.0, 3000 / Math.max(vp1.width, vp1.height));
-      const vp = page.getViewport({ scale: scale });
+      const vp = page.getViewport({ scale: 2.0 });
       const rawCanvas = document.createElement('canvas');
       rawCanvas.width = Math.round(vp.width); rawCanvas.height = Math.round(vp.height);
       await page.render({ canvasContext: rawCanvas.getContext('2d'), viewport: vp }).promise;
-      const jpegBase64 = withImage ? rawCanvas.toDataURL('image/jpeg', 0.96).split(',')[1] : null;
 
-      const ocrDataUrl = rawCanvas.toDataURL('image/jpeg', 0.92);
-      let lines = await extractApiPage(apiKey, model, ocrDataUrl, vp1.width, vp1.height, p, rawCanvas);
+      // HTML VERBATIM: autoCleanImage -> cleaned canvas. Yahi image model ko
+      // jaati hai AUR yahi coordinates ka source space (srcW/srcH) hai.
+      const cleanCanvas = autoCleanImageCanvas(rawCanvas);
+      const cleanedDataUrl = cleanCanvas.toDataURL('image/png');
 
-      // STOP: OCR ke baad translate call se pehle dobara check — extra call bachao
-      if (_shouldStop()) { abortVision(); return { blocks: lines, srcW: rawCanvas.width, srcH: rawCanvas.height, wPt: vp1.width, hPt: vp1.height, jpegBase64: withImage ? jpegBase64 : null }; }
+      // HTML VERBATIM: ek hi combined call — JSON text_blocks + cleaned image
+      const combined = await processPageCombined(cleanedDataUrl, cleanCanvas,
+        cleanCanvas.width, cleanCanvas.height, p, VISION_PROMPT1);
+      let lines = combined.textBlocks || [];
+      // HTML: finalImage = model ki edited image, warna cleaned image
+      const finalImageUrl = combined.image || cleanedDataUrl;
+      const bgBase64 = withImage
+        ? (finalImageUrl.indexOf('base64,') !== -1 ? finalImageUrl.split('base64,')[1] : null)
+        : null;
 
+      if (_shouldStop()) { abortVision(); return { blocks: lines, srcW: cleanCanvas.width,
+        srcH: cleanCanvas.height, wPt: vp1.width, hPt: vp1.height, jpegBase64: bgBase64 }; }
+
+      // Lexora-only step: translation (HTML me nahi). Sirf .text badalta hai,
+      // geometry bilkul untouched.
       if (!keepOriginal && lines.length) {
-        // OCR aur translation ALAG — pehle OCR ho chuka, ab translate.
-        // Translation ke baad text lamba ho sakta hai -> autofit zaroori.
         await translateLinesInPlace(apiKey, model, lines, targetLang);
-        // HTML-PARITY: koi autofit/collision/wrap NAHI. Measured geometry
-        // jaisi hai waisi place hoti hai (yahi HTML ka perfect output deta hai).
       }
-      // NO-TRANSLATION (Box-tool parity): autofit NAHI — box size/coords
-      // bilkul vision-model ke diye jaise rehte hain, exact clarity.
-      // NO-TRANSLATION: box position/size exact — sirf overflow par font shrink
-      // HTML-PARITY: font-size measurement se aata hai, koi shrink/grow nahi.
 
-      // WITH IMAGE: text ko page image se cv2 inpaint se hata do — cleaned
-      // image background banega (text-boxes uske upar). lines pt-coords ko
-      // rendered-image px me convert karke server ko bhejte hain.
-      let bgBase64 = withImage ? jpegBase64 : null;
-      if (withImage && jpegBase64 && lines.length && !_shouldStop()) {
-        try {
-          // Blocks ab raw permille me hain — image px me convert karo
-          // (rawCanvas ke dimensions par, kyunki wahi image bheji jaati hai).
-          const textLines = lines.filter(function (B) { return B.text && B.text.trim(); });
-          const IW = rawCanvas.width, IH = rawCanvas.height;
-          const boxesPx = textLines.map(function (B) {
-            return { x: (B.left/1000)*IW, y: (B.top/1000)*IH,
-                     w: (B.width/1000)*IW, h: (B.height/1000)*IH };
-          });
-          // Gemini prompt me exact extracted text — taaki wo pehchan kar
-          // sirf wahi hataye aur aas-paas se predict karke fill kare.
-          const texts = textLines.map(function (B) { return B.text; });
-          const resp = await _inpaintFetch(jpegBase64, boxesPx, texts);
-          if (resp.ok) {
-            const j = await resp.json();
-            if (j && j.imageBase64) {
-              bgBase64 = j.imageBase64;
-              if (j.prompt) log('P' + p + ' image-edit prompt: ' + j.prompt);
-              log('P' + p + ': background text removed (' + (j.method || 'edit') + ')');
-            }
-          } else {
-            log('P' + p + ': inpaint skip (server) — original image use hogi', 'warn');
-          }
-        } catch (e) {
-          if (!_shouldStop()) log('P' + p + ': inpaint fail — original image: ' + e.message, 'warn');
-        }
-      }
-      log('P' + p + ': ' + lines.length + ' line-boxes' + (keepOriginal ? ' (OCR only, exact boxes)' : ' (OCR+translate)'));
-      return { blocks: lines, srcW: rawCanvas.width, srcH: rawCanvas.height,
+      return { blocks: lines, srcW: cleanCanvas.width, srcH: cleanCanvas.height,
                wPt: vp1.width, hPt: vp1.height, jpegBase64: bgBase64 };
       } catch (pageErr) {
         // stop ke wajah se abort -> skipped (partial output me ignore).
