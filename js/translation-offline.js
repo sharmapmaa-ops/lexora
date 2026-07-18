@@ -194,6 +194,23 @@
       sorted.sort(function(a, b){ return a.yPt - b.yPt || a.xPt - b.xPt; });
     }
 
+    // ---- 3b. FINAL PAGE CLAMP (cascade ke BAAD) ----
+    // Cascade B.yPt ko neeche dhakelta hai bina clamp ke, isliye boxes page
+    // se bahar nikal jaate the (728pt page par y=821 -> text gayab). Ab
+    // cascade ke baad har box ko page ke andar wapas laao.
+    lines.forEach(function(L){
+      if (L.yPt + L.hPt > pageH){
+        L.yPt = Math.max(0, pageH - L.hPt);
+        clamped++;
+      }
+      if (L.xPt + L.wPt > pageW){
+        L.xPt = Math.max(0, pageW - L.wPt);
+        clamped++;
+      }
+      if (L.yPt < 0){ L.yPt = 0; clamped++; }
+      if (L.xPt < 0){ L.xPt = 0; clamped++; }
+    });
+
     // ---- 4. reading order (anchor emit order = logical flow) ----
     const rtlPage = lines.filter(function(L){ return L.rtl; }).length > lines.length / 2;
     lines.sort(function(a, b){
@@ -600,7 +617,10 @@
       if (bw <= 0 || bh <= 0) return blk;
 
       const ex = Math.max(10, Math.round(bw * 0.05 + bh * 0.5));
-      const ey = Math.max(6, Math.round(bh * 0.3));
+      // vertical margin CHHOTA: manuscript me lines paas-paas hoti hain,
+      // bada margin upar/neeche ki line ke ascender/descender pakad leta tha
+      // (boxes 2-3x tall -> overlap -> cascade -> page se bahar).
+      const ey = Math.max(2, Math.round(bh * 0.12));
       const x0 = clampV(Math.round(bx - ex), 0, W - 1);
       const y0 = clampV(Math.round(by - ey), 0, H - 1);
       const x1 = clampV(Math.round(bx + bw + ex), 0, W - 1);
@@ -654,7 +674,7 @@
             }
             const cw = mxx - mnx + 1, ch = mxy - mny + 1;
             const thin = ch <= 5 || cw <= 5;
-            const huge = ch > 3 * Math.max(bh, 20);
+            const huge = ch > 1.5 * Math.max(bh, 10);
             const intersects = !(mxx < seedX0 || mnx > seedX0 + bw || mxy < seedY0 || mny > seedY0 + bh);
             if (intersects && !thin && !huge){
               if (!tight) tight = [mnx, mxx, mny, mxy];
@@ -676,18 +696,22 @@
       const mLeft = x0 + tight[0], mTop = y0 + tight[2];
       const mW = tight[1] - tight[0] + 1, mH = tight[3] - tight[2] + 1;
 
-      // GUARD 1 — MERGED COMPONENT REJECT: agar measured box model ke box se
-      // bahut bada ho, to flood-fill ne aas-paas ki line/border/illustration
-      // ko jod diya hai (100pt-tall boxes wala bug). Aisi measurement bharosa
-      // ke laayak nahi — model ka box hi rakho.
-      if (mH > bh * 1.8 || mW > bw * 1.6) return blk;
+      // GUARD 1 — MERGED COMPONENT REJECT: measured box model se bahut bada
+      // ho to flood-fill ne padosi line/border/illustration jod di hai.
+      if (mH > bh * 1.5 || mW > bw * 1.5) return blk;
 
       const out = Object.assign({}, blk);
-      // Ink measurement sirf POSITION + SIZE ke liye (yahi reliable hai).
+      // GUARD 2 — SIRF HORIZONTAL measurement lo (left + width). Text lines
+      // horizontally alag hoti hain isliye start/end pixel reliable hai —
+      // yahi user ka asli issue tha (width/position galat). VERTICAL (top/
+      // height) model ka hi rakho: crowded manuscript lines me ink-measure
+      // padosi line pakad leta tha -> 2-3x tall boxes -> overlap -> page
+      // se bahar. Height layout/collision drive karti hai, isliye safe.
       out.left = mLeft / W * 1000;
-      out.top = mTop / H * 1000;
       out.width = mW / W * 1000;
-      out.height = mH / H * 1000;
+      // measured height sirf tab lo jab wo model ke kareeb ho (sanity)
+      const mHp = mH / H * 1000, bHp = parseFloat(Ht) || 0;
+      if (bHp > 0 && mHp <= bHp * 1.15) out.height = mHp;
 
       // GUARD 2 — FONT SIZE override NAHI. measured height me diacritics/
       // ascenders/descenders shamil hote hain, isliye height*0.8 bahut bada
