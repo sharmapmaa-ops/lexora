@@ -1,1059 +1,7768 @@
-/* translation-offline.js — Test.html offline mode ka EXACT verbatim logic
- * (pdf.js + JSZip, browser). window.buildOfflineDocxBlob(file, logFn) -> Blob */
-(function () {
-  'use strict';
-  const EMU = 12700;
-  const MIN_FONT_PT = 6;
-  const FONT_FLOOR_RATIO = 0.55;
-  let drawId = 100;
-  let _measureCtx = null;
-  let _log = function (m) { try { console.log(m); } catch (e) {} };
-  function log(m) { _log(m); }
+(function() {
+            "use strict";
 
-  // OPTION A: vision calls SERVER PROXY se jaati hain (/api/translation/
-  // vision-proxy). Key browser me nahi aati — server .env se lagti hai.
-  // Auth token app.js set karta hai (setVisionAuthToken).
-  let _authToken = '';
-  function setVisionAuthToken(t) { _authToken = t || ''; }
+            // ============================================================
+            // 1. JSON CONFIGURATION
+            // ============================================================
+            let MENU_CONFIG = null;
 
-  // STOP support: app.js ek shouldStop() callback deta hai. Stop dabate hi
-  // in-flight fetch abort ho jaati hai (paisa turant rukta hai) aur baaki
-  // pages skip. Jitne pages ho chuke unka partial docx banta hai.
-  let _shouldStop = function () { return false; };
-  let _abort = null;
-  function setStopCheck(fn) { _shouldStop = (typeof fn === 'function') ? fn : function () { return false; }; }
-  function _newAbort() { _abort = (typeof AbortController !== 'undefined') ? new AbortController() : null; return _abort; }
-  function abortVision() { try { if (_abort) _abort.abort(); } catch (e) {} }
+            // ============================================================
+            // 2. SERVICE FILES DATA
+            // ============================================================
+            let leaseFiles = [];
+            let translationFiles = [];
+            let nextLeaseFileId = 1;
+            let nextTranslationFileId = 1;
 
-  // WITH IMAGE (Option B): text-box regions ko page image se cv2 se hata kar
-  // clean background wapas laata hai (server /inpaint-proxy). Fail ho to
-  // original image hi use hoti hai (graceful).
-  async function _inpaintFetch(imageBase64, boxes, texts) {
-    const headers = { 'Content-Type': 'application/json' };
-    if (_authToken) headers['Authorization'] = 'Bearer ' + _authToken;
-    const init = { method: 'POST', headers: headers,
-      body: JSON.stringify({ imageBase64: imageBase64, boxes: boxes, texts: texts || [] }) };
-    if (_abort) init.signal = _abort.signal;
-    return fetch('/api/translation/inpaint-proxy', init);
-  }
+            // ============================================================
+            // 3. PAYMENT METHODS DATA
+            // ============================================================
+            let paymentMethods = [];
+            let nextPaymentId = 5;
 
-  async function _visionFetch(reqBody) {
-    const headers = { 'Content-Type': 'application/json' };
-    if (_authToken) headers['Authorization'] = 'Bearer ' + _authToken;
-    const init = { method: 'POST', headers: headers, body: JSON.stringify(reqBody) };
-    if (_abort) init.signal = _abort.signal;
-    return fetch('/api/translation/vision-proxy', init);
-  }
+            // ============================================================
+            // 4. PAYMENT HISTORY DATA
+            // ============================================================
+            let paymentHistory = [];
+            let nextTransactionId = 11;
 
-  function esc(s){
-    return String(s)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-      .replace(/"/g,'&quot;').replace(/'/g,'&apos;')
-      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,'');
-  }
+            // ============================================================
+            // 5. API KEYS DATA
+            // ============================================================
+            let apiKeys = [];
+            let nextApiKeyId = 1;
 
-  function hasRTL(s){ return /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/.test(s); }
+            // ============================================================
+            // 6. SERVICES API REFERENCE DATA
+            // ============================================================
+            let SERVICES_API_DATA = null;
 
-  function toHex(r,g,b){
-    // components 0..1 or 0..255 dono handle
-    if (r <= 1 && g <= 1 && b <= 1){ r*=255; g*=255; b*=255; }
-    return [r,g,b].map(v => Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join('').toUpperCase();
-  }
+            // ============================================================
+            // 6b. COMPANY DETAILS (logo, name, address, contact info, ...)
+            // ============================================================
+            let COMPANY_INFO = null;
+            let PLANS_DATA = [];
+            let planHistory = [];
 
-  function measureTextPt(text, sizePt, family, bold, italic){
-    if (!_measureCtx){
-      const c = document.createElement('canvas');
-      c.width = 8; c.height = 8;
-      _measureCtx = c.getContext('2d');
-    }
-    _measureCtx.font = (italic ? 'italic ' : '') + (bold ? 'bold ' : '') +
-      sizePt + 'px ' + (family || 'Arial') + ', Arial, sans-serif';
-    return _measureCtx.measureText(String(text)).width; // 1 canvas px == 1 pt yahan
-  }
-
-  // SIRF overflow-fix: text box-width se bahar ja raha ho to font
-  // proportionally chhota karo (floor 5pt). Position/box size same rehta hai.
-  // FIT-TO-BOX (user idea): box ki height/width almost sahi nikli hui hai.
-  // Minimum font (5pt) se shuru karke font BADHAO jab tak text box ki width
-  // YA height se overflow na ho — box ko maximum bharo. Ye shrinkOverflow se
-  // ulta hai (jo original font se ghatata tha); ye har box ko best-fit deta
-  // hai. Font ka original vision-size upper cap rehta hai (usse bada nahi).
-  function shrinkOverflow(lines){
-    lines.forEach(function(L){
-      if (!L.runs || !L.runs.length) return;
-      var t = L.runs.map(function(r){ return r.text || ''; }).join('');
-      if (!t.trim() || !(L.wPt > 0) || !(L.hPt > 0)) return;
-      var r0 = L.runs[0] || {};
-      var fam = r0.family || 'Arial', bold = !!r0.bold, italic = !!r0.italic;
-      // upper cap = vision-reported font (usse bada text box me nahi ghusana)
-      var cap = Math.max.apply(null, L.runs.map(function(r){ return r.sizePt || 11; }));
-      cap = Math.min(cap, L.hPt * 1.15);          // height se bada font pointless
-      var MIN = 5;
-      // best size dhundo: sabse bada size jispe width AND height fit ho
-      var best = MIN;
-      for (var sz = MIN; sz <= cap; sz += 0.5){
-        var w = measureTextPt(t, sz, fam, bold, italic);
-        var fitsW = w <= L.wPt;
-        var fitsH = sz <= L.hPt * 1.05;           // single line height check
-        if (fitsW && fitsH) best = sz; else break;
-      }
-      // sab runs ko best size par set karo (proportion preserve: agar runs
-      // ke alag sizes the to sabse bade ko best, baaki ko usi ratio me)
-      if (best !== cap){
-        var ratio = best / cap;
-        L.runs.forEach(function(r){
-          r.sizePt = Math.max(MIN, Math.min(cap, (r.sizePt || 11) * ratio));
-        });
-      }
-    });
-  }
-
-  function autofitPage(lines, pageW, pageH, pageNo){
-    let shrunk = 0, wrapped = 0, moved = 0, clamped = 0;
-
-    // ---- 1. per-box overflow fit ----
-    lines.forEach(function(L){
-      const r = L.runs[0];
-      if (!r || !r.text) return;
-      const fs0 = r.sizePt || 11;
-      const floor = Math.max(MIN_FONT_PT, fs0 * FONT_FLOOR_RATIO);
-      const w = measureTextPt(r.text, fs0, r.family, r.bold, r.italic);
-      if (w > L.wPt * 1.02){
-        const fit = fs0 * (L.wPt / w);
-        if (fit >= floor){
-          r.sizePt = Math.max(MIN_FONT_PT, Math.floor(fit * 10) / 10);
-          shrunk++;
-        } else {
-          // itna lamba (translated) text — floor font par wrap + height grow
-          r.sizePt = Math.floor(floor * 10) / 10;
-          const wf = measureTextPt(r.text, r.sizePt, r.family, r.bold, r.italic);
-          const nLines = Math.max(2, Math.ceil(wf / Math.max(1, L.wPt)));
-          L.wrapMulti = true;
-          L.hPt = Math.max(L.hPt, nLines * r.sizePt * 1.22);
-          wrapped++;
-        }
-      }
-      // box height font se chhota ho to text clip hota hai — uthao
-      if (!L.wrapMulti && L.hPt < r.sizePt * 1.05) L.hPt = r.sizePt * 1.15;
-    });
-
-    // ---- 2. page-bounds clamp ----
-    lines.forEach(function(L){
-      const r = L.runs[0];
-      if (L.xPt < 0){ L.xPt = 0; clamped++; }
-      if (L.yPt < 0){ L.yPt = 0; clamped++; }
-      if (L.xPt + L.wPt > pageW){
-        const over = L.xPt + L.wPt - pageW;
-        if (over <= L.wPt * 0.15 && L.xPt - over >= 0){
-          L.xPt -= over;                                  // halka shift kaafi hai
-        } else if (r){
-          const avail = Math.max(8, pageW - L.xPt);
-          const w = measureTextPt(r.text, r.sizePt, r.family, r.bold, r.italic);
-          if (w > avail) r.sizePt = Math.max(MIN_FONT_PT, r.sizePt * avail / w);
-          L.wPt = avail;
-        }
-        clamped++;
-      }
-      if (L.yPt + L.hPt > pageH){ L.yPt = Math.max(0, pageH - L.hPt); clamped++; }
-    });
-
-    // ---- 3. collision resolution (top→bottom cascade, max 3 passes) ----
-    const sorted = lines.slice().sort(function(a, b){ return a.yPt - b.yPt || a.xPt - b.xPt; });
-    for (let pass = 0; pass < 3; pass++){
-      let any = false;
-      for (let i = 0; i < sorted.length; i++){
-        const A = sorted[i];
-        for (let j = i + 1; j < sorted.length; j++){
-          const B = sorted[j];
-          if (B.yPt >= A.yPt + A.hPt) break;              // yPt-sorted → aage sab neeche
-          const hx = Math.min(A.xPt + A.wPt, B.xPt + B.wPt) - Math.max(A.xPt, B.xPt);
-          if (hx <= Math.min(A.wPt, B.wPt) * 0.3) continue; // side-by-side columns — theek
-          const overlap = (A.yPt + A.hPt) - B.yPt;
-          if (overlap <= Math.min(A.hPt, B.hPt) * 0.18) continue; // chhota OCR jitter — visually ok
-          const shift = overlap + 0.5;
-          if (A.wrapMulti || shift <= B.hPt * 0.9){
-            // A wrap se grow hua ho to poora cascade-shift hi sahi hai;
-            // warna chhota shift (<= 0.9x line height) layout ko disturb nahi karta
-            B.yPt += shift; moved++; any = true;
-          } else {
-            // native OCR bbox slop: A ki box B ke shuru tak trim karo agar
-            // A ka font phir bhi fit rehta hai — position bilkul nahi hilti
-            const trimmed = B.yPt - A.yPt - 0.5;
-            if (trimmed >= (A.runs[0] ? A.runs[0].sizePt * 1.05 : 8)){
-              A.hPt = trimmed; shrunk++; any = true;
-            } else if (B.runs[0]){
-              B.runs[0].sizePt = Math.max(MIN_FONT_PT, B.runs[0].sizePt * 0.9);
-              B.hPt = Math.max(B.runs[0].sizePt * 1.15, 6);
-              B.yPt = A.yPt + A.hPt + 0.5;                // resolve guaranteed
-              moved++; any = true;
+            // Item 3 - looks up the current user's assigned plan (users.json
+            // "plan" field) in plans.json; falls back to "Free" (or the
+            // first plan available) if the user has no plan set, so this
+            // never breaks for older accounts created before plans.json
+            // existed.
+            function getMyPlan() {
+                const planName = (profileData && profileData.plan) || 'Free';
+                return PLANS_DATA.find(p => p.name === planName) ||
+                    PLANS_DATA.find(p => p.name === 'Free') ||
+                    PLANS_DATA[0] ||
+                    { name: 'Free', pricePerLeaseAbstraction: 1, pricePerTranslation: 1 };
             }
-          }
-        }
-      }
-      if (!any) break;
-      sorted.sort(function(a, b){ return a.yPt - b.yPt || a.xPt - b.xPt; });
-    }
 
-    // ---- 4. reading order (anchor emit order = logical flow) ----
-    const rtlPage = lines.filter(function(L){ return L.rtl; }).length > lines.length / 2;
-    lines.sort(function(a, b){
-      const ay = a.yPt + a.hPt / 2, by = b.yPt + b.hPt / 2;
-      if (Math.abs(ay - by) > Math.min(a.hPt, b.hPt) * 0.6) return ay - by;
-      return rtlPage ? (b.xPt - a.xPt) : (a.xPt - b.xPt);
-    });
-
-    if (shrunk || wrapped || moved || clamped){
-      log('P' + pageNo + ' layout-fit: ' + shrunk + ' font-scaled, ' + wrapped + ' wrapped, ' +
-        moved + ' repositioned, ' + clamped + ' page-clamped', 'info');
-    }
-  }
-
-  function textBoxXml(line){
-    drawId++;
-    const x  = Math.max(0, Math.round(line.xPt * EMU));
-    const y  = Math.max(0, Math.round(line.yPt * EMU));
-    const cx = Math.max(1, Math.round(line.wPt * EMU));
-    const cy = Math.max(1, Math.round(line.hPt * EMU));
-    const lineTw = Math.max(20, Math.round(line.hPt * 20)); // exact line height (twips)
-
-    const order = line.rtl ? line.runs.slice().reverse() : line.runs;
-    const runsXml = order.map(function(r){
-      const sz  = Math.max(2, Math.round((r.sizePt || 11) * 2)); // half-points, fractional preserved
-      const col = /^[0-9A-F]{6}$/i.test(r.color || '') ? r.color.toUpperCase() : '000000';
-      const fam = esc(r.family || 'Arial');
-      return '<w:r><w:rPr>' +
-        '<w:rFonts w:ascii="' + fam + '" w:hAnsi="' + fam + '" w:cs="' + fam + '"/>' +
-        (r.bold ? '<w:b/><w:bCs/>' : '') +
-        (r.italic ? '<w:i/><w:iCs/>' : '') +
-        '<w:color w:val="' + col + '"/>' +
-        '<w:sz w:val="' + sz + '"/><w:szCs w:val="' + sz + '"/>' +
-        (line.rtl ? '<w:rtl/>' : '') +
-        '</w:rPr><w:t xml:space="preserve">' + esc(r.text) + '</w:t></w:r>';
-    }).join('');
-
-    return '<w:r><w:drawing>' +
-      '<wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="' + drawId +
-      '" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">' +
-      '<wp:simplePos x="0" y="0"/>' +
-      '<wp:positionH relativeFrom="page"><wp:posOffset>' + x + '</wp:posOffset></wp:positionH>' +
-      '<wp:positionV relativeFrom="paragraph"><wp:posOffset>' + y + '</wp:posOffset></wp:positionV>' +
-      '<wp:extent cx="' + cx + '" cy="' + cy + '"/>' +
-      '<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>' +
-      '<wp:docPr id="' + drawId + '" name="L' + drawId + '"/><wp:cNvGraphicFramePr/>' +
-      '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
-      '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">' +
-      '<wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr>' +
-      '<a:xfrm><a:off x="0" y="0"/><a:ext cx="' + cx + '" cy="' + cy + '"/></a:xfrm>' +
-      '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln>' +
-      '</wps:spPr><wps:txbx><w:txbxContent>' +
-      '<w:p><w:pPr>' +
-      '<w:spacing w:before="0" w:after="0" w:line="' + lineTw + '" w:lineRule="exact"/>' +
-      (line.rtl ? '<w:bidi/>' : '') +
-      '<w:jc w:val="both"/></w:pPr>' + runsXml + '</w:p>' +
-      '</w:txbxContent></wps:txbx>' +
-      // wrap="none": text apni width se wrap NAHI hoga, box size exact rahega
-      '<wps:bodyPr rot="0" vert="horz" wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t"><a:noAutofit/></wps:bodyPr>' +
-      '</wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>';
-  }
-
-  function bgImageXml(relId, wPt, hPt){
-    drawId++;
-    const cx = Math.round(wPt * EMU), cy = Math.round(hPt * EMU);
-    return '<w:r><w:drawing>' +
-      '<wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="1" behindDoc="1" locked="0" layoutInCell="1" allowOverlap="1">' +
-      '<wp:simplePos x="0" y="0"/>' +
-      '<wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>' +
-      '<wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV>' +
-      '<wp:extent cx="' + cx + '" cy="' + cy + '"/>' +
-      '<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>' +
-      '<wp:docPr id="' + drawId + '" name="BG' + drawId + '"/><wp:cNvGraphicFramePr/>' +
-      '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
-      '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
-      '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
-      '<pic:nvPicPr><pic:cNvPr id="' + drawId + '" name="bg.jpg"/><pic:cNvPicPr/></pic:nvPicPr>' +
-      '<pic:blipFill><a:blip r:embed="' + relId + '"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
-      '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + cx + '" cy="' + cy + '"/></a:xfrm>' +
-      '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>' +
-      '</pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>';
-  }
-
-  function buildDocx(pages, includeBg){
-    const zip = new JSZip();
-    const wPt = pages[0].wPt, hPt = pages[0].hPt;
-    const pgW = Math.round(wPt * 20), pgH = Math.round(hPt * 20);
-
-    let bodyXml = '';
-    const rels = [];
-    // MULTI-PAGE FIX: har page = apna paragraph + apna page-sized section.
-    // positionV paragraph-relative hai, isliye har page ke boxes us page ke
-    // paragraph se position lete hain — warna page 2 ke boxes page 1 par
-    // overlap/shift ho jaate the (page 1 blank dikhta tha).
-    function sectPrXml(pg){
-      const w = Math.round(pg.wPt * 20), h = Math.round(pg.hPt * 20);
-      return '<w:pgSz w:w="' + w + '" w:h="' + h + '"/>' +
-        '<w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/>';
-    }
-    pages.forEach(function(pg, i){
-      let runs = '';
-      if (includeBg && pg.jpegBase64){
-        const relId = 'rIdImg' + (i + 1);
-        rels.push({ id: relId, file: 'media/page' + (i + 1) + '.jpg', data: pg.jpegBase64 });
-        runs += bgImageXml(relId, pg.wPt, pg.hPt);
-      }
-      pg.lines.forEach(function(L){
-        if (L.runs.some(r => r.text && r.text.trim())) runs += textBoxXml(L);
-      });
-      if (i < pages.length - 1){
-        bodyXml += '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="' +
-          Math.round(pg.hPt * 20) + '" w:lineRule="exact"/>' +
-          '<w:sectPr>' + sectPrXml(pg) + '<w:type w:val="nextPage"/></w:sectPr>' +
-          '</w:pPr>' + runs + '</w:p>';
-      } else {
-        bodyXml += '<w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr>' + runs + '</w:p>';
-      }
-    });
-
-    const documentXml =
-'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
-'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" ' +
-'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
-'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
-'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" ' +
-'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" ' +
-'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" ' +
-'xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" ' +
-'mc:Ignorable="w14 wp14">' +
-'<w:body>' + bodyXml +
-'<w:sectPr>' + sectPrXml(pages[pages.length - 1]) + '</w:sectPr></w:body></w:document>';
-
-    let relsXml =
-'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-'<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>';
-    rels.forEach(function(r){
-      relsXml += '<Relationship Id="' + r.id + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="' + r.file + '"/>';
-    });
-    relsXml += '</Relationships>';
-
-    zip.file('[Content_Types].xml',
-'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
-'<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
-'<Default Extension="xml" ContentType="application/xml"/>' +
-'<Default Extension="jpg" ContentType="image/jpeg"/>' +
-'<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
-'<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
-'</Types>');
-
-    zip.file('_rels/.rels',
-'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
-'</Relationships>');
-
-    zip.file('word/styles.xml',
-'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-'<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
-'<w:docDefaults><w:rPrDefault><w:rPr>' +
-'<w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="22"/><w:szCs w:val="22"/>' +
-'</w:rPr></w:rPrDefault></w:docDefaults></w:styles>');
-
-    zip.file('word/document.xml', documentXml);
-    zip.file('word/_rels/document.xml.rels', relsXml);
-    rels.forEach(function(r){ zip.file('word/' + r.file, r.data, { base64: true }); });
-
-    return zip.generateAsync({ type: 'blob',
-      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-  }
-
-  async function extractColors(page){
-    const F = pdfjsLib.OPS;
-    const ops = await page.getOperatorList();
-    const out = [];
-    let cur = '000000';
-    for (let i = 0; i < ops.fnArray.length; i++){
-      const fn = ops.fnArray[i], args = ops.argsArray[i] || [];
-      if (fn === F.setFillRGBColor && args.length >= 3){
-        cur = toHex(args[0], args[1], args[2]);
-      } else if (fn === F.setFillGray && args.length >= 1){
-        cur = toHex(args[0], args[0], args[0]);
-      } else if (fn === F.setFillCMYKColor && args.length >= 4){
-        const c=args[0],m=args[1],y=args[2],k=args[3];
-        cur = toHex((1-c)*(1-k),(1-m)*(1-k),(1-y)*(1-k));
-      } else if (fn === F.showText || fn === F.showSpacedText ||
-                 fn === F.nextLineShowText || fn === F.nextLineSetSpacingShowText){
-        out.push(cur);
-      }
-    }
-    return out;
-  }
-
-  async function resolveFonts(page, items){
-    const map = {};
-    const names = [...new Set(items.map(i => i.fontName))];
-    for (const n of names){
-      let info = { bold: false, italic: false, family: null };
-      try {
-        const f = await new Promise(function(res){
-          try { page.commonObjs.get(n, res); } catch(e){ res(null); }
-          setTimeout(() => res(null), 300);
-        });
-        if (f && f.name){
-          let ps = f.name.replace(/^[A-Z]{6}\+/, ''); // subset prefix hatao
-          info.bold = /bold|black|heavy/i.test(ps);
-          info.italic = /italic|oblique/i.test(ps);
-          info.family = ps.split(/[-,]/)[0].replace(/(MT|PS|Std|Pro)$/,'').trim();
-        }
-      } catch(e){}
-      map[n] = info;
-    }
-    return map;
-  }
-
-  function genericFamily(cssFamily){
-    if (!cssFamily) return 'Arial';
-    if (/serif/i.test(cssFamily) && !/sans/i.test(cssFamily)) return 'Times New Roman';
-    if (/mono/i.test(cssFamily)) return 'Courier New';
-    return 'Arial';
-  }
-
-  async function extractOfflinePage(page, vp1, pageNo){
-    const tc = await page.getTextContent();
-    let colors = [];
-    try { colors = await extractColors(page); } catch(e){ log('P' + pageNo + ' color extract fail: ' + e.message, 'warn'); }
-    const colorOk = colors.length === tc.items.length;
-    if (!colorOk && colors.length) log('P' + pageNo + ': color count mismatch (' + colors.length + ' vs ' + tc.items.length + '), default black', 'warn');
-
-    const fontMap = await resolveFonts(page, tc.items);
-    const pageH = vp1.height;
-
-    // Har text item → run with exact metrics
-    const runs = [];
-    tc.items.forEach(function(it, idx){
-      if (!it.str || !it.str.trim()) return;
-      const tr = it.transform;
-      const fontH = Math.hypot(tr[2], tr[3]) || Math.abs(tr[3]) || 10; // exact font size (pt)
-      const st = tc.styles[it.fontName] || {};
-      const fi = fontMap[it.fontName] || {};
-      runs.push({
-        text: it.str,
-        x: tr[4],
-        yBase: tr[5],                                  // baseline (PDF coords, bottom-origin)
-        w: it.width || (it.str.length * fontH * 0.5),
-        sizePt: fontH,
-        ascent: (typeof st.ascent === 'number' && st.ascent > 0) ? st.ascent : 0.85,
-        descent: (typeof st.descent === 'number') ? Math.abs(st.descent) : 0.2,
-        bold: !!fi.bold,
-        italic: !!fi.italic,
-        family: fi.family || genericFamily(st.fontFamily),
-        color: colorOk ? (colors[idx] || '000000') : '000000'
-      });
-    });
-
-    // ---- Line grouping: same baseline ke runs ek line ----
-    runs.sort(function(a,b){ return (b.yBase - a.yBase) || (a.x - b.x); });
-    const rows = [];
-    runs.forEach(function(r){
-      const row = rows.find(function(R){ return Math.abs(R.yBase - r.yBase) < Math.max(2, r.sizePt * 0.4); });
-      if (row){ row.items.push(r); row.yBase = (row.yBase + r.yBase) / 2; }
-      else rows.push({ yBase: r.yBase, items: [r] });
-    });
-
-    // ---- Har row ko horizontal gaps par split (table columns alag boxes) ----
-    const lines = [];
-    rows.forEach(function(R){
-      R.items.sort(function(a,b){ return a.x - b.x; });
-      let seg = [R.items[0]];
-      for (let i = 1; i < R.items.length; i++){
-        const prev = seg[seg.length - 1], cur = R.items[i];
-        const gap = cur.x - (prev.x + prev.w);
-        if (gap > Math.max(prev.sizePt, cur.sizePt) * 1.5){
-          lines.push(makeLine(seg, pageH)); seg = [cur];
-        } else {
-          // agar visible gap hai par space missing, ek space daal do
-          if (gap > Math.max(prev.sizePt, cur.sizePt) * 0.15 && !/\s$/.test(prev.text) && !/^\s/.test(cur.text)){
-            prev.text += ' ';
-          }
-          seg.push(cur);
-        }
-      }
-      lines.push(makeLine(seg, pageH));
-    });
-    return lines;
-  }
-
-  function makeLine(seg, pageH){
-    const x0 = Math.min.apply(null, seg.map(r => r.x));
-    const x1 = Math.max.apply(null, seg.map(r => r.x + r.w));
-    const maxAsc  = Math.max.apply(null, seg.map(r => r.ascent  * r.sizePt));
-    const maxDesc = Math.max.apply(null, seg.map(r => r.descent * r.sizePt));
-    const yBase = seg[0].yBase;
-    const rtl = seg.some(r => hasRTL(r.text));
-    return {
-      xPt: x0,
-      yPt: pageH - yBase - maxAsc,      // top-left, exact — koi shift nahi
-      wPt: x1 - x0,                      // sirf sentence jitni width
-      hPt: maxAsc + maxDesc,             // sabse bade text ki height
-      rtl: rtl,
-      runs: seg.map(function(r){
-        return { text: r.text, sizePt: r.sizePt, bold: r.bold, italic: r.italic, color: r.color, family: r.family };
-      })
-    };
-  }
-
-  async function buildOfflineDocxBlob(file, logFn) {
-    if (typeof logFn === 'function') _log = logFn;
-    if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js load nahi hua');
-    if (typeof JSZip === 'undefined') throw new Error('JSZip load nahi hua');
-    const buf = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-    let sampleItems = 0;
-    for (let sp = 1; sp <= Math.min(2, pdf.numPages); sp++) {
-      const tc0 = await (await pdf.getPage(sp)).getTextContent();
-      sampleItems += tc0.items.filter(function (it) { return it.str && it.str.trim(); }).length;
-    }
-    if (sampleItems < 3)
-      throw new Error('Ye PDF Scanned/Image-based lagti hai — offline (Hybrid off) mode sirf Text-based PDFs process karta hai. Hybrid enable karke retry karo.');
-    const pages = [];
-    let totalLines = 0;
-    for (let p = 1; p <= pdf.numPages; p++) {
-      const page = await pdf.getPage(p);
-      const vp1 = page.getViewport({ scale: 1 });
-      let lines = await extractOfflinePage(page, vp1, p);
-      if (lines.length) autofitPage(lines, vp1.width, vp1.height, p);
-      totalLines += lines.length;
-      pages.push({ lines: lines, wPt: vp1.width, hPt: vp1.height, jpegBase64: null });
-      log('P' + p + ': ' + lines.length + ' text line(s) extracted (no API)');
-    }
-    if (totalLines === 0)
-      throw new Error('Is PDF me koi selectable text nahi mila — offline mode sirf Text-based PDFs process karta hai');
-    return buildDocx(pages, false);
-  }
-
-
-  // ===================================================================
-  //  HYBRID (with API) — VISION OCR path, Test.html se verbatim.
-  //  Line-level blocks (Box-tool jaisa), single vision call = fast.
-  //  Ensemble/High-Accuracy jaan-boojh kar NAHI (wo slow karte hain).
-  // ===================================================================
-
-  async function mapWithConcurrency(items, limit, worker, onProgress){
-    const results = new Array(items.length);
-    let next = 0, done = 0;
-    async function run(){
-      while (next < items.length){
-        const i = next++;
-        results[i] = await worker(items[i], i);
-        done++;
-        if (onProgress) onProgress(done, items.length);
-      }
-    }
-    const pool = [];
-    for (let w = 0; w < Math.min(limit, items.length); w++) pool.push(run());
-    await Promise.all(pool);
-    return results;
-  }
-
-
-  // detectCoordUnits — HTML se. coords ka scale pehchano (fraction/percent/permille/pixel)
-  function detectCoordUnits(blocks){
-    let maxVal = 0;
-    for (const b of blocks){
-      const l = parseFloat(b.left != null ? b.left : b.x) || 0;
-      const t = parseFloat(b.top  != null ? b.top  : b.y) || 0;
-      const w = parseFloat(b.width  != null ? b.width  : b.w) || 0;
-      const h = parseFloat(b.height != null ? b.height : b.h) || 0;
-      maxVal = Math.max(maxVal, l + w, t + h);
-    }
-    if (maxVal <= 1.5) return 'fraction';
-    if (maxVal <= 110) return 'percent';
-    if (maxVal <= 1010) return 'permille';
-    return 'pixel';
-  }
-
-  // refineBlocksWithInk — HTML reference se verbatim core. Model ki approx
-  // box lekar image ke ACTUAL ink pixels ko flood-fill se measure karta hai:
-  // exact bounding box, color (median), font-size (= measured height * 0.8).
-  // Isse coords/width/size/color guess se MEASUREMENT ban jaate hain.
-  // Canvas-based (sync) — Image load nahi.
-  function refineBlocksWithInk(srcCanvas, textBlocks){
-    const W = srcCanvas.width, H = srcCanvas.height;
-    const ctx = srcCanvas.getContext('2d');
-    const d = ctx.getImageData(0, 0, W, H).data;
-    const units = detectCoordUnits(textBlocks);
-    const toPx = (v, total) =>
-      units === 'fraction' ? v * total :
-      units === 'percent'  ? v / 100 * total :
-      units === 'permille' ? v / 1000 * total : v;
-    const clampV = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-
-    return textBlocks.map(function(blk){
-      const L = (blk.left != null ? blk.left : blk.x);
-      const T = (blk.top  != null ? blk.top  : blk.y);
-      const Wd= (blk.width  != null ? blk.width  : blk.w);
-      const Ht= (blk.height != null ? blk.height : blk.h);
-      const bx = toPx(parseFloat(L) || 0, W);
-      const by = toPx(parseFloat(T) || 0, H);
-      const bw = toPx(parseFloat(Wd) || 0, W);
-      const bh = toPx(parseFloat(Ht) || 0, H);
-      if (bw <= 0 || bh <= 0) return blk;
-
-      const ex = Math.max(10, Math.round(bw * 0.05 + bh * 0.5));
-      const ey = Math.max(6, Math.round(bh * 0.3));
-      const x0 = clampV(Math.round(bx - ex), 0, W - 1);
-      const y0 = clampV(Math.round(by - ey), 0, H - 1);
-      const x1 = clampV(Math.round(bx + bw + ex), 0, W - 1);
-      const y1 = clampV(Math.round(by + bh + ey), 0, H - 1);
-      const ww = x1 - x0 + 1, wh = y1 - y0 + 1;
-      if (ww < 4 || wh < 4) return blk;
-
-      const ring = [];
-      for (let x = x0; x <= x1; x++) ring.push((y0 * W + x) * 4, (y1 * W + x) * 4);
-      for (let y = y0; y <= y1; y++) ring.push((y * W + x0) * 4, (y * W + x1) * 4);
-      ring.sort((a, b) => (d[a]+d[a+1]+d[a+2]) - (d[b]+d[b+1]+d[b+2]));
-      const mi = ring[ring.length >> 1];
-      const bg = [d[mi], d[mi+1], d[mi+2]];
-
-      const mask = new Uint8Array(ww * wh);
-      let ink = 0;
-      for (let y = 0; y < wh; y++){
-        for (let x = 0; x < ww; x++){
-          const idx = ((y0 + y) * W + (x0 + x)) * 4;
-          if (Math.abs(d[idx]-bg[0]) + Math.abs(d[idx+1]-bg[1]) + Math.abs(d[idx+2]-bg[2]) > 60){
-            mask[y * ww + x] = 1; ink++;
-          }
-        }
-      }
-      if (ink === 0 || ink / (ww * wh) > 0.6) return blk;
-
-      const seen = new Uint8Array(ww * wh);
-      const qx = new Int32Array(ww * wh), qy = new Int32Array(ww * wh);
-      const seedX0 = bx - x0, seedY0 = by - y0;
-      let tight = null;
-      const colorSamples = [];
-      for (let sy = 0; sy < wh; sy++){
-        for (let sx = 0; sx < ww; sx++){
-          if (mask[sy * ww + sx] && !seen[sy * ww + sx]){
-            let qh = 0, qt = 0;
-            qx[qt] = sx; qy[qt] = sy; qt++; seen[sy * ww + sx] = 1;
-            let mnx = sx, mxx = sx, mny = sy, mxy = sy;
-            const pts = [];
-            while (qh < qt){
-              const x = qx[qh], y = qy[qh]; qh++;
-              pts.push(y * ww + x);
-              if (x < mnx) mnx = x; if (x > mxx) mxx = x;
-              if (y < mny) mny = y; if (y > mxy) mxy = y;
-              const nb = [[x+1,y],[x-1,y],[x,y+1],[x,y-1]];
-              for (const c of nb){
-                const xx = c[0], yy = c[1];
-                if (xx >= 0 && yy >= 0 && xx < ww && yy < wh && mask[yy*ww+xx] && !seen[yy*ww+xx]){
-                  seen[yy*ww+xx] = 1; qx[qt] = xx; qy[qt] = yy; qt++;
+            function getServicePrice(serviceId, pageCount) {
+                const plan = getMyPlan();
+                const perUnit = serviceId === 'translation' ?
+                    (plan.pricePerTranslation != null ? plan.pricePerTranslation : 1) :
+                    (plan.pricePerLeaseAbstraction != null ? plan.pricePerLeaseAbstraction : 1);
+                // translation ka apna billing unit (per-page). lease ke liye
+                // plan.billingUnit. Translation = per-page (user spec).
+                const unit = serviceId === 'translation'
+                    ? (plan.translationBillingUnit || 'page')
+                    : (plan.billingUnit || 'document');
+                if (unit === 'page') {
+                    return perUnit * Math.max(1, pageCount || 1);
                 }
-              }
+                return perUnit;
             }
-            const cw = mxx - mnx + 1, ch = mxy - mny + 1;
-            const thin = ch <= 5 || cw <= 5;
-            const huge = ch > 3 * Math.max(bh, 20);
-            const intersects = !(mxx < seedX0 || mnx > seedX0 + bw || mxy < seedY0 || mny > seedY0 + bh);
-            if (intersects && !thin && !huge){
-              if (!tight) tight = [mnx, mxx, mny, mxy];
-              else {
-                tight[0] = Math.min(tight[0], mnx); tight[1] = Math.max(tight[1], mxx);
-                tight[2] = Math.min(tight[2], mny); tight[3] = Math.max(tight[3], mxy);
-              }
-              const step = Math.max(1, Math.floor(pts.length / 50));
-              for (let pi = 0; pi < pts.length; pi += step){
-                const idx = ((y0 + Math.floor(pts[pi] / ww)) * W + (x0 + (pts[pi] % ww))) * 4;
-                colorSamples.push([d[idx], d[idx+1], d[idx+2]]);
-              }
+
+            function isPlanExpired() {
+                // Item 3 - no plan/no end-date at all means no active
+                // plan, which blocks service use exactly like an expired
+                // one does - this used to silently return "not expired"
+                // (i.e. allowed) in that case, which was backwards.
+                if (!profileData || !profileData.plan || !profileData.planEndDate) return true;
+                if (profileData.planStatus === 'Expired') return true;
+                const today = new Date().toISOString().split('T')[0];
+                return profileData.planEndDate < today;
             }
-          }
-        }
-      }
-      if (!tight) return blk;
 
-      const mLeft = x0 + tight[0], mTop = y0 + tight[2];
-      const mW = tight[1] - tight[0] + 1, mH = tight[3] - tight[2] + 1;
+            // ============================================================
+            // 7. CONTACT FORM SUBMISSIONS DATA
+            // ============================================================
+            let contactSubmissions = [];
+            let notifications = [];
+            let nextNotificationId = 1;
 
-      // GUARD 1 — MERGED COMPONENT REJECT: agar measured box model ke box se
-      // bahut bada ho, to flood-fill ne aas-paas ki line/border/illustration
-      // ko jod diya hai (100pt-tall boxes wala bug). Aisi measurement bharosa
-      // ke laayak nahi — model ka box hi rakho.
-      if (mH > bh * 1.8 || mW > bw * 1.6) return blk;
+            // ============================================================
+            // 8. USER / PROFILE DATA
+            // ============================================================
+            // There is no more wholesale "USERS" array loaded client-side -
+            // users.json holds plaintext passwords and verification codes,
+            // so it's blocked from static serving and from the generic
+            // /api/data/<name> API entirely (see py/server.py). The only
+            // user record the browser ever sees is the CURRENTLY
+            // authenticated one, fetched fresh via GET /api/auth/me after
+            // login - see the AUTH section further down.
+            let CURRENT_USER_ID = null;
+            let profileData = null;
 
-      const out = Object.assign({}, blk);
-      // Ink measurement sirf POSITION + SIZE ke liye (yahi reliable hai).
-      out.left = mLeft / W * 1000;
-      out.top = mTop / H * 1000;
-      out.width = mW / W * 1000;
-      out.height = mH / H * 1000;
-
-      // GUARD 2 — FONT SIZE override NAHI. measured height me diacritics/
-      // ascenders/descenders shamil hote hain, isliye height*0.8 bahut bada
-      // font deta tha (41pt tak). Model ka font_size rakho; fit-to-box
-      // (shrinkOverflow) waise bhi box ke hisaab se best-fit karta hai.
-
-      // GUARD 3 — COLOR: median lene se scan ke anti-aliased edge pixels
-      // (ink+paper blend) mid-tone muddy brown de rahe the. Ab CORE ink
-      // pixels lo — darkest 25 percentile — aur sirf tab apply karo jab
-      // wo background se saaf contrast rakhe. Warna model ka color.
-      if (colorSamples.length >= 4){
-        colorSamples.sort((a, b) => (a[0]+a[1]+a[2]) - (b[0]+b[1]+b[2]));
-        const q = colorSamples[Math.floor(colorSamples.length * 0.25)];
-        const bgLum = (bg[0] + bg[1] + bg[2]) / 3;
-        const inkLum = (q[0] + q[1] + q[2]) / 3;
-        // dark-on-light ya light-on-dark — dono me achha contrast chahiye
-        if (Math.abs(bgLum - inkLum) > 70){
-          out.color = q.map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
-        }
-      }
-      return out;
-    });
-  }
-
-  async function extractApiPage(apiKey, model, dataUrl, wPt, hPt, pageNo, srcCanvas){
-    // HTML reference ka DETAILED coordinate-detection prompt — pixel-by-pixel
-    // exact start/end detect, width/height/align explicit. Isse coords/size
-    // bahut behtar aate hain (aur phir refineBlocksWithInk se aur precise).
-    const prompt =
-`Return a single JSON object with exactly one top-level key named "text_blocks", whose value is an array of line objects (do NOT use any other key name like text_lines, textBlocks, or lines). Also include a top-level key "page_type" (one short sentence describing this page: document kind, subject, language/script, register — only guides translation tone).
-Process the image line-by-line (row by row) from top to bottom, scanning pixel by pixel. For each row:
-STEP 1 - DETECT TEXT START & END: When text is detected in a row, locate the exact start pixel (leftmost x-coordinate) and end pixel (rightmost x-coordinate) of that text segment. Group consecutive rows that contain the same text to form complete lines.
-STEP 2 - ADD TO JSON: For every complete text line, add its data with these fields:
-	1)top: vertical position on a normalized 0-1000 scale (0 = top edge, 1000 = bottom edge)
-	2)left: horizontal position on a normalized 0-1000 scale (0 = left edge, 1000 = right edge)
-	3)width: this line's bounding box width on the 0-1000 scale (exact start pixel to end pixel)
-	4)height: this line's bounding box height on the 0-1000 scale
-	5)font_size: this line's text height on the 0-1000 scale (relative to image height)
-	6)color: hex color code (e.g., "000000", no #)
-	7)style: "normal", "bold", "italic", or "bold italic"
-	8)align: "left", "center", "right", or "justify"
-	9)text: this line's exact text content (preserve original spelling/script, do NOT translate)
-
-Important:
-1)Process rows sequentially top to bottom
-2)For each line, find the EXACT start pixel and end pixel of the text
-3)ALL coordinates use the 0-1000 normalized scale, NOT pixels
-4)Every line must have its own accurate font_size, style and color
-5)Include EVERY text line (even small words, numbers, handwritten)
-6)Preserve original text exactly (don't correct spelling), keep the □ character if a glyph is illegible`;
-
-    const body = {
-      model: model, temperature: 0, max_tokens: 16000,
-      messages: [{ role: 'user', content: [
-        { type: 'text', text: prompt },
-        { type: 'image_url', image_url: { url: dataUrl } }
-      ]}]
-    };
-
-    for (let attempt = 1; attempt <= 2; attempt++){
-      let resp;
-      try { resp = await _visionFetch(body); }
-      catch (netErr) { if (_shouldStop()) throw new Error('stopped'); throw netErr; }
-      if (!resp.ok){
-        const t = await resp.text();
-        throw new Error('OpenRouter HTTP ' + resp.status + ': ' + t.slice(0, 300));
-      }
-      const data = await resp.json();
-      let raw = (data.choices && data.choices[0] && data.choices[0].message.content) || '';
-      raw = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
-      const a = raw.indexOf('{'), b = raw.lastIndexOf('}');
-      if (a !== -1 && b > a) raw = raw.slice(a, b + 1);
-      let parsed = null;
-      try {
-        parsed = JSON.parse(raw);
-      } catch (pe) {
-        // SALVAGE: poora JSON toota (truncated/malformed) — individual line
-        // objects regex se nikaal lo, taaki ek galat line se poori page na
-        // jaye. Ye tumhare "JSON error -> sentence hat jaata -> page missing"
-        // issue ka fix hai.
-        const objs = raw.match(/\{[^{}]*"text"[^{}]*\}/g);
-        if (objs && objs.length){
-          const salvaged = [];
-          objs.forEach(function(o){
-            try { salvaged.push(JSON.parse(o)); } catch (e2) {}
-          });
-          if (salvaged.length){
-            parsed = { lines: salvaged };
-            log('P' + pageNo + ': JSON partial tha — ' + salvaged.length + ' line(s) salvage ki (page nahi giri)', 'warn');
-          }
-        }
-        if (!parsed) throw pe;
-      }
-      try {
-        // HTML schema: text_blocks with top/left/width/height/font_size (0-1000
-        // permille), style, align. Fallbacks: purane lines/blocks bhi chalein.
-        let arr = parsed.text_blocks || parsed.lines || parsed.blocks || parsed.text_lines;
-        if (!Array.isArray(arr)) throw new Error('no text_blocks array');
-        arr = arr.filter(L => L && L.text && String(L.text).trim());
-
-        // INK REFINEMENT: model ke box ko actual image pixels se re-measure
-        // karo (HTML ka refineBlocksWithInk). Ye box/size/color ko guess se
-        // measurement banata hai — coords/width/font bahut precise ho jaate.
-        if (srcCanvas) {
-          try { arr = refineBlocksWithInk(srcCanvas, arr); }
-          catch (re) { log('P' + pageNo + ' ink-refine skip: ' + re.message, 'warn'); }
-        }
-
-        // permille (0-1000) → absolute points
-        const out = arr.map(function(L){
-          const styleStr = String(L.style || '').toLowerCase();
-          const bold = !!L.bold || styleStr.indexOf('bold') !== -1;
-          const italic = !!L.italic || styleStr.indexOf('italic') !== -1;
-          // font_size 0-1000 (image-height relative) OR legacy pt
-          let fs;
-          if (L.font_size != null) fs = (Number(L.font_size) / 1000) * hPt;
-          else fs = Number(L.font_size_pt) || 11;
-          fs = Math.max(4, Math.min(96, fs));
-          const left = (L.left != null ? L.left : L.x) || 0;
-          const top  = (L.top  != null ? L.top  : L.y) || 0;
-          const w    = (L.width  != null ? L.width  : L.w) || 0;
-          const h    = (L.height != null ? L.height : L.h) || 0;
-          return {
-            xPt: (left / 1000) * wPt,
-            yPt: (top / 1000) * hPt,
-            wPt: Math.max(fs * 0.5, (w / 1000) * wPt),
-            hPt: Math.max(fs, (h / 1000) * hPt),
-            align: (L.align || '').toLowerCase(),
-            rtl: hasRTL(L.text),
-            runs: [{
-              text: String(L.text).replace(/\n/g, ' '),
-              sizePt: fs,
-              bold: bold, italic: italic,
-              color: /^#?[0-9a-fA-F]{6}$/.test(L.color || '') ? String(L.color).replace('#','') : '000000',
-              family: 'Arial'
-            }]
-          };
-        });
-        // page_type sirf translation tone ke liye — box rendering untouched
-        out.pageType = (typeof parsed.page_type === 'string') ? parsed.page_type.slice(0, 160) : '';
-        if (out.pageType) log('P' + pageNo + ' type: ' + out.pageType);
-        return out;
-      } catch (e){
-        if (_shouldStop()) throw new Error('stopped');
-        log('Page ' + pageNo + ' parse fail (attempt ' + attempt + '): ' + e.message, 'warn');
-        if (attempt === 2) throw new Error('Page ' + pageNo + ': malformed JSON twice');
-      }
-    }
-  }
-
-  // Hybrid deliverable: har page ka image vision model ko bhejo, line-level
-  // blocks lo, wahi makeLine-style boxes + optional background image se docx.
-  // keepOriginal=true => sirf OCR (koi translation); warna translate bhi.
-  async function buildHybridDocxBlob(file, opts, logFn) {
-    if (typeof logFn === 'function') _log = logFn;
-    opts = opts || {};
-    // apiKey ab server proxy (.env) se lagti hai — browser me nahi
-    const apiKey = 'proxy';
-    const model = opts.model || 'google/gemini-2.5-flash';
-    const withImage = !!opts.withImage;
-    const targetLang = opts.targetLang || 'original';
-    const keepOriginal = !targetLang || String(targetLang).toLowerCase() === 'original';
-    if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js load nahi hua');
-    if (typeof JSZip === 'undefined') throw new Error('JSZip load nahi hua');
-
-    const buf = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-    // Bug 7 SPEED: With Image OFF -> pages parallel (fast, koi image call
-    // nahi to order matter nahi karta). With Image ON -> sequential (1),
-    // taaki har page ka Gemini background apne page ke turant baad bane
-    // aur stop-safe rahe. Sequence har haal me preserve (OCR->translate
-    // ->image per page andar sequential hi hai).
-    const CONCURRENCY = withImage ? 1 : 3;
-    const pageNums = Array.from({ length: pdf.numPages }, function (_, i) { return i + 1; });
-    _newAbort();   // fresh AbortController is run ke liye
-
-    const pages = await mapWithConcurrency(pageNums, CONCURRENCY, async function (p) {
-      // STOP: is page ka koi API call mat karo — abort + skip
-      if (_shouldStop()) { abortVision(); return { lines: [], wPt: 0, hPt: 0, jpegBase64: null, skipped: true }; }
-      try {
-      const page = await pdf.getPage(p);
-      const vp1 = page.getViewport({ scale: 1 });
-      // render page to canvas (vision + optional background)
-      const scale = Math.min(3.0, 3000 / Math.max(vp1.width, vp1.height));
-      const vp = page.getViewport({ scale: scale });
-      const rawCanvas = document.createElement('canvas');
-      rawCanvas.width = Math.round(vp.width); rawCanvas.height = Math.round(vp.height);
-      await page.render({ canvasContext: rawCanvas.getContext('2d'), viewport: vp }).promise;
-      const jpegBase64 = withImage ? rawCanvas.toDataURL('image/jpeg', 0.96).split(',')[1] : null;
-
-      const ocrDataUrl = rawCanvas.toDataURL('image/jpeg', 0.92);
-      let lines = await extractApiPage(apiKey, model, ocrDataUrl, vp1.width, vp1.height, p, rawCanvas);
-
-      // STOP: OCR ke baad translate call se pehle dobara check — extra call bachao
-      if (_shouldStop()) { abortVision(); return { lines: lines, wPt: vp1.width, hPt: vp1.height, jpegBase64: withImage ? jpegBase64 : null }; }
-
-      if (!keepOriginal && lines.length) {
-        // OCR aur translation ALAG — pehle OCR ho chuka, ab translate.
-        // Translation ke baad text lamba ho sakta hai -> autofit zaroori.
-        await translateLinesInPlace(apiKey, model, lines, targetLang);
-        if (lines.length) autofitPage(lines, vp1.width, vp1.height, p);
-      }
-      // NO-TRANSLATION (Box-tool parity): autofit NAHI — box size/coords
-      // bilkul vision-model ke diye jaise rehte hain, exact clarity.
-      // NO-TRANSLATION: box position/size exact — sirf overflow par font shrink
-      if (keepOriginal && lines.length) shrinkOverflow(lines);
-
-      // WITH IMAGE: text ko page image se cv2 inpaint se hata do — cleaned
-      // image background banega (text-boxes uske upar). lines pt-coords ko
-      // rendered-image px me convert karke server ko bhejte hain.
-      let bgBase64 = withImage ? jpegBase64 : null;
-      if (withImage && jpegBase64 && lines.length && !_shouldStop()) {
-        try {
-          const textLines = lines.filter(function (L) {
-            return L.runs && L.runs.some(function (r) { return r.text && r.text.trim(); });
-          });
-          const boxesPx = textLines.map(function (L) {
-            return { x: L.xPt * scale, y: L.yPt * scale, w: L.wPt * scale, h: L.hPt * scale };
-          });
-          // Gemini prompt me exact extracted text — taaki wo pehchan kar
-          // sirf wahi hataye aur aas-paas se predict karke fill kare.
-          const texts = textLines.map(function (L) {
-            return L.runs.map(function (r) { return r.text; }).join('');
-          });
-          const resp = await _inpaintFetch(jpegBase64, boxesPx, texts);
-          if (resp.ok) {
-            const j = await resp.json();
-            if (j && j.imageBase64) {
-              bgBase64 = j.imageBase64;
-              if (j.prompt) log('P' + p + ' image-edit prompt: ' + j.prompt);
-              log('P' + p + ': background text removed (' + (j.method || 'edit') + ')');
+            // Simulated server-side storage layout per the project's folder
+            // convention:
+            //   Users/{userId}/Profile/
+            //   Users/{userId}/Clients/Default/                 <- input files
+            //   Users/{userId}/Clients/Default/Template/        <- output templates
+            // A static front-end can't actually write to the filesystem, so
+            // these paths are used as descriptive labels (Activity Log entries,
+            // tooltips) ready to be wired to a real backend later.
+            function getUserClientFilePath(userId, fileName) {
+                return `Users/${userId}/Clients/Default/${fileName}`;
             }
-          } else {
-            log('P' + p + ': inpaint skip (server) — original image use hogi', 'warn');
-          }
-        } catch (e) {
-          if (!_shouldStop()) log('P' + p + ': inpaint fail — original image: ' + e.message, 'warn');
-        }
-      }
-      log('P' + p + ': ' + lines.length + ' line-boxes' + (keepOriginal ? ' (OCR only, exact boxes)' : ' (OCR+translate)'));
-      return { lines: lines, wPt: vp1.width, hPt: vp1.height, jpegBase64: bgBase64 };
-      } catch (pageErr) {
-        // stop ke wajah se abort -> skipped (partial output me ignore).
-        if (_shouldStop()) return { lines: [], wPt: 0, hPt: 0, jpegBase64: null, skipped: true };
-        // asli failure (stop nahi): ek page fail se pura run mat girao, LEKIN
-        // chup mat skip karo — visible error + failed-page record.
-        log('P' + p + ' FAILED: ' + pageErr.message + ' — is page ka text nahi aaya', 'error');
-        return { lines: [], wPt: 0, hPt: 0, jpegBase64: null, failed: true, pageNo: p };
-      }
-    }, function (done, total) {
-      log('Vision OCR: ' + done + '/' + total + ' pages');
-    });
 
-    // Partial output: skipped (stop) / failed / empty pages nikaal do.
-    const usable = pages.filter(function (pg) { return !pg.skipped && !pg.failed && pg.lines.length; });
-    const failedPages = pages.filter(function (pg) { return pg.failed; }).map(function (pg) { return pg.pageNo; });
-    if (_shouldStop()) log('Stop requested — ' + usable.length + '/' + pdf.numPages + ' pages tak ka partial output');
-    if (failedPages.length) log('WARNING: page(s) ' + failedPages.join(', ') + ' could not be processed (vision returned no text) — output has ' + usable.length + '/' + pdf.numPages + ' page(s)', 'error');
-    // PER-PAGE CONFIRMATION: user ko har page ka result clear pata chale.
-    // successfully-processed page numbers explicitly list karo.
-    const okPages = pages.filter(function (pg) { return !pg.skipped && !pg.failed && pg.lines.length; })
-                         .map(function (pg, i) { return i + 1; });
-    log('Pages processed: ' + usable.length + '/' + pdf.numPages +
-        (failedPages.length ? ' (failed: ' + failedPages.join(', ') + ')' : ' — all pages OK'), failedPages.length ? 'warn' : 'ok');
-    const totalLines = usable.reduce(function (s, pg) { return s + pg.lines.length; }, 0);
-    if (totalLines === 0) throw new Error(_shouldStop() ? 'Process stop kiya gaya — koi page complete nahi hua' : 'Kisi bhi page se text nahi aaya — vision model ne kuch nahi padha');
-    return buildDocx(usable, withImage);
-  }
-  async function translateTexts(apiKey, model, texts, targetLang, pageType){
-    if (!texts.length) return texts;
-    const prompt =
-`The JSON array below contains OCR'd lines from a document — treat this OCR text as FROZEN/IMMUTABLE. You are ONLY translating it into ${targetLang}, not re-reading, correcting, or improving it. These lines are individual and out of context, possibly fragmentary.
+            function getUserTemplateFilePath(userId, fileName) {
+                return `Users/${userId}/Clients/Default/Template/${fileName}`;
+            }
 
-Rules:
-- Translate literally, staying as close to the source wording and word order as ${targetLang} grammar allows. Do not summarize, paraphrase, expand, or produce a smoother/more fluent rewrite than the source supports.
-- Every source word/token should have a corresponding translated token — do not silently omit or merge words.
-- You are forbidden from "fixing" apparent OCR mistakes. If a source line looks broken or incomplete, translate it as-is (broken/incomplete) rather than completing it into a full sentence.
-- Translate each line LITERALLY and independently. Never substitute a semantic paraphrase, summary, or "improved" version for the literal text. Transliterate proper names and domain terms that have no established ${targetLang} equivalent.
-${pageType ? '- Document page context (auto-detected from this page itself, not assumed for the whole document): "' + pageType + '". Match the register, terminology, formality and tone appropriate to exactly this kind of page.' : ''}
-- Proper names, personal names, botanical/medical/Latin names, and historical/technical terms with no established ${targetLang} equivalent must be transliterated, not translated or replaced with a generic description.
-- If a source line contains the character □ (marking an illegible OCR character), preserve □ at the corresponding position in the output — do not remove it or guess what it represents.
-- Return ONLY a JSON array, same length and same order as the input, where each element is an object {"s": exact unmodified copy of the source line, "t": its ${targetLang} translation}. The "s" field must be character-identical to the input line — it is used to verify alignment. No explanation, no markdown fences, no other keys.
+            // payment-history.json and contact-submissions.json now carry a
+            // userId on every record (multiple users' data can live in the
+            // same file) - these helpers scope the lists down to whichever
+            // user is currently logged in, the same way a real per-user
+            // backend query would.
+            function getMyPaymentHistory() {
+                return paymentHistory.filter(t => t.userId === CURRENT_USER_ID);
+            }
 
-${JSON.stringify(texts)}`;
+            function getMyPaymentMethods() {
+                return paymentMethods.filter(m => m.userId === CURRENT_USER_ID);
+            }
 
-    const body = { model: model, temperature: 0, max_tokens: 12000,
-      messages: [{ role: 'user', content: prompt }] };
+            function getMyContactSubmissions() {
+                return contactSubmissions.filter(c => c.userId === CURRENT_USER_ID);
+            }
 
-    for (let attempt = 1; attempt <= 2; attempt++){
-      let resp;
-      try { resp = await _visionFetch(body); }
-      catch (netErr) { if (_shouldStop()) return texts; throw netErr; }
-      if (!resp.ok){
-        const t = await resp.text();
-        throw new Error('OpenRouter translate HTTP ' + resp.status + ': ' + t.slice(0, 300));
-      }
-      const data = await resp.json();
-      let raw = (data.choices && data.choices[0] && data.choices[0].message.content) || '';
-      raw = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
-      const a = raw.indexOf('['), b = raw.lastIndexOf(']');
-      if (a !== -1 && b > a) raw = raw.slice(a, b + 1);
-      try {
-        let arr = null;
-        try {
-          arr = JSON.parse(raw);
-        } catch (pe) {
-          // SALVAGE: poora JSON toota (ek line ka malformed {s,t} object) —
-          // individual objects regex se nikaalo taaki poore page ki
-          // translation na jaye. (page 2 ka "parse fail" issue ka fix)
-          const objs = raw.match(/\{[^{}]*"t"\s*:[^{}]*\}/g);
-          if (objs && objs.length){
-            const salv = [];
-            objs.forEach(function(o){ try { salv.push(JSON.parse(o)); } catch (e2){ salv.push(null); } });
-            if (salv.length){ arr = salv; log('Translation: JSON partial tha — ' + salv.filter(Boolean).length + ' line(s) salvage ki', 'warn'); }
-          }
-          if (!arr) throw pe;
-        }
-        // length mismatch par bhi kaam chalao: jitne mile utne map karo,
-        // baaki original (poora page mat girao)
-        if (!Array.isArray(arr)) throw new Error('not an array');
-        if (arr.length !== texts.length){
-          log('Translation: ' + arr.length + '/' + texts.length + ' line(s) aaye — baaki original rakhe', 'warn');
-        }
-        let misaligned = 0;
-        const out = texts.map(function(srcTxt, i){
-          const m = arr[i];
-          if (m == null) return texts[i];
-          if (typeof m === 'string') return m === '' ? texts[i] : m; // fallback: plain string array bhi chalega
-          const s = (m.s == null) ? '' : String(m.s);
-          const t = (m.t == null) ? '' : String(m.t);
-          // echo verification: agar model ne source galat quote kiya to us
-          // line par alignment bharosemand nahi — original text rakho
-          if (s.trim() !== String(texts[i]).trim()){ misaligned++; return texts[i]; }
-          return t === '' ? texts[i] : t;
-        });
-        if (misaligned) log('Translation: ' + misaligned + ' line(s) echo-mismatch — original kept', 'warn');
-        // Per-line debug hataya (activity log flood karta tha). Sirf summary.
-        log('Translation: ' + out.length + ' line(s) translated', 'ok');
-        return out;
-      } catch (e){
-        if (_shouldStop()) return texts;   // stop: original rakho, dobara call mat karo
-        if (attempt === 2){
-          log('Translation parse fail, keeping original text for this page: ' + e.message, 'warn');
-          return texts; // fail-safe: don't lose content, just skip translation for this page
-        }
-      }
-    }
-  }
+            // Developer/Admin see every user's data on the Payment History
+            // and Support pages (with a User ID column + filter); a plain
+            // User only ever sees their own - getCurrentBalance() etc. still
+            // always uses the strictly-own getMyPaymentHistory() above, this
+            // one is only for what the *page* displays.
+            function isAdminOrDeveloper() {
+                return !!profileData && (profileData.role === 'Admin' || profileData.role === 'Developer');
+            }
 
-  async function translateLinesInPlace(apiKey, model, lines, targetLang){
-    const texts = lines.map(function(L){ return L.runs.map(function(r){ return r.text; }).join(''); });
-    const translated = await translateTexts(apiKey, model, texts, targetLang, lines.pageType || '');
-    lines.forEach(function(L, i){
-      const t = translated[i] || texts[i];
-      const base = L.runs[0] || { sizePt: 11, color: '000000', family: 'Arial' };
-      L.runs = [{ text: t, sizePt: base.sizePt, bold: base.bold, italic: base.italic, color: base.color, family: base.family }];
-      L.rtl = hasRTL(t);
-      // NOTE: box width ab NAHI badhate — coordinate fidelity pehle; lamba
-      // text layout-fit engine (autofitPage) font-scale/wrap se sambhalta hai
-    });
-  }
+            function getVisiblePaymentHistory() {
+                return isAdminOrDeveloper() ? paymentHistory.slice() : getMyPaymentHistory();
+            }
 
-  window.buildHybridDocxBlob = buildHybridDocxBlob;
-  window.setVisionAuthToken = setVisionAuthToken;
-  window.setVisionStopCheck = setStopCheck;
-  window.abortVision = abortVision;
+            function getVisibleContactSubmissions() {
+                return isAdminOrDeveloper() ? contactSubmissions.slice() : getMyContactSubmissions();
+            }
 
-    window.buildOfflineDocxBlob = buildOfflineDocxBlob;
-})();
+            // Sanitized {id, email, firstName, lastName, role, ...} list (no
+            // passwords/codes - see py/auth_store.py's public_user_view) -
+            // loaded once at startup, used for the Developer/Admin user-id/
+            // email filters above and to find "who is the Developer" for
+            // the balance-centralization rule in addBalance().
+            let USER_DIRECTORY = [];
+
+            async function loadUserDirectory() {
+                try {
+                    const res = await authFetch('/api/auth/directory');
+                    const data = await res.json();
+                    USER_DIRECTORY = data.users || [];
+                } catch (e) {
+                    USER_DIRECTORY = [];
+                }
+            }
+
+            function getDeveloperUserId() {
+                const dev = USER_DIRECTORY.find(u => u.role === 'Developer');
+                return dev ? dev.id : null;
+            }
+
+            function getUserDirectoryEntry(userId) {
+                return USER_DIRECTORY.find(u => u.id === userId) || null;
+            }
+
+            // Lease/Translation files and activity logs all live in one
+            // shared json file per service (like payments/support above) -
+            // these scope them down to the current user so one person's
+            // uploads/history never show up in someone else's session.
+            function getMyLeaseFiles() {
+                return leaseFiles.filter(f => f.userId === CURRENT_USER_ID);
+            }
+
+            function getMyTranslationFiles() {
+                return translationFiles.filter(f => f.userId === CURRENT_USER_ID);
+            }
+
+            // Sends the "process completed, here's what was charged" email +
+            // bell notification (item 5) - called once from both the Lease
+            // Abstraction and Translation pipelines right after the $1
+            // processing fee is debited, so the table always reflects a
+            // real, already-completed charge.
+            function notifyProcessCompletion(serviceName, fileName, charge, txnId) {
+                addNotification(`${serviceName} completed for "${fileName}" - $${charge.toFixed(2)} was deducted from your wallet (${txnId}).`);
+                if (!profileData || !profileData.email) return;
+                sendGenericNotificationEmail(
+                    profileData.email,
+                    `${profileData.firstName} ${profileData.lastName}`,
+                    `${serviceName} completed - $${charge.toFixed(2)} deducted`,
+                    `Your ${serviceName.toLowerCase()} request has finished processing. The table below shows what was charged to your wallet.`,
+                    [[serviceName, fileName, `$${charge.toFixed(2)}`, `Completed (${txnId})`]],
+                    ['Service', 'File', 'Charge', 'Action/Status']
+                );
+            }
+
+            function getMyLeaseActivityLog() {
+                return leaseActivityLog.filter(a => a.userId === CURRENT_USER_ID);
+            }
+
+            function getMyTranslationActivityLog() {
+                return translationActivityLog.filter(a => a.userId === CURRENT_USER_ID);
+            }
+
+            // ============================================================
+            // 9. AGENTS DATA (each agent = one processing stage, per service)
+            // ============================================================
+            let AGENTS_BY_SERVICE = {};
+            let activeAgentId = null;
+
+            function getAgents(serviceId) {
+                return AGENTS_BY_SERVICE[serviceId] || [];
+            }
+
+            // System Configuration options are fixed (no system-configs.json
+            // anymore) - the *default* selection comes from the logged-in
+            // user's "sysConfig" field in users.json instead.
+            const SYSTEM_CONFIGS = ['Desktop', 'Sharefile', 'Sharepoint'];
+            let currentSystemConfig = 'Desktop';
+            let connectionStatus = 'idle'; // 'idle', 'connected', 'disconnected'
+
+            // ============================================================
+            // 10. PROCESS STATE
+            // ============================================================
+            let processState = {
+                isRunning: false,
+                isPaused: false,
+                isComplete: false,
+                stopped: false,
+                totalInBatch: 0,
+                runIndex: 0
+            };
+
+            // ============================================================
+            // 11. PERSISTED ACTIVITY LOG (per service)
+            // ============================================================
+            let leaseActivityLog = [];
+            let translationActivityLog = [];
+
+            let _nextActivityEntryId = 1;
+
+            // Every activity now gets logged as 'Pending' the moment a step
+            // STARTS, then flips to 'Completed'/'Failed'/'Skipped' in place
+            // (same row, not a new one) once that step actually finishes -
+            // addActivity() returns the entry's id so the caller can update
+            // it later via updateActivity().
+            function addActivity(serviceId, activity, result) {
+                const now = new Date();
+                const timeStr = now.toISOString().replace('T', ' ').slice(0, 16);
+                const entry = { id: _nextActivityEntryId++, time: timeStr, activity: activity, result: result, userId: CURRENT_USER_ID };
+                if (serviceId === 'translation') {
+                    translationActivityLog.unshift(entry);
+                } else {
+                    leaseActivityLog.unshift(entry);
+                }
+                return entry.id;
+            }
+
+            function updateActivity(serviceId, entryId, newResult, newActivityText) {
+                const log = serviceId === 'translation' ? translationActivityLog : leaseActivityLog;
+                const entry = log.find(e => e.id === entryId);
+                if (entry) {
+                    entry.result = newResult;
+                    if (newActivityText) entry.activity = newActivityText;
+                }
+            }
+
+            // ============================================================
+            // 12. SERVICE PAGE - REUSABLE PIECE BUILDERS
+            //     (shared by the initial full render AND the live, in-place
+            //      DOM updates used while a process is running, so nothing
+            //      ever needs to be torn down and rebuilt mid-process)
+            // ============================================================
+            function buildFileTableRows(files) {
+                return files.map(file => {
+                    const scanIsNumeric = /^\d+$/.test(String(file.scanResult));
+                    const progressIsNumeric = /^\d+$/.test(String(file.progress));
+                    const scanProgress = scanIsNumeric ? parseInt(file.scanResult) || 0 : 0;
+                    const processProgress = progressIsNumeric ? parseInt(file.progress) || 0 : 0;
+                    const statusClass = file.status === 'completed' ? 'completed' :
+                        file.status === 'error' ? 'error' :
+                        file.status === 'needs_review' ? 'needs-review' :
+                        file.status === 'processing' ? 'processing' : 'pending';
+
+                    const actionLabel = file.status === 'error' ? (file.errorLabel || 'Error') : null;
+                    const docFolder = file.leaseName || file.docName || '';
+                    const downloadKind = file.docName ? 'translation' : 'lease';
+                    // Download the file in the format the user selected for
+                    // this document (defaults to docx for translations).
+                    const dlFormat = (file.outputFormat === 'pdf') ? 'pdf'
+                        : (downloadKind === 'translation' ? 'docx' : 'pdf');
+                    const dlFile = dlFormat === 'docx' ? 'Output.docx' : 'Output.pdf';
+                    // Bug 4: translation output browser-only (session blob) —
+                    // server download nahi. Blob is session me ho to usse download.
+                    const isSessionDl = file.sessionDownload && translationBlobStore[file.id];
+                    const actionLink = file.status === 'completed' ?
+                        (isSessionDl
+                          ? `<a class="file-action-link" onclick="downloadSessionBlob('${file.id}')">Download</a>`
+                          : `<a class="file-action-link" onclick="downloadFile('${dlFile}', '${docFolder.replace(/'/g, "\\'")}', '${downloadKind}')">Download</a>`) :
+                        file.status === 'needs_review' ?
+                        `<a class="file-action-link review-link" onclick="openLeaseReviewModal('${file.id}')">🔍 Review</a>` :
+                        file.status === 'error' ?
+                        `<a class="file-action-link error-link" onclick="retryFile('${file.id}')">${actionLabel}</a>` :
+                        `<span class="file-action-link disabled">${file.status === 'processing' ? 'Processing' : 'Pending'}</span>`;
+
+                    const scanCell = scanIsNumeric ? `
+                        <div class="progress-bar-container">
+                            <div class="progress-bar-track">
+                                <div class="progress-bar-fill ${statusClass}" style="width:${scanProgress}%;"></div>
+                            </div>
+                            <span class="progress-label">${scanProgress}%</span>
+                        </div>` : `<span class="scan-result-text ${statusClass}">${file.scanResult}</span>`;
+
+                    const progressCell = progressIsNumeric ? `
+                        <div class="progress-bar-container">
+                            <div class="progress-bar-track">
+                                <div class="progress-bar-fill ${statusClass}" style="width:${processProgress}%;"></div>
+                            </div>
+                            <span class="progress-label">${processProgress}%</span>
+                        </div>` : `<span class="scan-result-text ${statusClass}">${file.progress || '-'}</span>`;
+
+                    return `
+                        <tr>
+                            <td><input type="checkbox" class="file-select-checkbox" data-file-id="${file.id}" ${file.selected !== false ? 'checked' : ''} onchange="toggleFileSelect('${file.id}', this.checked)" ${processState.running ? 'disabled' : ''} /></td>
+                            <td class="file-name"><a class="file-name-link" onclick="openFilePreview('${file.id}')">${escapeHtml(file.name)}</a></td>
+                            <td>${file.pageCount || '-'}</td>
+                            <td>${scanCell}</td>
+                            <td>${progressCell}</td>
+                            <td>${actionLink}</td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            function buildActivityLogRows(activityLog) {
+                return activityLog.map(log => {
+                    const resultClass = (log.result === 'Completed' || log.result === 'Success' || log.result === 'Finished') ? 'completed' :
+                        (log.result === 'Error' || log.result === 'Failed') ? 'error' :
+                        log.result === 'Skipped' ? 'skipped' :
+                        log.result === 'Started' ? 'processing' :
+                        log.result === 'Processing' ? 'processing' : 'pending';
+                    return `
+                        <tr>
+                            <td>${log.time}</td>
+                            <td>${log.activity}</td>
+                            <td><span class="activity-result ${resultClass}">${log.result}</span></td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            // Agent strip shown at the top of the Activity Log - highlights only the currently running agent
+            // Item 5 - tracks which agents have already finished their part
+            // for the file CURRENTLY being processed, so their pill can look
+            // visibly different ("done") from the one actively working and
+            // the ones not reached yet. Reset at the start of every new file.
+            let completedAgentIds = new Set();
+
+            function markAgentDone(agentId) {
+                if (agentId) completedAgentIds.add(agentId);
+            }
+
+            // Item 2 - the agentPulse CSS animation (0.4s/cycle) needs at
+            // least 3 full cycles (~1.2s) to visibly read as "blinking"
+            // before an agent flips to its done/highlighted state. Real
+            // work (an API call, OCR, etc) often already takes longer than
+            // that on its own - this only adds an explicit wait for the
+            // remainder when the real step finished faster than the
+            // minimum blink time.
+            async function ensureMinBlinkTime(startTime, minMs) {
+                minMs = minMs || 1300;
+                const elapsed = Date.now() - startTime;
+                if (elapsed < minMs) {
+                    await sleep(minMs - elapsed);
+                }
+            }
+
+            // Item 2b - every agent (Success OR Skipped) blinks at least 3
+            // times while it's "working" before its pill switches to the
+            // done/highlighted look - makes each agent's turn visible even
+            // when the real underlying step resolves near-instantly, and
+            // even when that agent's result ends up being Skipped.
+            async function blinkAgentThenDone(serviceId, agentId, minBlinks) {
+                if (!agentId) return;
+                minBlinks = minBlinks || 3;
+                for (let i = 0; i < minBlinks; i++) {
+                    activeAgentId = agentId;
+                    refreshServicePage(serviceId);
+                    await sleep(130);
+                    if (processState.stopped) return;
+                    activeAgentId = null;
+                    refreshServicePage(serviceId);
+                    await sleep(80);
+                    if (processState.stopped) return;
+                }
+                activeAgentId = agentId;
+                refreshServicePage(serviceId);
+            }
+
+            function buildAgentPillsHTML(serviceId) {
+                return getAgents(serviceId).map(agent => {
+                    const state = agent.id === activeAgentId ? 'active' : completedAgentIds.has(agent.id) ? 'done' : '';
+                    return `
+                    <div class="agent-pill ${state}" title="${agent.step ? agent.step + ' ' : ''}${agent.name}">
+                        <span class="agent-pill-icon">${state === 'done' ? '✅' : agent.icon}</span>
+                        <span class="agent-pill-name">${agent.name}</span>
+                    </div>
+                `;
+                }).join('');
+            }
+
+            // Connection status badge - intentionally renders nothing while idle (no "Idle" tag)
+            function buildConnectionStatusHTML() {
+                if (connectionStatus === 'idle') return '';
+                const statusText = connectionStatus === 'connected' ? '● Connected' : '● Not Connected';
+                const statusClass = connectionStatus === 'connected' ? 'connected' : 'disconnected';
+                return `<span class="connection-status ${statusClass}">${statusText}</span>`;
+            }
+
+            // Process control buttons (Start/Clear, or Pause/Resume/Stop while running)
+            function buildControlButtonsHTML(serviceId, hasFiles) {
+                if (processState.isRunning && !processState.isComplete) {
+                    const pauseLabel = processState.isPaused ? '▶️ Resume' : '⏸️ Pause';
+                    const pauseClass = processState.isPaused ? 'resume-btn' : 'pause-btn';
+                    return `
+                        <button class="process-btn ${pauseClass}" onclick="togglePause()">${pauseLabel}</button>
+                        <button class="process-btn stop-btn" onclick="stopProcess()">⏹️ Stop</button>
+                    `;
+                }
+                return `
+                    <button class="process-btn start-btn" onclick="startProcess('${serviceId}')" ${!hasFiles ? 'disabled' : ''}>▶️ Start</button>
+                    <button class="process-btn clear-btn" onclick="clearFiles('${serviceId}')">🗑️ Clear Files</button>
+                `;
+            }
+
+            // ============================================================
+            // 13. BUILD SERVICE UPLOAD HTML (full page render)
+            // ============================================================
+            function buildServiceUploadHTML(serviceId, serviceLabel, icon) {
+                const isTranslation = serviceId === 'translation';
+                const files = isTranslation ? getMyTranslationFiles() : getMyLeaseFiles();
+                const activityLog = isTranslation ? getMyTranslationActivityLog() : getMyLeaseActivityLog();
+
+                const fileRows = buildFileTableRows(files);
+                const activityRows = buildActivityLogRows(activityLog);
+                const agentPills = buildAgentPillsHTML(serviceId);
+
+                // Item 8 - auto-calculated charge for the current batch,
+                // shown top-right of the Uploaded Files card. Only counts
+                // files not already completed/needs_review (same set
+                // startProcess() would actually charge for).
+                const billableFiles = files.filter(f => f.status !== 'completed' && f.status !== 'needs_review');
+                const myPlanForEstimate = getMyPlan();
+                const batchChargeEstimate = billableFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
+                const chargeEstimateHtml = billableFiles.length > 0 ?
+                    `💰 Est. charge: $${batchChargeEstimate.toFixed(2)}${(serviceId === 'translation' ? (myPlanForEstimate.translationBillingUnit || 'page') : myPlanForEstimate.billingUnit) === 'page' ? ' (per page)' : ' (per document)'}` : '';
+                const controlButtons = buildControlButtonsHTML(serviceId, files.length > 0);
+
+                // File count text for drop zone
+                const fileCountText = files.length > 0 ?
+                    `${files.length} file(s) uploaded` :
+                    'No files uploaded yet';
+
+                // Output Template (lease-abstraction) OR Output Language (translation) - shown in Setup card
+                const outputFieldHTML = isTranslation ? `
+                    <div class="setup-group">
+                        <div style="display:flex;gap:12px;align-items:flex-start;">
+                          <div style="flex:1;">
+                            <label>Output Language</label>
+                            <select id="translationLangSelect" style="width:100%;" ${(translationHybridMode && !processState.running) ? '' : 'disabled'}>
+                                <option value="original" ${translationHybridMode ? '' : 'selected'}>Original (No Translation)</option>
+                                ${translationHybridMode ? `
+                                <option value="English" selected>English</option>
+                                <option value="Spanish">Spanish</option>
+                                <option value="French">French</option>
+                                <option value="German">German</option>
+                                <option value="Chinese">Chinese</option>
+                                <option value="Japanese">Japanese</option>
+                                <option value="Arabic">Arabic</option>
+                                <option value="Hindi">Hindi</option>
+                                <option value="Gujarati">Gujarati</option>
+                                <option value="Urdu">Urdu</option>
+                                <option value="Portuguese">Portuguese</option>
+                                <option value="Russian">Russian</option>
+                                ` : ''}
+                            </select>
+                          </div>
+                          <div style="flex:1;">
+                            <label>Output Format</label>
+                            <select id="translationOutputFormat" onchange="setTranslationOutputFormat(this.value)" style="width:100%;" ${processState.running ? 'disabled' : ''}
+                                    title="DOCX: editable Word file (recommended). PDF: same layout as PDF.">
+                                <option value="docx" ${translationOutputFormat !== 'pdf' ? 'selected' : ''}>Word (.docx)</option>
+                                <option value="pdf" ${translationOutputFormat === 'pdf' ? 'selected' : ''}>PDF (.pdf)</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:20px;margin-top:10px;">
+                            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
+                                   title="Checked: full API processing (Vision + High Accuracy + Ensemble OCR, all internally ON). Unchecked: WITHOUT API — text-based PDFs only, text extraction only, no translation.">
+                                <input type="checkbox" id="translationHybridCheck" style="width:auto;margin:0;" ${translationHybridMode ? 'checked' : ''} ${processState.running ? 'disabled' : ''}
+                                       onchange="setTranslationHybridMode(this.checked)" />
+                                <span>Hybrid</span>
+                            </label>
+                            <label id="translationWithImageWrap" style="display:${translationHybridMode ? 'flex' : 'none'};align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
+                                   title="Checked: the page background/graphics/logos are preserved in the output (original text is removed and the cleaned image is placed behind). Unchecked: only reconstructed text on a clean white page.">
+                                <input type="checkbox" id="translationWithImageCheck" style="width:auto;margin:0;" ${translationWithImage ? 'checked' : ''} ${processState.running ? 'disabled' : ''}
+                                       onchange="setTranslationWithImage(this.checked)" />
+                                <span>With Image</span>
+                            </label>
+                        </div>
+                        <div id="translationWithImageMsg" style="display:${translationHybridMode && translationWithImage ? 'block' : 'none'};margin-top:6px;padding:8px 10px;border:1px solid #7aa7cc;background:#eef5fb;border-radius:6px;font-size:12.5px;color:#2c5777;">
+                            Note: With Image uses an AI-predicted background (the original text is removed and the empty area is filled by prediction). The reconstructed background is not a pixel-perfect copy, so some changes in image quality and layout may occur.
+                        </div>
+                        <div id="translationOfflineMsg" style="display:${translationHybridMode ? 'none' : 'block'};margin-top:6px;padding:8px 10px;border:1px solid #e0a800;background:#fff8e1;border-radius:6px;font-size:12.5px;color:#7a5c00;">
+                            Without API mode: only <b>Text-based PDFs</b> can be processed (not scanned/photo), and the output will contain only the <b>extracted original text</b> — no translation. Output Language is locked to "Original (No Translation)".
+                        </div>
+                    </div>
+                ` : `
+                    <div class="setup-group">
+                        <label>Output Template</label>
+                        <div class="template-select-row">
+                            <button class="select-btn" onclick="document.getElementById('templateFileInput').click()">Select</button>
+                            <a class="template-file-link" id="templateFileName" href="#" onclick="return false;">${selectedTemplateFile || 'default.pdf'}</a>
+                        </div>
+                        <input type="file" id="templateFileInput" style="display:none;" accept=".pdf" onchange="selectTemplateFile(event)" />
+                    </div>
+                `;
+
+                // System config
+                let systemOptions = SYSTEM_CONFIGS.map(config => `
+                    <option value="${config}" ${config === currentSystemConfig ? 'selected' : ''}>${config}</option>
+                `).join('');
+
+                return `
+                    <div>
+                        <div class="service-upload-layout">
+                            <!-- Left: Upload Card -->
+                            <div class="service-card">
+                                <h3>📤 Upload File(s)</h3>
+                                <div class="card-body">
+                                    <div class="drop-zone" id="dropZone" onclick="${processState.running ? 'void(0)' : "document.getElementById('fileInput').click()"}" style="${processState.running ? 'opacity:0.5;pointer-events:none;' : ''}">
+                                        <div class="drop-icon">📤</div>
+                                        <div class="drop-text">Drag & drop files here</div>
+                                        <div class="drop-sub">or click to browse (PDF only)</div>
+                                        <div class="file-count-text" id="fileCountText">${fileCountText}</div>
+                                    </div>
+                                    <input type="file" id="fileInput" multiple style="display:none;" accept=".pdf" onchange="handleFileUpload(event, '${serviceId}')" />
+                                </div>
+                            </div>
+
+                            <!-- Right: Setup Card -->
+                            <div class="service-card">
+                                <h3>⚙️ Setup</h3>
+                                <div class="card-body">
+                                    ${outputFieldHTML}
+
+                                    ${serviceId === 'lease-abstraction' ? `
+                                    <div class="setup-row-split">
+                                        <div class="setup-group">
+                                            <label>System Configuration</label>
+                                            <div class="system-config-row">
+                                                <select id="systemConfigSelect" onchange="verifySystemConnection()">
+                                                    ${systemOptions}
+                                                </select>
+                                                <span id="connectionStatusWrap">${buildConnectionStatusHTML()}</span>
+                                            </div>
+                                        </div>
+                                        <div class="setup-group">
+                                            <label>Extraction Rules</label>
+                                            <button class="filter-btn" onclick="openRulesPopup()">📐 Update Rules</button>
+                                        </div>
+                                        ${isAdminOrDeveloper() ? `
+                                        <div class="setup-group">
+                                            <label>Accuracy Testing</label>
+                                            <button class="filter-btn" onclick="openTestComparePopup()">🧪 Test &amp; Compare</button>
+                                        </div>
+                                        ` : ''}
+                                    </div>
+                                    ` : ``}
+
+                                    <div class="setup-group" style="margin-top:8px;">
+                                        <div class="process-controls" id="processControls">
+                                            ${controlButtons}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- File List Card (Separate) -->
+                        <div class="file-list-card">
+                            <div class="file-list-card-header">
+                                <h3>📁 Uploaded Files</h3>
+                                <span class="file-list-charge-estimate" id="fileListChargeEstimate">${chargeEstimateHtml}</span>
+                            </div>
+                            <div class="card-body">
+                                <div class="file-table-wrapper">
+                                    <table class="file-table file-table-files">
+                                        <colgroup>
+                                            <col style="width:5%;"><col style="width:33%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;">
+                                        </colgroup>
+                                        <thead>
+                                            <tr>
+                                                <th><input type="checkbox" id="translationSelectAll" onchange="toggleSelectAllFiles('${serviceId}', this.checked)" title="Select all" /></th>
+                                                <th>File Name</th>
+                                                <th>Pages</th>
+                                                <th>Scan Result</th>
+                                                <th>Progress</th>
+                                                <th>Action</th>
+                                            </tr>
+                                        </thead>
+                                    </table>
+                                    <div class="file-table-scroll">
+                                        <table class="file-table file-table-files">
+                                            <colgroup>
+                                                <col style="width:5%;"><col style="width:33%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;">
+                                            </colgroup>
+                                            <tbody id="fileTableBody">
+                                                ${fileRows || '<tr><td colspan="5" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No files uploaded yet.</td></tr>'}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Activity Log below (with active agent strip on top) -->
+                        <div class="activity-log-section">
+                            <div class="activity-log-card">
+                                <div class="agents-top-row" id="agentsTopRow">
+                                    ${agentPills}
+                                </div>
+                                <div class="log-header">
+                                    <h3>📋 Activity Log</h3>
+                                    <div class="log-actions">
+                                        <button onclick="downloadActivityLog()">⬇️ Download Log</button>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <div class="file-table-wrapper">
+                                        <table class="file-table file-table-activity">
+                                            <colgroup>
+                                                <col style="width:20%;"><col style="width:62%;"><col style="width:18%;">
+                                            </colgroup>
+                                            <thead>
+                                                <tr>
+                                                    <th>Date &amp; Time</th>
+                                                    <th>Activity</th>
+                                                    <th>Status</th>
+                                                </tr>
+                                            </thead>
+                                        </table>
+                                        <div class="file-table-scroll">
+                                            <table class="file-table file-table-activity">
+                                                <colgroup>
+                                                    <col style="width:20%;"><col style="width:62%;"><col style="width:18%;">
+                                                </colgroup>
+                                                <tbody id="activityList">
+                                                    ${activityRows || '<tr><td colspan="3" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No activities recorded.</td></tr>'}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    ${isTranslation ? '' : `
+                    <div class="history-card" style="height:240px;margin-top:20px;">
+                        <h3>📁 My Processed Leases</h3>
+                        <div class="card-body" style="overflow-y:auto;">
+                            <ul class="my-leases-list" id="myLeasesList">
+                                <li class="my-leases-empty">Loading…</li>
+                            </ul>
+                        </div>
+                    </div>
+                    `}
+                `;
+            }
+
+            let selectedTemplateFile = null;
+
+            // Translation output mode - persists across service-page
+            // re-renders (the setup card's HTML is rebuilt on every
+            // refreshServicePage, which would otherwise reset the
+            // checkbox). true = Hybrid (layout-preserving), false =
+            // Simple (vision reads the page, clean reflowed output).
+            let translationHybridMode = false;   // default: UNCHECKED (user spec)
+            let translationWithImage = true;
+            window.setTranslationWithImage = function(c){
+                translationWithImage = !!c;
+                var wiMsg = document.getElementById('translationWithImageMsg');
+                if (wiMsg) wiMsg.style.display = (c ? 'block' : 'none');
+            };
+            window.setTranslationHybridMode = function(checked) {
+                translationHybridMode = !!checked;
+                // Hybrid OFF = offline: With Image chhipao, offline message
+                // dikhao, Output Language ko "original" par lock karo
+                const wiWrap = document.getElementById('translationWithImageWrap');
+                const offMsg = document.getElementById('translationOfflineMsg');
+                const langSel = document.getElementById('translationLangSelect');
+                if (wiWrap) wiWrap.style.display = checked ? 'flex' : 'none';
+                var wiMsg2 = document.getElementById('translationWithImageMsg');
+                if (wiMsg2) wiMsg2.style.display = (checked && translationWithImage) ? 'block' : 'none';
+                if (offMsg) offMsg.style.display = checked ? 'none' : 'block';
+                if (langSel){
+                    if (!checked){
+                        // Hybrid OFF: sirf Original, baaki languages hatao + lock
+                        langSel.innerHTML = '<option value="original" selected>Original (No Translation)</option>';
+                        langSel.value = 'original';
+                        langSel.disabled = true;
+                    } else {
+                        // Hybrid ON: saari languages wapas
+                        langSel.innerHTML =
+                            '<option value="original">Original (No Translation)</option>' +
+                            '<option value="English" selected>English</option>' +
+                            '<option value="Spanish">Spanish</option>' +
+                            '<option value="French">French</option>' +
+                            '<option value="German">German</option>' +
+                            '<option value="Chinese">Chinese</option>' +
+                            '<option value="Japanese">Japanese</option>' +
+                            '<option value="Arabic">Arabic</option>' +
+                            '<option value="Hindi">Hindi</option>' +
+                            '<option value="Gujarati">Gujarati</option>' +
+                            '<option value="Urdu">Urdu</option>' +
+                            '<option value="Portuguese">Portuguese</option>' +
+                            '<option value="Russian">Russian</option>';
+                        langSel.disabled = false;
+                    }
+                }
+            };
+
+            // Translation output file format: 'docx' (default) or 'pdf'.
+            // When 'docx' is chosen, the workflow keeps the editable Word
+            // file as the deliverable and skips the final DOCX->PDF
+            // conversion step entirely.
+            let translationOutputFormat = 'docx';
+            window.setTranslationOutputFormat = function(fmt) {
+                translationOutputFormat = (fmt === 'pdf') ? 'pdf' : 'docx';
+            };
+
+            // ============================================================
+            // 13. TEMPLATE FILE SELECTION
+            // ============================================================
+            window.selectTemplateFile = function(event) {
+                const file = event.target.files[0];
+                if (!file) { event.target.value = ''; return; }
+                if (!/\.pdf$/i.test(file.name)) {
+                    showWarning('Output Template must be a single PDF file.');
+                    event.target.value = '';
+                    return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = async function(e) {
+                    const dataBase64 = e.target.result.split(',')[1];
+                    try {
+                        await postJSON('/api/lease/upload-template', {
+                            userId: CURRENT_USER_ID,
+                            fileName: file.name,
+                            dataBase64: dataBase64
+                        });
+                        selectedTemplateFile = file.name;
+                        document.getElementById('templateFileName').textContent = file.name;
+                        const templatePath = getUserTemplateFilePath(CURRENT_USER_ID, file.name);
+                        addActivity('lease-abstraction', `Output Template "${file.name}" saved to ${templatePath}`, 'Completed');
+                        refreshServicePage('lease-abstraction');
+                        persistServiceFiles('lease-abstraction');
+                        showMessage('✅ Template Selected', `Template "${file.name}" selected and saved to ${templatePath}.`, ['OK']);
+                    } catch (err) {
+                        console.warn('Template upload failed:', err);
+                        showWarning('Could not save the template to the server. Make sure py/server.py is running.');
+                    }
+                };
+                reader.readAsDataURL(file);
+                event.target.value = '';
+            };
+
+            // ============================================================
+            // 14. FILE DOWNLOAD / RETRY
+            // ============================================================
+            window.downloadFile = function(fileName, docFolderName, kind) {
+                if (!docFolderName) {
+                    showWarning('This file was not processed through the real pipeline, so there\'s nothing to download yet.');
+                    return;
+                }
+                const base = kind === 'translation' ? '/api/translation/download' : '/api/lease/download';
+                const nameParam = kind === 'translation' ? 'docName' : 'leaseName';
+                // window.open() is a plain browser navigation - it can't
+                // attach the Authorization header authFetch normally uses,
+                // so the session token rides along as a query param instead
+                // (server.py's _authenticated_user_id() accepts either).
+                const url = base + '?userId=' + encodeURIComponent(CURRENT_USER_ID) +
+                    '&' + nameParam + '=' + encodeURIComponent(docFolderName) + '&fileName=' + encodeURIComponent(fileName) +
+                    '&token=' + encodeURIComponent(AUTH_TOKEN || '');
+                window.open(url, '_blank');
+            };
+
+            // Item 9 - clicking a filename in Uploaded Files opens a
+            // preview card for that PDF. Uses the in-memory blob (still
+            // held until that file's save-output step completes, per the
+            // pipeline's own memory cleanup) so this works during
+            // pending/processing/needs_review - once a file is fully
+            // completed, the blob is gone and this instead opens the same
+            // Output.pdf download the Action column already offers.
+            window.openFilePreview = function(fileId) {
+                const serviceId = activeSubItemId === 'translation' ? 'translation' : 'lease-abstraction';
+                const files = serviceId === 'translation' ? getMyTranslationFiles() : getMyLeaseFiles();
+                const file = files.find(f => String(f.id) === String(fileId));
+                if (!file) return;
+
+                const blob = serviceId === 'translation' ? translationFileBlobs[file.id] : leaseFileBlobs[file.id];
+                let previewUrl = null;
+                if (blob) {
+                    previewUrl = URL.createObjectURL(blob);
+                } else if (file.status === 'completed') {
+                    const docFolder = file.leaseName || file.docName || '';
+                    const base = serviceId === 'translation' ? '/api/translation/download' : '/api/lease/download';
+                    const nameParam = serviceId === 'translation' ? 'docName' : 'leaseName';
+                    previewUrl = `${base}?userId=${encodeURIComponent(CURRENT_USER_ID)}&${nameParam}=${encodeURIComponent(docFolder)}&fileName=Output.pdf&token=${encodeURIComponent(AUTH_TOKEN || '')}`;
+                }
+
+                const html = `
+                    <div class="admin-modal-overlay" id="filePreviewOverlay">
+                        <div class="file-preview-card">
+                            <div class="file-preview-header">
+                                <span class="file-preview-title">${escapeHtml(file.name)}</span>
+                                <button class="admin-modal-close" onclick="closeFilePreview()">✕</button>
+                            </div>
+                            ${previewUrl ?
+                                `<iframe src="${previewUrl}" class="file-preview-frame"></iframe>` :
+                                `<div class="file-preview-unavailable">This file is no longer available to preview in this session. If it's already completed, use the Download link in the Action column instead.</div>`
+                            }
+                        </div>
+                    </div>
+                `;
+                const existing = document.getElementById('filePreviewOverlay');
+                if (existing) existing.remove();
+                document.body.insertAdjacentHTML('beforeend', html);
+                if (previewUrl && blob) {
+                    document.getElementById('filePreviewOverlay')._objectUrl = previewUrl;
+                }
+            };
+
+            window.closeFilePreview = function() {
+                const overlay = document.getElementById('filePreviewOverlay');
+                if (overlay) {
+                    if (overlay._objectUrl) URL.revokeObjectURL(overlay._objectUrl);
+                    overlay.remove();
+                }
+            };
+
+            window.retryFile = function(fileId) {
+                const serviceId = activeSubItemId === 'translation' ? 'translation' : 'lease-abstraction';
+                const files = serviceId === 'translation' ? getMyTranslationFiles() : getMyLeaseFiles();
+                const file = files.find(f => String(f.id) === String(fileId));
+                const reason = (file && file.errorReason) ? file.errorReason :
+                    'This file could not be processed. Click "Start" to try again.';
+                showMessage('❌ Error', reason, ['OK']);
+            };
+
+            // ============================================================
+            // 15. PROCESS CONTROL (sequential, one file at a time)
+            // ============================================================
+            function getCurrentBalance() {
+                let totalCredit = 0,
+                    totalDebit = 0;
+                getMyPaymentHistory().forEach(t => {
+                    // A balance-add sits in 'pending_approval' until an
+                    // Admin/Developer approves it, and never counts at all
+                    // if cancelled - only 'approved' (or legacy transactions
+                    // with no status field at all, i.e. pre-existing service
+                    // fee debits) count toward the real balance.
+                    if (t.status === 'pending_approval' || t.status === 'cancelled') return;
+                    totalCredit += Number(t.credit) || 0;
+                    totalDebit += Number(t.debit) || 0;
+                });
+                return totalCredit - totalDebit;
+            }
+
+            // ------------------------------------------------------------
+            // Lease Abstraction real-processing helpers (section 14)
+            // ------------------------------------------------------------
+            // Uploaded File objects for lease-abstraction files, keyed by
+            // file.id - JSON can't store real file bytes, so these live
+            // only in memory for the lifetime of this browser tab/session.
+            // If the page is reloaded, a "pending" file entry restored from
+            // lease-files.json will have no blob here and Start will ask
+            // the user to re-upload it (see processLeaseFileAt below).
+            let leaseFileBlobs = {};
+            let translationFileBlobs = {};
+            // Bug 4: browser-only output blobs (session download, no server save)
+            let translationBlobStore = {};
+
+            function sleep(ms) {
+                return new Promise(resolve => setTimeout(resolve, ms));
+            }
+
+            function waitIfPausedAsync(serviceId) {
+                return new Promise(resolve => waitIfPaused(serviceId, resolve));
+            }
+
+            function readFileAsDataURL(blob) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = () => reject(reader.error || new Error('Could not read file'));
+                    reader.readAsDataURL(blob);
+                });
+            }
+
+            async function postJSON(url, payload) {
+                const res = await authFetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                let data;
+                try { data = await res.json(); } catch (e) { data = {}; }
+                if (!res.ok) throw new Error(data.error || ('Request to ' + url + ' failed'));
+                return data;
+            }
+
+            // Starts a background text-extraction job and polls its status
+            // every couple of seconds until it's done. Extraction (real OCR
+            // for scanned PDFs especially) can take well over a minute for a
+            // long document - long enough to trip a reverse-proxy/gateway
+            // timeout if it sat inside one single HTTP request/response, so
+            // the server just kicks it off and this polls a tiny status
+            // endpoint instead (see /api/lease/extract-start + -status).
+            // Same idea as runExtractJob above, but for the LLM analysis
+            // step (/api/lease/analyze-start + -status) - this used to be a
+            // single blocking postJSON('/api/lease/analyze', ...) call, which
+            // meant a slow LLM response (large prompt + long document, can
+            // genuinely take well over a minute) left the progress bar
+            // sitting at 20% with zero feedback until the whole thing
+            // resolved, and risked the same gateway-timeout problem OCR had
+            // before it got the async-job treatment. onTick (optional) fires
+            // on every poll so the caller can show a "still working..."
+            // indicator even though there's no percentage to report mid-call.
+            // generate-pdf ka async-job wrapper — sync call multi-minute
+            // hybrid/ensemble pipeline par timeout ho jaata tha (permanent fix)
+            async function runGeneratePdfJob(payload, onTick) {
+                const startRes = await postJSON('/api/translation/generate-pdf-start', payload);
+                const jobId = startRes.jobId;
+                while (true) {
+                    await sleep(1500);
+                    const res = await authFetch('/api/translation/generate-pdf-status?jobId=' + encodeURIComponent(jobId));
+                    let status;
+                    try { status = await res.json(); } catch (e) { status = {}; }
+                    if (!res.ok) throw new Error(status.error || 'Could not check document generation status');
+                    if (status.status === 'done') return status.result || status;
+                    if (status.status === 'error') throw new Error(status.error || 'Document generation failed');
+                    if (typeof onTick === 'function') onTick();
+                }
+            }
+
+            async function runAnalyzeJob(text, fallbackName, onTick) {
+                const startRes = await postJSON('/api/lease/analyze-start', { text, fallbackName });
+                const jobId = startRes.jobId;
+
+                while (true) {
+                    await sleep(500);
+                    const res = await authFetch('/api/lease/analyze-status?jobId=' + encodeURIComponent(jobId));
+                    let status;
+                    try { status = await res.json(); } catch (e) { status = {}; }
+                    if (!res.ok) throw new Error(status.error || 'Could not check analysis status');
+
+                    if (status.status === 'done') {
+                        return status;
+                    }
+                    if (status.status === 'error') {
+                        throw new Error(status.error || 'Analysis failed');
+                    }
+                    if (typeof onTick === 'function') onTick();
+                }
+            }
+
+            async function runTranslateJob(text, targetLanguage, onTick) {
+                const startRes = await postJSON('/api/translation/translate-start', { text, targetLanguage });
+                const jobId = startRes.jobId;
+
+                while (true) {
+                    await sleep(500);
+                    const res = await authFetch('/api/translation/translate-status?jobId=' + encodeURIComponent(jobId));
+                    let status;
+                    try { status = await res.json(); } catch (e) { status = {}; }
+                    if (!res.ok) throw new Error(status.error || 'Could not check translation status');
+
+                    if (status.status === 'done') {
+                        return status;
+                    }
+                    if (status.status === 'error') {
+                        throw new Error(status.error || 'Translation failed');
+                    }
+                    if (typeof onTick === 'function') onTick();
+                }
+            }
+
+            async function runExtractJob(stagingPath, onProgress) {
+                const startRes = await postJSON('/api/lease/extract-start', { stagingPath });
+                const jobId = startRes.jobId;
+
+                while (true) {
+                    await sleep(500);
+                    const res = await authFetch('/api/lease/extract-status?jobId=' + encodeURIComponent(jobId));
+                    let status;
+                    try { status = await res.json(); } catch (e) { status = {}; }
+                    if (!res.ok) throw new Error(status.error || 'Could not check extraction status');
+
+                    if (status.status === 'done') {
+                        return { text: status.text, textLength: status.textLength };
+                    }
+                    if (status.status === 'error') {
+                        throw new Error(status.error || 'Extraction failed');
+                    }
+                    if (typeof onProgress === 'function') {
+                        onProgress(status.pagesDone, status.pagesTotal);
+                    }
+                }
+            }
+
+            // Uses XMLHttpRequest (not fetch) specifically so the real byte
+            // upload progress can drive the Scan Result column/progress bar.
+            // Retries once on a genuine network-level failure (xhr.onerror -
+            // the request never got any HTTP response at all, e.g. a
+            // transient connection blip or a proxy/gateway timeout on a
+            // large file) before giving up - a real HTTP error response
+            // (4xx/5xx, handled in onload below) is NOT retried, since
+            // retrying an actual rejection (bad file, auth failure, etc.)
+            // would just fail again for the same reason.
+            function uploadWithProgress(url, payload, onProgress, _isRetry) {
+                return new Promise((resolve, reject) => {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('POST', url);
+                    xhr.setRequestHeader('Content-Type', 'application/json');
+                    if (AUTH_TOKEN) xhr.setRequestHeader('Authorization', 'Bearer ' + AUTH_TOKEN);
+                    xhr.upload.onprogress = function(e) {
+                        if (e.lengthComputable && typeof onProgress === 'function') {
+                            onProgress(Math.round((e.loaded / e.total) * 100));
+                        }
+                    };
+                    xhr.onload = function() {
+                        let data;
+                        try { data = JSON.parse(xhr.responseText); } catch (e) { data = {}; }
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            resolve(data);
+                        } else {
+                            reject(new Error(data.error || ('Upload failed with status ' + xhr.status)));
+                        }
+                    };
+                    xhr.onerror = function() {
+                        if (!_isRetry) {
+                            console.warn('Upload hit a network error - retrying once...');
+                            uploadWithProgress(url, payload, onProgress, true).then(resolve, reject);
+                        } else {
+                            reject(new Error('Network error while uploading - please check your connection and try again.'));
+                        }
+                    };
+                    xhr.send(JSON.stringify(payload));
+                });
+            }
+
+            window.startProcess = function(serviceId) {
+                if (processState.isRunning) {
+                    showWarning('Processing is already running for this batch.');
+                    return;
+                }
+                let files = serviceId === 'translation' ? getMyTranslationFiles() : getMyLeaseFiles();
+                if (files.length === 0) {
+                    showWarning('No files to process. Please upload files first.');
+                    return;
+                }
+                // Bug 3: sirf SELECTED files process karo (checkbox). Agar
+                // kisi ne select nahi kiya to sab (backward compatible).
+                const anySelected = files.some(f => f.selected === true);
+                const anyUnselected = files.some(f => f.selected === false);
+                if (anySelected || anyUnselected) {
+                    const sel = files.filter(f => f.selected !== false);
+                    if (sel.length === 0) {
+                        showWarning('No files selected. Tick at least one file to process.');
+                        return;
+                    }
+                    files = sel;
+                }
+
+                // Item 6 - plan status/expiry is checked BEFORE the wallet
+                // balance check, and before any file starts - an expired
+                // plan blocks the whole batch, same as insufficient balance
+                // does below.
+                if (isPlanExpired()) {
+                    if (profileData) profileData.planStatus = 'Expired';
+                    addActivity(serviceId,
+                        `System > Process Aborted > Your ${getMyPlan().name} plan expired on ${profileData ? profileData.planEndDate : ''} - please renew it before processing`, 'Failed');
+                    refreshServicePage(serviceId);
+                    showWarning(`Your ${getMyPlan().name} plan expired on ${profileData ? profileData.planEndDate : 'an earlier date'}. Please renew or switch plans from Plans & Offers before processing.`);
+                    return;
+                }
+
+                // Only files that haven't already been dealt with actually
+                // cost anything (or count toward File(N/Total)) this run -
+                // completed/needs_review ones are skipped by the loop below.
+                const billable = files.filter(f => f.status !== 'completed' && f.status !== 'needs_review');
+                const myPlan = getMyPlan();
+                const isPerPage = (serviceId === 'translation' ? (myPlan.translationBillingUnit || 'page') : myPlan.billingUnit) === 'page';
+                // Item 7 - a per-page plan can't know the EXACT charge for a
+                // not-yet-scanned file up front (page count isn't known
+                // until OCR runs) - this uses each file's already-known
+                // page count if it has one (e.g. a retry) and assumes 1
+                // page otherwise, clearly labeled as an estimate so nobody
+                // is surprised if the real per-file charge (shown next to
+                // each row once scanning finishes) comes out higher.
+                const totalNeeded = billable.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
+                const pricePerFile = getServicePrice(serviceId);
+                const estimateNote = isPerPage ? ' (estimate - final charge depends on each file\'s actual page count)' : '';
+                const balanceCheckId = addActivity(serviceId,
+                    `System > Checking Wallet Balance > $${totalNeeded.toFixed(2)} required for ${billable.length} file(s)${estimateNote} (${myPlan.name} plan)`, 'Pending');
+                refreshServicePage(serviceId);
+
+                if (totalNeeded > 0 && getCurrentBalance() < totalNeeded) {
+                    updateActivity(serviceId, balanceCheckId, 'Failed');
+                    addActivity(serviceId,
+                        `System > Process Aborted > Insufficient balance - you have $${getCurrentBalance().toFixed(2)}, but $${totalNeeded.toFixed(2)} is required for ${billable.length} file(s)`,
+                        'Failed');
+                    refreshServicePage(serviceId);
+                    persistServiceFiles(serviceId);
+                    showWarning(`Insufficient balance. Processing ${billable.length} file(s) requires $${totalNeeded.toFixed(2)}${estimateNote} on your ${myPlan.name} plan, but your wallet only has $${getCurrentBalance().toFixed(2)}. Please add balance and click Start again.`);
+                    return;
+                }
+                updateActivity(serviceId, balanceCheckId, 'Success');
+
+                processState.isRunning = true;
+                processState.isPaused = false;
+                processState.isComplete = false;
+                processState.stopped = false;
+                processState.totalInBatch = billable.length;
+                processState.runIndex = 0;
+
+                refreshServicePage(serviceId);
+
+                if (serviceId === 'lease-abstraction') {
+                    setTimeout(() => runLeaseAbstractionPipeline(), 500);
+                } else {
+                    setTimeout(() => runTranslationPipeline(), 500);
+                }
+            };
+
+            function waitIfPaused(serviceId, cb) {
+                if (processState.stopped) return;
+                if (processState.isPaused) {
+                    setTimeout(() => waitIfPaused(serviceId, cb), 400);
+                    return;
+                }
+                cb();
+            }
+
+            // ============================================================
+            // 15b. LEASE ABSTRACTION - REAL PROCESSING PIPELINE (section 14)
+            // Backed by the /api/lease/* routes in py/server.py. Progress
+            // follows the fixed checkpoints from the spec: 0/20/40/60/80/100.
+            // Translation has its own real pipeline too now (see
+            // runTranslationPipeline/processTranslationFileAt further down),
+            // backed by /api/translation/* - it used to be a setTimeout-only
+            // simulation.
+            // ============================================================
+            function _shortPath(path, segments) {
+                if (!path) return path;
+                return path.split('/').slice(-segments).join('/');
+            }
+
+            // Item 5 - simulates a visible step-by-step ramp from `fromVal`
+            // to `toVal` for a Pending activity line, even when the
+            // underlying operation itself resolved in one shot (e.g.
+            // "Applying Rules" or "Accuracy Analyze", which come back as a
+            // single atomic number from the analyze call) - so the log
+            // always reads as a real sequence rather than jumping straight
+            // to the final number.
+            async function animateActivityNumber(serviceId, stepId, template, fromVal, toVal, steps) {
+                steps = steps || 8;
+                const stepSize = (toVal - fromVal) / steps;
+                for (let i = 1; i <= steps; i++) {
+                    if (processState.stopped) return;
+                    const current = i === steps ? toVal : Math.round(fromVal + stepSize * i);
+                    updateActivity(serviceId, stepId, 'Pending', template(current));
+                    refreshServicePage(serviceId);
+                    await sleep(45);
+                }
+            }
+
+            async function runLeaseAbstractionPipeline() {
+                if (processState.stopped) return;
+
+                // 14.1 - scan the output template ONCE for the whole batch;
+                // deliberately not tied to any file's Progress column.
+                try {
+                    const scanAgent = getAgents('lease-abstraction').find(a => a.phase === 'scan');
+                    activeAgentId = scanAgent ? scanAgent.id : null;
+                    const stepId = addActivity('lease-abstraction', `System > File Scanning > Output Template`, 'Pending');
+                    refreshServicePage('lease-abstraction');
+                    const result = await postJSON('/api/lease/scan-template', {
+                        userId: CURRENT_USER_ID,
+                        templateName: selectedTemplateFile || null
+                    });
+                    updateActivity('lease-abstraction', stepId, 'Success', `System > File Scanning > Output Template "${result.template}"`);
+                } catch (err) {
+                    addActivity('lease-abstraction', 'System > File Scanning > Output Template > Aborted: scan failed, continuing with Default.pdf', 'Failed');
+                }
+                activeAgentId = null;
+                refreshServicePage('lease-abstraction');
+
+                processLeaseFileAt(0);
+            }
+
+            async function processLeaseFileAt(startIndex) {
+                for (let fileIndex = startIndex; ; fileIndex++) {
+                    if (processState.stopped) return;
+
+                    const myLeaseFiles = getMyLeaseFiles();
+                    if (fileIndex >= myLeaseFiles.length) {
+                        // Item 2/3 fix - a file sitting in needs_review is
+                        // NOT finished, it's just paused waiting for a
+                        // person - the loop has nothing left to actively
+                        // process, but that's different from the whole
+                        // batch being done. Only clear the agent
+                        // highlights / show the completion popup once
+                        // there's truly nothing left awaiting review either
+                        // (this keeps the Review card's agent pills exactly
+                        // as they were until that specific file is
+                        // approved - see submitLeaseReview()).
+                        const stillAwaitingReview = myLeaseFiles.some(f => f.status === 'needs_review');
+                        processState.isRunning = false;
+                        if (!stillAwaitingReview) {
+                            activeAgentId = null;
+                            completedAgentIds.clear();
+                            processState.isComplete = true;
+                            refreshServicePage('lease-abstraction');
+                            persistServiceFiles('lease-abstraction');
+                            const hasErrors = myLeaseFiles.some(f => f.status === 'error');
+                            showMessage(hasErrors ? '⚠️ Finished with Errors' : '✅ Complete',
+                                hasErrors ?
+                                'Processing finished, but one or more files could not be completed. Check the Action column for details.' :
+                                'All files have been processed successfully!', ['OK']);
+                        } else {
+                            refreshServicePage('lease-abstraction');
+                            persistServiceFiles('lease-abstraction');
+                        }
+                        return;
+                    }
+
+                    await waitIfPausedAsync('lease-abstraction');
+                    if (processState.stopped) return;
+
+                    const file = myLeaseFiles[fileIndex];
+
+                    if (file.status === 'completed' || file.status === 'needs_review') {
+                        continue;
+                    }
+
+                    file.status = 'processing';
+                    // Item 5 - a fresh file starts with every agent pill back
+                    // to its normal (not-yet-reached) look.
+                    completedAgentIds.clear();
+                    // File(N/Total) label is fixed once, when this file actually
+                    // starts processing, and stored on the file so later steps
+                    // (including the human-review-approval flow, which can
+                    // happen much later) keep using the same label consistently.
+                    processState.runIndex = (processState.runIndex || 0) + 1;
+                    file.batchLabel = `File(${processState.runIndex}/${processState.totalInBatch || processState.runIndex}): `;
+                    const fl = file.batchLabel;
+
+                    addActivity('lease-abstraction', `${fl}File Processing > ${file.name}`, 'Started');
+                    refreshServicePage('lease-abstraction');
+                    await sleep(120);
+                    if (processState.stopped) return;
+
+                    const blob = leaseFileBlobs[file.id];
+                    if (!blob) {
+                        file.status = 'error';
+                        file.errorLabel = 'Missing';
+                        file.scanResult = 'File Not Available';
+                        file.errorReason = 'The original file is no longer available in this browser session (this can happen after a page reload). Please remove and re-upload this file, then click Start again.';
+                        addActivity('lease-abstraction',
+                            `${fl}File Processing > ${file.name} > Aborted: original file not available in this session`, 'Failed');
+                        refreshServicePage('lease-abstraction');
+                        persistServiceFiles('lease-abstraction');
+                        await sleep(120);
+                        continue;
+                    }
+
+                    const processAgents = getAgents('lease-abstraction').filter(a => a.phase !== 'scan');
+                    const scanPhaseAgents = getAgents('lease-abstraction').filter(a => a.phase === 'scan');
+
+                    try {
+                        // ---- Upload - silent (not its own log line per item
+                        // 5 feedback), folds straight into File Scanning ----
+                        activeAgentId = null;
+                        const dataUrl = await readFileAsDataURL(blob);
+                        const dataBase64 = dataUrl.split(',')[1];
+                        const uploadResult = await uploadWithProgress('/api/lease/upload',
+                            { userId: CURRENT_USER_ID, fileName: file.name, dataBase64: dataBase64 },
+                            (pct) => { file.scanResult = String(pct); refreshServicePage('lease-abstraction'); }
+                        );
+                        file.scanResult = '100';
+                        file.progress = '0';
+                        const stagingPath = uploadResult.stagingPath;
+                        const originalFileName = uploadResult.originalFileName;
+
+                        await waitIfPausedAsync('lease-abstraction');
+                        if (processState.stopped) return;
+
+                        // ---- 20%: data extraction (async job + polling - a
+                        // slow OCR pass can take well over a minute, so this
+                        // never sits inside one single HTTP request, which is
+                        // what was tripping a gateway/proxy timeout before). ----
+                        await blinkAgentThenDone('lease-abstraction', scanPhaseAgents[0] ? scanPhaseAgents[0].id : null);
+                        // scanResult was left at '100' by the upload step
+                        // just above (100% uploaded) - reset it here so the
+                        // Scan Result column doesn't show a stale "100%"
+                        // left over from upload while OCR itself has barely
+                        // started (and the Activity Log's own "File
+                        // Scanning" percentage is still climbing from 0).
+                        file.scanResult = '0';
+                        let stepId = addActivity('lease-abstraction', `${fl}File Scanning > 0%`, 'Pending');
+                        refreshServicePage('lease-abstraction');
+                        let lastRealPct = 0;
+                        const extractRes = await runExtractJob(stagingPath, (pagesDone, pagesTotal) => {
+                            if (pagesTotal) {
+                                const pct = Math.round((pagesDone / pagesTotal) * 100);
+                                lastRealPct = pct;
+                                file.pageCount = pagesTotal;
+                                // Same exact number drives BOTH the Scan
+                                // Result column and the Activity Log line -
+                                // they can never show two different values
+                                // at the same instant this way.
+                                file.scanResult = String(pct);
+                                file.progress = String(Math.min(20, Math.round((pagesDone / pagesTotal) * 20)));
+                                updateActivity('lease-abstraction', stepId, 'Pending', `${fl}File Scanning > ${pct}%`);
+                                refreshServicePage('lease-abstraction');
+                            }
+                        });
+                        // Ramps from wherever the real OCR ticks last left
+                        // off (often already 100 for a short document, in
+                        // which case this is a no-op) up to 100 - never
+                        // restarts from 0, which would otherwise show the
+                        // Activity Log rolling backwards below what the
+                        // Scan Result column (already at 100%) displays.
+                        // Keeps file.scanResult in lockstep with the
+                        // Activity Log's own number the whole time (same
+                        // single source of truth, see the tick callback
+                        // above) rather than letting the two drift during
+                        // this animated tail end.
+                        await animateActivityNumber('lease-abstraction', stepId, (v) => { file.scanResult = String(v); return `${fl}File Scanning > ${v}%`; }, lastRealPct, 100, 5);
+                        file.scanResult = '100';
+                        file.progress = '20';
+                        updateActivity('lease-abstraction', stepId, 'Success', `${fl}File Scanning > 100%`);
+                        markAgentDone(scanPhaseAgents[0] ? scanPhaseAgents[0].id : null);
+                        refreshServicePage('lease-abstraction');
+
+                        await waitIfPausedAsync('lease-abstraction');
+                        if (processState.stopped) return;
+
+                        // ---- 20%-40%: analysis - real OpenAI/OpenRouter call
+                        // when .env has a key configured (using
+                        // json/extraction_prompt.txt + json/rules.json), else
+                        // the heuristic engine - see py/lease_engine.py. Runs
+                        // as a background job (runAnalyzeJob) so the progress
+                        // bar keeps moving instead of sitting frozen at 20%
+                        // for however long the LLM call takes. ----
+                        await blinkAgentThenDone('lease-abstraction', processAgents[0] ? processAgents[0].id : null);
+                        stepId = addActivity('lease-abstraction', `${fl}API Request > LLM Extraction & Validation`, 'Pending');
+                        refreshServicePage('lease-abstraction');
+                        let analyzeTicks = 0;
+                        const analyzeRes = await runAnalyzeJob(extractRes.text, originalFileName.replace(/\.[^.]+$/, ''), () => {
+                            analyzeTicks++;
+                            // Creeps from 20% to 39% while waiting so the bar
+                            // visibly keeps moving during the LLM call, then
+                            // snaps to 40% once the real result comes back.
+                            file.progress = String(Math.min(39, 20 + analyzeTicks));
+                            refreshServicePage('lease-abstraction');
+                        });
+                        file.progress = '40';
+                        const methodLabel = analyzeRes.extractionMethod === 'llm-openai' ? 'OpenAI' :
+                            analyzeRes.extractionMethod === 'llm-openrouter' ? 'OpenRouter' : 'heuristic engine (no LLM configured)';
+                        updateActivity('lease-abstraction', stepId, 'Success', `${fl}API Request > LLM Extraction & Validation via ${methodLabel}`);
+                        file.accuracy = analyzeRes.accuracy;
+                        refreshServicePage('lease-abstraction');
+
+                        // ---- Item 5: charge happens right here, right after
+                        // the real LLM cost was actually incurred - not later,
+                        // at review-approval time. ----
+                        const chargeAmount = getServicePrice('lease-abstraction', file.pageCount);
+                        const now = new Date();
+                        const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                        paymentHistory.push({
+                            id: txnId,
+                            date: now.toISOString().split('T')[0],
+                            time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                            userId: CURRENT_USER_ID,
+                            paymentType: 'Service Fee',
+                            paymentMode: 'Wallet Balance',
+                            description: `Lease Abstraction - ${file.name}`,
+                            credit: 0,
+                            debit: chargeAmount
+                        });
+                        persistPaymentHistory();
+                        addActivity('lease-abstraction', `${fl}System > Process Charged > $${chargeAmount.toFixed(2)} deducted (${txnId})`, 'Success');
+                        file.chargeTxnId = txnId;
+                        file.chargeAmount = chargeAmount;
+
+                        // ---- Item 5: one log line per scan-phase "specialist"
+                        // agent, based on whether that agent's specific kind of
+                        // data was actually found in the just-completed
+                        // analysis - Success/Skipped is a real reflection of
+                        // the extracted fields, not a fixed script. ----
+                        const fields = analyzeRes.fields || {};
+                        const hasRentSchedule = Array.isArray(fields?.rent?.rent_schedule) && fields.rent.rent_schedule.length > 0;
+                        const hasRenewalOptions = !!(fields?.options?.renewal_options) && fields.options.renewal_options !== 'Lease is silent.';
+                        const hasContacts = fields?.contacts && Object.values(fields.contacts).some(v => v && v !== 'N/A');
+                        const scanAgentResults = [
+                            { agent: scanPhaseAgents[0], ok: true, activity: 'Core lease terms extracted (parties, premises, term)' },
+                            { agent: scanPhaseAgents[1], ok: hasRentSchedule,
+                                activity: hasRentSchedule ? 'Rent schedule / charge periods extracted' : 'No rent schedule table found in this document' },
+                            { agent: scanPhaseAgents[2], ok: hasRenewalOptions,
+                                activity: hasRenewalOptions ? 'Renewal/relocation option terms extracted' : 'No renewal option clause found in this document' },
+                            { agent: scanPhaseAgents[3], ok: hasContacts,
+                                activity: hasContacts ? 'Tenant/Landlord contact details resolved' : 'No structured contact details found in this document' },
+                        ];
+                        for (const r of scanAgentResults) {
+                            if (!r.agent) continue;
+                            await blinkAgentThenDone('lease-abstraction', r.agent.id);
+                            addActivity('lease-abstraction', `${fl}Agents > ${r.agent.name} > ${r.activity}`, r.ok ? 'Success' : 'Skipped');
+                            markAgentDone(r.agent.id);
+                            refreshServicePage('lease-abstraction');
+                        }
+
+                        // ---- Citation Enforcer's own line (the agent driving
+                        // this whole Analyze step) - now that its specialist
+                        // sub-results above are in, mark it and move on. ----
+                        await blinkAgentThenDone('lease-abstraction', processAgents[0] ? processAgents[0].id : null);
+                        addActivity('lease-abstraction', `${fl}Agents > ${processAgents[0] ? processAgents[0].name : 'Citation Enforcer'} > Citations verified against extracted clauses`, 'Success');
+                        markAgentDone(processAgents[0] ? processAgents[0].id : null);
+                        refreshServicePage('lease-abstraction');
+
+                        // ---- rules applied + accuracy detail (both come from
+                        // the same analyze call above) - animated so the
+                        // numbers visibly climb rather than jumping straight
+                        // to the final count. ----
+                        const rulesTotal = analyzeRes.rulesTotal || 0;
+                        let rulesStepId = addActivity('lease-abstraction', `${fl}System > Applying Rules > 0/${rulesTotal}`, 'Pending');
+                        refreshServicePage('lease-abstraction');
+                        await animateActivityNumber('lease-abstraction', rulesStepId, (v) => `${fl}System > Applying Rules > ${v}/${rulesTotal}`, 0, analyzeRes.rulesApplied || 0, 6);
+                        updateActivity('lease-abstraction', rulesStepId, 'Success', `${fl}System > Applying Rules > ${analyzeRes.rulesApplied || 0}/${rulesTotal}`);
+                        refreshServicePage('lease-abstraction');
+
+                        const accuracyLabel = analyzeRes.accuracyMethod === 'llm-validation' ? 'QC validated' : 'heuristic estimate';
+                        let accStepId = addActivity('lease-abstraction', `${fl}System > Accuracy Analyze > Accuracy: 0%`, 'Pending');
+                        refreshServicePage('lease-abstraction');
+                        await animateActivityNumber('lease-abstraction', accStepId, (v) => `${fl}System > Accuracy Analyze > Accuracy: ${v}%`, 0, analyzeRes.accuracy || 0, 5);
+                        updateActivity('lease-abstraction', accStepId, 'Success', `${fl}System > Accuracy Analyze > Accuracy: ${analyzeRes.accuracy}% (${accuracyLabel})`);
+                        refreshServicePage('lease-abstraction');
+
+                        // ---- Item 7: fire-and-forget rule auto-discovery -
+                        // asks the system to notice any extraction patterns
+                        // in THIS lease worth turning into a reusable rule.
+                        // Deliberately not awaited: this must never add
+                        // latency to the user's pipeline or fail it if the
+                        // LLM call errors - it just quietly lands in
+                        // rules.json's pending queue (under the Developer's
+                        // id) for later approval via Update Rules. ----
+                        postJSON('/api/lease/discover-rules', { userId: CURRENT_USER_ID, text: extractRes.text })
+                            .catch(e => console.warn('Rule auto-discovery could not be queued:', e));
+
+                        await waitIfPausedAsync('lease-abstraction');
+                        if (processState.stopped) return;
+
+                        // ---- 60%: document-type + duplicate validation ----
+                        await blinkAgentThenDone('lease-abstraction', processAgents[1] ? processAgents[1].id : null);
+                        stepId = addActivity('lease-abstraction', `${fl}System > Validation > Checking document type & duplicates`, 'Pending');
+                        refreshServicePage('lease-abstraction');
+                        const validateRes = await postJSON('/api/lease/validate', {
+                            userId: CURRENT_USER_ID,
+                            docType: analyzeRes.docType,
+                            leaseName: analyzeRes.leaseName,
+                            fields: analyzeRes.fields
+                        });
+
+                        if (!validateRes.valid) {
+                            file.status = 'error';
+                            file.progress = '0';
+                            if (validateRes.reason === 'duplicate') {
+                                file.scanResult = 'Already Processed';
+                                file.errorLabel = 'Duplicate';
+                                file.errorReason = `A lease named "${validateRes.leaseName}" has already been processed for your account.`;
+                            } else if (validateRes.reason === 'duplicate-content') {
+                                file.scanResult = 'Duplicate Content';
+                                file.errorLabel = 'Duplicate';
+                                file.errorReason = `This document's tenant, landlord, property, and lease dates match an already-processed lease ("${validateRes.matchedLeaseName}") - looks like a duplicate or a reference/exhibit for that same lease, not a new one.`;
+                            } else {
+                                file.scanResult = 'Invalid Document';
+                                file.errorLabel = 'Invalid';
+                                file.errorReason = 'This document does not appear to be a Lease or Amendment.';
+                            }
+                            updateActivity('lease-abstraction', stepId, 'Failed', `${fl}System > Validation > Failed: ${file.errorReason}`);
+                            addActivity('lease-abstraction',
+                                `${fl}File Processing > ${file.name} > Aborted: remaining steps skipped (Save Output, Human Review, Generate PDF)`, 'Failed');
+                            activeAgentId = null;
+                            refreshServicePage('lease-abstraction');
+                            persistServiceFiles('lease-abstraction');
+                            await sleep(120);
+                            continue;
+                        }
+
+                        file.progress = '60';
+                        file.leaseName = validateRes.leaseName;
+                        updateActivity('lease-abstraction', stepId, 'Success',
+                            `${fl}System > Validation > Document type + Duplicate check passed`);
+                        addActivity('lease-abstraction', `${fl}Agents > ${processAgents[1] ? processAgents[1].name : 'Blank Field Governance'} > Checked for missing/blank required fields`, 'Success');
+                        markAgentDone(processAgents[1] ? processAgents[1].id : null);
+                        refreshServicePage('lease-abstraction');
+
+                        await waitIfPausedAsync('lease-abstraction');
+                        if (processState.stopped) return;
+
+                        // ---- 80%: Output.json + saved document + LeaseDocuments.json ----
+                        await blinkAgentThenDone('lease-abstraction', processAgents[2] ? processAgents[2].id : null);
+                        stepId = addActivity('lease-abstraction', `${fl}System > Creating Output.json`, 'Pending');
+                        refreshServicePage('lease-abstraction');
+                        const saveRes = await postJSON('/api/lease/save-output', {
+                            userId: CURRENT_USER_ID,
+                            leaseName: validateRes.leaseName,
+                            docType: analyzeRes.docType,
+                            fields: analyzeRes.fields,
+                            extractionMethod: analyzeRes.extractionMethod,
+                            accuracy: analyzeRes.accuracy,
+                            accuracyMethod: analyzeRes.accuracyMethod,
+                            accuracySummary: analyzeRes.accuracySummary,
+                            missingFields: analyzeRes.missingFields,
+                            lowConfidenceFields: analyzeRes.lowConfidenceFields,
+                            stagingPath: stagingPath,
+                            originalFileName: originalFileName
+                        });
+                        file.progress = '80';
+                        updateActivity('lease-abstraction', stepId, 'Success', `${fl}System > Creating Output.json > Saved to ${_shortPath(saveRes.leaseFolder, 1)}`);
+                        addActivity('lease-abstraction', `${fl}Agents > ${processAgents[2] ? processAgents[2].name : 'Template Integrity'} > Output.json structure verified against template`, 'Success');
+                        markAgentDone(processAgents[2] ? processAgents[2].id : null);
+                        refreshServicePage('lease-abstraction');
+
+                        // ---- Item 2: an automated legal-review pass right
+                        // before the human ever sees it - reads back through
+                        // the extracted clauses looking for anything a real
+                        // reviewing attorney would flag (missing/ambiguous
+                        // language, unusually tenant/landlord-unfavorable
+                        // terms, clauses worth a second look). Doesn't block
+                        // the pipeline if nothing stands out - it's a
+                        // heads-up for the human reviewer, not a gate. ----
+                        await blinkAgentThenDone('lease-abstraction', processAgents[3] ? processAgents[3].id : null);
+                        const attorneyFlags = [];
+                        const f2 = analyzeRes.fields || {};
+                        if (!f2?.parties?.guarantor_name && (!f2?.parties?.guarantor || f2.parties.guarantor === 'N/A')) {
+                            attorneyFlags.push('no Guarantor named - confirm this is intentional for a lease of this size');
+                        }
+                        if (f2?.rent?.security_deposit && String(f2.rent.security_deposit).replace(/[^0-9.]/g, '') === '') {
+                            attorneyFlags.push('Security Deposit amount could not be confirmed');
+                        }
+                        if ((analyzeRes.missingFields || []).length > 3) {
+                            attorneyFlags.push(`${analyzeRes.missingFields.length} fields could not be located in the source document`);
+                        }
+                        addActivity('lease-abstraction',
+                            `${fl}Agents > ${processAgents[3] ? processAgents[3].name : 'Real Estate Legal Attorney Reviewer'} > ${attorneyFlags.length ? 'Flagged for human attention: ' + attorneyFlags.join('; ') : 'No legal risk flags found - clauses read as standard'}`,
+                            attorneyFlags.length ? 'Skipped' : 'Success');
+                        markAgentDone(processAgents[3] ? processAgents[3].id : null);
+                        refreshServicePage('lease-abstraction');
+
+                        // ---- Human Review checkpoint - the pipeline stops
+                        // here for THIS file (it does NOT block the other
+                        // files in the queue, the outer loop just moves on)
+                        // and waits for a person to open the Review panel,
+                        // check/correct the extracted fields, and approve.
+                        // Only PDF generation happens after that now (the
+                        // charge already happened above) - see
+                        // submitLeaseReview() below. ----
+                        await blinkAgentThenDone('lease-abstraction', processAgents[4] ? processAgents[4].id : null);
+                        file.status = 'needs_review';
+                        file.templateName = selectedTemplateFile || 'Default.pdf';
+                        // "Final QA + Validator" is ONE agent in agents.json -
+                        // one log line, not two.
+                        addActivity('lease-abstraction', `${fl}Agents > ${processAgents[4] ? processAgents[4].name : 'Final QA + Validator'} > Automated pre-check complete - ready for human review`, 'Success');
+                        markAgentDone(processAgents[4] ? processAgents[4].id : null);
+                        addActivity('lease-abstraction', `${fl}System > Awaiting human review before finalizing`, 'Success');
+                        activeAgentId = null;
+                        delete leaseFileBlobs[file.id]; // the file's already saved server-side by save-output above, no longer needed in memory
+                        refreshServicePage('lease-abstraction');
+                        persistServiceFiles('lease-abstraction');
+                        continue;
+
+                    } catch (err) {
+                        console.error('Lease processing error:', err);
+                        file.status = 'error';
+                        file.errorLabel = 'Error';
+                        file.errorReason = 'Processing failed: ' + (err && err.message ? err.message :
+                            'Unknown error. Make sure py/server.py is running with its dependencies installed (pip install -r requirements.txt).');
+                        activeAgentId = null;
+                        addActivity('lease-abstraction',
+                            `${fl}File Processing > ${file.name} > Aborted: ${file.errorReason}`, 'Failed');
+                        refreshServicePage('lease-abstraction');
+                        persistServiceFiles('lease-abstraction');
+                    }
+
+                    await sleep(120);
+                }
+            }
+
+
+            // ============================================================
+            // REAL TRANSLATION PIPELINE (used to be entirely simulated with
+            // setTimeout - now a real backend pipeline, same shape as lease
+            // abstraction: real upload -> real (async, OCR-capable) text
+            // extraction -> real LLM translation -> real saved output +
+            // downloadable PDF).
+            // ============================================================
+            async function runTranslationPipeline() {
+                if (processState.stopped) return;
+                processTranslationFileAt(0);
+            }
+
+            async function processTranslationFileAt(startIndex) {
+                for (let fileIndex = startIndex; ; fileIndex++) {
+                    if (processState.stopped) return;
+
+                    const myFiles = getMyTranslationFiles();
+                    if (fileIndex >= myFiles.length) {
+                        activeAgentId = null;
+                        completedAgentIds.clear();
+                        processState.isRunning = false;
+                        processState.isComplete = true;
+                        refreshServicePage('translation');
+                        persistServiceFiles('translation');
+                        const hasErrors = myFiles.some(f => f.status === 'error');
+                        showMessage(hasErrors ? '⚠️ Finished with Errors' : '✅ Complete',
+                            hasErrors ?
+                            'Processing finished, but one or more files could not be completed. Check the Action column for details.' :
+                            'All files have been processed successfully!', ['OK']);
+                        return;
+                    }
+
+                    await waitIfPausedAsync('translation');
+                    if (processState.stopped) return;
+
+                    const file = myFiles[fileIndex];
+                    if (file.status === 'completed') {
+                        continue;
+                    }
+
+                    file.status = 'processing';
+                    completedAgentIds.clear();
+                    processState.runIndex = (processState.runIndex || 0) + 1;
+                    file.batchLabel = `File(${processState.runIndex}/${processState.totalInBatch || processState.runIndex}): `;
+                    const fl = file.batchLabel;
+
+                    addActivity('translation', `${fl}File Processing > ${file.name}`, 'Started');
+                    refreshServicePage('translation');
+                    await sleep(120);
+                    if (processState.stopped) return;
+
+                    const blob = translationFileBlobs[file.id];
+                    if (!blob) {
+                        file.status = 'error';
+                        file.errorLabel = 'Missing';
+                        file.scanResult = 'File Not Available';
+                        file.errorReason = 'The original file is no longer available in this browser session (this can happen after a page reload). Please remove and re-upload this file, then click Start again.';
+                        addActivity('translation',
+                            `${fl}File Processing > ${file.name} > Aborted: original file not available in this session`, 'Failed');
+                        refreshServicePage('translation');
+                        persistServiceFiles('translation');
+                        await sleep(120);
+                        continue;
+                    }
+
+                    // Read the language selector fresh right now, rather
+                    // than trusting file.targetLang (which was captured back
+                    // when the file was uploaded - if the dropdown gets
+                    // changed afterwards, before Start is clicked, that
+                    // stale value would silently translate into the wrong
+                    // language, not just display the wrong one).
+                    const langSelectNow = document.getElementById('translationLangSelect');
+                    const targetLanguage = (langSelectNow && langSelectNow.value) || file.targetLang || 'English';
+                    file.targetLang = targetLanguage;
+                    // Read the Hybrid checkbox fresh too, for the same
+                    // reason as the language above.
+                    // Hybrid + With Image — render ke waqt fresh read
+                    const hybridCheckNow = document.getElementById('translationHybridCheck');
+                    const hybridMode = hybridCheckNow ? !!hybridCheckNow.checked : translationHybridMode;
+                    const _wiNow = document.getElementById('translationWithImageCheck');
+                    const withImageOpt = _wiNow ? !!_wiNow.checked : translationWithImage;
+                    const processAgents = getAgents('translation').filter(a => a.phase !== 'scan');
+                    const agentName = (list, idx) => (list[idx] && list[idx].name) || 'Unassigned';
+
+                    try {
+                        // ---- Upload - silent, folds into File Scanning ----
+                        activeAgentId = null;
+                        const dataUrl = await readFileAsDataURL(blob);
+                        const dataBase64 = dataUrl.split(',')[1];
+                        const uploadResult = await uploadWithProgress('/api/translation/upload',
+                            { userId: CURRENT_USER_ID, fileName: file.name, dataBase64: dataBase64 },
+                            (pct) => { file.scanResult = String(pct); refreshServicePage('translation'); }
+                        );
+                        file.scanResult = '100';
+                        file.progress = '0';
+                        const stagingPath = uploadResult.stagingPath;
+                        const originalFileName = uploadResult.originalFileName;
+
+                        await waitIfPausedAsync('translation');
+                        if (processState.stopped) return;
+
+                        // ============================================================
+                        // OFFLINE (Hybrid OFF) — WITHOUT API. Test.html ka EXACT
+                        // offline logic browser me chalta hai (translation-offline.js):
+                        // pdf.js se text extract + JSZip se docx. Server pe sirf
+                        // save hota hai (folder + billing + download link). Koi
+                        // extraction/vision/translate API call NAHI.
+                        // ============================================================
+                        // Browser-side deliverable banega jab:
+                        //  (a) Hybrid OFF  -> offline text-layer (no API), YA
+                        //  (b) Hybrid ON + Original(No Translation) -> vision OCR
+                        //      browser me (Box-tool jaisa line-level, tez),
+                        //      koi translation nahi, image sirf With Image par.
+                        // Hybrid ON -> sab kuch browser vision path me (OCR-only
+                        // ya OCR+translate, dono Test.html criteria ke saath:
+                        // page-type detect + tone). Hybrid OFF -> offline text-layer.
+                        const browserBuild = true;
+                        if (browserBuild) {
+                            const baseName = originalFileName.replace(/\.[^.]+$/, '');
+                            const isTranslate = hybridMode && targetLanguage !== 'original';
+                            // OUTPUT FILENAME (user spec):
+                            //  Hybrid OFF (text-based, no API): "<name> No Hybrid - Without Translation - Translation"
+                            //  Hybrid ON + Original:            "<name> Hybrid - Without Translation - Translation"
+                            //  Hybrid ON + <language>:          "<name> Hybrid - <language> - Translation"
+                            let docName;
+                            if (!hybridMode) {
+                                docName = baseName + ' No Hybrid - Without Translation - Translation';
+                            } else if (!isTranslate) {
+                                docName = baseName + ' Hybrid - Without Translation - Translation';
+                            } else {
+                                docName = baseName + ' Hybrid - ' + targetLanguage + ' - Translation';
+                            }
+                            const modeLabel = !hybridMode ? 'Offline (no API)'
+                                : (isTranslate ? ('Hybrid - Vision OCR + Translate -> ' + targetLanguage)
+                                               : 'Hybrid - Vision OCR only');
+                            // ACTIVITY LOG FIX: har distinct step apni ALAG line
+                            // banata hai (updateActivity se overwrite NAHI). Error
+                            // aaye to wo line rehti hai; solve/agla step nayi line.
+                            addActivity('translation', `${fl}File Processing > ${file.name} > Started (${modeLabel})`, 'Started');
+                            refreshServicePage('translation');
+
+                            // SCANNING: pehle poora scan (100%) — tabhi aage process.
+                            let scanId = addActivity('translation', `${fl}File Scanning > 0%`, 'Pending');
+                            refreshServicePage('translation');
+                            let offlineBlob;
+                            let lastLoggedMsg = '';
+                            // ACTIVITY LOG: extraction/translation ke liye ALAG lines
+                            // banane ki jagah EK updating counter line rakho.
+                            //   "File(x/y): Text(N) extracted"  — N badhta rehta hai
+                            //   "File(x/y): Text(N) translated"
+                            let extractedCount = 0, translatedCount = 0;
+                            let extractLineId = null, translateLineId = null;
+                            try {
+                                const onLog = (m) => {
+                                    // PROGRESS BAR: "Vision OCR: X/Y pages" se real progress
+                                    const mm = m.match(/Vision OCR:\s*(\d+)\/(\d+)\s*pages/);
+                                    if (mm) {
+                                        const done = parseInt(mm[1], 10), total = parseInt(mm[2], 10) || 1;
+                                        const pct = Math.min(80, Math.round((done / total) * 80));
+                                        file.progress = String(pct);
+                                        updateActivity('translation', scanId, 'Pending', `${fl}File Scanning > ${pct}%`);
+                                        refreshServicePage('translation');
+                                        return;
+                                    }
+                                    // EXTRACTION: "P{n}: {count} line-boxes ..." → ek counter line
+                                    const em = m.match(/P\d+:\s*(\d+)\s*line-boxes/);
+                                    if (em) {
+                                        extractedCount += parseInt(em[1], 10) || 0;
+                                        if (!extractLineId) extractLineId = addActivity('translation', `${fl}Text(${extractedCount}) extracted`, 'Info');
+                                        else updateActivity('translation', extractLineId, 'Info', `${fl}Text(${extractedCount}) extracted`);
+                                        refreshServicePage('translation');
+                                        return;
+                                    }
+                                    // TRANSLATION: "Translation: {N} line(s) translated" → counter line
+                                    const tm = m.match(/Translation:\s*(\d+)\s*line\(s\) translated/);
+                                    if (tm) {
+                                        translatedCount += parseInt(tm[1], 10) || 0;
+                                        if (!translateLineId) translateLineId = addActivity('translation', `${fl}Text(${translatedCount}) translated`, 'Info');
+                                        else updateActivity('translation', translateLineId, 'Info', `${fl}Text(${translatedCount}) translated`);
+                                        refreshServicePage('translation');
+                                        return;
+                                    }
+                                    // OFFLINE: "P{n}: {count} text line(s) extracted (no API)"
+                                    const om = m.match(/P\d+:\s*(\d+)\s*text line\(s\) extracted/);
+                                    if (om) {
+                                        extractedCount += parseInt(om[1], 10) || 0;
+                                        if (!extractLineId) extractLineId = addActivity('translation', `${fl}Text(${extractedCount}) extracted`, 'Info');
+                                        else updateActivity('translation', extractLineId, 'Info', `${fl}Text(${extractedCount}) extracted`);
+                                        refreshServicePage('translation');
+                                        return;
+                                    }
+                                    // baaki important messages (background removed, warnings,
+                                    // page-summary, errors) apni alag line — lekin duplicate skip.
+                                    if (m === lastLoggedMsg) return;
+                                    lastLoggedMsg = m;
+                                    addActivity('translation', `${fl}${m}`, 'Info');
+                                    refreshServicePage('translation');
+                                };
+                                if (hybridMode) {
+                                    if (window.setVisionAuthToken) window.setVisionAuthToken(AUTH_TOKEN || '');
+                                    if (window.setVisionStopCheck) window.setVisionStopCheck(function () { return processState.stopped; });
+                                    offlineBlob = await window.buildHybridDocxBlob(blob, {
+                                        withImage: withImageOpt,
+                                        targetLang: targetLanguage
+                                    }, onLog);
+                                } else {
+                                    offlineBlob = await window.buildOfflineDocxBlob(blob, onLog);
+                                }
+                            } catch (offErr) {
+                                // ERROR LINE: rehti hai (hatti nahi), aur File Processing
+                                // ki alag failed line bhi.
+                                updateActivity('translation', scanId, 'Failed', `${fl}File Scanning > FAILED`);
+                                addActivity('translation', `${fl}Error > ${offErr.message}`, 'Failed');
+                                file.status = 'error';
+                                file.errorLabel = 'Error';
+                                file.errorReason = offErr.message || 'Processing failed';
+                                addActivity('translation', `${fl}File Processing > ${file.name} > Aborted: ${file.errorReason}`, 'Failed');
+                                refreshServicePage('translation');
+                                persistServiceFiles('translation');
+                                continue;
+                            }
+                            // SCANNING 100% — ab hi process aage badha
+                            updateActivity('translation', scanId, 'Success', `${fl}File Scanning > 100%`);
+                            addActivity('translation', `${fl}File Scanning > Extraction complete`, 'Success');
+                            file.progress = '85';   // monotonic: scan(0-80) -> build 85
+                            refreshServicePage('translation');
+
+                            // Bug 4: translation output ab SERVER PE SAVE NAHI hota.
+                            // Browser me bana docx blob ko sirf is session me rakhte
+                            // hain — user isi process ke dauran download karta hai.
+                            // Koi server file, koi Output.docx disk pe nahi.
+                            translationBlobStore[file.id] = { blob: offlineBlob, name: docName + '.docx' };
+                            file.progress = '95';
+
+                            // billing — same principle as hybrid path
+                            const chargeAmount = getServicePrice('translation', file.pageCount);
+                            const now = new Date();
+                            const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                            paymentHistory.push({
+                                id: txnId,
+                                date: now.toISOString().split('T')[0],
+                                time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                                userId: CURRENT_USER_ID,
+                                paymentType: 'Service Fee',
+                                paymentMode: 'Wallet Balance',
+                                description: `Translation - ${file.name} (${!hybridMode ? 'No Hybrid' : (isTranslate ? 'Hybrid ' + targetLanguage : 'Hybrid Original')})`,
+                                credit: 0,
+                                debit: chargeAmount
+                            });
+
+                            file.docName = docName;
+                            file.outputFormat = 'docx';
+                            file.sessionDownload = true;   // browser-only download
+                            file.progress = '100';
+                            addActivity('translation', `${fl}System > Output Mode > ${!hybridMode ? 'offline (no API)' : (isTranslate ? 'Hybrid Vision + Translate' : 'Hybrid Vision OCR-only')}`, 'Success');
+                            addActivity('translation', `${fl}System > Generate Output > ${docName}.docx ready for download (this session only)`, 'Success');
+                            addActivity('translation', `${fl}File Processing > ${file.name}`, 'Finished');
+                            notifyProcessCompletion('Translation', file.name, chargeAmount, txnId);
+                            file.status = 'completed';
+                            activeAgentId = null;
+                            delete translationFileBlobs[file.id];
+                            refreshServicePage('translation');
+                            persistPaymentHistory();
+                            persistServiceFiles('translation');
+                            await sleep(120);
+                            continue;
+                        }
+
+                        // ---- Extracting Text Content (async job + polling, same
+                        // OCR-capable pipeline as lease abstraction) ----
+                        await blinkAgentThenDone('translation', processAgents[0] ? processAgents[0].id : null);
+                        // Reset the stale '100' left by the upload step
+                        // above, so Scan Result doesn't show 100% while
+                        // OCR itself has barely started.
+                        file.scanResult = '0';
+                        let stepId = addActivity('translation', `${fl}File Scanning > 0%`, 'Pending');
+                        refreshServicePage('translation');
+                        let lastRealPct = 0;
+                        const extractRes = await runExtractJob(stagingPath, (pagesDone, pagesTotal) => {
+                            if (pagesTotal) {
+                                const pct = Math.round((pagesDone / pagesTotal) * 100);
+                                lastRealPct = pct;
+                                file.pageCount = pagesTotal;
+                                file.scanResult = String(pct);
+                                file.progress = String(Math.min(20, Math.round((pagesDone / pagesTotal) * 20)));
+                                updateActivity('translation', stepId, 'Pending', `${fl}File Scanning > ${pct}%`);
+                                refreshServicePage('translation');
+                            }
+                        });
+                        await animateActivityNumber('translation', stepId, (v) => { file.scanResult = String(v); return `${fl}File Scanning > ${v}%`; }, lastRealPct, 100, 5);
+                        file.scanResult = '100';
+                        file.progress = '20';
+                        updateActivity('translation', stepId, 'Success', `${fl}File Scanning > 100%`);
+                        markAgentDone(processAgents[0] ? processAgents[0].id : null);
+                        refreshServicePage('translation');
+
+                        await waitIfPausedAsync('translation');
+                        if (processState.stopped) return;
+
+                        // ---- Translating Content - real LLM call, runs as a
+                        // background job (runTranslateJob) for the same
+                        // reason analysis does above - a long document can
+                        // take well over a minute to translate and shouldn't
+                        // leave the progress bar frozen the whole time. ----
+                        await blinkAgentThenDone('translation', processAgents[1] ? processAgents[1].id : null);
+                        stepId = addActivity('translation', `${fl}API Request > Translation to ${targetLanguage}`, 'Pending');
+                        refreshServicePage('translation');
+                        let translateTicks = 0;
+                        // "Original (No Translation)" ya offline (Hybrid off):
+                        // koi translate API call NAHI — extracted text hi output hai
+                        const translateRes = (targetLanguage === 'original' || !hybridMode)
+                            ? { translated: extractRes.text, translatedText: extractRes.text, text: extractRes.text, method: 'none' }
+                            : await runTranslateJob(extractRes.text, targetLanguage, () => {
+                                translateTicks++;
+                                file.progress = String(Math.min(49, 20 + translateTicks));
+                                refreshServicePage('translation');
+                            });
+                        file.progress = '50';
+                        const methodLabel = translateRes.method === 'none' ? 'no translation (original preserved)' :
+                            translateRes.method === 'llm-openai' ? 'OpenAI' :
+                            translateRes.method === 'llm-openrouter' ? 'OpenRouter' : 'heuristic (no LLM configured)';
+                        updateActivity('translation', stepId, 'Success', `${fl}API Request > Translated to ${targetLanguage} via ${methodLabel}`);
+                        refreshServicePage('translation');
+
+                        // ---- Item 5: charge right after the real LLM cost
+                        // was actually incurred, same principle as Lease
+                        // Abstraction. ----
+                        const chargeAmount = getServicePrice('translation', file.pageCount);
+                        const now = new Date();
+                        const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                        paymentHistory.push({
+                            id: txnId,
+                            date: now.toISOString().split('T')[0],
+                            time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                            userId: CURRENT_USER_ID,
+                            paymentType: 'Service Fee',
+                            paymentMode: 'Wallet Balance',
+                            description: `Translation - ${file.name}`,
+                            credit: 0,
+                            debit: chargeAmount
+                        });
+                        persistPaymentHistory();
+                        addActivity('translation', `${fl}System > Process Charged > $${chargeAmount.toFixed(2)} deducted (${txnId})`, 'Success');
+
+                        addActivity('translation', `${fl}Agents > ${agentName(processAgents, 0)} > Source text extracted`, 'Success');
+                        addActivity('translation', `${fl}Agents > ${agentName(processAgents, 1)} > Translation complete`, 'Success');
+                        markAgentDone(processAgents[1] ? processAgents[1].id : null);
+                        refreshServicePage('translation');
+
+                        await waitIfPausedAsync('translation');
+                        if (processState.stopped) return;
+
+                        // ---- Applying Formatting Rules (cosmetic checkpoint -
+                        // the real auto-formatting happens in generate_translation_pdf) ----
+                        await blinkAgentThenDone('translation', processAgents[2] ? processAgents[2].id : null);
+                        stepId = addActivity('translation', `${fl}Agents > ${agentName(processAgents, 2)} > Applying document formatting`, 'Pending');
+                        file.progress = '65';
+                        refreshServicePage('translation');
+                        await sleep(120);
+                        updateActivity('translation', stepId, 'Success', `${fl}Agents > ${agentName(processAgents, 2)} > Formatting applied`);
+                        markAgentDone(processAgents[2] ? processAgents[2].id : null);
+                        refreshServicePage('translation');
+
+                        await waitIfPausedAsync('translation');
+                        if (processState.stopped) return;
+
+                        // ---- Prepare Output File - real save ----
+                        await blinkAgentThenDone('translation', processAgents[3] ? processAgents[3].id : null);
+                        stepId = addActivity('translation', `${fl}System > Creating Output.json`, 'Pending');
+                        refreshServicePage('translation');
+                        const docName = originalFileName.replace(/\.[^.]+$/, '');
+                        const saveRes = await postJSON('/api/translation/save-output', {
+                            userId: CURRENT_USER_ID,
+                            docName: docName,
+                            originalText: extractRes.text,
+                            translatedText: translateRes.translatedText,
+                            targetLanguage: targetLanguage,
+                            translationMethod: translateRes.method,
+                            stagingPath: stagingPath,
+                            originalFileName: originalFileName
+                        });
+                        file.progress = '85';
+                        file.docName = docName;
+                        updateActivity('translation', stepId, 'Success', `${fl}System > Creating Output.json > Saved to ${_shortPath(saveRes.docFolder, 1)}`);
+                        markAgentDone(processAgents[3] ? processAgents[3].id : null);
+                        refreshServicePage('translation');
+
+                        await waitIfPausedAsync('translation');
+                        if (processState.stopped) return;
+
+                        // ---- Create Download Link - real PDF ----
+                        await blinkAgentThenDone('translation', processAgents[4] ? processAgents[4].id : null);
+                        stepId = addActivity('translation', `${fl}System > Generate Output`, 'Pending');
+                        refreshServicePage('translation');
+                        const outputFormatNow = document.getElementById('translationOutputFormat');
+                        const outFmt = outputFormatNow ? outputFormatNow.value : translationOutputFormat;
+                        const pdfRes = await runGeneratePdfJob({
+                            userId: CURRENT_USER_ID,
+                            docName: docName,
+                            hybrid: hybridMode,
+                            withImage: withImageOpt,
+                            outputFormat: outFmt
+                        });
+                        addActivity('translation', `${fl}System > Output Mode > ${pdfRes.mode || (hybridMode ? 'hybrid' : 'simple')}`, 'Success');
+                        file.progress = '100';
+                        file.outputFormat = pdfRes.outputFormat || outFmt;
+                        updateActivity('translation', stepId, 'Success', `${fl}System > Generate Output > ${_shortPath(pdfRes.outputPdf, 2)} generated successfully`);
+                        markAgentDone(processAgents[4] ? processAgents[4].id : null);
+
+                        // Item - surface exactly what the layout-preserving
+                        // translator actually did on THIS server (which
+                        // rendering path, how many text regions it found
+                        // per page, any errors) into the Activity Log -
+                        // since a production server's own console isn't
+                        // something that's normally visible, this makes it
+                        // possible to diagnose a "nothing got translated"
+                        // report just from what's already on screen.
+                        if (pdfRes.diagnostics) {
+                            const d = pdfRes.diagnostics;
+                            // Per-step progress the engine reported while
+                            // working (region detection, vision read,
+                            // reviewer rounds) - so the long 85% wait now
+                            // shows what's happening instead of looking stuck.
+                            (d.progressLog || []).forEach(msg => {
+                                addActivity('translation', `${fl}Progress > ${msg}`, 'Success');
+                            });
+                            addActivity('translation', `${fl}Diagnostics > Path: ${d.pathUsed || 'unknown'}, OCR lang: ${d.ocrLangUsed || 'n/a'}, Tesseract: ${d.tesseractVersion || 'n/a'}, pdfium: ${d.pypdfium2Version || 'n/a'}`, 'Success');
+                            (d.pages || []).forEach(p => {
+                                const revInfo = Object.keys(p).filter(k => k.startsWith('review')).map(k => `${k}=${p[k]}`).join(', ');
+                                addActivity('translation', `${fl}Diagnostics > Page ${p.page}: ${p.cvRegionsDetected ?? p.regionsDetected ?? 'n/a'} block(s), text=${p.cvTranslatable ?? 'n/a'}, elements=${p.cvNonTranslatable ?? 'n/a'}, skippedTooSmall=${p.skippedTooSmall ?? 0}${revInfo ? ', ' + revInfo : ''}${p.error ? ' - ERROR: ' + p.error : ''}`, p.error ? 'Failed' : 'Success');
+                            });
+                            // Debug artifacts (original page images, the exact
+                            // prompt sent to the model, the raw model response,
+                            // the parsed JSON layout, and the reconstructed
+                            // clean background) - each as a downloadable link so
+                            // every step can be inspected.
+                            (d.artifacts || []).forEach(a => {
+                                const url = a.url || (a.path ? ('/' + String(a.path).replace(/^\/+/, '')) : '');
+                                const label = a.name + (a.kind ? ` [${a.kind}]` : '');
+                                if (url) {
+                                    addActivity('translation', `${fl}Artifact > <a href="${url}" target="_blank" rel="noopener">${label}</a>`, 'Success');
+                                } else {
+                                    addActivity('translation', `${fl}Artifact > ${label}`, 'Success');
+                                }
+                            });
+                            if (d.fatalError) {
+                                addActivity('translation', `${fl}Diagnostics > Fell back to plain reflow - fatal error: ${d.fatalError}`, 'Failed');
+                            }
+                        }
+
+                        addActivity('translation', `${fl}File Processing > ${file.name}`, 'Finished');
+                        notifyProcessCompletion('Translation', file.name, chargeAmount, txnId);
+
+                        file.status = 'completed';
+                        activeAgentId = null;
+                        delete translationFileBlobs[file.id];
+                        refreshServicePage('translation');
+                        persistPaymentHistory();
+                        persistServiceFiles('translation');
+
+                    } catch (err) {
+                        console.error('Translation processing error:', err);
+                        file.status = 'error';
+                        file.errorLabel = 'Error';
+                        file.errorReason = 'Processing failed: ' + (err && err.message ? err.message :
+                            'Unknown error. Make sure py/server.py is running with its dependencies installed (pip install -r requirements.txt).');
+                        activeAgentId = null;
+                        addActivity('translation',
+                            `${file.batchLabel || ''}File Processing > ${file.name} > Aborted: ${file.errorReason}`, 'Failed');
+                        refreshServicePage('translation');
+                        persistServiceFiles('translation');
+                    }
+
+                    await sleep(120);
+                }
+            }
+
+            window.togglePause = function() {
+                processState.isPaused = !processState.isPaused;
+                const serviceId = activeSubItemId || 'lease-abstraction';
+                addActivity(serviceId, `System > Process ${processState.isPaused ? 'Paused' : 'Resumed'}`, processState.isPaused ? 'Pending' : 'Success');
+                refreshServicePage(serviceId);
+            };
+
+            window.stopProcess = function() {
+                processState.stopped = true;
+                processState.isRunning = false;
+                processState.isPaused = false;
+                // Item 7 - stopping mid-batch is NOT the same as finishing -
+                // isComplete used to get set here too, which made the UI
+                // (and a subsequent Start click) treat a stopped run as if
+                // every file had been dealt with. Leave it false so Start
+                // cleanly picks back up.
+                processState.isComplete = false;
+                activeAgentId = null;
+                completedAgentIds.clear();
+                const serviceId = activeSubItemId || 'lease-abstraction';
+
+                // Any file this run was actively working on when Stop was
+                // pressed is left in a permanent 'processing' limbo
+                // otherwise - reset it to a clear, restartable error state
+                // instead (its blob is still in memory, since only a
+                // *completed* step deletes it, so Start can safely retry).
+                const files = serviceId === 'translation' ? getMyTranslationFiles() : getMyLeaseFiles();
+                let stoppedMidFile = null;
+                files.forEach(f => {
+                    if (f.status === 'processing') {
+                        f.status = 'error';
+                        f.errorLabel = 'Stopped';
+                        f.errorReason = 'Processing was stopped by the user before this file finished. Click Start to retry.';
+                        stoppedMidFile = f;
+                    }
+                });
+                addActivity(serviceId, `System > Process Stopped${stoppedMidFile ? ` while processing ${stoppedMidFile.name}` : ''}`, 'Failed');
+                showMessage('⏹️ Stopped', 'Processing has been stopped. Files already completed or awaiting review are unaffected - click Start to resume with the rest.', ['OK']);
+                refreshServicePage(serviceId);
+                persistServiceFiles(serviceId);
+            };
+
+            // File selection (checkbox) — user specific files run/clear kar sake
+            window.toggleFileSelect = function(fileId, checked) {
+                const arr = (activeServiceId === 'translation') ? translationFiles : leaseFiles;
+                const f = arr.find(x => String(x.id) === String(fileId));
+                if (f) f.selected = !!checked;
+            };
+            window.toggleSelectAllFiles = function(serviceId, checked) {
+                const arr = (serviceId === 'translation') ? translationFiles : leaseFiles;
+                arr.filter(f => f.userId === CURRENT_USER_ID).forEach(f => { f.selected = !!checked; });
+                refreshServicePage(serviceId);
+            };
+
+            // Bug 4: translation output browser-only download (session blob)
+            window.downloadSessionBlob = function(fileId) {
+                const entry = translationBlobStore[fileId];
+                if (!entry || !entry.blob) {
+                    showWarning('This file is only available during the session it was processed in. Please run it again to download.');
+                    return;
+                }
+                const url = URL.createObjectURL(entry.blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = entry.name || 'Translation.docx';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            };
+
+            window.clearFiles = function(serviceId) {
+                const arrForCount = (serviceId === 'translation') ? translationFiles : leaseFiles;
+                const mine = arrForCount.filter(f => f.userId === CURRENT_USER_ID);
+                const selected = mine.filter(f => f.selected !== false);
+                const onlySelected = selected.length > 0 && selected.length < mine.length;
+                const msg = onlySelected
+                    ? `Remove the ${selected.length} selected file(s) from this list?`
+                    : 'Are you sure you want to clear all files from this list? Your processed history stays safe on the Dashboard.';
+                showConfirm('🗑️ Clear Files', msg, function(confirmed) {
+                    if (confirmed) {
+                        if (onlySelected) {
+                            // sirf selected hatao
+                            const selIds = new Set(selected.map(f => String(f.id)));
+                            if (serviceId === 'translation') {
+                                translationFiles = translationFiles.filter(f => !(f.userId === CURRENT_USER_ID && selIds.has(String(f.id))));
+                                selected.forEach(f => { delete translationFileBlobs[f.id]; });
+                            } else {
+                                leaseFiles = leaseFiles.filter(f => !(f.userId === CURRENT_USER_ID && selIds.has(String(f.id))));
+                                selected.forEach(f => { delete leaseFileBlobs[f.id]; });
+                            }
+                            refreshServicePage(serviceId);
+                            persistServiceFiles(serviceId);
+                            showMessage('🗑️ Cleared', `${selected.length} file(s) removed.`, ['OK']);
+                            return;
+                        }
+                        // Full clear - safe to remove completed entries too now,
+                        // since the Dashboard's "My Processed Leases"/"My
+                        // Processed Translations" cards read from the server
+                        // (/api/lease/list, /api/translation/list) rather than
+                        // from these local arrays, so clearing this view can
+                        // no longer wipe someone's processed history.
+                        if (serviceId === 'translation') {
+                            translationFiles = translationFiles.filter(f => f.userId !== CURRENT_USER_ID);
+                            translationActivityLog = translationActivityLog.filter(a => a.userId !== CURRENT_USER_ID);
+                            translationFileBlobs = {};
+                        } else {
+                            leaseFiles = leaseFiles.filter(f => f.userId !== CURRENT_USER_ID);
+                            leaseActivityLog = leaseActivityLog.filter(a => a.userId !== CURRENT_USER_ID);
+                            leaseFileBlobs = {};
+                        }
+                        refreshServicePage(serviceId);
+                        persistServiceFiles(serviceId);
+                        showMessage('🗑️ Cleared', 'The file list and activity log have been cleared. Your processed history is unaffected.', ['OK']);
+                    }
+                });
+            };
+
+            // ============================================================
+            // 16. ACTIVITY LOG DOWNLOAD
+            // ============================================================
+            window.downloadActivityLog = function() {
+                const serviceId = activeSubItemId || 'lease-abstraction';
+                const log = serviceId === 'translation' ? getMyTranslationActivityLog() : getMyLeaseActivityLog();
+
+                if (log.length === 0) {
+                    showWarning('No activities to download.');
+                    return;
+                }
+
+                let logData = 'Date & Time | Activity | Status\n';
+                logData += '='.repeat(50) + '\n';
+                log.forEach(item => {
+                    logData += `${item.time} | ${item.activity} | ${item.result}\n`;
+                });
+
+                const blob = new Blob([logData], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `Activity_Log_${new Date().toISOString().split('T')[0]}.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                showMessage('✅ Downloaded', 'Activity log downloaded successfully.', ['OK']);
+            };
+
+            // ============================================================
+            // 17. REFRESH SERVICE PAGE (in-place, flicker-free update)
+            // ============================================================
+            // While a process is running this gets called repeatedly (about once
+            // per second, per step). Re-running the full loadContent() /
+            // resetContentArea() pipeline here used to blank the whole page out
+            // and fade it back in on every tick - that's what caused the visible
+            // "blinking". Instead, when the relevant service page is the one
+            // currently on screen, only the pieces that actually changed (file
+            // table, activity log, agent strip, control buttons, file count,
+            // connection status) are patched in place. Nothing is removed and
+            // recreated, so there's no flicker and no scroll jump. If the user
+            // has navigated away from this service page, the in-memory state is
+            // still updated and simply renders correctly next time they open it.
+            function refreshServicePage(serviceId) {
+                if (serviceId !== 'lease-abstraction' && serviceId !== 'translation') return;
+                if (activeSubItemId !== serviceId) return;
+
+                const isTranslation = serviceId === 'translation';
+                const files = isTranslation ? getMyTranslationFiles() : getMyLeaseFiles();
+                const activityLog = isTranslation ? getMyTranslationActivityLog() : getMyLeaseActivityLog();
+
+                const fileCountEl = document.getElementById('fileCountText');
+                if (fileCountEl) {
+                    fileCountEl.textContent = files.length > 0 ? `${files.length} file(s) uploaded` : 'No files uploaded yet';
+                }
+
+                const fileTableBody = document.getElementById('fileTableBody');
+                if (fileTableBody) {
+                    fileTableBody.innerHTML = buildFileTableRows(files) ||
+                        '<tr><td colspan="5" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No files uploaded yet.</td></tr>';
+                }
+
+                const chargeEstimateEl = document.getElementById('fileListChargeEstimate');
+                if (chargeEstimateEl) {
+                    const billableFiles = files.filter(f => f.status !== 'completed' && f.status !== 'needs_review');
+                    const myPlanForEstimate = getMyPlan();
+                    const batchChargeEstimate = billableFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
+                    chargeEstimateEl.innerHTML = billableFiles.length > 0 ?
+                        `💰 Est. charge: $${batchChargeEstimate.toFixed(2)}${(serviceId === 'translation' ? (myPlanForEstimate.translationBillingUnit || 'page') : myPlanForEstimate.billingUnit) === 'page' ? ' (per page)' : ' (per document)'}` : '';
+                }
+
+                const activityListEl = document.getElementById('activityList');
+                if (activityListEl) {
+                    activityListEl.innerHTML = buildActivityLogRows(activityLog) ||
+                        '<tr><td colspan="3" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No activities recorded.</td></tr>';
+                }
+
+                const agentsRow = document.getElementById('agentsTopRow');
+                if (agentsRow) {
+                    agentsRow.innerHTML = buildAgentPillsHTML(serviceId);
+                }
+
+                const controlsWrap = document.getElementById('processControls');
+                if (controlsWrap) {
+                    controlsWrap.innerHTML = buildControlButtonsHTML(serviceId, files.length > 0);
+                }
+
+                const statusWrap = document.getElementById('connectionStatusWrap');
+                if (statusWrap) {
+                    statusWrap.innerHTML = buildConnectionStatusHTML();
+                }
+
+                const systemSelect = document.getElementById('systemConfigSelect');
+                if (systemSelect) systemSelect.value = currentSystemConfig;
+            }
+
+            // ============================================================
+            // 18. SYSTEM CONNECTION - auto-verified as soon as the user
+            // picks Desktop / ShareFile / SharePoint from the dropdown.
+            // ============================================================
+            window.verifySystemConnection = async function() {
+                const select = document.getElementById('systemConfigSelect');
+                const selected = select.value;
+
+                // Desktop is the local machine - always available, no remote
+                // handshake needed.
+                if (selected === 'Desktop') {
+                    connectionStatus = 'connected';
+                    currentSystemConfig = 'Desktop';
+                    refreshServicePage(activeSubItemId || 'lease-abstraction');
+                    return;
+                }
+
+                // Item 3 - ShareFile / SharePoint need a real OAuth app
+                // registered with Citrix / Microsoft (Client ID + Secret in
+                // .env) before a connection is possible at all - this
+                // checks whether the server has those configured instead
+                // of guessing, so the status shown is honest rather than
+                // randomly succeeding/failing.
+                try {
+                    const statusRes = await authFetch(`/api/integrations/status?provider=${selected.toLowerCase()}`);
+                    const status = await statusRes.json();
+                    if (!status.configured) {
+                        connectionStatus = 'disconnected';
+                        currentSystemConfig = 'Desktop';
+                        select.value = 'Desktop';
+                        refreshServicePage(activeSubItemId || 'lease-abstraction');
+                        showMessage('⚙️ Not Set Up Yet', `${selected} isn't connected because no one has registered an app with ${selected} yet (needs a Client ID/Secret set up by your Developer in the server's .env file). Ask your Developer to complete that setup, then try again. Switched back to Desktop for now.`, ['OK']);
+                        return;
+                    }
+                    window.open(status.authUrl, '_blank', 'width=520,height=640');
+                    showMessage('🔗 Connect Account', `A window opened to sign in to ${selected}. Once you approve access there, come back and select ${selected} again.`, ['OK']);
+                    select.value = 'Desktop';
+                } catch (err) {
+                    showWarning('Could not check the connection status. Make sure py/server.py is running.');
+                    select.value = 'Desktop';
+                }
+            };
+
+            // ============================================================
+            // 19. FILE UPLOAD HANDLER
+            // ============================================================
+            window.handleFileUpload = function(event, serviceId) {
+                const files = event.target.files;
+                if (files.length === 0) return;
+
+                // PDF-only for both Lease Abstraction and Translation - the
+                // accept=".pdf" on the <input> is just a browser hint (and
+                // is bypassed entirely by drag & drop), so this is the real
+                // enforcement point both paths funnel through.
+                const nonPdf = Array.from(files).filter(f => !/\.pdf$/i.test(f.name));
+                if (nonPdf.length > 0) {
+                    showWarning('Only PDF files are supported. ' +
+                        (nonPdf.length === files.length ? 'Please select PDF file(s) only.' :
+                        `Skipped non-PDF file(s): ${nonPdf.map(f => f.name).join(', ')}`));
+                }
+                const pdfFiles = Array.from(files).filter(f => /\.pdf$/i.test(f.name));
+                if (pdfFiles.length === 0) { event.target.value = ''; return; }
+
+                const isTranslation = serviceId === 'translation';
+                const idCounter = isTranslation ? nextTranslationFileId : nextLeaseFileId;
+
+                let newFiles = [];
+                for (let i = 0; i < pdfFiles.length; i++) {
+                    const file = pdfFiles[i];
+
+                    const newFile = {
+                        id: idCounter + i,
+                        userId: CURRENT_USER_ID,
+                        name: file.name,
+                        status: 'pending',
+                        scanResult: '0',
+                        progress: '0',
+                        action: 'Pending',
+                        savedPath: getUserClientFilePath(CURRENT_USER_ID, file.name)
+                    };
+
+                    if (isTranslation) {
+                        const langSelect = document.getElementById('translationLangSelect');
+                        newFile.targetLang = langSelect ? langSelect.value : 'English';
+                    }
+
+                    newFiles.push(newFile);
+                }
+
+                if (isTranslation) {
+                    translationFiles = translationFiles.concat(newFiles);
+                    nextTranslationFileId += newFiles.length;
+                    for (let i = 0; i < pdfFiles.length; i++) {
+                        translationFileBlobs[newFiles[i].id] = pdfFiles[i];
+                    }
+                    // PAGE COUNT: Uploaded Files card me no-of-pages dikhane ke liye
+                    // pdf.js se numPages nikaalo (async, non-blocking).
+                    newFiles.forEach(function (nf, idx) {
+                        const blobFile = pdfFiles[idx];
+                        if (typeof pdfjsLib === 'undefined') return;
+                        blobFile.arrayBuffer().then(function (buf) {
+                            return pdfjsLib.getDocument({ data: buf }).promise;
+                        }).then(function (pdf) {
+                            nf.pageCount = pdf.numPages;
+                            refreshServicePage('translation');
+                        }).catch(function () { /* ignore — count optional */ });
+                    });
+                } else {
+                    leaseFiles = leaseFiles.concat(newFiles);
+                    nextLeaseFileId += newFiles.length;
+                    // Keep the real File objects in memory (JSON can't store
+                    // bytes) so Start can actually upload them for real
+                    // scanning/extraction - see runLeaseAbstractionPipeline().
+                    for (let i = 0; i < pdfFiles.length; i++) {
+                        leaseFileBlobs[newFiles[i].id] = pdfFiles[i];
+                    }
+                }
+
+                refreshServicePage(serviceId);
+                event.target.value = '';
+                persistServiceFiles(serviceId);
+
+                showMessage('✅ Upload Complete', `${newFiles.length} file(s) uploaded successfully.`, ['OK']);
+            };
+
+            // ============================================================
+            // 20. PAYMENT METHODS FUNCTIONS
+            // ============================================================
+            function renderPaymentMethods() {
+                const list = document.getElementById('paymentList');
+                if (!list) return;
+
+                const myMethods = getMyPaymentMethods();
+
+                if (myMethods.length === 0) {
+                    list.innerHTML =
+                        '<li style="padding:15px; color:rgba(0,0,0,0.4); text-align:center;">No payment methods added yet.</li>';
+                    populateBalancePaymentMethods();
+                    return;
+                }
+
+                list.innerHTML = '';
+                myMethods.forEach((method) => {
+                    const li = document.createElement('li');
+                    li.innerHTML = `
+                        <div class="payment-info">
+                            <span class="payment-icon">${method.icon}</span>
+                            <div class="payment-details">
+                                <span class="payment-name">${method.name} ${method.isDefault ? '<span style="color:darkblue;font-size:0.7rem;font-weight:600;">(Default)</span>' : ''}</span>
+                                <span class="payment-sub">${method.details} ${method.expires ? '| Expires: ' + method.expires : ''}</span>
+                            </div>
+                        </div>
+                        <div class="payment-actions">
+                            ${!method.isDefault ? `<button class="default-btn" onclick="setDefaultPayment(${method.id})">Set Default</button>` : ''}
+                            <button class="remove-btn" onclick="removePaymentMethod(${method.id})">Remove</button>
+                        </div>
+                    `;
+                    list.appendChild(li);
+                });
+
+                populateBalancePaymentMethods();
+            }
+
+            function populateBalancePaymentMethods() {
+                const select = document.getElementById('balancePaymentMethod');
+                const expenseSelect = document.getElementById('expensePaymentMethod');
+                if (!select && !expenseSelect) return;
+
+                const myMethods = getMyPaymentMethods();
+
+                [select, expenseSelect].forEach((sel) => {
+                    if (!sel) return;
+                    sel.innerHTML = '';
+                    if (myMethods.length === 0) {
+                        sel.innerHTML = '<option value="">No payment methods available</option>';
+                        return;
+                    }
+                    myMethods.forEach((method) => {
+                        const option = document.createElement('option');
+                        option.value = method.id;
+                        option.textContent = method.name + ' (' + method.details + ')';
+                        if (method.isDefault) option.selected = true;
+                        sel.appendChild(option);
+                    });
+                });
+            }
+
+            window.togglePaymentForm = function() {
+                const type = document.getElementById('paymentType').value;
+                const creditFields = document.getElementById('creditCardFields');
+                const upiFields = document.getElementById('upiFields');
+
+                if (type === 'credit-card') {
+                    creditFields.style.display = 'block';
+                    upiFields.style.display = 'none';
+                } else if (type === 'upi') {
+                    creditFields.style.display = 'none';
+                    upiFields.style.display = 'block';
+                }
+            };
+
+            window.addPaymentMethod = function() {
+                const type = document.getElementById('paymentType').value;
+                let name, details, icon, expires = '';
+
+                if (type === 'credit-card') {
+                    const cardNumber = document.getElementById('cardNumber').value.trim();
+                    const cardName = document.getElementById('cardName').value.trim();
+                    const expiry = document.getElementById('expiryDate').value.trim();
+                    const cvv = document.getElementById('cvv').value.trim();
+
+                    if (!cardNumber || !cardName) {
+                        showWarning('Please fill in all required fields.');
+                        return;
+                    }
+
+                    name = cardName;
+                    details = '**** ' + cardNumber.slice(-4);
+                    icon = '💳';
+                    expires = expiry;
+
+                } else if (type === 'upi') {
+                    const upiId = document.getElementById('upiId').value.trim();
+                    if (!upiId) {
+                        showWarning('Please enter UPI ID.');
+                        return;
+                    }
+                    name = 'UPI';
+                    details = upiId;
+                    icon = '📱';
+                }
+
+                const newMethod = {
+                    id: nextPaymentId++,
+                    name: name,
+                    details: details,
+                    icon: icon,
+                    expires: expires,
+                    isDefault: getMyPaymentMethods().length === 0,
+                    type: type,
+                    userId: CURRENT_USER_ID
+                };
+
+                paymentMethods.push(newMethod);
+                renderPaymentMethods();
+
+                document.getElementById('cardNumber').value = '';
+                document.getElementById('cardName').value = '';
+                document.getElementById('expiryDate').value = '';
+                document.getElementById('cvv').value = '';
+                document.getElementById('upiId').value = '';
+                persistPaymentMethods();
+
+                showMessage('✅ Success', 'Payment method added successfully!', ['OK']);
+            };
+
+            window.setDefaultPayment = function(id) {
+                paymentMethods.forEach(m => { if (m.userId === CURRENT_USER_ID) m.isDefault = (m.id === id); });
+                renderPaymentMethods();
+                persistPaymentMethods();
+                const method = paymentMethods.find(m => m.id === id);
+                showMessage('✅ Updated', `"${method.name}" is now your default payment method.`, ['OK']);
+            };
+
+            window.removePaymentMethod = function(id) {
+                const method = paymentMethods.find(m => m.id === id);
+                if (method.isDefault) {
+                    showWarning('Cannot remove the default payment method. Please set another as default first.');
+                    return;
+                }
+                showConfirm('🗑️ Remove Payment Method', `Are you sure you want to remove "${method.name}"?`, function(
+                confirmed) {
+                    if (confirmed) {
+                        paymentMethods = paymentMethods.filter(m => m.id !== id);
+                        renderPaymentMethods();
+                        persistPaymentMethods();
+                        showMessage('🗑️ Removed', `"${method.name}" has been removed successfully.`, ['OK']);
+                    }
+                });
+            };
+
+            // ============================================================
+            // 21. PAYMENT HISTORY FUNCTIONS
+            // ============================================================
+            function getDefaultHistoryRange() {
+                const today = new Date();
+                const fromDate = new Date();
+                fromDate.setDate(today.getDate() - 4);
+                const toStr = today.toISOString().split('T')[0];
+                const fromStr = fromDate.toISOString().split('T')[0];
+                return { from: fromStr, to: toStr };
+            }
+
+            function getFilteredHistory() {
+                const fromInput = document.getElementById('historyFromDate');
+                const toInput = document.getElementById('historyToDate');
+                const userInput = document.getElementById('historyUserFilter');
+
+                let base = getVisiblePaymentHistory();
+
+                if (fromInput && toInput && fromInput.value && toInput.value) {
+                    base = base.filter(t => t.date >= fromInput.value && t.date <= toInput.value);
+                }
+                if (userInput && userInput.value.trim()) {
+                    const q = userInput.value.trim().toLowerCase();
+                    base = base.filter(t => {
+                        const dirEntry = getUserDirectoryEntry(t.userId);
+                        const email = dirEntry ? (dirEntry.email || '').toLowerCase() : '';
+                        return (t.userId || '').toLowerCase().includes(q) || email.includes(q);
+                    });
+                }
+                return base;
+            }
+
+            let selectedTransactionIds = new Set();
+
+            function renderHistoryRows(tbody, list, includeCheckbox) {
+                const colCount = includeCheckbox ? 9 : 8;
+                if (list.length === 0) {
+                    tbody.innerHTML =
+                        `<tr><td colspan="${colCount}" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions found.</td></tr>`;
+                    return;
+                }
+                tbody.innerHTML = '';
+                const sortedHistory = [...list].sort((a, b) => new Date(b.date) - new Date(a.date));
+                sortedHistory.forEach((transaction) => {
+                    const tr = document.createElement('tr');
+                    const formattedDate = new Date(transaction.date).toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: '2-digit'
+                    });
+                    // Transaction Date & Time together in a single column
+                    const dateTimeText = transaction.time ? `${formattedDate}, ${transaction.time}` : formattedDate;
+                    // Item 3 - a balance-add sitting in pending_approval (or
+                    // cancelled) shows a clear status prefix on its
+                    // description, everywhere this row shape is used
+                    // (Payment History AND Today's Transactions, both call
+                    // through here).
+                    let descriptionText = escapeHtml(transaction.description || '');
+                    if (transaction.status === 'pending_approval') {
+                        descriptionText = `<span class="txn-status-tag pending">In Process</span> : ${descriptionText}`;
+                    } else if (transaction.status === 'cancelled') {
+                        descriptionText = `<span class="txn-status-tag cancelled">Cancelled</span> : ${descriptionText}`;
+                    }
+                    tr.innerHTML = `
+                        ${includeCheckbox ? `<td><input type="checkbox" class="txn-select-checkbox" data-txn-id="${transaction.id}" ${selectedTransactionIds.has(transaction.id) ? 'checked' : ''} onchange="toggleSelectTransaction('${transaction.id}', this.checked)" /></td>` : ''}
+                        <td>${dateTimeText}</td>
+                        <td><span style="font-weight:500;color:darkblue;">${transaction.id}</span></td>
+                        <td>${escapeHtml(transaction.userId || '')}</td>
+                        <td>${transaction.paymentType}</td>
+                        <td>${transaction.paymentMode}</td>
+                        <td>${descriptionText}</td>
+                        <td class="credit">${transaction.credit > 0 ? '$' + transaction.credit.toFixed(2) : '-'}</td>
+                        <td class="debit">${transaction.debit > 0 ? '$' + transaction.debit.toFixed(2) : '-'}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            }
+
+            window.toggleSelectTransaction = function(txnId, checked) {
+                if (checked) selectedTransactionIds.add(txnId);
+                else selectedTransactionIds.delete(txnId);
+            };
+
+            window.toggleSelectAllTransactions = function(checked) {
+                document.querySelectorAll('.txn-select-checkbox').forEach(cb => {
+                    cb.checked = checked;
+                    const txnId = cb.getAttribute('data-txn-id');
+                    if (checked) selectedTransactionIds.add(txnId);
+                    else selectedTransactionIds.delete(txnId);
+                });
+            };
+
+            function renderPaymentHistory() {
+                const tbody = document.getElementById('historyTableBody');
+                if (!tbody) return;
+
+                // Dates start blank by default - getFilteredHistory() already
+                // returns every transaction for this user when no range is set.
+                const filtered = getFilteredHistory();
+                renderHistoryRows(tbody, filtered, true);
+                updateSummary(filtered);
+            }
+
+            window.applyHistoryFilter = function() {
+                const fromInput = document.getElementById('historyFromDate');
+                const toInput = document.getElementById('historyToDate');
+                if (!fromInput.value || !toInput.value) {
+                    showWarning('Please select both From and To dates.');
+                    return;
+                }
+                if (fromInput.value > toInput.value) {
+                    showWarning('"From" date cannot be after "To" date.');
+                    return;
+                }
+                const tbody = document.getElementById('historyTableBody');
+                const filtered = getFilteredHistory();
+                renderHistoryRows(tbody, filtered, true);
+                updateSummary(filtered);
+            };
+
+            window.clearHistoryFilter = function() {
+                document.getElementById('historyFromDate').value = '';
+                document.getElementById('historyToDate').value = '';
+                const tbody = document.getElementById('historyTableBody');
+                const filtered = getFilteredHistory();
+                renderHistoryRows(tbody, filtered, true);
+                updateSummary(filtered);
+            };
+
+            window.downloadHistoryExcel = function() {
+                const filtered = getFilteredHistory();
+                if (filtered.length === 0) {
+                    showWarning('No data available to download for the selected range.');
+                    return;
+                }
+                const sorted = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
+                const headers = ['Transaction Date & Time', 'Transaction ID', 'Payment Type', 'Payment Mode',
+                    'Description', 'Credit', 'Debit'
+                ];
+                let table = '<table border="1"><tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
+                sorted.forEach(t => {
+                    const dateTimeText = t.time ? `${t.date}, ${t.time}` : t.date;
+                    table += '<tr>' +
+                        `<td>${dateTimeText}</td><td>${t.id}</td><td>${t.paymentType}</td>` +
+                        `<td>${t.paymentMode}</td><td>${t.description}</td>` +
+                        `<td>${t.credit > 0 ? t.credit.toFixed(2) : ''}</td>` +
+                        `<td>${t.debit > 0 ? t.debit.toFixed(2) : ''}</td>` +
+                        '</tr>';
+                });
+                table += '</table>';
+
+                const blob = new Blob(['\ufeff' + table], { type: 'application/vnd.ms-excel' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'Payment_History_' + new Date().toISOString().split('T')[0] + '.xls';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+
+            function updateSummary(list) {
+                const data = list || getMyPaymentHistory();
+                let totalCredit = 0,
+                    totalDebit = 0;
+                data.forEach(t => {
+                    if (t.status === 'pending_approval' || t.status === 'cancelled') return;
+                    totalCredit += Number(t.credit) || 0;
+                    totalDebit += Number(t.debit) || 0;
+                });
+                const balance = totalCredit - totalDebit;
+
+                document.getElementById('totalCredit').textContent = '$' + totalCredit.toFixed(2);
+                document.getElementById('totalDebit').textContent = '$' + totalDebit.toFixed(2);
+                document.getElementById('currentBalance').textContent = '$' + balance.toFixed(2);
+            }
+
+            // ============================================================
+            // 22. BALANCE FUNCTIONS
+            // ============================================================
+            function updateBalanceDisplay() {
+                let totalCredit = 0,
+                    totalDebit = 0;
+                getMyPaymentHistory().forEach(t => {
+                    if (t.status === 'pending_approval' || t.status === 'cancelled') return;
+                    totalCredit += Number(t.credit) || 0;
+                    totalDebit += Number(t.debit) || 0;
+                });
+                const balance = totalCredit - totalDebit;
+
+                const creditEl = document.getElementById('totalCreditBalance');
+                const debitEl = document.getElementById('totalDebitBalance');
+                const balanceEl = document.getElementById('currentBalanceDisplay');
+
+                if (creditEl) creditEl.textContent = '$' + totalCredit.toFixed(2);
+                if (debitEl) debitEl.textContent = '$' + totalDebit.toFixed(2);
+                if (balanceEl) balanceEl.textContent = '$' + balance.toFixed(2);
+            }
+
+            function getAdminAndDeveloperIds() {
+                return USER_DIRECTORY.filter(u => u.role === 'Admin' || u.role === 'Developer').map(u => u.id);
+            }
+
+            window.switchPlan = function(planId) {
+                const plan = PLANS_DATA.find(p => p.id === planId);
+                if (!plan) { showWarning('That plan could not be found.'); return; }
+                if (plan.name === getMyPlan().name) return;
+
+                // Item - show exactly what will be deducted and require an
+                // explicit Confirm before charging anything, instead of
+                // switching immediately on click.
+                const confirmMsg = plan.monthlyPrice > 0 ?
+                    `Switching to the ${plan.name} plan will deduct $${plan.monthlyPrice.toFixed(2)} from your wallet balance right now. Do you want to continue?` :
+                    `Switch to the ${plan.name} plan? This plan has no monthly charge.`;
+                showConfirm('Confirm Plan Change', confirmMsg, (confirmed) => {
+                    if (confirmed) _doSwitchPlan(plan);
+                });
+            };
+
+            function _doSwitchPlan(plan) {
+                const finalizeSwitch = () => {
+                    const now = new Date();
+                    const endDate = new Date(now);
+                    // Item 3 - Free is a 7-day trial-style period; every
+                    // paid plan renews monthly (30 days).
+                    endDate.setDate(endDate.getDate() + (plan.name === 'Free' ? 7 : 30));
+                    const startDateStr = now.toISOString().split('T')[0];
+                    const endDateStr = endDate.toISOString().split('T')[0];
+                    profileData.plan = plan.name;
+                    profileData.planStartDate = startDateStr;
+                    profileData.planEndDate = endDateStr;
+                    profileData.planStatus = 'Active';
+                    persistProfile();
+
+                    // Item - plan history table (shown below the plan cards
+                    // on Plans & Offers) - one row per switch, ever.
+                    planHistory.push({
+                        userId: CURRENT_USER_ID,
+                        planName: plan.name,
+                        startDate: startDateStr,
+                        endDate: endDateStr,
+                        frequency: 'Monthly',
+                        amount: plan.monthlyPrice,
+                        pricePerLeaseAbstraction: plan.pricePerLeaseAbstraction,
+                        pricePerTranslation: plan.pricePerTranslation,
+                    });
+                    persistPlanHistory();
+
+                    if (activeSubItemId === null && activeItemId === 'plans-offers') loadContent('plans-offers');
+                    addNotification(`Your plan was switched to ${plan.name} (valid through ${profileData.planEndDate}).`);
+                    if (profileData.email) {
+                        sendGenericNotificationEmail(
+                            profileData.email, `${profileData.firstName} ${profileData.lastName}`,
+                            `You're now on the ${plan.name} plan`,
+                            `Your plan is now ${plan.name}. It's valid from ${profileData.planStartDate} to ${profileData.planEndDate}. ` +
+                            `Pricing: $${plan.pricePerLeaseAbstraction}/Lease Abstraction, $${plan.pricePerTranslation}/Translation.`
+                        );
+                    }
+                };
+
+                if (plan.monthlyPrice > 0) {
+                    if (getCurrentBalance() < plan.monthlyPrice) {
+                        showWarning(`Upgrading to ${plan.name} costs $${plan.monthlyPrice}/month, but your wallet only has $${getCurrentBalance().toFixed(2)}. Please add at least $${(plan.monthlyPrice - getCurrentBalance()).toFixed(2)} to your wallet balance and try again.`);
+                        return;
+                    }
+                    const now = new Date();
+                    const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                    paymentHistory.push({
+                        id: txnId,
+                        date: now.toISOString().split('T')[0],
+                        time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                        userId: CURRENT_USER_ID,
+                        paymentType: 'Plan Subscription',
+                        paymentMode: 'Wallet Balance',
+                        description: `${plan.name} plan - monthly subscription`,
+                        credit: 0,
+                        debit: plan.monthlyPrice
+                    });
+                    persistPaymentHistory();
+                    updateBalanceDisplay();
+                    addNotification(`$${plan.monthlyPrice.toFixed(2)} was deducted for your ${plan.name} plan subscription (${txnId}).`);
+                }
+                finalizeSwitch();
+                showMessage('✅ Plan Updated', `You're now on the ${plan.name} plan.`, ['OK']);
+            }
+
+            window.recordExpense = function() {
+                if (!isAdminOrDeveloper()) { showWarning('Only an Admin or Developer can record an expense.'); return; }
+                const methodSelect = document.getElementById('expensePaymentMethod');
+                const amountInput = document.getElementById('expenseAmount');
+                const descInput = document.getElementById('expenseDescription');
+
+                const methodId = parseInt(methodSelect.value);
+                const amount = parseFloat(amountInput.value);
+                const description = descInput.value.trim();
+
+                if (!methodId) { showWarning('Please select a payment method.'); return; }
+                if (!amount || amount <= 0) { showWarning('Please enter a valid amount.'); return; }
+                if (!description) { showWarning('Please enter a description.'); return; }
+
+                const method = paymentMethods.find(m => m.id === methodId);
+                if (!method) { showWarning('Selected payment method not found.'); return; }
+
+                const developerId = getDeveloperUserId() || CURRENT_USER_ID;
+                const now = new Date();
+                const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                paymentHistory.push({
+                    id: txnId,
+                    date: now.toISOString().split('T')[0],
+                    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                    userId: developerId,
+                    paymentType: 'Expense',
+                    paymentMode: method.name + ' ' + method.details,
+                    description: description,
+                    credit: 0,
+                    debit: amount,
+                    recordedBy: CURRENT_USER_ID
+                });
+
+                amountInput.value = '';
+                descInput.value = '';
+
+                renderPaymentHistory();
+                updateBalanceDisplay();
+                persistPaymentHistory();
+                showMessage('💸 Expense Recorded', `$${amount.toFixed(2)} has been recorded as a business expense.`, ['OK']);
+            };
+
+            window.addBalance = function() {
+                const methodSelect = document.getElementById('balancePaymentMethod');
+                const amountInput = document.getElementById('balanceAmount');
+                const descInput = document.getElementById('balanceDescription');
+
+                const methodId = parseInt(methodSelect.value);
+                const amount = parseFloat(amountInput.value);
+                const description = descInput.value.trim();
+
+                if (!methodId) { showWarning('Please select a payment method.'); return; }
+                if (!amount || amount <= 0) { showWarning('Please enter a valid amount.'); return; }
+                if (!description) { showWarning('Please enter a description.'); return; }
+
+                const method = paymentMethods.find(m => m.id === methodId);
+                if (!method) { showWarning('Selected payment method not found.'); return; }
+
+                const now = new Date();
+                const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                // Item 2: a balance-add always starts as pending_approval and
+                // isn't counted in the user's real balance (see
+                // getCurrentBalance/updateSummary/updateBalanceDisplay) until
+                // an Admin/Developer approves it - UNLESS the person adding
+                // it already IS an Admin/Developer, in which case requiring
+                // them to approve their own request would be circular, so
+                // it's auto-approved immediately.
+                const selfApprove = isAdminOrDeveloper();
+                const newTransaction = {
+                    id: txnId,
+                    date: now.toISOString().split('T')[0],
+                    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                    userId: CURRENT_USER_ID,
+                    paymentType: method.type === 'upi' ? 'UPI' : method.type === 'credit-card' ? 'Credit Card' :
+                        'Bank Transfer',
+                    paymentMode: method.name + ' ' + method.details,
+                    description: description,
+                    credit: amount,
+                    debit: 0,
+                    status: selfApprove ? 'approved' : 'pending_approval'
+                };
+
+                paymentHistory.push(newTransaction);
+                if (selfApprove) {
+                    _creditDeveloperRevenueRecord(newTransaction, description);
+                }
+
+                amountInput.value = '';
+                descInput.value = '';
+
+                renderPaymentHistory();
+                updateBalanceDisplay();
+                persistPaymentHistory();
+
+                if (selfApprove) {
+                    addNotification(`$${amount.toFixed(2)} was added to your balance (Transaction ID: ${txnId}).`);
+                    if (profileData && profileData.email) {
+                        sendGenericNotificationEmail(
+                            profileData.email,
+                            `${profileData.firstName} ${profileData.lastName}`,
+                            `$${amount.toFixed(2)} added to your balance`,
+                            `Your payment was received and added to your wallet balance.`,
+                            [[newTransaction.paymentMode, description, `$${amount.toFixed(2)}`, `Completed (${txnId})`]],
+                            ['Payment Method', 'Description', 'Amount', 'Status']
+                        );
+                    }
+                    showMessage('✅ Success', `$${amount.toFixed(2)} added successfully! Transaction ID: ${txnId}`, ['OK']);
+                    return;
+                }
+
+                // Not an Admin/Developer - notify every Admin/Developer with
+                // an actionable request (see notification table's Approve/
+                // Cancel buttons, rendered for notifications tagged
+                // balance_approval - approveBalanceRequest/cancelBalanceRequest
+                // below).
+                const requesterName = profileData ? `${profileData.firstName} ${profileData.lastName}` : CURRENT_USER_ID;
+                getAdminAndDeveloperIds().forEach(adminId => {
+                    addNotificationFor(adminId, `💰 ${requesterName} requested $${amount.toFixed(2)} added to their balance (${txnId}) - awaiting your approval.`,
+                        { type: 'balance_approval', transactionId: txnId });
+                    const adminEntry = getUserDirectoryEntry(adminId);
+                    if (adminEntry && adminEntry.email) {
+                        sendGenericNotificationEmail(
+                            adminEntry.email, `${adminEntry.firstName} ${adminEntry.lastName}`,
+                            'Balance request awaiting your approval',
+                            `${requesterName} requested $${amount.toFixed(2)} be added to their wallet balance (Transaction ${txnId}). ` +
+                            `Please review and approve or cancel it from the Notifications page.`
+                        );
+                    }
+                });
+                showMessage('⏳ Submitted for Approval', `Your request to add $${amount.toFixed(2)} has been submitted. An Admin or Developer needs to approve it before it's added to your balance.`, ['OK']);
+            };
+
+            function _creditDeveloperRevenueRecord(newTransaction, description) {
+                // Whoever adds balance, the real "money received" also
+                // shows up in the Developer's own Payment History as
+                // revenue - the entry above is what makes the ADDING
+                // user's own spendable balance go up; this one just
+                // records that the Developer's primary account is who
+                // actually received it. Only runs once a request is
+                // actually approved (or immediately, for a self-approved
+                // Admin/Developer top-up).
+                const developerId = getDeveloperUserId();
+                if (developerId && developerId !== newTransaction.userId) {
+                    const dirEntry = getUserDirectoryEntry(newTransaction.userId);
+                    const whoAdded = dirEntry ? `${dirEntry.firstName} ${dirEntry.lastName} (${newTransaction.userId})` : newTransaction.userId;
+                    paymentHistory.push({
+                        id: 'TXN' + String(nextTransactionId++).padStart(3, '0'),
+                        date: newTransaction.date,
+                        time: newTransaction.time,
+                        userId: developerId,
+                        paymentType: 'Balance Received',
+                        paymentMode: newTransaction.paymentMode,
+                        description: `Balance added by ${whoAdded}: ${description}`,
+                        credit: newTransaction.credit,
+                        debit: 0
+                    });
+                }
+            }
+
+            // Item 2 - called from the Approve/Cancel buttons rendered
+            // directly in a balance_approval notification row.
+            window.approveBalanceRequest = function(txnId, notificationId) {
+                const txn = paymentHistory.find(t => t.id === txnId);
+                if (!txn) { showWarning('That transaction could not be found - it may have already been handled.'); return; }
+                txn.status = 'approved';
+                _creditDeveloperRevenueRecord(txn, txn.description);
+                persistPaymentHistory();
+                markNotificationHandled(notificationId, 'Approved');
+
+                addNotificationFor(txn.userId, `✅ Your balance request for $${txn.credit.toFixed(2)} (${txnId}) was approved and added to your wallet.`);
+                const dirEntry = getUserDirectoryEntry(txn.userId);
+                if (dirEntry && dirEntry.email) {
+                    sendGenericNotificationEmail(dirEntry.email, `${dirEntry.firstName} ${dirEntry.lastName}`,
+                        'Your balance request was approved',
+                        `Your request to add $${txn.credit.toFixed(2)} to your wallet (Transaction ${txnId}) has been approved and is now reflected in your balance.`);
+                }
+                if (txn.userId === CURRENT_USER_ID) updateBalanceDisplay();
+                renderNotificationTable();
+                showMessage('✅ Approved', `$${txn.credit.toFixed(2)} has been added to the user's balance.`, ['OK']);
+            };
+
+            window.cancelBalanceRequest = function(txnId, notificationId) {
+                const txn = paymentHistory.find(t => t.id === txnId);
+                if (!txn) { showWarning('That transaction could not be found - it may have already been handled.'); return; }
+                txn.status = 'cancelled';
+                persistPaymentHistory();
+                markNotificationHandled(notificationId, 'Cancelled');
+
+                addNotificationFor(txn.userId, `❌ Your balance request for $${txn.credit.toFixed(2)} (${txnId}) was cancelled by an Admin/Developer.`);
+                const dirEntry = getUserDirectoryEntry(txn.userId);
+                if (dirEntry && dirEntry.email) {
+                    sendGenericNotificationEmail(dirEntry.email, `${dirEntry.firstName} ${dirEntry.lastName}`,
+                        'Your balance request was cancelled',
+                        `Your request to add $${txn.credit.toFixed(2)} to your wallet (Transaction ${txnId}) was cancelled. Please contact Support if you believe this is a mistake.`);
+                }
+                renderNotificationTable();
+                showMessage('❌ Cancelled', `The balance request has been cancelled.`, ['OK']);
+            };
+
+            function markNotificationHandled(notificationId, resultLabel) {
+                if (!notificationId) return;
+                const n = notifications.find(x => x.id === notificationId);
+                if (n) {
+                    n.read = true;
+                    n.handledResult = resultLabel;
+                }
+                persistNotifications();
+            }
+
+
+
+            // ============================================================
+            // 23. MESSAGE BOX
+            // ============================================================
+            // Title/buttons config per message type now lives in messages.json
+            // (loaded in loadAppData) instead of being hardcoded here.
+            let MESSAGES = {
+                success: { title: '✅ Success', buttons: ['OK'], blocking: false },
+                warning: { title: '⚠️ Warning', buttons: ['OK'], blocking: false },
+                error: { title: '❌ Error', buttons: ['OK'], blocking: false },
+                confirm: { title: '❓ Confirm', buttons: ['Yes', 'No'], blocking: true },
+                info: { title: 'ℹ️ Information', buttons: ['OK'], blocking: false }
+            };
+
+            const msgOverlay = document.getElementById('messageOverlay');
+            const msgTitle = document.getElementById('msgTitle');
+            const msgText = document.getElementById('msgText');
+            const msgButtons = document.getElementById('msgButtons');
+            let onMsgButtonClick = null;
+
+            window.handleButtonClick = function(label) {
+                if (msgOverlay) {
+                    msgOverlay.style.display = 'none';
+                }
+                document.body.classList.remove('disable-bg');
+
+                if (typeof onMsgButtonClick === 'function') {
+                    try { onMsgButtonClick(label); } catch (e) { console.warn('MessageBox callback error:', e); }
+                }
+                onMsgButtonClick = null;
+            };
+
+            function renderMessageBox(cfg, callback) {
+                if (typeof callback === 'function') { onMsgButtonClick = callback; } else { onMsgButtonClick = null; }
+
+                let buttons = cfg.buttons || ['OK'];
+                if (!Array.isArray(buttons)) buttons = [String(buttons)];
+
+                msgTitle.textContent = cfg.title || 'Message';
+                msgText.textContent = cfg.message || '';
+
+                msgButtons.innerHTML = '';
+                buttons.forEach((label) => {
+                    const btn = document.createElement('button');
+                    btn.className = 'msg-action-btn';
+                    btn.textContent = label;
+                    btn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        handleButtonClick(label);
+                    });
+                    msgButtons.appendChild(btn);
+                });
+
+                msgOverlay.style.display = 'flex';
+                document.body.classList.add('disable-bg');
+                msgOverlay.style.animation = 'none';
+                requestAnimationFrame(() => {
+                    msgOverlay.style.animation = 'msgFadeIn 0.2s ease';
+                });
+            }
+
+            function showMessage(title, message, buttons) {
+                renderMessageBox({ title: title, message: message, buttons: buttons || ['OK'] });
+            }
+
+            window.showWarning = function(message) {
+                renderMessageBox({ title: MESSAGES.warning.title, message: message, buttons: ['OK'] });
+            };
+
+            window.showConfirm = function(title, message, callback) {
+                renderMessageBox({ title: title || MESSAGES.confirm.title, message: message, buttons: ['Yes', 'No'] },
+                    function(label) {
+                        callback(label === 'Yes');
+                    });
+            };
+
+            msgOverlay.addEventListener('click', function(e) {
+                if (e.target === msgOverlay) { handleButtonClick('Close'); }
+            });
+
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape' && msgOverlay.style.display === 'flex') { handleButtonClick('Close'); }
+            });
+
+            // ============================================================
+            // 24. API KEY FUNCTIONS
+            // ============================================================
+            function generateRandomKey() {
+                const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+                let key = 'tc_live_';
+                for (let i = 0; i < 32; i++) { key += chars.charAt(Math.floor(Math.random() * chars.length)); }
+                return key;
+            }
+
+            function getActiveApiKey() {
+                return apiKeys.find(k => k.status !== 'revoked') || null;
+            }
+
+            window.generateApiKey = function() {
+                const newKey = {
+                    id: nextApiKeyId++,
+                    key: generateRandomKey(),
+                    createdAt: new Date().toLocaleString(),
+                    status: 'active',
+                    saved: false
+                };
+                apiKeys.unshift(newKey);
+                if (profileData) profileData.apiKey = newKey.key;
+                renderApiKeyDisplay();
+                persistApiKeys();
+                persistProfile();
+                addNotification('A new API key was generated for your account.');
+                if (profileData && profileData.email) {
+                    sendGenericNotificationEmail(
+                        profileData.email,
+                        `${profileData.firstName} ${profileData.lastName}`,
+                        'New API key generated',
+                        `A new API key was generated for your account just now (${newKey.createdAt}). ` +
+                        `If you didn't do this, please revoke it immediately from your Profile and contact support.`
+                    );
+                }
+                showMessage('✅ API Key Generated',
+                    'Your new API key has been generated successfully. Please copy and store it securely.', ['OK']);
+            };
+
+            window.copyApiKey = function() {
+                const activeKey = getActiveApiKey();
+                if (!activeKey) { showWarning('No active API key to copy. Generate one first.'); return; }
+
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(activeKey.key).then(() => {
+                        showMessage('📋 Copied', 'API key copied to clipboard.', ['OK']);
+                    }).catch(() => {
+                        showMessage('📋 API Key', `Copy failed automatically — here is your key:\n${activeKey.key}`, ['OK']);
+                    });
+                } else {
+                    showMessage('📋 API Key', `Your API key:\n${activeKey.key}`, ['OK']);
+                }
+            };
+
+            window.saveApiKey = function() {
+                const activeKey = getActiveApiKey();
+                if (!activeKey) { showWarning('No active API key to save. Generate one first.'); return; }
+
+                activeKey.saved = true;
+                if (profileData) profileData.apiKey = activeKey.key;
+                renderApiKeyDisplay();
+                persistApiKeys();
+                persistProfile();
+                showMessage('💾 Saved', 'API key has been saved to your account record.', ['OK']);
+            };
+
+            window.revokeApiKey = function() {
+                const activeKey = getActiveApiKey();
+                if (!activeKey) { showWarning('No active API key to revoke.'); return; }
+
+                showConfirm('🚫 Revoke API Key',
+                    'Are you sure you want to revoke this API key? Any application using it will stop working immediately.',
+                    function(confirmed) {
+                        if (confirmed) {
+                            activeKey.status = 'revoked';
+                            activeKey.revokedAt = new Date().toLocaleString();
+                            if (profileData && profileData.apiKey === activeKey.key) profileData.apiKey = null;
+                            renderApiKeyDisplay();
+                            persistApiKeys();
+                            persistProfile();
+                            addNotification('Your API key was revoked.');
+                            if (profileData && profileData.email) {
+                                sendGenericNotificationEmail(
+                                    profileData.email,
+                                    `${profileData.firstName} ${profileData.lastName}`,
+                                    'API key revoked',
+                                    `Your API key was revoked just now (${activeKey.revokedAt}). It can no longer be used to access the API. ` +
+                                    `If you didn't do this, please contact support right away.`
+                                );
+                            }
+                            showMessage('🚫 Revoked', 'The API key has been revoked and can no longer be used.', ['OK']);
+                        }
+                    });
+            };
+
+            function renderApiKeyDisplay() {
+                const display = document.getElementById('apiKeyDisplay');
+                const actionsEl = document.getElementById('apiKeyActions');
+                const historyEl = document.getElementById('apiKeyHistory');
+                if (!display) return;
+
+                const activeKey = getActiveApiKey();
+
+                if (!activeKey) {
+                    display.textContent = 'No active API key. Click "Generate New API Key" to create one.';
+                } else {
+                    display.innerHTML = `<span style="font-family:monospace;">${activeKey.key}</span>` +
+                        (activeKey.saved ?
+                            ' <span style="font-size:0.7rem;color:#27ae60;font-weight:600;">(Saved)</span>' : '');
+                }
+
+                if (actionsEl) {
+                    actionsEl.style.display = 'flex';
+                }
+
+                if (historyEl) {
+                    const others = apiKeys.filter(k => k !== activeKey);
+                    if (others.length === 0) {
+                        historyEl.innerHTML = '';
+                    } else {
+                        historyEl.innerHTML =
+                            '<div style="margin-top:14px;font-size:0.8rem;color:rgba(0,0,0,0.6);">Previous keys:</div>' +
+                            '<ul style="list-style:none;padding:0;margin-top:6px;">' +
+                            others.map(k =>
+                                `<li style="padding:6px 0;border-bottom:1px solid rgba(0,0,139,0.05);font-family:monospace;font-size:0.8rem;">${k.key} <span style="color:rgba(0,0,0,0.4);font-family:inherit;">(${k.createdAt}${k.status === 'revoked' ? ' — Revoked' : ''})</span></li>`
+                                ).join('') +
+                            '</ul>';
+                    }
+                }
+            }
+
+            function renderServicesApiList() {
+                const container = document.getElementById('servicesApiList');
+                if (!container) return;
+
+                const servicesMenu = MENU_CONFIG.mainMenu.find(m => m.id === 'services');
+                if (!servicesMenu) return;
+
+                container.innerHTML = servicesMenu.subItems.map(sub => {
+                    const apiData = SERVICES_API_DATA[sub.id];
+                    if (!apiData) return '';
+                    return `
+                        <div class="service-api-block">
+                            <h4>${apiData.icon} ${apiData.label}</h4>
+                            <div class="api-endpoint-row">
+                                <span class="api-method get">GET</span>
+                                <span class="api-endpoint-path">${apiData.get.endpoint}</span>
+                            </div>
+                            <p class="api-endpoint-desc">${apiData.get.description}</p>
+                            <pre class="api-example">${apiData.get.example}</pre>
+                            <div class="api-endpoint-row">
+                                <span class="api-method post">POST</span>
+                                <span class="api-endpoint-path">${apiData.post.endpoint}</span>
+                            </div>
+                            <p class="api-endpoint-desc">${apiData.post.description}</p>
+                            <pre class="api-example">${apiData.post.example}</pre>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            // ============================================================
+            // 25. SUPPORT TABLE FUNCTIONS
+            // ============================================================
+            function escapeHtml(str) {
+                return String(str == null ? '' : str)
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+            }
+
+            let selectedSupportIds = new Set();
+
+            function renderSupportRows(tbody, list) {
+                if (list.length === 0) {
+                    tbody.innerHTML =
+                        '<tr><td colspan="10" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No submissions found.</td></tr>';
+                    return;
+                }
+                // Defensive: backfill an id for any record that's missing one
+                // (e.g. hand-edited via the Admin File Manager) so a row can
+                // never silently fail to open in the message card.
+                list.forEach(item => {
+                    if (!item.id) item.id = generateNextSupportId();
+                });
+                const sorted = [...list].sort((a, b) => new Date(b.date) - new Date(a.date));
+                tbody.innerHTML = sorted.map(item => `
+                    <tr class="support-row ${selectedSupportIds.has(item.id) ? 'row-checked' : ''} ${selectedSupportId === item.id ? 'selected' : ''}">
+                        <td onclick="event.stopPropagation();"><input type="checkbox" class="support-row-check" data-id="${item.id}" ${selectedSupportIds.has(item.id) ? 'checked' : ''} onchange="toggleSupportRowCheck('${item.id}', this)" /></td>
+                        <td onclick="selectSupportRow('${item.id}')"><span style="font-weight:500;color:darkblue;">${escapeHtml(item.id)}</span></td>
+                        <td onclick="selectSupportRow('${item.id}')">${item.date}</td>
+                        <td onclick="selectSupportRow('${item.id}')">${item.time}</td>
+                        <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.userId || '')}</td>
+                        <td onclick="selectSupportRow('${item.id}')">${item.type}</td>
+                        <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.subject)}</td>
+                        <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.message)}</td>
+                        <td onclick="selectSupportRow('${item.id}')"><span class="status-badge ${item.status === 'Resolved' ? 'status-resolved' : 'status-pending'}">${escapeHtml(item.status)}</span></td>
+                        <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.response)}</td>
+                    </tr>
+                `).join('');
+            }
+
+            function getFilteredSupport() {
+                const fromInput = document.getElementById('supportFromDate');
+                const toInput = document.getElementById('supportToDate');
+                const statusInput = document.getElementById('supportStatusFilter');
+                const userInput = document.getElementById('supportUserFilter');
+
+                let base = getVisibleContactSubmissions();
+
+                if (fromInput && toInput && fromInput.value && toInput.value) {
+                    base = base.filter(t => t.date >= fromInput.value && t.date <= toInput.value);
+                }
+                if (statusInput && statusInput.value) {
+                    base = base.filter(t => t.status === statusInput.value);
+                }
+                if (userInput && userInput.value.trim()) {
+                    const q = userInput.value.trim().toLowerCase();
+                    base = base.filter(t => {
+                        const dirEntry = getUserDirectoryEntry(t.userId);
+                        const email = dirEntry ? (dirEntry.email || '').toLowerCase() : '';
+                        return (t.userId || '').toLowerCase().includes(q) || email.includes(q);
+                    });
+                }
+                return base;
+            }
+
+            function renderSupportTable() {
+                const tbody = document.getElementById('supportTableBody');
+                if (!tbody) return;
+
+                // Deliberately no default From/To pre-fill - every submission
+                // shows by default; a date range only narrows things down
+                // once the user actually picks one and applies it.
+                renderSupportRows(tbody, getFilteredSupport());
+            }
+
+            window.toggleSupportRowCheck = function(id, checkbox) {
+                if (checkbox.checked) selectedSupportIds.add(id);
+                else selectedSupportIds.delete(id);
+            };
+
+            window.toggleSupportSelectAll = function(checkbox) {
+                document.querySelectorAll('.support-row-check').forEach((cb) => {
+                    cb.checked = checkbox.checked;
+                    if (checkbox.checked) selectedSupportIds.add(cb.dataset.id);
+                    else selectedSupportIds.delete(cb.dataset.id);
+                });
+            };
+
+            window.deleteSelectedSupport = function() {
+                if (selectedSupportIds.size === 0) {
+                    showWarning('Select at least one query first.');
+                    return;
+                }
+                const count = selectedSupportIds.size;
+                showConfirm('🗑️ Delete', `Delete ${count} selected item(s)? This cannot be undone.`, function(confirmed) {
+                    if (!confirmed) return;
+                    const deletedItems = contactSubmissions.filter(c => selectedSupportIds.has(c.id));
+                    contactSubmissions = contactSubmissions.filter(c => !selectedSupportIds.has(c.id));
+                    if (selectedSupportId && selectedSupportIds.has(selectedSupportId)) {
+                        closeMessagePopup();
+                    }
+                    selectedSupportIds.clear();
+                    persistContactSubmissions();
+                    deletedItems.forEach((item) => {
+                        addNotificationFor(item.userId, `Support ticket ${item.id} ("${item.subject}") was deleted.`);
+                        const dirEntry = getUserDirectoryEntry(item.userId);
+                        if (dirEntry && dirEntry.email) {
+                            sendGenericNotificationEmail(
+                                dirEntry.email,
+                                `${dirEntry.firstName} ${dirEntry.lastName}`,
+                                `Support ticket ${item.id} deleted`,
+                                `Your support ticket ${item.id} ("${item.subject}") has been deleted by our support team.`
+                            );
+                        }
+                    });
+                    renderSupportRows(document.getElementById('supportTableBody'), getFilteredSupport());
+                    showMessage('🗑️ Deleted', 'Selected item(s) have been deleted.', ['OK']);
+                });
+            };
+
+            window.applySupportFilter = function() {
+                const fromInput = document.getElementById('supportFromDate');
+                const toInput = document.getElementById('supportToDate');
+                if (!fromInput.value || !toInput.value) {
+                    showWarning('Please select both From and To dates.');
+                    return;
+                }
+                if (fromInput.value > toInput.value) {
+                    showWarning('"From" date cannot be after "To" date.');
+                    return;
+                }
+                renderSupportRows(document.getElementById('supportTableBody'), getFilteredSupport());
+            };
+
+            window.resetSupportFilter = function() {
+                document.getElementById('supportFromDate').value = '';
+                document.getElementById('supportToDate').value = '';
+                renderSupportRows(document.getElementById('supportTableBody'), getFilteredSupport());
+            };
+
+            window.downloadSupportExcel = function() {
+                const filtered = getFilteredSupport();
+                if (filtered.length === 0) {
+                    showWarning('No data available to download for the selected range.');
+                    return;
+                }
+                const sorted = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
+                const headers = ['ID', 'Date', 'Time', 'Type', 'Subject', 'Message', 'Status', 'Response'];
+                let table = '<table border="1"><tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
+                sorted.forEach(t => {
+                    table += '<tr>' +
+                        `<td>${t.id}</td><td>${t.date}</td><td>${t.time}</td><td>${t.type}</td>` +
+                        `<td>${t.subject}</td><td>${t.message}</td>` +
+                        `<td>${t.status}</td><td>${t.response}</td>` +
+                        '</tr>';
+                });
+                table += '</table>';
+
+                const blob = new Blob(['\ufeff' + table], { type: 'application/vnd.ms-excel' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'Support_Submissions_' + new Date().toISOString().split('T')[0] + '.xls';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+
+            // ============================================================
+            // 26. CONTACT FORM FUNCTIONS
+            // ============================================================
+            let selectedSupportId = null;
+
+            // ID + Status share the top row (ID narrow, Status to its
+            // right); Response is full width (same width as Message),
+            // placed below the button row - only the editability of
+            // Type/Subject/Message and the button row change between modes.
+            // Ticket IDs are YYMMDD + a 5-digit daily sequence (e.g.
+            // 26070200001 for the first ticket on 2026-07-02) so they sort
+            // naturally by date and are sequential within a day.
+            function generateNextSupportId() {
+                const now = new Date();
+                const datePrefix = String(now.getFullYear()).slice(-2) +
+                    String(now.getMonth() + 1).padStart(2, '0') +
+                    String(now.getDate()).padStart(2, '0');
+                let maxSeq = 0;
+                contactSubmissions.forEach(c => {
+                    const id = c.id || '';
+                    if (id.startsWith(datePrefix) && id.length === 11) {
+                        const n = parseInt(id.slice(6), 10);
+                        if (!isNaN(n) && n > maxSeq) maxSeq = n;
+                    }
+                });
+                return datePrefix + String(maxSeq + 1).padStart(5, '0');
+            }
+
+            // opts.mode: 'compose' (Type+Subject+Message+Create only - no
+            // ID/Status/Response at all), 'view-user' (everything readonly,
+            // no buttons), or 'view-admin' (Type/Subject/Message readonly,
+            // but Status is a real dropdown and Response is editable, plus
+            // a Submit button - Developer/Admin can respond and change
+            // status but never touch what the user actually wrote).
+            function buildContactCardHTML(opts) {
+                if (opts.mode === 'compose') {
+                    return `
+                        <div class="form-row contact-type-subject-row">
+                            <div class="form-group">
+                                <label>Type</label>
+                                <select id="contactType">
+                                    <option value="Query">Query</option>
+                                    <option value="Inquiry">Inquiry</option>
+                                    <option value="Complaint">Complaint</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Subject *</label>
+                                <input type="text" id="contactSubject" placeholder="Enter subject" />
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Message *</label>
+                            <textarea id="contactMessage" rows="5" placeholder="Type your message here..."></textarea>
+                        </div>
+                        <div style="display:flex;gap:10px;">
+                            <button class="submit-btn" onclick="submitContactForm()">➕ Create</button>
+                        </div>
+                    `;
+                }
+
+                const isAdminEdit = opts.mode === 'view-admin';
+                return `
+                    <div class="form-row contact-id-status-row">
+                        <div class="form-group">
+                            <label>Ticket ID</label>
+                            <div class="contact-readonly-label">${escapeHtml(opts.id)}</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Status</label>
+                            ${isAdminEdit ? `
+                                <select id="contactStatus">
+                                    <option value="Pending" ${opts.status === 'Pending' ? 'selected' : ''}>Pending</option>
+                                    <option value="WIP" ${opts.status === 'WIP' ? 'selected' : ''}>WIP</option>
+                                    <option value="Resolved" ${opts.status === 'Resolved' ? 'selected' : ''}>Resolved</option>
+                                </select>
+                            ` : `<div class="contact-readonly-label">${escapeHtml(opts.status || '-')}</div>`}
+                        </div>
+                    </div>
+                    <div class="form-row contact-type-subject-row">
+                        <div class="form-group">
+                            <label>Type</label>
+                            <div class="contact-readonly-label">${escapeHtml(opts.type)}</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Subject</label>
+                            <div class="contact-readonly-label">${escapeHtml(opts.subject)}</div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Message</label>
+                        <textarea rows="4" disabled style="opacity:0.7;">${escapeHtml(opts.message || '')}</textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Response</label>
+                        <textarea id="contactResponse" rows="3" ${isAdminEdit ? `placeholder="Write a response..."` : 'disabled style="opacity:0.7;"'}>${opts.response && opts.response !== '-' ? escapeHtml(opts.response) : ''}</textarea>
+                    </div>
+                    ${isAdminEdit ? `
+                        <div style="display:flex;gap:10px;">
+                            <button class="submit-btn" onclick="submitTicketUpdate('${opts.id}')">📤 Submit</button>
+                        </div>
+                    ` : ''}
+                `;
+            }
+
+            // ---- "Send us a Message" / Ticket Details popup (triggered by
+            // a row click or the "Create New" link - the log table itself
+            // is full width, with no permanently-visible side card). ----
+            window.openMessagePopup = function(mode, item) {
+                let fieldsHtml, title;
+                if (mode === 'compose') {
+                    selectedSupportId = null;
+                    fieldsHtml = buildContactCardHTML({ mode: 'compose' });
+                    title = '✉️ Send us a Message';
+                } else {
+                    selectedSupportId = item.id;
+                    fieldsHtml = buildContactCardHTML({
+                        id: item.id, type: item.type, subject: item.subject, message: item.message,
+                        response: item.response, status: item.status,
+                        mode: isAdminOrDeveloper() ? 'view-admin' : 'view-user'
+                    });
+                    title = '🎫 Ticket Details';
+                }
+
+                const html = `
+                    <div class="admin-modal-overlay" id="messagePopupOverlay">
+                        <div class="admin-modal-card message-popup-card">
+                            <button class="admin-modal-close" onclick="closeMessagePopup()">✕</button>
+                            <h3 class="admin-modal-title">${title}</h3>
+                            <div class="payment-form" id="contactCardBody">${fieldsHtml}</div>
+                        </div>
+                    </div>
+                `;
+                const existing = document.getElementById('messagePopupOverlay');
+                if (existing) existing.remove();
+                document.body.insertAdjacentHTML('beforeend', html);
+
+                const tbody = document.getElementById('supportTableBody');
+                if (tbody) renderSupportRows(tbody, getFilteredSupport());
+            };
+
+            window.closeMessagePopup = function() {
+                const overlay = document.getElementById('messagePopupOverlay');
+                if (overlay) overlay.remove();
+                selectedSupportId = null;
+                const tbody = document.getElementById('supportTableBody');
+                if (tbody) renderSupportRows(tbody, getFilteredSupport());
+            };
+
+            window.selectSupportRow = function(id) {
+                const item = contactSubmissions.find(c => c.id === id);
+                if (!item) return;
+                openMessagePopup('view', item);
+            };
+
+            // ============================================================
+            // RAISE ISSUE ON TRANSACTION(S) (item 4) - user selects one or
+            // more Payment History rows, picks a reason (or types a custom
+            // one), and submitting creates a single support ticket that
+            // references all the selected transaction IDs.
+            // ============================================================
+            const TRANSACTION_ISSUE_REASONS = [
+                'Amount deducted but not credited into wallet',
+                'Charged an incorrect amount',
+                'Duplicate charge for the same transaction',
+                'Service was not delivered despite being charged',
+                'Refund not received',
+                'Other (describe below)'
+            ];
+
+            window.openRaiseIssueModal = function() {
+                if (selectedTransactionIds.size === 0) {
+                    showWarning('Please select at least one transaction first, using the checkboxes in the table.');
+                    return;
+                }
+                const ids = Array.from(selectedTransactionIds);
+                const html = `
+                    <div class="admin-modal-overlay" id="raiseIssueOverlay">
+                        <div class="admin-modal-card">
+                            <button class="admin-modal-close" onclick="closeRaiseIssueModal()">✕</button>
+                            <h3 class="admin-modal-title">🚩 Raise an Issue</h3>
+                            <p class="lease-review-sub">Selected transaction(s): <strong>${ids.map(escapeHtml).join(', ')}</strong></p>
+                            <div class="payment-form">
+                                <div class="form-group">
+                                    <label>Reason</label>
+                                    <select id="raiseIssueReason" onchange="onRaiseIssueReasonChange()">
+                                        ${TRANSACTION_ISSUE_REASONS.map(r => `<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('')}
+                                    </select>
+                                </div>
+                                <div class="form-group" id="raiseIssueCustomGroup" style="display:none;">
+                                    <label>Please describe the issue</label>
+                                    <textarea id="raiseIssueCustomText" rows="4" placeholder="Add any details that will help us investigate..." style="width:100%;padding:8px 12px;border:1px solid rgba(0,0,139,0.15);border-radius:4px;font-size:0.9rem;font-family:inherit;box-sizing:border-box;resize:vertical;"></textarea>
+                                </div>
+                            </div>
+                            <div class="lease-review-actions">
+                                <button class="filter-btn" onclick="closeRaiseIssueModal()">Cancel</button>
+                                <button class="plan-cta-btn" onclick="submitTransactionIssue()">Submit</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                const existing = document.getElementById('raiseIssueOverlay');
+                if (existing) existing.remove();
+                document.body.insertAdjacentHTML('beforeend', html);
+            };
+
+            window.closeRaiseIssueModal = function() {
+                const overlay = document.getElementById('raiseIssueOverlay');
+                if (overlay) overlay.remove();
+            };
+
+            window.onRaiseIssueReasonChange = function() {
+                const select = document.getElementById('raiseIssueReason');
+                const customGroup = document.getElementById('raiseIssueCustomGroup');
+                if (!select || !customGroup) return;
+                customGroup.style.display = select.value.startsWith('Other') ? 'block' : 'none';
+            };
+
+            window.submitTransactionIssue = function() {
+                const select = document.getElementById('raiseIssueReason');
+                const customText = document.getElementById('raiseIssueCustomText');
+                let reason = select.value;
+                if (reason.startsWith('Other')) {
+                    const detail = customText.value.trim();
+                    if (!detail) {
+                        showWarning('Please describe the issue in the text box before submitting.');
+                        return;
+                    }
+                    reason = detail;
+                }
+
+                const ids = Array.from(selectedTransactionIds);
+                const subject = `Transaction issue - ${ids.length} transaction(s)`;
+                const message = `Reason: ${reason}\n\nAffected Transaction ID(s): ${ids.join(', ')}`;
+
+                const now = new Date();
+                const ticketId = generateNextSupportId();
+                contactSubmissions.push({
+                    id: ticketId,
+                    userId: CURRENT_USER_ID,
+                    date: now.toISOString().split('T')[0],
+                    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                    type: 'Billing Issue',
+                    subject: subject,
+                    message: message,
+                    status: 'Pending',
+                    response: '-',
+                    relatedTransactionIds: ids
+                });
+
+                closeRaiseIssueModal();
+                persistContactSubmissions();
+                sendContactAcknowledgementEmail(ticketId, 'Billing Issue', subject, message);
+                addNotification(`Support ticket ${ticketId} was created for ${ids.length} transaction(s).`);
+                selectedTransactionIds.clear();
+                const tbody = document.getElementById('historyTableBody');
+                if (tbody) renderHistoryRows(tbody, getFilteredHistory(), true);
+                const selectAll = document.getElementById('historySelectAll');
+                if (selectAll) selectAll.checked = false;
+                showMessage('✅ Issue Reported', `Your ticket ID is <strong>${ticketId}</strong>. Our team will investigate and get back to you.`, ['OK']);
+            };
+
+            window.submitContactForm = function() {
+                const typeSelect = document.getElementById('contactType');
+                const subjectInput = document.getElementById('contactSubject');
+                const messageInput = document.getElementById('contactMessage');
+
+                const type = typeSelect.value;
+                const subject = subjectInput.value.trim();
+                const message = messageInput.value.trim();
+
+                if (!subject || !message) {
+                    showWarning('Please fill in both Subject and Message.');
+                    return;
+                }
+
+                const now = new Date();
+                const ticketId = generateNextSupportId();
+                contactSubmissions.push({
+                    id: ticketId,
+                    userId: CURRENT_USER_ID,
+                    date: now.toISOString().split('T')[0],
+                    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                    type: type,
+                    subject: subject,
+                    message: message,
+                    status: 'Pending',
+                    response: '-'
+                });
+
+                closeMessagePopup();
+                persistContactSubmissions();
+                sendContactAcknowledgementEmail(ticketId, type, subject, message);
+                addNotification(`Support ticket ${ticketId} ("${subject}") was created.`);
+                const tbody = document.getElementById('supportTableBody');
+                if (tbody) renderSupportRows(tbody, getFilteredSupport());
+                showMessage('✅ Ticket Created', `Thank you for reaching out! Your ticket ID is <strong>${ticketId}</strong>. Our team will get back to you shortly.`, ['OK']);
+            };
+
+            window.submitTicketUpdate = function(id) {
+                const item = contactSubmissions.find(c => c.id === id);
+                if (!item) return;
+                const statusSelect = document.getElementById('contactStatus');
+                const responseInput = document.getElementById('contactResponse');
+
+                item.status = statusSelect.value;
+                item.response = responseInput.value.trim() || '-';
+
+                persistContactSubmissions();
+                closeMessagePopup();
+                sendTicketUpdateEmail(item);
+                addNotificationFor(item.userId, `Support ticket ${item.id} ("${item.subject}") was updated - status: ${item.status}.`);
+                const tbody = document.getElementById('supportTableBody');
+                if (tbody) renderSupportRows(tbody, getFilteredSupport());
+                showMessage('✅ Updated', 'The ticket status and response have been saved.', ['OK']);
+            };
+
+            // Fires the acknowledgement email in the background via the backend's
+            // SMTP endpoint (credentials in .env). Failures are logged quietly -
+            // the user has already seen the "Ticket Created" confirmation, and a
+            // missing/unreachable SMTP server shouldn't block the submission.
+            function sendContactAcknowledgementEmail(ticketId, type, subject, message) {
+                const recipient = (profileData && profileData.email) || (COMPANY_INFO && COMPANY_INFO.email);
+                if (!recipient) return;
+
+                authFetch('/api/send-acknowledgement', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        toEmail: recipient,
+                        userName: profileData ? `${profileData.firstName} ${profileData.lastName}` : 'there',
+                        ticketId: ticketId,
+                        type: type,
+                        subject: subject,
+                        message: message
+                    })
+                }).catch(e => console.warn('Acknowledgement email could not be sent:', e));
+            }
+
+            // Notifies the ticket's original owner by email once an admin/
+            // developer submits a status/response update.
+            function sendTicketUpdateEmail(item) {
+                const dirEntry = getUserDirectoryEntry(item.userId);
+                const recipient = dirEntry ? dirEntry.email : null;
+                if (!recipient) return;
+
+                authFetch('/api/send-ticket-update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        toEmail: recipient,
+                        userName: dirEntry ? `${dirEntry.firstName} ${dirEntry.lastName}` : 'there',
+                        ticketId: item.id,
+                        status: item.status,
+                        response: item.response,
+                        subject: item.subject
+                    })
+                }).catch(e => console.warn('Ticket update email could not be sent:', e));
+            }
+
+            // ============================================================
+            // 27. DASHBOARD FUNCTIONS
+            // ============================================================
+            function renderTodayTransactions() {
+                const tbody = document.getElementById('todayTableBody');
+                if (!tbody) return;
+
+                const myHistory = getMyPaymentHistory();
+                const todayStr = new Date().toISOString().split('T')[0];
+                const todayList = myHistory.filter(t => t.date === todayStr);
+
+                if (todayList.length === 0) {
+                    tbody.innerHTML =
+                        '<tr><td colspan="8" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions today.</td></tr>';
+                } else {
+                    renderHistoryRows(tbody, todayList);
+                }
+
+                let totalCredit = 0,
+                    totalDebit = 0;
+                myHistory.forEach(t => { totalCredit += Number(t.credit) || 0;
+                    totalDebit += Number(t.debit) || 0; });
+                const balanceEl = document.getElementById('dashBalance');
+                if (balanceEl) balanceEl.textContent = '$' + (totalCredit - totalDebit).toFixed(2);
+                // Bug 10: dashboard Current Plan hardcoded tha — actual plan
+                // se update karo (plan switch ke baad stale na dikhe).
+                const planEl = document.getElementById('dashCurrentPlan');
+                if (planEl) planEl.textContent = getMyPlan().name + ' Plan';
+            }
+
+            // Real counts (previously hardcoded placeholder numbers) - Lease
+            // Abstraction count comes from how many lease folders actually
+            // exist on disk for this user (Users/<id>/LeaseAbstraction/*),
+            // Translation count from completed entries in translationFiles
+            // (translation is still a simulated pipeline, no real output
+            // folder to count on disk).
+            async function renderDashboardCounts() {
+                const leaseEl = document.getElementById('dashLeaseCount');
+                const translationEl = document.getElementById('dashTranslationCount');
+
+                if (translationEl) {
+                    translationEl.textContent = getMyTranslationFiles().filter(f => f.status === 'completed').length;
+                }
+
+                if (leaseEl) {
+                    try {
+                        const res = await authFetch('/api/lease/list?userId=' + encodeURIComponent(CURRENT_USER_ID));
+                        const data = await res.json();
+                        leaseEl.textContent = (data.leases || []).length;
+                    } catch (e) {
+                        leaseEl.textContent = '0';
+                    }
+                }
+            }
+
+            async function renderMyLeasesList() {
+                const list = document.getElementById('myLeasesList');
+                if (!list) return;
+
+                try {
+                    const res = await authFetch('/api/lease/list?userId=' + encodeURIComponent(CURRENT_USER_ID));
+                    const data = await res.json();
+                    const leases = data.leases || [];
+
+                    if (leases.length === 0) {
+                        list.innerHTML = '<li class="my-leases-empty">No leases processed yet - run one from Lease Abstraction.</li>';
+                        return;
+                    }
+
+                    list.innerHTML = leases.map(l => `
+                        <li class="my-lease-item">
+                            <a class="my-lease-link" onclick="openLeaseDocsPopup('${l.leaseName.replace(/'/g, "\\'")}')">📄 ${escapeHtml(l.leaseName)}</a>
+                            <span class="my-lease-meta">${l.docType ? escapeHtml(l.docType) : ''} ${l.accuracy != null ? '· ' + l.accuracy + '% accuracy' : ''}</span>
+                        </li>
+                    `).join('');
+                } catch (e) {
+                    list.innerHTML = '<li class="my-leases-empty">Could not load - make sure py/server.py is running.</li>';
+                }
+            }
+
+            async function renderMyTranslationsList() {
+                const list = document.getElementById('myTranslationsList');
+                if (!list) return;
+
+                try {
+                    const res = await authFetch('/api/translation/list?userId=' + encodeURIComponent(CURRENT_USER_ID));
+                    const data = await res.json();
+                    const docs = data.documents || [];
+
+                    if (docs.length === 0) {
+                        list.innerHTML = '<li class="my-leases-empty">No translations processed yet - run one from Translation.</li>';
+                        return;
+                    }
+
+                    list.innerHTML = docs.map(d => `
+                        <li class="my-lease-item">
+                            <a class="my-lease-link" onclick="downloadFile('Output.pdf', '${d.docName.replace(/'/g, "\\'")}', 'translation')">🌐 ${escapeHtml(d.docName)}</a>
+                            <span class="my-lease-meta">${d.targetLanguage ? escapeHtml(d.targetLanguage) : ''}</span>
+                        </li>
+                    `).join('');
+                } catch (e) {
+                    list.innerHTML = '<li class="my-leases-empty">Could not load - make sure py/server.py is running.</li>';
+                }
+            }
+
+            // ============================================================
+            // HUMAN REVIEW (Lease Abstraction) - opened via the "🔍 Review"
+            // action link for a file in 'needs_review' status. Fetches the
+            // already-saved Output.json fields, renders them as an editable
+            // form, and on Approve: saves any edits, generates the PDF,
+            // charges the $1 fee, sends the completion email/notification,
+            // and marks the file completed - mirroring what used to happen
+            // automatically right after save-output, before this checkpoint
+            // existed.
+            // ============================================================
+            let _reviewLeaseFileId = null;
+            let _reviewLeaseName = null;
+
+            window.openLeaseReviewModal = async function(fileId) {
+                const file = leaseFiles.find(f => String(f.id) === String(fileId));
+                if (!file || !file.leaseName) { showWarning('This file has no saved data to review yet.'); return; }
+                _reviewLeaseFileId = fileId;
+                _reviewLeaseName = file.leaseName;
+
+                let data;
+                try {
+                    const res = await authFetch('/api/lease/review-data?userId=' + encodeURIComponent(CURRENT_USER_ID) +
+                        '&leaseName=' + encodeURIComponent(file.leaseName));
+                    data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not load this lease for review.');
+                } catch (err) {
+                    showWarning(err.message || 'Could not load this lease for review.');
+                    return;
+                }
+
+                const html = `
+                    <div class="admin-modal-overlay" id="leaseReviewOverlay">
+                        <div class="admin-modal-card lease-review-card">
+                            <button class="admin-modal-close" onclick="closeLeaseReviewModal()">✕</button>
+                            <h3 class="admin-modal-title">🔍 Human Review — ${escapeHtml(file.leaseName)}</h3>
+                            <p class="lease-review-sub">Check the extracted fields below and correct anything that's wrong.
+                                Nothing is finalized (no PDF, no wallet charge) until you approve.</p>
+                            <div class="lease-review-body" id="leaseReviewBody">
+                                ${_buildReviewFieldsHtml(data.fields || {})}
+                            </div>
+                            <div class="lease-review-actions">
+                                <button class="filter-btn" onclick="closeLeaseReviewModal()">Cancel</button>
+                                <button class="plan-cta-btn" onclick="submitLeaseReview()">✅ Approve &amp; Generate PDF</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                const existing = document.getElementById('leaseReviewOverlay');
+                if (existing) existing.remove();
+                document.body.insertAdjacentHTML('beforeend', html);
+            };
+
+            window.closeLeaseReviewModal = function() {
+                const overlay = document.getElementById('leaseReviewOverlay');
+                if (overlay) overlay.remove();
+                _reviewLeaseFileId = null;
+                _reviewLeaseName = null;
+            };
+
+            // Simple leaf strings/numbers get a real text input (the common,
+            // high-value case for a reviewer to spot-check). Arrays and
+            // deeper nested objects (e.g. rent.rent_schedule, the late-fee
+            // sub-table) are shown as an editable JSON block instead of a
+            // bespoke mini-table per shape - still fully editable, just less
+            // fancy, which is a reasonable trade-off given how many
+            // different nested shapes the extraction schema has.
+            function _buildReviewFieldsHtml(fields) {
+                let html = '';
+                Object.keys(fields).forEach(sectionKey => {
+                    const value = fields[sectionKey];
+                    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+                        html += `<fieldset class="lease-review-section"><legend>${escapeHtml(_humanizeKey(sectionKey))}</legend>`;
+                        Object.keys(value).forEach(leafKey => {
+                            html += _reviewFieldRow(`${sectionKey}.${leafKey}`, leafKey, value[leafKey]);
+                        });
+                        html += `</fieldset>`;
+                    } else {
+                        html += `<fieldset class="lease-review-section"><legend>${escapeHtml(_humanizeKey(sectionKey))}</legend>`;
+                        html += _reviewFieldRow(sectionKey, sectionKey, value);
+                        html += `</fieldset>`;
+                    }
+                });
+                return html || '<p class="lease-review-sub">No fields were extracted for this lease.</p>';
+            }
+
+            function _reviewFieldRow(path, label, value) {
+                const isComplex = value !== null && typeof value === 'object';
+                const displayLabel = escapeHtml(_humanizeKey(label));
+                if (isComplex) {
+                    const jsonText = escapeHtml(JSON.stringify(value, null, 2));
+                    return `
+                        <div class="lease-review-field">
+                            <label>${displayLabel} <span class="lease-review-json-tag">JSON</span></label>
+                            <textarea class="lease-review-textarea lease-review-json" data-path="${path}" data-json="true" rows="6">${jsonText}</textarea>
+                        </div>`;
+                }
+                const text = value == null ? '' : String(value);
+                const long = text.length > 80 || text.includes('\n');
+                return `
+                    <div class="lease-review-field">
+                        <label>${displayLabel}</label>
+                        ${long ?
+                            `<textarea class="lease-review-textarea" data-path="${path}" rows="3">${escapeHtml(text)}</textarea>` :
+                            `<input type="text" class="lease-review-input" data-path="${path}" value="${escapeHtml(text)}" />`}
+                    </div>`;
+            }
+
+            function _humanizeKey(key) {
+                return String(key).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            }
+
+            function _setPath(obj, path, value) {
+                const parts = path.split('.');
+                let cur = obj;
+                for (let i = 0; i < parts.length - 1; i++) {
+                    if (typeof cur[parts[i]] !== 'object' || cur[parts[i]] === null) cur[parts[i]] = {};
+                    cur = cur[parts[i]];
+                }
+                cur[parts[parts.length - 1]] = value;
+            }
+
+            window.submitLeaseReview = async function() {
+                const fileId = _reviewLeaseFileId;
+                const leaseName = _reviewLeaseName;
+                const file = leaseFiles.find(f => String(f.id) === String(fileId));
+                if (!file || !leaseName) { closeLeaseReviewModal(); return; }
+
+                const editedFields = {};
+                const inputs = document.querySelectorAll('#leaseReviewBody [data-path]');
+                let jsonError = null;
+                inputs.forEach(el => {
+                    const path = el.getAttribute('data-path');
+                    if (el.getAttribute('data-json') === 'true') {
+                        try {
+                            _setPath(editedFields, path, JSON.parse(el.value));
+                        } catch (e) {
+                            jsonError = path;
+                        }
+                    } else {
+                        _setPath(editedFields, path, el.value);
+                    }
+                });
+                if (jsonError) {
+                    showWarning(`"${_humanizeKey(jsonError.split('.').pop())}" isn't valid JSON - please fix it before approving.`);
+                    return;
+                }
+
+                try {
+                    const fl = file.batchLabel || '';
+                    let stepId = addActivity('lease-abstraction', `${fl}System > Review and Approve`, 'Pending');
+                    refreshServicePage('lease-abstraction');
+                    await postJSON('/api/lease/review-submit', {
+                        userId: CURRENT_USER_ID, leaseName: leaseName, fields: editedFields
+                    });
+                    updateActivity('lease-abstraction', stepId, 'Success');
+                    refreshServicePage('lease-abstraction');
+
+                    const genPdfAgent = getAgents('lease-abstraction').filter(a => a.phase !== 'scan')[5];
+                    await blinkAgentThenDone('lease-abstraction', genPdfAgent ? genPdfAgent.id : null);
+                    stepId = addActivity('lease-abstraction', `${fl}System > Generate Output`, 'Pending');
+                    refreshServicePage('lease-abstraction');
+                    const pdfRes = await postJSON('/api/lease/generate-pdf', {
+                        userId: CURRENT_USER_ID, leaseName: leaseName,
+                        templateName: file.templateName || 'Default.pdf'
+                    });
+                    updateActivity('lease-abstraction', stepId, 'Success', `${fl}System > Generate Output > ${_shortPath(pdfRes.outputPdf, 2)} generated successfully`);
+                    if (genPdfAgent) {
+                        addActivity('lease-abstraction', `${fl}Agents > ${genPdfAgent.name} > Verified all assumptions are clearly flagged in the output`, 'Success');
+                        markAgentDone(genPdfAgent.id);
+                    }
+                    activeAgentId = null;
+                    addActivity('lease-abstraction', `${fl}File Processing > ${file.name}`, 'Finished');
+                    notifyProcessCompletion('Lease Abstraction', file.name, file.chargeAmount || getServicePrice('lease-abstraction'), file.chargeTxnId || '');
+
+                    file.status = 'completed';
+                    file.progress = '100';
+                    closeLeaseReviewModal();
+                    refreshServicePage('lease-abstraction');
+                    persistServiceFiles('lease-abstraction');
+                    showMessage('✅ Approved', 'The reviewed lease has been finalized and the Output.pdf generated.', ['OK']);
+                } catch (err) {
+                    showWarning(err.message || 'Could not finalize this lease. Please try again.');
+                }
+            };
+
+            window.openLeaseDocsPopup = async function(leaseName) {
+                try {
+                    const res = await authFetch('/api/lease/documents?userId=' + encodeURIComponent(CURRENT_USER_ID) + '&leaseName=' + encodeURIComponent(leaseName));
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not load lease documents.');
+
+                    const docs = data.documents || [];
+                    const rows = docs.map(d => `
+                        <tr>
+                            <td>${escapeHtml(d.fileName)}</td>
+                            <td><button class="filter-btn download-btn" onclick="downloadFile('${d.fileName.replace(/'/g, "\\'")}', '${leaseName.replace(/'/g, "\\'")}')">⬇️ Download</button></td>
+                        </tr>
+                    `).join('') + (data.hasOutputPdf ? `
+                        <tr>
+                            <td><strong>Output.pdf</strong> (generated report)</td>
+                            <td><button class="filter-btn download-btn" onclick="downloadFile('Output.pdf', '${leaseName.replace(/'/g, "\\'")}')">⬇️ Download</button></td>
+                        </tr>
+                    ` : '');
+
+                    const html = `
+                        <div class="admin-modal-overlay" id="leaseDocsPopupOverlay">
+                            <div class="admin-modal-card message-popup-card">
+                                <button class="admin-modal-close" onclick="document.getElementById('leaseDocsPopupOverlay').remove()">✕</button>
+                                <h3 class="admin-modal-title">📁 ${escapeHtml(leaseName)}</h3>
+                                <table class="admin-json-table" style="width:100%;">
+                                    <thead><tr><th>File</th><th>Action</th></tr></thead>
+                                    <tbody>${rows || '<tr><td colspan="2">No documents found.</td></tr>'}</tbody>
+                                </table>
+                            </div>
+                        </div>
+                    `;
+                    const existing = document.getElementById('leaseDocsPopupOverlay');
+                    if (existing) existing.remove();
+                    document.body.insertAdjacentHTML('beforeend', html);
+                } catch (err) {
+                    showWarning(err.message || 'Could not load lease documents.');
+                }
+            };
+
+
+            // ============================================================
+            // 28. PROFILE FUNCTIONS
+            // ============================================================
+            function buildProfileBody() {
+                return `
+                    <div class="payment-layout">
+                        <div class="payment-left">
+                            <div class="payment-card profile-photo-card" style="height:480px;">
+                                <div class="profile-photo-card-header">
+                                    <h3>🖼️ Profile Photo</h3>
+                                    <a class="profile-remove-photo-link" id="profileRemovePhotoLink" style="display:${profileData.photo ? 'inline-flex' : 'none'};" onclick="removeProfilePhoto()">🗑️ Remove Photo</a>
+                                </div>
+                                <div class="card-body profile-photo-dropzone-body">
+                                    <div class="profile-photo-dropzone" id="profilePhotoDropzone"
+                                         ondragover="event.preventDefault(); this.classList.add('drag-over');"
+                                         ondragleave="this.classList.remove('drag-over');"
+                                         ondrop="handlePhotoDrop(event)"
+                                         onclick="document.getElementById('profilePhotoInput').click()">
+                                        <div class="profile-photo-preview" id="profilePhotoPreview">
+                                            ${profileData.photo ?
+                                                `<img src="${profileData.photo}" alt="Profile" />` :
+                                                '<div class="profile-photo-placeholder">👤<div>Click or drag a photo here</div></div>'}
+                                        </div>
+                                    </div>
+                                    <input type="file" id="profilePhotoInput" accept="image/*" style="display:none;" onchange="handlePhotoUpload(event)" />
+                                </div>
+                            </div>
+                        </div>
+                        <div class="payment-right">
+                            <div class="payment-card" style="height:480px;">
+                                <h3>👤 Personal Information</h3>
+                                <div class="card-body" style="overflow-y:auto;">
+                                    <div class="payment-form">
+                                        <div class="form-row">
+                                            <div class="form-group">
+                                                <label>First Name</label>
+                                                <input type="text" id="profileFirstName" value="${profileData.firstName}" />
+                                            </div>
+                                            <div class="form-group">
+                                                <label>Last Name</label>
+                                                <input type="text" id="profileLastName" value="${profileData.lastName}" />
+                                            </div>
+                                        </div>
+                                        <div class="form-row">
+                                            <div class="form-group">
+                                                <label>Gender</label>
+                                                <select id="profileGender">
+                                                    <option value="Male" ${profileData.gender === 'Male' ? 'selected' : ''}>Male</option>
+                                                    <option value="Female" ${profileData.gender === 'Female' ? 'selected' : ''}>Female</option>
+                                                    <option value="Other" ${profileData.gender === 'Other' ? 'selected' : ''}>Other</option>
+                                                </select>
+                                            </div>
+                                            <div class="form-group">
+                                                <label>Birthdate</label>
+                                                <input type="date" id="profileBirthdate" value="${profileData.birthdate}" />
+                                            </div>
+                                        </div>
+                                        <div class="form-row">
+                                            <div class="form-group">
+                                                <label>Mobile No</label>
+                                                <input type="text" id="profileMobile" value="${profileData.mobile}" />
+                                            </div>
+                                            <div class="form-group">
+                                                <label>Email Address</label>
+                                                <input type="email" id="profileEmail" value="${profileData.email}" disabled style="opacity:0.6;cursor:not-allowed;" />
+                                            </div>
+                                        </div>
+                                        <div class="form-row">
+                                            <div class="form-group">
+                                                <label>New Password</label>
+                                                <div class="password-field-wrapper">
+                                                    <input type="password" id="profilePassword" placeholder="Leave blank to keep current password" autocomplete="new-password" />
+                                                    <span class="password-eye" onclick="togglePasswordVisibility('profilePassword', this)">👁️</span>
+                                                </div>
+                                            </div>
+                                            <div class="form-group">
+                                                <label>Confirm New Password</label>
+                                                <div class="password-field-wrapper">
+                                                    <input type="password" id="profileConfirmPassword" placeholder="Leave blank to keep current password" autocomplete="new-password" />
+                                                    <span class="password-eye" onclick="togglePasswordVisibility('profileConfirmPassword', this)">👁️</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="form-row">
+                                            <div class="form-group" style="margin-top:-8px;">
+                                                <small style="color:rgba(0,0,0,0.5);font-size:0.72rem;">Min 8 characters, with 1 uppercase, 1 lowercase, 1 number and 1 special character.</small>
+                                            </div>
+                                        </div>
+                                        <div class="form-group profile-2fa-save-row" style="margin-top:4px;">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" id="profileTwoFactorAuth" ${profileData.twoFactorAuth === 'Yes' ? 'checked' : ''} />
+                                                Two-Factor Authentication (2FA)
+                                            </label>
+                                            <button class="submit-btn" onclick="saveProfile()">💾 Save Changes</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            window.togglePasswordVisibility = function(inputId, eyeEl) {
+                const input = document.getElementById(inputId);
+                if (input.type === 'password') {
+                    input.type = 'text';
+                    eyeEl.textContent = '🙈';
+                } else {
+                    input.type = 'password';
+                    eyeEl.textContent = '👁️';
+                }
+            };
+
+            window.handlePhotoUpload = function(event) {
+                const file = event.target.files[0];
+                if (file) processProfilePhotoFile(file);
+                // Reset so picking the exact same file again still fires 'change'
+                event.target.value = '';
+            };
+
+            window.handlePhotoDrop = function(event) {
+                event.preventDefault();
+                const zone = document.getElementById('profilePhotoDropzone');
+                if (zone) zone.classList.remove('drag-over');
+                const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+                if (!file) return;
+                if (!file.type.startsWith('image/')) {
+                    showWarning('Please drop an image file.');
+                    return;
+                }
+                processProfilePhotoFile(file);
+            };
+
+            function processProfilePhotoFile(file) {
+                const reader = new FileReader();
+                reader.onload = async function(e) {
+                    const dataUrl = e.target.result;
+                    // Optimistic preview while the upload completes - the
+                    // dropzone shows the image filling its full width/height
+                    // (cover fit, see CSS) rather than a small avatar circle.
+                    document.getElementById('profilePhotoPreview').innerHTML = `<img src="${dataUrl}" alt="Profile" />`;
+                    try {
+                        const res = await authFetch('/api/upload-photo', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ userId: CURRENT_USER_ID, fileName: file.name, dataUrl: dataUrl })
+                        });
+                        const result = await res.json();
+                        if (!res.ok || !result.path) throw new Error(result.error || 'Upload failed');
+                        // Store the real saved path (Users/<UserID>/ProfilePhoto/...) in
+                        // users.json, not the raw base64 - cache-bust so the <img> refreshes.
+                        profileData.photo = result.path + '?t=' + Date.now();
+                        document.getElementById('profilePhotoPreview').innerHTML = `<img src="${profileData.photo}" alt="Profile" />`;
+                        updateAvatarDisplay();
+                        persistProfile();
+                        refreshProfilePhotoCard();
+                    } catch (err) {
+                        console.warn('Profile photo upload failed:', err);
+                        showWarning('Could not save the profile photo to the server. Make sure py/server.py is running.');
+                    }
+                };
+                reader.readAsDataURL(file);
+            }
+
+            function refreshProfilePhotoCard() {
+                const removeLink = document.getElementById('profileRemovePhotoLink');
+                if (removeLink) removeLink.style.display = profileData.photo ? 'inline-flex' : 'none';
+            }
+
+            window.removeProfilePhoto = function() {
+                profileData.photo = null;
+                document.getElementById('profilePhotoPreview').innerHTML =
+                    '<div class="profile-photo-placeholder">👤<div>Click or drag a photo here</div></div>';
+                updateAvatarDisplay();
+                persistProfile();
+                refreshProfilePhotoCard();
+            };
+
+            // Password policy: 8+ chars, 1 upper, 1 lower, 1 digit, 1 special char.
+            function getPasswordPolicyIssues(password) {
+                const issues = [];
+                if (!password || password.length < 8) issues.push('at least 8 characters');
+                if (!/[A-Z]/.test(password)) issues.push('1 uppercase letter');
+                if (!/[a-z]/.test(password)) issues.push('1 lowercase letter');
+                if (!/[0-9]/.test(password)) issues.push('1 numeric digit');
+                if (!/[^A-Za-z0-9]/.test(password)) issues.push('1 special character');
+                return issues;
+            }
+
+            window.saveProfile = function() {
+                const password = document.getElementById('profilePassword').value;
+                const confirmPassword = document.getElementById('profileConfirmPassword').value;
+                let passwordChanged = false;
+
+                if (password || confirmPassword) {
+                    if (password !== confirmPassword) {
+                        showWarning('Password and Confirm Password do not match.');
+                        return;
+                    }
+                    const policyIssues = getPasswordPolicyIssues(password);
+                    if (policyIssues.length > 0) {
+                        showWarning('Password must contain ' + policyIssues.join(', ') + '.');
+                        return;
+                    }
+                    profileData.password = password;
+                    passwordChanged = true;
+                } else {
+                    delete profileData.password;
+                }
+
+                // Snapshot before vs after so the notification/email only
+                // fires when something actually changed (item 11) - saving
+                // the form with no edits shouldn't spam the user.
+                const before = {
+                    firstName: profileData.firstName, lastName: profileData.lastName,
+                    gender: profileData.gender, birthdate: profileData.birthdate,
+                    mobile: profileData.mobile, twoFactorAuth: profileData.twoFactorAuth
+                };
+
+                profileData.firstName = document.getElementById('profileFirstName').value.trim();
+                profileData.lastName = document.getElementById('profileLastName').value.trim();
+                profileData.gender = document.getElementById('profileGender').value;
+                profileData.birthdate = document.getElementById('profileBirthdate').value;
+                profileData.mobile = document.getElementById('profileMobile').value.trim();
+                profileData.twoFactorAuth = document.getElementById('profileTwoFactorAuth').checked ? 'Yes' : 'No';
+
+                const changedFields = Object.keys(before).filter(k => before[k] !== profileData[k]);
+                const detailsChanged = changedFields.length > 0 || passwordChanged;
+
+                userNameDisplay.textContent = profileData.firstName + ' ' + profileData.lastName;
+                MENU_CONFIG.user.name = profileData.firstName + ' ' + profileData.lastName;
+                updateAvatarDisplay();
+                persistProfile();
+                document.getElementById('profilePassword').value = '';
+                document.getElementById('profileConfirmPassword').value = '';
+
+                if (detailsChanged) {
+                    const changeList = changedFields.map(k => _humanizeProfileField(k)).concat(passwordChanged ? ['Password'] : []);
+                    addNotification(`Your profile was updated (${changeList.join(', ')}).`);
+                    if (profileData.email) {
+                        sendGenericNotificationEmail(
+                            profileData.email,
+                            `${profileData.firstName} ${profileData.lastName}`,
+                            'Your profile was updated',
+                            `The following field(s) on your profile were just changed: ${changeList.join(', ')}.\n\n` +
+                            `If you didn't make this change, please contact support right away.`
+                        );
+                    }
+                }
+
+                showMessage('✅ Profile Updated', 'Your profile information has been saved successfully.', ['OK']);
+            };
+
+            function _humanizeProfileField(key) {
+                const labels = {
+                    firstName: 'First Name', lastName: 'Last Name', gender: 'Gender',
+                    birthdate: 'Birthdate', mobile: 'Mobile', twoFactorAuth: '2-Step Verification'
+                };
+                return labels[key] || key;
+            }
+
+            function updateAvatarDisplay() {
+                const avatarImg = document.getElementById('avatarImg');
+                const avatarTextEl = document.getElementById('avatarText');
+                if (profileData.photo) {
+                    avatarImg.src = profileData.photo;
+                    avatarImg.style.display = 'block';
+                    avatarTextEl.style.display = 'none';
+                } else {
+                    avatarImg.style.display = 'none';
+                    avatarTextEl.style.display = 'block';
+                    avatarTextEl.textContent = (profileData.firstName[0] || '') + (profileData.lastName[0] || '');
+                }
+            }
+
+            // ============================================================
+            // 28b. ADMIN FILE MANAGER (Developer/Admin role only)
+            // Browses/manages the real project folder through the
+            // /api/admin/* routes in py/server.py.
+            // ============================================================
+            let adminCurrentPath = '';
+            let adminEntries = [];
+            let adminSelectedPaths = new Set();
+
+            // ============================================================
+            // NOTIFICATIONS (generated e.g. when balance is added)
+            // ============================================================
+            function getMyNotifications() {
+                return notifications.filter(n => n.userId === CURRENT_USER_ID);
+            }
+
+            function addNotification(description) {
+                addNotificationFor(CURRENT_USER_ID, description);
+            }
+
+            // General version - used when the action is taken by one user
+            // (e.g. an admin updating a ticket) but the notification belongs
+            // to a *different* user (the ticket's original owner). `meta`
+            // (optional) carries extra fields like {type, transactionId} so
+            // the notification can render actionable buttons (see
+            // approveBalanceRequest/cancelBalanceRequest).
+            function addNotificationFor(userId, description, meta) {
+                const now = new Date();
+                notifications.push(Object.assign({
+                    id: 'NOTIF' + String(nextNotificationId++).padStart(3, '0'),
+                    userId: userId,
+                    date: now.toISOString().split('T')[0],
+                    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                    description: description,
+                    read: false
+                }, meta || {}));
+                persistNotifications();
+                if (userId === CURRENT_USER_ID) updateNotificationBadge();
+            }
+
+            // Fire-and-forget email via the backend's generic notification
+            // route (/api/send-notification -> _send_notification_email in
+            // py/server.py). Used for support ticket create/update/delete,
+            // API key generate/revoke, and profile-change alerts. Failures
+            // are logged quietly, same pattern as the other email helpers -
+            // a missing/unreachable SMTP server should never block the
+            // action itself.
+            function sendGenericNotificationEmail(toEmail, userName, title, message, tableRows, tableHeaders) {
+                if (!toEmail) return;
+                authFetch('/api/send-notification', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        toEmail: toEmail,
+                        userName: userName || 'there',
+                        title: title,
+                        message: message,
+                        tableRows: tableRows || null,
+                        tableHeaders: tableHeaders || null
+                    })
+                }).catch(e => console.warn('Notification email could not be sent:', e));
+            }
+
+            function updateNotificationBadge() {
+                const badge = document.getElementById('notificationBadge');
+                if (!badge) return;
+                const unread = getMyNotifications().filter(n => !n.read).length;
+                if (unread > 0) {
+                    badge.textContent = unread > 9 ? '9+' : String(unread);
+                    badge.style.display = 'inline-flex';
+                } else {
+                    badge.style.display = 'none';
+                }
+            }
+
+            let selectedNotificationIds = new Set();
+
+            function buildNotificationBody() {
+                return `
+                    <div class="history-card">
+                        <h3>🔔 Notifications</h3>
+                        <div class="card-body">
+                            <table class="history-table" id="notificationTableHeader">
+                                <thead>
+                                    <tr>
+                                        <th style="width:32px;"><input type="checkbox" onchange="toggleNotificationSelectAll(this)" /></th>
+                                        <th>Date &amp; Time</th>
+                                        <th>Description</th>
+                                    </tr>
+                                </thead>
+                            </table>
+                            <div class="history-table-wrapper" id="notificationTableWrapper">
+                                <table class="history-table" id="notificationTable">
+                                    <tbody id="notificationTableBody"></tbody>
+                                </table>
+                            </div>
+                            <div class="support-log-footer-row">
+                                <button class="filter-btn" onclick="bulkMarkNotifications(true)">✅ Mark Read</button>
+                                <button class="filter-btn reset-btn" onclick="bulkMarkNotifications(false)">📩 Mark Unread</button>
+                                <button class="filter-btn delete-btn" onclick="bulkRemoveNotifications()">🗑️ Remove</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function renderNotificationTable() {
+                const tbody = document.getElementById('notificationTableBody');
+                if (!tbody) return;
+                const mine = [...getMyNotifications()].sort((a, b) => new Date(b.date + ' ' + b.time) - new Date(a.date + ' ' + a.time));
+
+                if (mine.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No notifications yet.</td></tr>';
+                    updateNotificationBadge();
+                    return;
+                }
+
+                tbody.innerHTML = mine.map(n => {
+                    const needsAction = n.type === 'balance_approval' && !n.handledResult;
+                    const actionsHtml = needsAction ?
+                        `<span class="notification-action-hint">⏳ Action required - click to Approve/Cancel</span>` :
+                        (n.handledResult ? `<span class="notification-handled-tag">${escapeHtml(n.handledResult)}</span>` : '');
+                    return `
+                    <tr class="${n.read ? '' : 'notification-unread'}">
+                        <td onclick="event.stopPropagation();"><input type="checkbox" class="notification-row-check" data-id="${n.id}" ${selectedNotificationIds.has(n.id) ? 'checked' : ''} onchange="toggleNotificationRowCheck('${n.id}', this)" /></td>
+                        <td>${n.date} ${n.time}</td>
+                        <td>
+                            <a class="notification-desc-link" onclick="openNotificationPopup('${n.id}')">${escapeHtml(n.description)}</a>
+                            ${actionsHtml}
+                        </td>
+                    </tr>
+                `;
+                }).join('');
+                updateNotificationBadge();
+            }
+
+            window.toggleNotificationRowCheck = function(id, checkbox) {
+                if (checkbox.checked) selectedNotificationIds.add(id);
+                else selectedNotificationIds.delete(id);
+            };
+
+            window.toggleNotificationSelectAll = function(checkbox) {
+                document.querySelectorAll('.notification-row-check').forEach((cb) => {
+                    cb.checked = checkbox.checked;
+                    if (checkbox.checked) selectedNotificationIds.add(cb.dataset.id);
+                    else selectedNotificationIds.delete(cb.dataset.id);
+                });
+            };
+
+            window.bulkMarkNotifications = function(readValue) {
+                if (selectedNotificationIds.size === 0) {
+                    showWarning('Select at least one notification first.');
+                    return;
+                }
+                notifications.forEach(n => {
+                    if (selectedNotificationIds.has(n.id)) n.read = readValue;
+                });
+                persistNotifications();
+                renderNotificationTable();
+            };
+
+            window.bulkRemoveNotifications = function() {
+                if (selectedNotificationIds.size === 0) {
+                    showWarning('Select at least one notification first.');
+                    return;
+                }
+                notifications = notifications.filter(n => !selectedNotificationIds.has(n.id));
+                selectedNotificationIds.clear();
+                persistNotifications();
+                renderNotificationTable();
+            };
+
+            window.openNotificationPopup = function(id) {
+                const n = notifications.find(x => x.id === id);
+                if (!n) return;
+                if (!n.read) {
+                    n.read = true;
+                    persistNotifications();
+                    renderNotificationTable();
+                }
+                const showActions = n.type === 'balance_approval' && !n.handledResult;
+                const actionsHtml = showActions ? `
+                    <div class="lease-review-actions" style="justify-content:center;margin-top:16px;border-top:1px solid rgba(0,0,139,0.1);padding-top:14px;">
+                        <button class="filter-btn error-link" onclick="cancelBalanceRequest('${n.transactionId}', '${n.id}'); document.getElementById('notificationPopupOverlay').remove();">✖ Cancel</button>
+                        <button class="plan-cta-btn" onclick="approveBalanceRequest('${n.transactionId}', '${n.id}'); document.getElementById('notificationPopupOverlay').remove();">✅ Approve</button>
+                    </div>
+                ` : (n.handledResult ? `<p class="notification-handled-tag" style="display:block;text-align:center;margin-top:12px;">${escapeHtml(n.handledResult)}</p>` : '');
+                const html = `
+                    <div class="admin-modal-overlay" id="notificationPopupOverlay">
+                        <div class="admin-modal-card message-popup-card">
+                            <button class="admin-modal-close" onclick="document.getElementById('notificationPopupOverlay').remove()">✕</button>
+                            <h3 class="admin-modal-title">🔔 Notification</h3>
+                            <p style="font-size:0.75rem;color:rgba(0,0,0,0.5);margin-bottom:10px;">${n.date} ${n.time}</p>
+                            <p style="font-size:0.9rem;line-height:1.6;">${escapeHtml(n.description)}</p>
+                            ${actionsHtml}
+                        </div>
+                    </div>
+                `;
+                const existing = document.getElementById('notificationPopupOverlay');
+                if (existing) existing.remove();
+                document.body.insertAdjacentHTML('beforeend', html);
+            };
+
+            // ============================================================
+            // LEASE ABSTRACTION RULES (json/rules.json workflow)
+            // ============================================================
+            let rulesNewRows = [];
+
+            let rulesActiveTab = 'master';
+            let rulesSelectedApprovedIds = new Set();
+            let rulesSelectedPendingIds = new Set();
+            let rulesLastApproved = [];
+            let rulesLastPending = [];
+
+            // ============================================================
+            // Item 4 - "Test & Compare" admin tool: upload multiple
+            // {original, human output, current output?} lease document
+            // sets (all PDFs) in one go - the backend runs our own
+            // extraction pipeline wherever Current Output wasn't
+            // supplied, then an LLM compares our output against the
+            // human's for each one and proposes new rules straight into
+            // the Update Rules pending queue (duplicates skipped).
+            // ============================================================
+            let _testCompareRows = [];
+
+            window.openTestComparePopup = function() {
+                _testCompareRows = [{ original: null, humanOutput: null, currentOutput: null }];
+                renderTestCompareModal();
+            };
+
+            function renderTestCompareModal() {
+                const rowsHtml = _testCompareRows.map((row, idx) => `
+                    <div class="test-compare-row">
+                        <span class="test-compare-row-num">${idx + 1}</span>
+                        <div class="form-group">
+                            <label>Original Lease (PDF)</label>
+                            <input type="file" accept=".pdf" onchange="testCompareReadFile(event, ${idx}, 'original')" />
+                            ${row.original ? `<span class="test-compare-filename">✓ ${escapeHtml(row.original.name)}</span>` : ''}
+                        </div>
+                        <div class="form-group">
+                            <label>Human Output (PDF)</label>
+                            <input type="file" accept=".pdf" onchange="testCompareReadFile(event, ${idx}, 'humanOutput')" />
+                            ${row.humanOutput ? `<span class="test-compare-filename">✓ ${escapeHtml(row.humanOutput.name)}</span>` : ''}
+                        </div>
+                        <div class="form-group">
+                            <label>Current Output (PDF, optional)</label>
+                            <input type="file" accept=".pdf" onchange="testCompareReadFile(event, ${idx}, 'currentOutput')" />
+                            ${row.currentOutput ? `<span class="test-compare-filename">✓ ${escapeHtml(row.currentOutput.name)}</span>` : ''}
+                        </div>
+                        ${_testCompareRows.length > 1 ? `<span class="admin-action-icon delete" onclick="removeTestCompareRow(${idx})">🗑️</span>` : ''}
+                    </div>
+                `).join('');
+
+                const html = `
+                    <div class="admin-modal-overlay" id="testCompareOverlay">
+                        <div class="admin-modal-card admin-multi-table-modal">
+                            <button class="admin-modal-close" onclick="document.getElementById('testCompareOverlay').remove()">✕</button>
+                            <h3 class="admin-modal-title">🧪 Test &amp; Compare</h3>
+                            <p style="font-size:0.78rem;color:rgba(0,0,0,0.55);margin-bottom:14px;">
+                                Upload up to 10 leases: the original document, a human-reviewed "ideal" Output.pdf, and
+                                optionally our own already-generated Output.pdf. Skip Current Output to run a fresh
+                                extraction instead. Process compares each pair via LLM and proposes new rules straight
+                                into the Update Rules pending queue wherever our output falls short of the human's.
+                            </p>
+                            <div class="payment-form" id="testCompareRowsContainer">${rowsHtml}</div>
+                            <div class="lease-review-actions">
+                                ${_testCompareRows.length < 10 ? `<button class="filter-btn" onclick="addTestCompareRow()">+ Add Another Lease</button>` : ''}
+                                <button class="plan-cta-btn" onclick="runTestCompare()">▶ Process</button>
+                            </div>
+                            <div id="testCompareResults"></div>
+                        </div>
+                    </div>
+                `;
+                const existing = document.getElementById('testCompareOverlay');
+                if (existing) existing.remove();
+                document.body.insertAdjacentHTML('beforeend', html);
+            }
+
+            window.addTestCompareRow = function() {
+                if (_testCompareRows.length >= 10) return;
+                _testCompareRows.push({ original: null, humanOutput: null, currentOutput: null });
+                renderTestCompareModal();
+            };
+
+            window.removeTestCompareRow = function(idx) {
+                _testCompareRows.splice(idx, 1);
+                renderTestCompareModal();
+            };
+
+            window.testCompareReadFile = function(event, idx, kind) {
+                const file = event.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    _testCompareRows[idx][kind] = { name: file.name, dataBase64: e.target.result.split(',')[1] };
+                };
+                reader.readAsDataURL(file);
+            };
+
+            window.runTestCompare = async function() {
+                const resultsEl = document.getElementById('testCompareResults');
+                const validRows = _testCompareRows.filter(r => r.original && r.humanOutput);
+                if (validRows.length === 0) {
+                    showWarning('Each lease needs at least the Original document and Human Output uploaded.');
+                    return;
+                }
+                resultsEl.innerHTML = '<p style="text-align:center;padding:20px;">⏳ Processing - this can take a little while per lease (real extraction + LLM comparison)...</p>';
+                try {
+                    const items = validRows.map(r => ({
+                        originalName: r.original.name, originalBase64: r.original.dataBase64,
+                        humanOutputName: r.humanOutput.name, humanOutputBase64: r.humanOutput.dataBase64,
+                        ...(r.currentOutput ? { currentOutputName: r.currentOutput.name, currentOutputBase64: r.currentOutput.dataBase64 } : {}),
+                    }));
+                    const res = await authFetch('/api/admin/test-compare', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId: CURRENT_USER_ID, items })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Comparison failed.');
+
+                    const rows = data.results.map(r => r.ok ? `
+                        <tr>
+                            <td>${escapeHtml(r.label)}</td>
+                            <td style="color:${r.similarity >= 85 ? '#27ae60' : r.similarity >= 65 ? '#e67e22' : '#c0392b'};font-weight:600;">${r.similarity}%</td>
+                            <td>${escapeHtml(r.currentOutputSource)}</td>
+                            <td>${r.rulesProposed > 0 ? `✨ ${r.rulesProposed} new rule(s) proposed` : 'No new rules needed'}</td>
+                        </tr>
+                    ` : `
+                        <tr>
+                            <td>${escapeHtml(r.label)}</td>
+                            <td colspan="3" style="color:#c0392b;">${escapeHtml(r.error)}</td>
+                        </tr>
+                    `).join('');
+
+                    resultsEl.innerHTML = `
+                        <div class="admin-json-table-wrapper" style="max-height:320px;margin-top:16px;">
+                            <table class="admin-json-table">
+                                <thead><tr><th>Lease</th><th>Similarity</th><th>Current Output Source</th><th>Rules</th></tr></thead>
+                                <tbody>${rows}</tbody>
+                            </table>
+                        </div>
+                        <p style="font-size:0.78rem;color:rgba(0,0,0,0.5);margin-top:10px;">Any proposed rules are now waiting in Update Rules &gt; Pending Approval.</p>
+                    `;
+                } catch (err) {
+                    resultsEl.innerHTML = `<p style="color:#c0392b;text-align:center;padding:20px;">${escapeHtml(err.message)}</p>`;
+                }
+            };
+
+            window.openRulesPopup = async function() {
+                try {
+                    const res = await authFetch('/api/rules/list');
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not load rules.');
+                    rulesNewRows = [];
+                    rulesActiveTab = 'master';
+                    rulesSelectedApprovedIds = new Set();
+                    rulesSelectedPendingIds = new Set();
+                    renderRulesPopupHTML(data.approved || [], data.pending || []);
+                } catch (err) {
+                    showWarning(err.message || 'Could not load rules. Make sure py/server.py is running.');
+                }
+            };
+
+            window.switchRulesTab = function(tab) {
+                rulesActiveTab = tab;
+                renderRulesPopupHTML(rulesLastApproved, rulesLastPending);
+            };
+
+            window.toggleRuleRowSelect = function(section, id, checked) {
+                const set = section === 'approved' ? rulesSelectedApprovedIds : rulesSelectedPendingIds;
+                if (checked) set.add(id); else set.delete(id);
+            };
+
+            window.toggleRuleSelectAll = function(section, checked) {
+                const rows = document.querySelectorAll(`.rule-select-check[data-section="${section}"]`);
+                const set = section === 'approved' ? rulesSelectedApprovedIds : rulesSelectedPendingIds;
+                rows.forEach(cb => {
+                    cb.checked = checked;
+                    if (checked) set.add(cb.getAttribute('data-id')); else set.delete(cb.getAttribute('data-id'));
+                });
+            };
+
+            function renderRulesPopupHTML(approved, pending) {
+                rulesLastApproved = approved;
+                rulesLastPending = pending;
+                const isAdminOrDev = isAdminOrDeveloper();
+                const myPending = pending.filter(r => r.userId === CURRENT_USER_ID);
+                const pendingList = isAdminOrDev ? pending : myPending;
+
+                const sourceBadge = (r) => r.source === 'auto-discovered' ?
+                    ' <span class="rule-auto-badge" title="Proposed automatically by the system after processing a lease">🤖 Auto-discovered</span>' :
+                    r.source === 'claude-suggested' ?
+                    ' <span class="rule-auto-badge claude-badge" title="Suggested by Claude as a gap in the extraction schema, not tied to any specific document">✨ Claude-suggested</span>' :
+                    r.source === 'rules_review.xlsx' ?
+                    ' <span class="rule-auto-badge claude-badge" title="Reviewed and proposed from an uploaded rules_review.xlsx accuracy analysis">📊 From Rules Review</span>' : '';
+
+                // ---- Master Rules tab ----
+                const approvedRows = approved.map(r => `
+                    <tr>
+                        <td><input type="checkbox" class="rule-select-check" data-section="approved" data-id="${r.id}" ${rulesSelectedApprovedIds.has(r.id) ? 'checked' : ''} onchange="toggleRuleRowSelect('approved', '${r.id}', this.checked)" /></td>
+                        <td>${escapeHtml(r.id)}</td>
+                        <td>${isAdminOrDev ? `<input type="text" class="admin-json-cell-input" value="${escapeHtml(r.fieldId)}" data-rule-id="${r.id}" data-field="fieldId" />` : escapeHtml(r.fieldId)}</td>
+                        <td>${isAdminOrDev ? `
+                            <select data-rule-id="${r.id}" data-field="ruleType">
+                                <option value="mapping" ${r.ruleType === 'mapping' ? 'selected' : ''}>mapping</option>
+                                <option value="validation" ${r.ruleType === 'validation' ? 'selected' : ''}>validation</option>
+                                <option value="formatting" ${r.ruleType === 'formatting' ? 'selected' : ''}>formatting</option>
+                                <option value="logic" ${r.ruleType === 'logic' ? 'selected' : ''}>logic</option>
+                                <option value="style" ${r.ruleType === 'style' ? 'selected' : ''}>style</option>
+                            </select>
+                        ` : escapeHtml(r.ruleType)}</td>
+                        <td>${isAdminOrDev ? `<input type="text" class="admin-json-cell-input" value="${escapeHtml(r.ruleText)}" data-rule-id="${r.id}" data-field="ruleText" />` : escapeHtml(r.ruleText)}${sourceBadge(r)}</td>
+                        <td>${escapeHtml(r.userId || '')}</td>
+                    </tr>
+                `).join('');
+
+                const newRuleRows = rulesNewRows.map((r, idx) => `
+                    <tr class="rules-new-row">
+                        <td></td>
+                        <td><em>(new)</em></td>
+                        <td><input type="text" class="admin-json-cell-input" placeholder="e.g. tenant_legal_name" value="${escapeHtml(r.fieldId)}" onchange="updateNewRuleField(${idx}, 'fieldId', this.value)" /></td>
+                        <td>
+                            <select onchange="updateNewRuleField(${idx}, 'ruleType', this.value)">
+                                <option value="mapping" ${r.ruleType === 'mapping' ? 'selected' : ''}>mapping</option>
+                                <option value="validation" ${r.ruleType === 'validation' ? 'selected' : ''}>validation</option>
+                                <option value="formatting" ${r.ruleType === 'formatting' ? 'selected' : ''}>formatting</option>
+                            </select>
+                        </td>
+                        <td><input type="text" class="admin-json-cell-input" placeholder="Describe where/how to extract this field..." value="${escapeHtml(r.ruleText)}" onchange="updateNewRuleField(${idx}, 'ruleText', this.value)" /></td>
+                        <td><span class="admin-action-icon delete" onclick="removeNewRuleRow(${idx})">🗑️</span></td>
+                    </tr>
+                `).join('');
+
+                const masterButtonsHtml = isAdminOrDev ? `
+                    <div class="rules-tab-actions">
+                        <button class="admin-btn admin-btn-add-file" onclick="addNewRuleRow()">+ Add</button>
+                        <button class="admin-btn admin-btn-save" onclick="saveMasterRuleEdits()">💾 Save</button>
+                        <button class="admin-btn admin-btn-delete" onclick="deleteSelectedApprovedRules()">🗑️ Delete Selected</button>
+                    </div>
+                ` : '';
+
+                // ---- Pending Approval tab ----
+                const pendingRows = pendingList.map(r => `
+                    <tr>
+                        <td><input type="checkbox" class="rule-select-check" data-section="pending" data-id="${r.id}" ${rulesSelectedPendingIds.has(r.id) ? 'checked' : ''} onchange="toggleRuleRowSelect('pending', '${r.id}', this.checked)" /></td>
+                        <td>${escapeHtml(r.id)}</td>
+                        <td>${escapeHtml(r.fieldId)}</td>
+                        <td>${escapeHtml(r.ruleType)}</td>
+                        <td>${escapeHtml(r.ruleText)}${sourceBadge(r)}</td>
+                        <td>${escapeHtml(r.userId || '')}</td>
+                    </tr>
+                `).join('');
+
+                const pendingButtonsHtml = isAdminOrDev ? `
+                    <div class="rules-tab-actions">
+                        <button class="admin-btn admin-btn-save" onclick="approveSelectedPendingRules()">✅ Approve Selected</button>
+                        <button class="admin-btn admin-btn-delete" onclick="rejectSelectedPendingRules()">✖ Reject Selected</button>
+                    </div>
+                ` : `
+                    <div class="rules-tab-actions">
+                        <button class="admin-btn admin-btn-add-file" onclick="addNewRuleRow()">+ Add</button>
+                        <button class="admin-btn admin-btn-delete" onclick="deleteSelectedPendingRules()">🗑️ Delete Selected</button>
+                    </div>
+                `;
+
+                const html = `
+                    <div class="admin-modal-overlay" id="rulesPopupOverlay">
+                        <div class="admin-modal-card admin-multi-table-modal">
+                            <button class="admin-modal-close" onclick="document.getElementById('rulesPopupOverlay').remove()">✕</button>
+                            <h3 class="admin-modal-title">📐 Lease Abstraction Rules</h3>
+                            <p style="font-size:0.78rem;color:rgba(0,0,0,0.55);margin-bottom:10px;">
+                                All master rules belong to the Developer account. New rules go into "Pending Approval" and
+                                only take effect once an Admin or Developer approves them.
+                            </p>
+
+                            <div class="rules-tab-strip">
+                                <button class="rules-tab-btn ${rulesActiveTab === 'master' ? 'active' : ''}" onclick="switchRulesTab('master')">
+                                    Master Rules <span class="admin-section-count">(${approved.length})</span>
+                                </button>
+                                <button class="rules-tab-btn ${rulesActiveTab === 'pending' ? 'active' : ''}" onclick="switchRulesTab('pending')">
+                                    Pending Approval <span class="admin-section-count">(${pendingList.length})</span>
+                                </button>
+                            </div>
+
+                            ${rulesActiveTab === 'master' ? `
+                                <div class="admin-json-table-wrapper admin-section-table" style="max-height:380px;">
+                                    <table class="admin-json-table">
+                                        <thead><tr>
+                                            <th style="width:30px;"><input type="checkbox" onchange="toggleRuleSelectAll('approved', this.checked)" /></th>
+                                            <th>ID</th><th>Field ID</th><th>Type</th><th>Rule Text</th><th>Owner</th>
+                                        </tr></thead>
+                                        <tbody>${newRuleRows}${approvedRows}</tbody>
+                                    </table>
+                                </div>
+                                ${masterButtonsHtml}
+                            ` : `
+                                <div class="admin-json-table-wrapper admin-section-table" style="max-height:380px;">
+                                    <table class="admin-json-table">
+                                        <thead><tr>
+                                            <th style="width:30px;"><input type="checkbox" onchange="toggleRuleSelectAll('pending', this.checked)" /></th>
+                                            <th>ID</th><th>Field ID</th><th>Type</th><th>Rule Text</th><th>Proposed By</th>
+                                        </tr></thead>
+                                        <tbody>${pendingRows || '<tr><td colspan="6" style="text-align:center;">No pending rules.</td></tr>'}</tbody>
+                                    </table>
+                                </div>
+                                ${pendingButtonsHtml}
+                            `}
+
+                            <div class="admin-modal-actions">
+                                <button class="admin-modal-cancel" onclick="document.getElementById('rulesPopupOverlay').remove()">Close</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                const existing = document.getElementById('rulesPopupOverlay');
+                if (existing) existing.remove();
+                document.body.insertAdjacentHTML('beforeend', html);
+            }
+
+            window.addNewRuleRow = function() {
+                if (rulesActiveTab === 'pending' && !isAdminOrDeveloper()) {
+                    // Regular user's "+ Add" on the Pending tab proposes a
+                    // brand-new rule directly (goes to /api/rules/propose,
+                    // same as before) - reuse the same inline-new-row UI.
+                }
+                rulesNewRows.push({ fieldId: '', ruleType: 'mapping', ruleText: '' });
+                renderRulesPopupHTML(rulesLastApproved, rulesLastPending);
+            };
+
+            window.updateNewRuleField = function(idx, key, value) {
+                if (rulesNewRows[idx]) rulesNewRows[idx][key] = value;
+            };
+
+            window.removeNewRuleRow = function(idx) {
+                rulesNewRows.splice(idx, 1);
+                renderRulesPopupHTML(rulesLastApproved, rulesLastPending);
+            };
+
+            async function refreshRulesPopup() {
+                try {
+                    const res = await authFetch('/api/rules/list');
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not load rules.');
+                    renderRulesPopupHTML(data.approved || [], data.pending || []);
+                } catch (err) {
+                    showWarning(err.message || 'Could not refresh rules.');
+                }
+            }
+
+            window.submitNewRuleRows = async function() {
+                const validRows = rulesNewRows.filter(r => r.fieldId.trim() && r.ruleText.trim());
+                if (validRows.length === 0) {
+                    showWarning('Fill in at least Field ID and Rule Text for each new row before submitting.');
+                    return;
+                }
+                try {
+                    for (const row of validRows) {
+                        const res = await authFetch('/api/rules/propose', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ userId: CURRENT_USER_ID, fieldId: row.fieldId.trim(), ruleType: row.ruleType, ruleText: row.ruleText.trim() })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error || 'Could not submit a rule.');
+                    }
+                    rulesNewRows = [];
+                    showMessage('✅ Submitted', `${validRows.length} new rule(s) submitted and pending approval.`, ['OK']);
+                    rulesActiveTab = 'pending';
+                    refreshRulesPopup();
+                } catch (err) {
+                    showWarning(err.message || 'Could not submit the new rules.');
+                }
+            };
+
+            // ---- Item 1: Master Rules tab actions (Admin/Developer only) ----
+            window.saveMasterRuleEdits = async function() {
+                // New rows (added via "+ Add") get submitted as fresh
+                // proposals - Master Rules edits never bypass the approval
+                // queue, even for Admin/Developer, so those still land in
+                // Pending first.
+                if (rulesNewRows.some(r => r.fieldId.trim() && r.ruleText.trim())) {
+                    await submitNewRuleRows();
+                }
+                const inputs = document.querySelectorAll('#rulesPopupOverlay [data-rule-id]');
+                const byRule = {};
+                inputs.forEach(el => {
+                    const id = el.getAttribute('data-rule-id');
+                    const field = el.getAttribute('data-field');
+                    byRule[id] = byRule[id] || { id };
+                    byRule[id][field] = el.value;
+                });
+                const updates = Object.values(byRule);
+                if (updates.length === 0) return;
+                try {
+                    const res = await authFetch('/api/rules/update-approved', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ updates })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not save changes.');
+                    showMessage('✅ Saved', `${data.updated} rule(s) updated.`, ['OK']);
+                    refreshRulesPopup();
+                } catch (err) {
+                    showWarning(err.message || 'Could not save changes.');
+                }
+            };
+
+            window.deleteSelectedApprovedRules = async function() {
+                if (rulesSelectedApprovedIds.size === 0) { showWarning('Select at least one Master Rule row first.'); return; }
+                showConfirm('🗑️ Delete Rules', `Delete ${rulesSelectedApprovedIds.size} selected Master Rule(s)? This cannot be undone.`, async (confirmed) => {
+                    if (!confirmed) return;
+                    try {
+                        const res = await authFetch('/api/rules/delete-approved', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ruleIds: Array.from(rulesSelectedApprovedIds) })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error || 'Could not delete.');
+                        rulesSelectedApprovedIds.clear();
+                        refreshRulesPopup();
+                    } catch (err) {
+                        showWarning(err.message || 'Could not delete the selected rules.');
+                    }
+                });
+            };
+
+            // ---- Item 1: Pending Approval tab actions ----
+            window.deleteSelectedPendingRules = async function() {
+                if (rulesSelectedPendingIds.size === 0) { showWarning('Select at least one pending rule row first.'); return; }
+                showConfirm('🗑️ Delete', `Delete ${rulesSelectedPendingIds.size} selected pending rule(s)?`, async (confirmed) => {
+                    if (!confirmed) return;
+                    try {
+                        const res = await authFetch('/api/rules/delete-pending', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ userId: CURRENT_USER_ID, ruleIds: Array.from(rulesSelectedPendingIds) })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error || 'Could not delete.');
+                        rulesSelectedPendingIds.clear();
+                        refreshRulesPopup();
+                    } catch (err) {
+                        showWarning(err.message || 'Could not delete the selected rules.');
+                    }
+                });
+            };
+
+            window.approveSelectedPendingRules = async function() {
+                if (rulesSelectedPendingIds.size === 0) { showWarning('Select at least one pending rule row first.'); return; }
+                try {
+                    for (const ruleId of rulesSelectedPendingIds) {
+                        await authFetch('/api/rules/approve', {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ruleId })
+                        });
+                    }
+                    rulesSelectedPendingIds.clear();
+                    showMessage('✅ Approved', 'The selected rule(s) are now part of Master Rules.', ['OK']);
+                    refreshRulesPopup();
+                } catch (err) {
+                    showWarning(err.message || 'Could not approve the selected rules.');
+                }
+            };
+
+            window.rejectSelectedPendingRules = async function() {
+                if (rulesSelectedPendingIds.size === 0) { showWarning('Select at least one pending rule row first.'); return; }
+                try {
+                    for (const ruleId of rulesSelectedPendingIds) {
+                        await authFetch('/api/rules/reject', {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ruleId })
+                        });
+                    }
+                    rulesSelectedPendingIds.clear();
+                    showMessage('✖ Rejected', 'The selected rule(s) have been rejected.', ['OK']);
+                    refreshRulesPopup();
+                } catch (err) {
+                    showWarning(err.message || 'Could not reject the selected rules.');
+                }
+            };
+
+
+            window.approveRule = async function(ruleId) {
+                try {
+                    const res = await authFetch('/api/rules/approve', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ruleId })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not approve the rule.');
+                    refreshRulesPopup();
+                } catch (err) {
+                    showWarning(err.message || 'Could not approve the rule.');
+                }
+            };
+
+            window.rejectRule = async function(ruleId) {
+                try {
+                    const res = await authFetch('/api/rules/reject', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ruleId })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not reject the rule.');
+                    refreshRulesPopup();
+                } catch (err) {
+                    showWarning(err.message || 'Could not reject the rule.');
+                }
+            };
+
+            function buildAdminFilesBody() {
+                return `
+                    <div class="admin-files-card">
+                        <div class="admin-files-header">
+                            <h3>📁 Files and Folder</h3>
+                        </div>
+                        <div class="admin-toolbar">
+                            <button class="admin-btn admin-btn-add-file" onclick="document.getElementById('adminFileInput').click()">📄 Add File</button>
+                            <button class="admin-btn admin-btn-add-folder" onclick="adminAddFolder()">📁 Add Folder</button>
+                            <button class="admin-btn admin-btn-delete" onclick="adminDeleteSelected()">🗑️ Delete</button>
+                            <button class="admin-btn admin-btn-download" onclick="adminDownloadSelected()">⬇️ Download</button>
+                            <input type="file" id="adminFileInput" style="display:none;" onchange="adminUploadFile(event)" />
+                        </div>
+                        <div class="admin-breadcrumb" id="adminBreadcrumb"></div>
+                        <div class="admin-table-wrapper">
+                            <table class="admin-table">
+                                <thead>
+                                    <tr>
+                                        <th><input type="checkbox" id="adminSelectAll" onchange="adminToggleSelectAll(this)" /></th>
+                                        <th>Name</th>
+                                        <th>Type</th>
+                                        <th>Size</th>
+                                        <th>Modified</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="adminTableBody">
+                                    <tr><td colspan="6" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">Loading…</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function buildAdminBreadcrumb(path) {
+                const parts = path ? path.split('/') : [];
+                let acc = '';
+                let html = `<span class="admin-crumb" onclick="loadAdminDirectory('')">🗄️ Root</span>`;
+                parts.forEach((part) => {
+                    acc = acc ? acc + '/' + part : part;
+                    html += ` <span class="admin-crumb-sep">/</span> <span class="admin-crumb" onclick="loadAdminDirectory('${acc.replace(/'/g, "\\'")}')">${part}</span>`;
+                });
+                return html;
+            }
+
+            window.loadAdminDirectory = async function(path) {
+                adminCurrentPath = path || '';
+                adminSelectedPaths = new Set();
+                const tbody = document.getElementById('adminTableBody');
+                const breadcrumb = document.getElementById('adminBreadcrumb');
+                if (breadcrumb) breadcrumb.innerHTML = buildAdminBreadcrumb(adminCurrentPath);
+                if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">Loading…</td></tr>`;
+
+                try {
+                    const res = await authFetch('/api/admin/list?path=' + encodeURIComponent(adminCurrentPath));
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not load folder');
+                    adminEntries = data.entries || [];
+                    renderAdminTable();
+                } catch (err) {
+                    console.error('Admin file list failed:', err);
+                    if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px;color:#c0392b;">Could not load this folder. Make sure py/server.py is running.</td></tr>`;
+                }
+            };
+
+            function renderAdminTable() {
+                const tbody = document.getElementById('adminTableBody');
+                if (!tbody) return;
+
+                if (adminEntries.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">This folder is empty.</td></tr>`;
+                    return;
+                }
+
+                tbody.innerHTML = adminEntries.map((entry) => {
+                    const icon = entry.type === 'dir' ? '📁' : '📄';
+                    const nameCell = entry.type === 'dir' ?
+                        `<a class="admin-name-link" onclick="loadAdminDirectory('${entry.path.replace(/'/g, "\\'")}')">${icon} ${entry.name}</a>` :
+                        `<a class="admin-name-link" onclick="adminOpenFile('${entry.path.replace(/'/g, "\\'")}')">${icon} ${entry.name}</a>`;
+                    const downloadBtn = entry.type === 'file' ?
+                        (entry.downloadBlocked ?
+                            `<span class="admin-action-icon disabled" title="Protected file">🔒</span>` :
+                            `<span class="admin-action-icon" title="Download" onclick="adminDownloadOne('${entry.path.replace(/'/g, "\\'")}')">⬇️</span>`) :
+                        '';
+                    return `
+                        <tr>
+                            <td><input type="checkbox" class="admin-row-check" data-path="${entry.path}" onchange="adminToggleSelectOne('${entry.path.replace(/'/g, "\\'")}', this)" /></td>
+                            <td class="admin-name-cell">${nameCell}</td>
+                            <td><span class="admin-type-badge">${entry.typeLabel}</span></td>
+                            <td>${entry.sizeLabel || '—'}</td>
+                            <td>${entry.modified || '—'}</td>
+                            <td class="admin-actions-cell">
+                                ${downloadBtn}
+                                <span class="admin-action-icon delete" title="Delete" onclick="adminDeleteOne('${entry.path.replace(/'/g, "\\'")}')">🗑️</span>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            window.adminToggleSelectOne = function(path, checkbox) {
+                if (checkbox.checked) adminSelectedPaths.add(path);
+                else adminSelectedPaths.delete(path);
+            };
+
+            window.adminToggleSelectAll = function(checkbox) {
+                document.querySelectorAll('.admin-row-check').forEach((cb) => {
+                    cb.checked = checkbox.checked;
+                    if (checkbox.checked) adminSelectedPaths.add(cb.dataset.path);
+                    else adminSelectedPaths.delete(cb.dataset.path);
+                });
+            };
+
+            window.adminAddFolder = function() {
+                const name = prompt('New folder name:');
+                if (!name || !name.trim()) return;
+                authFetch('/api/admin/mkdir', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: adminCurrentPath, name: name.trim() })
+                }).then(async (res) => {
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not create folder');
+                    loadAdminDirectory(adminCurrentPath);
+                }).catch((err) => showWarning(err.message || 'Could not create folder.'));
+            };
+
+            window.adminUploadFile = function(event) {
+                const file = event.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = async function(e) {
+                    const dataBase64 = e.target.result.split(',')[1];
+                    try {
+                        const res = await authFetch('/api/admin/upload', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ path: adminCurrentPath, fileName: file.name, dataBase64: dataBase64 })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error || 'Upload failed');
+                        loadAdminDirectory(adminCurrentPath);
+                    } catch (err) {
+                        showWarning(err.message || 'Could not upload file.');
+                    }
+                };
+                reader.readAsDataURL(file);
+                event.target.value = '';
+            };
+
+            window.adminDeleteOne = function(path) {
+                showConfirm('🗑️ Delete', `Are you sure you want to delete "${path.split('/').pop()}"? This cannot be undone.`, function(confirmed) {
+                    if (!confirmed) return;
+                    adminDeletePaths([path]);
+                });
+            };
+
+            window.adminDeleteSelected = function() {
+                const paths = Array.from(adminSelectedPaths);
+                if (paths.length === 0) { showWarning('Select at least one file or folder first.'); return; }
+                showConfirm('🗑️ Delete Selected', `Delete ${paths.length} selected item(s)? This cannot be undone.`, function(confirmed) {
+                    if (!confirmed) return;
+                    adminDeletePaths(paths);
+                });
+            };
+
+            function adminDeletePaths(paths) {
+                authFetch('/api/admin/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ paths: paths })
+                }).then(async (res) => {
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Delete failed');
+                    if (data.failed && data.failed.length > 0) {
+                        showWarning('Some items could not be deleted: ' + data.failed.map(f => f.path + ' (' + f.error + ')').join(', '));
+                    }
+                    loadAdminDirectory(adminCurrentPath);
+                }).catch((err) => showWarning(err.message || 'Could not delete.'));
+            }
+
+            window.adminDownloadOne = function(path) {
+                window.open('/api/admin/download?path=' + encodeURIComponent(path) + '&token=' + encodeURIComponent(AUTH_TOKEN || ''), '_blank');
+            };
+
+            window.adminDownloadSelected = function() {
+                const paths = Array.from(adminSelectedPaths);
+                const fileEntry = adminEntries.find(e => paths.includes(e.path) && e.type === 'file');
+                const onlyFiles = paths.every(p => {
+                    const entry = adminEntries.find(e => e.path === p);
+                    return entry && entry.type === 'file';
+                });
+                if (paths.length === 0) { showWarning('Select at least one file first.'); return; }
+                if (!onlyFiles) { showWarning('Folders can\'t be downloaded directly - please select individual files.'); return; }
+                paths.forEach(p => window.open('/api/admin/download?path=' + encodeURIComponent(p) + '&token=' + encodeURIComponent(AUTH_TOKEN || ''), '_blank'));
+            };
+
+            // ---- File name click -> view/edit modal (JSON as table, text as editor) ----
+            let adminTableEditorState = { path: null, mode: null, columns: [], rows: [], selected: new Set() };
+
+            window.adminOpenFile = async function(path) {
+                try {
+                    const res = await authFetch('/api/admin/read?path=' + encodeURIComponent(path));
+                    const data = await res.json();
+                    if (!res.ok) {
+                        showWarning(res.status === 415 ?
+                            'This file type can\'t be previewed here - use the download icon instead.' :
+                            (data.error || 'Could not open this file.'));
+                        return;
+                    }
+
+                    if (data.isJson) {
+                        let parsed = null;
+                        try { parsed = JSON.parse(data.content); } catch (e) { parsed = null; }
+
+                        if (Array.isArray(parsed)) {
+                            const allFlatObjects = parsed.every(item => item && typeof item === 'object' && !Array.isArray(item));
+                            if (allFlatObjects) {
+                                openAdminModal(buildJsonArrayTableModalHTML(path, parsed, 'array'));
+                                return;
+                            }
+                        } else if (parsed && typeof parsed === 'object') {
+                            // Smart multi-table view: any nested array-of-objects
+                            // (one level of nesting deep) gets extracted into its
+                            // own proper table instead of showing as a JSON blob
+                            // in a single cell - e.g. rules.json's "approved"
+                            // list, agents.json's
+                            // "openai.keys"/"openrouter.keys", agents.json's
+                            // "lease-abstraction"/"translation", menu-config.json's
+                            // "mainMenu"/"profileMenu". A "dict of same-shaped
+                            // sub-objects" (like messages.json's success/warning/
+                            // error/confirm/info) is treated as a virtual array -
+                            // each key becomes a row.
+                            openAdminModal(buildJsonMultiTableModalHTML(path, parsed));
+                            return;
+                        }
+                    }
+                    openAdminModal(buildTextEditorModalHTML(path, data.content));
+                } catch (err) {
+                    showWarning('Could not open this file. Make sure py/server.py is running.');
+                }
+            };
+
+            function openAdminModal(html) {
+                const existing = document.getElementById('adminFileModalOverlay');
+                if (existing) existing.remove();
+                document.body.insertAdjacentHTML('beforeend', html);
+            }
+
+            window.adminCloseFileModal = function() {
+                const overlay = document.getElementById('adminFileModalOverlay');
+                if (overlay) overlay.remove();
+                adminTableEditorState = { path: null, mode: null, rootType: 'array', columns: [], rows: [], selected: new Set(), generalRows: [], sections: [] };
+            };
+
+            function buildTextEditorModalHTML(path, content) {
+                const fileName = path.split('/').pop();
+                return `
+                    <div class="admin-modal-overlay" id="adminFileModalOverlay">
+                        <div class="admin-modal-card admin-text-modal">
+                            <button class="admin-modal-close" onclick="adminCloseFileModal()">✕</button>
+                            <div class="admin-modal-icon">📝</div>
+                            <h3 class="admin-modal-title">✏️ ${escapeHtml(fileName)}</h3>
+                            <textarea id="adminFileEditorTextarea" class="admin-text-editor" spellcheck="false">${escapeHtml(content)}</textarea>
+                            <div class="admin-modal-path">📄 ${escapeHtml(path)}</div>
+                            <div class="admin-modal-actions">
+                                <button class="admin-modal-save" onclick="adminSaveFile('${path.replace(/'/g, "\\'")}', 'text')">💾 Save</button>
+                                <button class="admin-modal-cancel" onclick="adminCloseFileModal()">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // ---- Array-of-objects JSON (e.g. payment-methods.json) AND
+            // single-object JSON (e.g. rules.json, agents.json,
+            // agents.json) - the latter is rendered as a one-row table, its
+            // keys becoming the column headers (see adminOpenFile above). ----
+            // ---- Smart structure analysis for object-root JSON ----
+            function isDictOfObjects(obj) {
+                const values = Object.values(obj);
+                return values.length > 0 && values.every(v => v !== null && typeof v === 'object' && !Array.isArray(v));
+            }
+
+            function analyzeJsonObject(obj) {
+                if (isDictOfObjects(obj)) {
+                    // e.g. messages.json: {success:{...}, warning:{...}, ...} -
+                    // each top-level key becomes one row, with a locked "_key"
+                    // column identifying which key it came from.
+                    const rows = Object.entries(obj).map(([k, v]) => Object.assign({ _key: k }, v));
+                    return { virtualArray: rows };
+                }
+
+                const generalRows = [];
+                const sections = [];
+
+                Object.keys(obj).forEach((key) => {
+                    const val = obj[key];
+                    if (Array.isArray(val)) {
+                        sections.push({ title: key, items: val });
+                    } else if (val !== null && typeof val === 'object') {
+                        let hasNestedArray = false;
+                        Object.keys(val).forEach((subKey) => {
+                            if (Array.isArray(val[subKey])) {
+                                sections.push({ title: key + '.' + subKey, items: val[subKey] });
+                                hasNestedArray = true;
+                            }
+                        });
+                        Object.keys(val).forEach((subKey) => {
+                            if (!Array.isArray(val[subKey])) {
+                                generalRows.push({ key: key + '.' + subKey, value: val[subKey] });
+                            }
+                        });
+                    } else {
+                        generalRows.push({ key: key, value: val });
+                    }
+                });
+
+                return { generalRows, sections };
+            }
+
+            function buildJsonMultiTableModalHTML(path, obj) {
+                const analysis = analyzeJsonObject(obj);
+
+                if (analysis.virtualArray) {
+                    const rows = analysis.virtualArray;
+                    const columns = [];
+                    rows.forEach(r => Object.keys(r).forEach(k => { if (!columns.includes(k)) columns.push(k); }));
+                    adminTableEditorState = {
+                        path, mode: 'multi-virtual', rootType: 'multi-virtual',
+                        columns, rows: JSON.parse(JSON.stringify(rows)), selected: new Set()
+                    };
+                    return `
+                        <div class="admin-modal-overlay" id="adminFileModalOverlay">
+                            <div class="admin-modal-card admin-table-modal">
+                                <button class="admin-modal-close" onclick="adminCloseFileModal()">✕</button>
+                                <h3 class="admin-modal-title">${escapeHtml(path.split('/').pop())}</h3>
+                                <div class="admin-json-table-wrapper">
+                                    <table class="admin-json-table" id="adminJsonTable">${buildJsonArrayTableInnerHTML()}</table>
+                                </div>
+                                <div class="admin-modal-actions admin-json-actions">
+                                    <div class="admin-json-actions-left">
+                                        <button class="admin-btn admin-btn-add-file" onclick="adminJsonAddRow()">+ Add Row</button>
+                                        <button class="admin-btn admin-btn-delete" onclick="adminJsonDeleteSelected()">🗑️ Delete Selected</button>
+                                        <button class="admin-btn admin-btn-add-folder" onclick="adminJsonSelectAll()">☑️ Select All</button>
+                                    </div>
+                                    <div class="admin-json-actions-right">
+                                        <button class="admin-modal-save" onclick="adminSaveFile('${path.replace(/'/g, "\\'")}', 'multi-virtual')">💾 Save</button>
+                                        <button class="admin-modal-cancel" onclick="adminCloseFileModal()">Cancel</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                adminTableEditorState = {
+                    path, mode: 'multi-sectioned', rootType: 'multi-sectioned',
+                    generalRows: analysis.generalRows.map(r => Object.assign({}, r)),
+                    sections: analysis.sections.map(s => {
+                        const columns = [];
+                        s.items.forEach(it => { if (it && typeof it === 'object' && !Array.isArray(it)) Object.keys(it).forEach(k => { if (!columns.includes(k)) columns.push(k); }); });
+                        return { title: s.title, columns, rows: JSON.parse(JSON.stringify(s.items)), selected: new Set() };
+                    })
+                };
+
+                return `
+                    <div class="admin-modal-overlay" id="adminFileModalOverlay">
+                        <div class="admin-modal-card admin-table-modal admin-multi-table-modal">
+                            <button class="admin-modal-close" onclick="adminCloseFileModal()">✕</button>
+                            <h3 class="admin-modal-title">${escapeHtml(path.split('/').pop())}</h3>
+                            <div id="adminMultiTableBody">${buildMultiSectionInnerHTML()}</div>
+                            <div class="admin-modal-actions">
+                                <button class="admin-modal-save" onclick="adminSaveFile('${path.replace(/'/g, "\\'")}', 'multi-sectioned')">💾 Save</button>
+                                <button class="admin-modal-cancel" onclick="adminCloseFileModal()">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function buildMultiSectionInnerHTML() {
+                const st = adminTableEditorState;
+                let html = '';
+
+                if (st.generalRows.length > 0) {
+                    html += `
+                        <h4 class="admin-section-title">General</h4>
+                        <div class="admin-json-table-wrapper admin-section-table">
+                            <table class="admin-json-table">
+                                <thead><tr><th>Key</th><th>Value</th></tr></thead>
+                                <tbody>${st.generalRows.map((row, idx) => `
+                                    <tr>
+                                        <td class="admin-json-key-cell">${escapeHtml(row.key)}</td>
+                                        <td>${typeof row.value === 'boolean' ?
+                                            `<input type="checkbox" ${row.value ? 'checked' : ''} onchange="adminMultiUpdateGeneral(${idx}, this.checked)" />` :
+                                            `<input type="text" class="admin-json-cell-input" value="${escapeHtml(String(row.value === null || row.value === undefined ? '' : row.value))}" onchange="adminMultiUpdateGeneral(${idx}, this.value)" />`
+                                        }</td>
+                                    </tr>
+                                `).join('')}</tbody>
+                            </table>
+                        </div>
+                    `;
+                }
+
+                st.sections.forEach((section, sIdx) => {
+                    html += `
+                        <div class="admin-section-header-row">
+                            <h4 class="admin-section-title">${escapeHtml(section.title)} <span class="admin-section-count">(${section.rows.length})</span></h4>
+                            <div class="admin-section-actions">
+                                <button class="admin-btn admin-btn-add-file" onclick="adminMultiAddRow(${sIdx})">+ Add Row</button>
+                                <button class="admin-btn admin-btn-delete" onclick="adminMultiDeleteSelected(${sIdx})">🗑️ Delete Selected</button>
+                                <button class="admin-btn admin-btn-add-folder" onclick="adminMultiSelectAll(${sIdx})">☑️ Select All</button>
+                            </div>
+                        </div>
+                        <div class="admin-json-table-wrapper admin-section-table">
+                            <table class="admin-json-table" id="adminMultiSection${sIdx}">${buildMultiSectionTableInnerHTML(sIdx)}</table>
+                        </div>
+                    `;
+                });
+
+                return html;
+            }
+
+            function buildMultiSectionTableInnerHTML(sIdx) {
+                const section = adminTableEditorState.sections[sIdx];
+                const { columns, rows, selected } = section;
+
+                if (columns.length === 0) {
+                    const header = `<thead><tr><th><input type="checkbox" onchange="adminMultiToggleSelectAllCheckbox(${sIdx}, this)" /></th><th>Row (JSON)</th><th>Del</th></tr></thead>`;
+                    const body = `<tbody>${rows.map((r, idx) => `
+                        <tr>
+                            <td><input type="checkbox" ${selected.has(idx) ? 'checked' : ''} onchange="adminMultiToggleSelectRow(${sIdx}, ${idx}, this)" /></td>
+                            <td><input type="text" class="admin-json-cell-input" value="${escapeHtml(JSON.stringify(r))}" onchange="adminMultiUpdateFreeform(${sIdx}, ${idx}, this.value)" /></td>
+                            <td><span class="admin-action-icon delete" onclick="adminMultiDeleteRow(${sIdx}, ${idx})">🗑️</span></td>
+                        </tr>
+                    `).join('')}</tbody>`;
+                    return header + body;
+                }
+
+                const header = `<thead><tr><th><input type="checkbox" onchange="adminMultiToggleSelectAllCheckbox(${sIdx}, this)" /></th>${columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}<th>Del</th></tr></thead>`;
+                const body = `<tbody>${rows.map((row, idx) => `
+                    <tr>
+                        <td><input type="checkbox" ${selected.has(idx) ? 'checked' : ''} onchange="adminMultiToggleSelectRow(${sIdx}, ${idx}, this)" /></td>
+                        ${columns.map(col => {
+                            const val = row[col];
+                            if (typeof val === 'boolean') {
+                                return `<td style="text-align:center;"><input type="checkbox" ${val ? 'checked' : ''} onchange="adminMultiUpdateCell(${sIdx}, ${idx}, '${col}', this.checked)" /></td>`;
+                            }
+                            const display = (val === null || val === undefined) ? '' : (typeof val === 'object' ? JSON.stringify(val) : val);
+                            return `<td><input type="text" class="admin-json-cell-input" value="${escapeHtml(String(display))}" onchange="adminMultiUpdateCell(${sIdx}, ${idx}, '${col}', this.value)" /></td>`;
+                        }).join('')}
+                        <td><span class="admin-action-icon delete" onclick="adminMultiDeleteRow(${sIdx}, ${idx})">🗑️</span></td>
+                    </tr>
+                `).join('')}</tbody>`;
+                return header + body;
+            }
+
+            function refreshMultiSection(sIdx) {
+                const table = document.getElementById('adminMultiSection' + sIdx);
+                if (table) table.innerHTML = buildMultiSectionTableInnerHTML(sIdx);
+                const header = table ? table.closest('.admin-section-table').previousElementSibling : null;
+                if (header) {
+                    const countEl = header.querySelector('.admin-section-count');
+                    if (countEl) countEl.textContent = `(${adminTableEditorState.sections[sIdx].rows.length})`;
+                }
+            }
+
+            window.adminMultiUpdateGeneral = function(idx, value) {
+                const row = adminTableEditorState.generalRows[idx];
+                if (typeof row.value === 'boolean') { row.value = !!value; return; }
+                if (typeof row.value === 'number') {
+                    const n = parseFloat(value);
+                    row.value = isNaN(n) ? value : n;
+                    return;
+                }
+                row.value = value;
+            };
+
+            window.adminMultiUpdateCell = function(sIdx, idx, col, value) {
+                const section = adminTableEditorState.sections[sIdx];
+                const current = section.rows[idx][col];
+                if (current !== null && typeof current === 'object') {
+                    try { section.rows[idx][col] = JSON.parse(value); return; } catch (e) { /* keep typing */ }
+                }
+                section.rows[idx][col] = value;
+            };
+
+            window.adminMultiUpdateFreeform = function(sIdx, idx, value) {
+                try { adminTableEditorState.sections[sIdx].rows[idx] = JSON.parse(value); } catch (e) { /* keep old until valid JSON */ }
+            };
+
+            window.adminMultiDeleteRow = function(sIdx, idx) {
+                const section = adminTableEditorState.sections[sIdx];
+                section.rows.splice(idx, 1);
+                section.selected.delete(idx);
+                refreshMultiSection(sIdx);
+            };
+
+            window.adminMultiAddRow = function(sIdx) {
+                const section = adminTableEditorState.sections[sIdx];
+                if (section.columns.length === 0) {
+                    section.rows.push({});
+                } else {
+                    const blank = {};
+                    section.columns.forEach(c => { blank[c] = ''; });
+                    section.rows.push(blank);
+                }
+                refreshMultiSection(sIdx);
+            };
+
+            window.adminMultiToggleSelectRow = function(sIdx, idx, checkbox) {
+                const section = adminTableEditorState.sections[sIdx];
+                if (checkbox.checked) section.selected.add(idx);
+                else section.selected.delete(idx);
+            };
+
+            window.adminMultiToggleSelectAllCheckbox = function(sIdx, checkbox) {
+                const section = adminTableEditorState.sections[sIdx];
+                if (checkbox.checked) section.rows.forEach((_, idx) => section.selected.add(idx));
+                else section.selected.clear();
+                refreshMultiSection(sIdx);
+            };
+
+            window.adminMultiSelectAll = function(sIdx) {
+                const section = adminTableEditorState.sections[sIdx];
+                section.rows.forEach((_, idx) => section.selected.add(idx));
+                refreshMultiSection(sIdx);
+            };
+
+            window.adminMultiDeleteSelected = function(sIdx) {
+                const section = adminTableEditorState.sections[sIdx];
+                const toDelete = Array.from(section.selected).sort((a, b) => b - a);
+                toDelete.forEach(idx => section.rows.splice(idx, 1));
+                section.selected.clear();
+                refreshMultiSection(sIdx);
+            };
+
+            function buildJsonArrayTableModalHTML(path, arr, rootType) {
+                const columns = [];
+                arr.forEach(obj => Object.keys(obj).forEach(k => { if (!columns.includes(k)) columns.push(k); }));
+                const isObjectRoot = rootType === 'object';
+                const freeform = columns.length === 0 && !isObjectRoot;
+                adminTableEditorState = {
+                    path, mode: freeform ? 'array-freeform' : 'array', rootType: rootType || 'array',
+                    columns,
+                    rows: freeform ? arr.map(o => JSON.stringify(o)) : JSON.parse(JSON.stringify(arr)),
+                    selected: new Set()
+                };
+
+                return `
+                    <div class="admin-modal-overlay" id="adminFileModalOverlay">
+                        <div class="admin-modal-card admin-table-modal">
+                            <button class="admin-modal-close" onclick="adminCloseFileModal()">✕</button>
+                            <h3 class="admin-modal-title">${escapeHtml(path.split('/').pop())}</h3>
+                            ${freeform ? '<p class="admin-modal-note">This file is an empty list, so there are no columns to show yet - add a row and type a JSON object for it (e.g. {"id": 1, "name": "Example"}).</p>' : ''}
+                            <div class="admin-json-table-wrapper">
+                                <table class="admin-json-table" id="adminJsonTable">${buildJsonArrayTableInnerHTML()}</table>
+                            </div>
+                            <div class="admin-modal-actions admin-json-actions">
+                                <div class="admin-json-actions-left">
+                                    ${isObjectRoot ? '' : `
+                                    <button class="admin-btn admin-btn-add-file" onclick="adminJsonAddRow()">+ Add Row</button>
+                                    <button class="admin-btn admin-btn-delete" onclick="adminJsonDeleteSelected()">🗑️ Delete Selected</button>
+                                    <button class="admin-btn admin-btn-add-folder" onclick="adminJsonSelectAll()">☑️ Select All</button>
+                                    `}
+                                </div>
+                                <div class="admin-json-actions-right">
+                                    <button class="admin-modal-save" onclick="adminSaveFile('${path.replace(/'/g, "\\'")}', '${freeform ? 'array-freeform' : 'array'}')">💾 Save</button>
+                                    <button class="admin-modal-cancel" onclick="adminCloseFileModal()">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function buildJsonArrayTableInnerHTML() {
+                const { columns, rows, selected } = adminTableEditorState;
+
+                if (columns.length === 0) {
+                    const header = `<thead><tr><th><input type="checkbox" onchange="adminJsonToggleSelectAllCheckbox(this)" /></th><th>Row (JSON object)</th><th>Del</th></tr></thead>`;
+                    const body = `<tbody>${rows.map((rowStr, idx) => `
+                        <tr>
+                            <td><input type="checkbox" ${selected.has(idx) ? 'checked' : ''} onchange="adminJsonToggleSelectRow(${idx}, this)" /></td>
+                            <td><input type="text" class="admin-json-cell-input" value="${escapeHtml(rowStr)}" placeholder='{"key": "value"}' onchange="adminJsonUpdateFreeformRow(${idx}, this.value)" /></td>
+                            <td><span class="admin-action-icon delete" onclick="adminJsonDeleteRow(${idx})">🗑️</span></td>
+                        </tr>
+                    `).join('')}</tbody>`;
+                    return header + body;
+                }
+
+                const isObjectRoot = adminTableEditorState.rootType === 'object';
+                const header = `<thead><tr>${isObjectRoot ? '' : '<th><input type="checkbox" onchange="adminJsonToggleSelectAllCheckbox(this)" /></th>'}${columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}${isObjectRoot ? '' : '<th>Del</th>'}</tr></thead>`;
+                const body = `<tbody>${rows.map((row, idx) => `
+                    <tr>
+                        ${isObjectRoot ? '' : `<td><input type="checkbox" ${selected.has(idx) ? 'checked' : ''} onchange="adminJsonToggleSelectRow(${idx}, this)" /></td>`}
+                        ${columns.map(col => {
+                            const val = row[col];
+                            if (typeof val === 'boolean') {
+                                return `<td style="text-align:center;"><input type="checkbox" ${val ? 'checked' : ''} onchange="adminJsonUpdateCell(${idx}, '${col}', this.checked)" /></td>`;
+                            }
+                            const display = (val === null || val === undefined) ? '' : (typeof val === 'object' ? JSON.stringify(val) : val);
+                            return `<td><input type="text" class="admin-json-cell-input" value="${escapeHtml(String(display))}" onchange="adminJsonUpdateCell(${idx}, '${col}', this.value)" /></td>`;
+                        }).join('')}
+                        ${isObjectRoot ? '' : `<td><span class="admin-action-icon delete" onclick="adminJsonDeleteRow(${idx})">🗑️</span></td>`}
+                    </tr>
+                `).join('')}</tbody>`;
+                return header + body;
+            }
+
+            window.adminJsonUpdateFreeformRow = function(idx, value) {
+                adminTableEditorState.rows[idx] = value;
+            };
+
+            function refreshJsonTable() {
+                const table = document.getElementById('adminJsonTable');
+                if (table) table.innerHTML = buildJsonArrayTableInnerHTML();
+            }
+
+            window.adminJsonUpdateCell = function(idx, col, value) {
+                const current = adminTableEditorState.rows[idx][col];
+                // Preserve nested object/array structure: if the cell used to
+                // hold a real object/array (shown as JSON text), try to parse
+                // the edited text back into one instead of storing it as a
+                // plain string (which would otherwise corrupt the JSON shape
+                // on save).
+                if (current !== null && typeof current === 'object') {
+                    try {
+                        adminTableEditorState.rows[idx][col] = JSON.parse(value);
+                        return;
+                    } catch (e) {
+                        // not valid JSON yet (e.g. still mid-edit) - fall
+                        // through and store the raw text for now.
+                    }
+                }
+                adminTableEditorState.rows[idx][col] = value;
+            };
+
+            window.adminJsonDeleteRow = function(idx) {
+                adminTableEditorState.rows.splice(idx, 1);
+                adminTableEditorState.selected.delete(idx);
+                refreshJsonTable();
+            };
+
+            window.adminJsonAddRow = function() {
+                if (adminTableEditorState.mode === 'array-freeform') {
+                    adminTableEditorState.rows.push('{}');
+                } else if (adminTableEditorState.mode === 'array') {
+                    const blank = {};
+                    adminTableEditorState.columns.forEach(c => { blank[c] = ''; });
+                    adminTableEditorState.rows.push(blank);
+                }
+                refreshJsonTable();
+            };
+
+            window.adminJsonToggleSelectRow = function(idx, checkbox) {
+                if (checkbox.checked) adminTableEditorState.selected.add(idx);
+                else adminTableEditorState.selected.delete(idx);
+            };
+
+            window.adminJsonToggleSelectAllCheckbox = function(checkbox) {
+                if (checkbox.checked) adminTableEditorState.rows.forEach((_, idx) => adminTableEditorState.selected.add(idx));
+                else adminTableEditorState.selected.clear();
+                refreshJsonTable();
+            };
+
+            window.adminJsonSelectAll = function() {
+                adminTableEditorState.rows.forEach((_, idx) => adminTableEditorState.selected.add(idx));
+                refreshJsonTable();
+            };
+
+            window.adminJsonDeleteSelected = function() {
+                const toDelete = Array.from(adminTableEditorState.selected).sort((a, b) => b - a);
+                toDelete.forEach(idx => adminTableEditorState.rows.splice(idx, 1));
+                adminTableEditorState.selected.clear();
+                refreshJsonTable();
+            };
+
+            window.adminSaveFile = async function(path, mode) {
+                let content;
+                if (mode === 'array-freeform') {
+                    try {
+                        content = JSON.stringify(adminTableEditorState.rows.map(r => JSON.parse(r)), null, 4);
+                    } catch (err) {
+                        showWarning('One or more rows are not valid JSON: ' + err.message);
+                        return;
+                    }
+                } else if (mode === 'array') {
+                    content = JSON.stringify(adminTableEditorState.rows, null, 4);
+                } else if (mode === 'multi-virtual') {
+                    // Reconstruct {key: {...fields}} from the "_key"-tagged rows.
+                    const obj = {};
+                    adminTableEditorState.rows.forEach((row) => {
+                        const key = row._key;
+                        if (!key) return;
+                        const copy = Object.assign({}, row);
+                        delete copy._key;
+                        obj[key] = copy;
+                    });
+                    content = JSON.stringify(obj, null, 4);
+                } else if (mode === 'multi-sectioned') {
+                    // Reconstruct the full object from the General rows (paths
+                    // like "key" or "key.subkey") plus each extracted section
+                    // (title like "key" or "key.subkey") back into place.
+                    const obj = {};
+                    const setPath = (path2, value) => {
+                        const parts = path2.split('.');
+                        if (parts.length === 1) {
+                            obj[parts[0]] = value;
+                        } else {
+                            if (typeof obj[parts[0]] !== 'object' || obj[parts[0]] === null || Array.isArray(obj[parts[0]])) {
+                                obj[parts[0]] = {};
+                            }
+                            obj[parts[0]][parts[1]] = value;
+                        }
+                    };
+                    adminTableEditorState.generalRows.forEach(row => setPath(row.key, row.value));
+                    adminTableEditorState.sections.forEach(section => setPath(section.title, section.rows));
+                    content = JSON.stringify(obj, null, 4);
+                } else {
+                    content = document.getElementById('adminFileEditorTextarea').value;
+                }
+
+                try {
+                    const res = await authFetch('/api/admin/write', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: path, content: content })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Save failed');
+                    adminCloseFileModal();
+                    loadAdminDirectory(adminCurrentPath);
+                    showMessage('✅ Saved', 'File saved successfully.', ['OK']);
+                } catch (err) {
+                    showWarning(err.message || 'Could not save file.');
+                }
+            };
+
+            // ============================================================
+            // 29. DOM REFS
+            // ============================================================
+            const mainMenu = document.getElementById('mainMenu');
+            const menuWrapper = document.getElementById('menuWrapper');
+            const contentArea = document.getElementById('contentArea');
+            const contentBody = document.getElementById('contentBody');
+            const currentMenuDisplay = document.getElementById('currentMenuDisplay');
+            const centerContent = document.getElementById('centerContent');
+
+            const userNameDisplay = document.getElementById('userNameDisplay');
+            const avatarText = document.getElementById('avatarText');
+            const userAvatar = document.getElementById('userAvatar');
+            const userDropdown = document.getElementById('userDropdown');
+
+            let activeItemId = null;
+            let activeSubItemId = null;
+            let isUserMenuOpen = false;
+
+            // ============================================================
+            // 29b. COMPANY BRANDING (logo + name from company.json)
+            // ============================================================
+            function applyCompanyBranding() {
+                if (!COMPANY_INFO) return;
+
+                const logoEl = document.getElementById('companyLogo');
+                const nameEl = document.getElementById('companyName');
+                const footerEl = document.getElementById('footerCompany');
+
+                if (logoEl) {
+                    if (COMPANY_INFO.logo) {
+                        logoEl.innerHTML =
+                            `<img src="${COMPANY_INFO.logo}" alt="${COMPANY_INFO.name} logo" onerror="this.onerror=null;this.src='Pictures/logo.png';" />`;
+                    } else {
+                        logoEl.textContent = '🏢';
+                    }
+                }
+
+                if (nameEl) {
+                    nameEl.innerHTML = `${COMPANY_INFO.name}\n                    <span class="separator" id="separator">|</span>`;
+                }
+
+                if (footerEl) {
+                    footerEl.textContent = COMPANY_INFO.name;
+                }
+
+                document.title = COMPANY_INFO.name;
+            }
+
+            // ============================================================
+            // 30. USER PROFILE SETUP
+            // ============================================================
+            function setupUserProfile() {
+                const fallback = MENU_CONFIG.user;
+                const name = profileData ? `${profileData.firstName} ${profileData.lastName}` : fallback.name;
+                const avatarUrl = profileData ? profileData.photo : fallback.avatar;
+                const initials = profileData ?
+                    ((profileData.firstName[0] || '') + (profileData.lastName[0] || '')) :
+                    (fallback.initials || fallback.name.split(' ').map(n => n[0]).join(''));
+
+                userNameDisplay.textContent = name;
+
+                if (avatarUrl) {
+                    userAvatar.innerHTML = `<img src="${avatarUrl}" alt="${name}" />`;
+                } else {
+                    avatarText.textContent = initials;
+                }
+
+                renderProfileMenu();
+            }
+
+            function renderProfileMenu() {
+                userDropdown.innerHTML = '';
+                const profileItems = MENU_CONFIG.profileMenu;
+                const myRole = profileData ? profileData.role : null;
+
+                profileItems.forEach((item) => {
+                    if (item.type === 'divider') {
+                        const divider = document.createElement('div');
+                        divider.className = 'dropdown-divider';
+                        userDropdown.appendChild(divider);
+                        return;
+                    }
+
+                    // Role-gated items (e.g. Admin) only render for allowed roles.
+                    if (Array.isArray(item.rolesAllowed) && !item.rolesAllowed.includes(myRole)) {
+                        return;
+                    }
+
+                    const btn = document.createElement('button');
+                    btn.className = 'dropdown-item';
+                    if (item.isLogout) btn.classList.add('logout');
+                    btn.textContent = item.label;
+                    btn.dataset.action = item.action;
+                    btn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        const action = this.dataset.action;
+                        userDropdown.classList.remove('show');
+                        isUserMenuOpen = false;
+                        handleUserAction(action);
+                    });
+                    userDropdown.appendChild(btn);
+                });
+            }
+
+            // ============================================================
+            // 31. USER DROPDOWN TOGGLE
+            // ============================================================
+            window.toggleUserDropdown = function(e) {
+                if (e) e.stopPropagation();
+                closeAllSubMenus();
+                userDropdown.classList.toggle('show');
+                isUserMenuOpen = userDropdown.classList.contains('show');
+            };
+
+            document.addEventListener('click', function(e) {
+                const profile = document.getElementById('userProfile');
+                if (profile && !profile.contains(e.target)) {
+                    userDropdown.classList.remove('show');
+                    isUserMenuOpen = false;
+                }
+            });
+
+            window.handleUserAction = function(action) {
+                if (action === 'Logout') {
+                    performLogout();
+                    return;
+                }
+
+                const pagePath = 'User / ' + action;
+                resetContentArea();
+
+                setTimeout(() => {
+                    let data;
+                    if (action === 'Profile') {
+                        data = { body: buildProfileBody() };
+                    } else if (action === 'Admin') {
+                        data = { body: buildAdminFilesBody() };
+                    } else if (action === 'Notification') {
+                        data = { body: buildNotificationBody() };
+                    }
+                    updateContent(data, pagePath);
+                    contentArea.classList.remove('loading');
+                    if (action === 'Admin') loadAdminDirectory('');
+                    if (action === 'Notification') renderNotificationTable();
+                }, 300);
+
+                document.querySelectorAll('.menu-item > a').forEach(el => el.classList.remove('active'));
+                document.querySelectorAll('.sub-menu li a').forEach(el => el.classList.remove('active'));
+            };
+
+            // ============================================================
+            // 32. RESET CONTENT AREA
+            // ============================================================
+            function resetContentArea() {
+                contentArea.classList.add('loading');
+                contentBody.innerHTML = '';
+                centerContent.scrollTop = 0;
+            }
+
+            // ============================================================
+            // 33. UPDATE CONTENT
+            // ============================================================
+            function updateContent(data, breadcrumb) {
+                const bodyContent = typeof data.body === 'function' ? data.body() : data.body;
+                contentBody.innerHTML = bodyContent || '';
+                currentMenuDisplay.textContent = breadcrumb || 'Dashboard';
+
+                if (breadcrumb && breadcrumb.includes('Payment Mode')) {
+                    setTimeout(() => {
+                        renderPaymentMethods();
+                        const typeSelect = document.getElementById('paymentType');
+                        if (typeSelect) togglePaymentForm();
+                    }, 50);
+                }
+
+                if (breadcrumb && breadcrumb.includes('Payment History')) {
+                    setTimeout(renderPaymentHistory, 50);
+                }
+
+                if (breadcrumb && breadcrumb.includes('Balance')) {
+                    setTimeout(() => {
+                        populateBalancePaymentMethods();
+                        updateBalanceDisplay();
+                    }, 50);
+                }
+
+                if (breadcrumb === '📊 Dashboard') {
+                    setTimeout(renderTodayTransactions, 50);
+                    setTimeout(renderDashboardCounts, 50);
+                }
+
+                if (breadcrumb && breadcrumb.includes('API Documentation')) {
+                    setTimeout(() => {
+                        renderApiKeyDisplay();
+                        renderServicesApiList();
+                    }, 50);
+                }
+
+                if (breadcrumb && breadcrumb.includes('Support') && !breadcrumb.includes('Help Center')) {
+                    setTimeout(renderSupportTable, 50);
+                }
+
+                if (breadcrumb && breadcrumb.includes('Lease Abstraction')) {
+                    setTimeout(setupDragAndDrop, 50);
+                    setTimeout(renderMyLeasesList, 50);
+                }
+
+                if (breadcrumb && breadcrumb.includes('Translation')) {
+                    setTimeout(setupDragAndDrop, 50);
+                    setTimeout(renderMyTranslationsList, 50);
+                }
+            }
+
+            // ============================================================
+            // 34. DRAG AND DROP SETUP
+            // ============================================================
+            function setupDragAndDrop() {
+                const dropZone = document.getElementById('dropZone');
+                const fileInput = document.getElementById('fileInput');
+
+                if (!dropZone) return;
+
+                const serviceId = activeSubItemId === 'translation' ? 'translation' : 'lease-abstraction';
+
+                dropZone.addEventListener('dragover', function(e) {
+                    e.preventDefault();
+                    this.classList.add('dragover');
+                });
+
+                dropZone.addEventListener('dragleave', function(e) {
+                    e.preventDefault();
+                    this.classList.remove('dragover');
+                });
+
+                dropZone.addEventListener('drop', function(e) {
+                    e.preventDefault();
+                    this.classList.remove('dragover');
+                    const files = e.dataTransfer.files;
+                    if (files.length > 0) {
+                        const mockEvent = { target: { files: files } };
+                        handleFileUpload(mockEvent, serviceId);
+                    }
+                });
+            }
+
+            // ============================================================
+            // 35. MENU RENDERER
+            // ============================================================
+            function renderMenu() {
+                mainMenu.innerHTML = '';
+                const mainMenuItems = MENU_CONFIG.mainMenu.filter(item => !item.adminOnly || isAdminOrDeveloper());
+
+                mainMenuItems.forEach((item) => {
+                    const li = document.createElement('li');
+                    li.className = 'menu-item';
+
+                    const a = document.createElement('a');
+                    a.textContent = item.label;
+                    a.dataset.id = item.id;
+
+                    const hasSub = item.subItems && item.subItems.length > 0;
+                    a.dataset.hasSub = hasSub ? 'true' : 'false';
+
+                    if (hasSub) {
+                        const arrow = document.createElement('span');
+                        arrow.className = 'arrow';
+                        arrow.textContent = '▼';
+                        a.appendChild(arrow);
+                        a.addEventListener('click', function(e) {
+                            e.preventDefault();
+                            if (isUserMenuOpen) {
+                                userDropdown.classList.remove('show');
+                                isUserMenuOpen = false;
+                            }
+                            toggleSubMenu(this);
+                        });
+                    } else {
+                        a.addEventListener('click', function(e) {
+                            e.preventDefault();
+                            if (isUserMenuOpen) {
+                                userDropdown.classList.remove('show');
+                                isUserMenuOpen = false;
+                            }
+                            loadContent(item.id, null);
+                            if (window.innerWidth <= 768) menuWrapper.classList.remove('open');
+                        });
+                    }
+
+                    li.appendChild(a);
+
+                    if (hasSub) {
+                        const ul = document.createElement('ul');
+                        ul.className = 'sub-menu';
+                        ul.dataset.parentId = item.id;
+
+                        item.subItems.forEach((sub) => {
+                            const subLi = document.createElement('li');
+                            const subA = document.createElement('a');
+                            subA.textContent = sub.label;
+                            subA.dataset.id = sub.id;
+                            subA.dataset.parentId = item.id;
+
+                            subA.addEventListener('click', function(e) {
+                                e.preventDefault();
+                                if (isUserMenuOpen) {
+                                    userDropdown.classList.remove('show');
+                                    isUserMenuOpen = false;
+                                }
+                                loadContent(item.id, sub.id);
+                                closeAllSubMenus();
+                                if (window.innerWidth <= 768) menuWrapper.classList.remove('open');
+                            });
+                            subLi.appendChild(subA);
+                            ul.appendChild(subLi);
+                        });
+
+                        li.appendChild(ul);
+                    }
+
+                    mainMenu.appendChild(li);
+                });
+            }
+
+            function toggleSubMenu(element) {
+                const li = element.closest('.menu-item');
+                const subMenu = li.querySelector('.sub-menu');
+                const arrow = element.querySelector('.arrow');
+
+                if (subMenu) {
+                    document.querySelectorAll('.sub-menu.show').forEach((menu) => {
+                        if (menu !== subMenu) {
+                            menu.classList.remove('show');
+                            const parentArrow = menu.closest('.menu-item').querySelector('.arrow');
+                            if (parentArrow) parentArrow.classList.remove('open');
+                        }
+                    });
+
+                    subMenu.classList.toggle('show');
+                    if (arrow) arrow.classList.toggle('open');
+                }
+            }
+
+            function closeAllSubMenus() {
+                document.querySelectorAll('.sub-menu.show').forEach((menu) => {
+                    menu.classList.remove('show');
+                    const arrow = menu.closest('.menu-item').querySelector('.arrow');
+                    if (arrow) arrow.classList.remove('open');
+                });
+            }
+
+            // ============================================================
+            // 36. LOAD CONTENT
+            // ============================================================
+            function loadContent(parentId, subId) {
+                resetContentArea();
+
+                setTimeout(() => {
+                    const parent = MENU_CONFIG.mainMenu.find(item => item.id === parentId);
+                    if (!parent) return;
+
+                    let dataKey = parentId;
+                    let breadcrumb = parent.label;
+
+                    if (subId) {
+                        const sub = parent.subItems.find(item => item.id === subId);
+                        if (sub) {
+                            dataKey = subId;
+                            breadcrumb = parent.label + ' / ' + sub.label;
+                            activeSubItemId = subId;
+                        }
+                    } else {
+                        activeSubItemId = null;
+                    }
+
+                    activeItemId = parentId;
+
+                    let data = CONTENT_DATA[dataKey];
+                    if (!data) {
+                        data = { body: '<div class="content-section"><p>Content not available for this section.</p></div>' };
+                    }
+
+                    updateContent(data, breadcrumb);
+
+                    document.querySelectorAll('.menu-item > a').forEach((el) => {
+                        el.classList.remove('active');
+                        if (el.dataset.id === parentId) el.classList.add('active');
+                    });
+
+                    document.querySelectorAll('.sub-menu li a').forEach((el) => {
+                        el.classList.remove('active');
+                        if (el.dataset.id === subId && el.dataset.parentId === parentId) el.classList.add(
+                        'active');
+                    });
+
+                    closeAllSubMenus();
+                    contentArea.classList.remove('loading');
+                }, 300);
+            }
+
+            // ============================================================
+            // 37. MOBILE TOGGLE
+            // ============================================================
+            window.toggleMenu = function() {
+                menuWrapper.classList.toggle('open');
+            };
+
+            document.addEventListener('click', function(e) {
+                const toggle = document.querySelector('.menu-toggle');
+                if (window.innerWidth <= 768) {
+                    if (!menuWrapper.contains(e.target) && !toggle.contains(e.target)) {
+                        menuWrapper.classList.remove('open');
+                    }
+                }
+            });
+
+            document.addEventListener('click', function(e) {
+                if (!e.target.closest('.menu-item')) {
+                    closeAllSubMenus();
+                }
+            });
+
+            // ============================================================
+            // 38. CONTENT DATA
+            // ============================================================
+            const CONTENT_DATA = {
+                dashboard: {
+                    body: `
+                        <div class="dashboard-grid">
+                            <div class="dash-card">
+                                <div class="dash-card-icon">📋</div>
+                                <div class="dash-card-value" id="dashCurrentPlan">—</div>
+                                <div class="dash-card-label">Current Plan</div>
+                            </div>
+                            <div class="dash-card">
+                                <div class="dash-card-icon">💰</div>
+                                <div class="dash-card-value" id="dashBalance">$0.00</div>
+                                <div class="dash-card-label">Balance</div>
+                            </div>
+                            <div class="dash-card">
+                                <div class="dash-card-icon">📄</div>
+                                <div class="dash-card-value" id="dashLeaseCount">—</div>
+                                <div class="dash-card-label">Total Lease Abstraction</div>
+                            </div>
+                            <div class="dash-card">
+                                <div class="dash-card-icon">🌐</div>
+                                <div class="dash-card-value" id="dashTranslationCount">—</div>
+                                <div class="dash-card-label">Total Translation</div>
+                            </div>
+                        </div>
+                        <div class="history-card" style="height:280px;margin-top:20px;">
+                            <h3>📅 Today's Transactions</h3>
+                            <div class="card-body today-table-scroll-outer">
+                                <table class="history-table today-table" id="todayTableHeader">
+                                    <thead>
+                                        <tr>
+                                            <th>Transaction Date & Time</th>
+                                            <th>Transaction ID</th>
+                                            <th>User ID</th>
+                                            <th>Payment Type</th>
+                                            <th>Payment Mode</th>
+                                            <th>Description</th>
+                                            <th>Credit</th>
+                                            <th>Debit</th>
+                                        </tr>
+                                    </thead>
+                                </table>
+                                <div class="history-table-wrapper" id="todayTableWrapper">
+                                    <table class="history-table today-table" id="todayTable">
+                                        <tbody id="todayTableBody">
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    `
+                },
+                'lease-abstraction': {
+                    body: function() {
+                        return buildServiceUploadHTML('lease-abstraction', 'Lease Abstraction', '📄');
+                    }
+                },
+                translation: {
+                    body: function() {
+                        return buildServiceUploadHTML('translation', 'Translation', '🌐');
+                    }
+                },
+                'plans-offers': {
+                    body: function() {
+                        const myPlanName = getMyPlan().name;
+                        const isAdminOrDev = isAdminOrDeveloper();
+                        const historyRows = (isAdminOrDev ? planHistory : planHistory.filter(h => h.userId === CURRENT_USER_ID))
+                            .slice().reverse();
+                        return `
+                        <div class="plans-grid">
+                            ${PLANS_DATA.map(plan => `
+                                <div class="plan-card ${plan.featured ? 'featured' : ''}">
+                                    ${plan.featured ? '<div class="plan-badge">⭐ Most Popular</div>' : ''}
+                                    <div class="plan-name">${plan.icon || ''} ${escapeHtml(plan.name)}</div>
+                                    <div class="plan-price">$${plan.monthlyPrice}<span>/month</span></div>
+                                    <ul class="plan-features">
+                                        ${(plan.features || []).map(f => `<li>✅ ${escapeHtml(f)}</li>`).join('')}
+                                    </ul>
+                                    <button class="plan-cta-btn" ${plan.name === myPlanName ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
+                                        ${plan.name === myPlanName ? '✓ Current Plan' : (plan.monthlyPrice > 0 ? 'Upgrade Now' : 'Get Started')}
+                                    </button>
+                                </div>
+                            `).join('')}
+                        </div>
+
+                        <div class="plan-history-card">
+                            <h3>📜 ${isAdminOrDev ? 'All Users\' Plan History' : 'Your Plan History'}</h3>
+                            <div class="admin-json-table-wrapper" style="max-height:320px;">
+                                <table class="admin-json-table">
+                                    <thead><tr>
+                                        ${isAdminOrDev ? '<th>User</th>' : ''}
+                                        <th>Plan Name</th><th>Start Date</th><th>End Date</th>
+                                        <th>Frequency</th><th>Amount</th><th>Price/Lease Abstraction</th><th>Price/Translation</th>
+                                    </tr></thead>
+                                    <tbody>
+                                        ${historyRows.length === 0 ? `<tr><td colspan="${isAdminOrDev ? 7 : 6}" style="text-align:center;">No plan changes yet.</td></tr>` :
+                                        historyRows.map(h => `
+                                            <tr>
+                                                ${isAdminOrDev ? `<td>${escapeHtml(h.userId)}</td>` : ''}
+                                                <td>${escapeHtml(h.planName)}</td>
+                                                <td>${escapeHtml(h.startDate)}</td>
+                                                <td>${escapeHtml(h.endDate)}</td>
+                                                <td>${escapeHtml(h.frequency)}</td>
+                                                <td>$${Number(h.amount).toFixed(2)}</td>
+                                                <td>$${Number(h.pricePerLeaseAbstraction).toFixed(2)}</td>
+                                                <td>$${Number(h.pricePerTranslation).toFixed(2)}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    `;
+                    }
+                },
+                balance: {
+                    body: function() {
+                        // "Add Balance" is for every user (this was never
+                        // meant to be Admin/Developer-only - that
+                        // restriction was a misread of the original ask).
+                        const addBalanceCardHtml = `
+                        <div class="balance-add-card">
+                            <h3>➕ Add Balance</h3>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Payment Method</label>
+                                    <select id="balancePaymentMethod"></select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Amount</label>
+                                    <input type="number" id="balanceAmount" placeholder="Enter amount" min="0.01" step="0.01" />
+                                </div>
+                                <div class="form-group">
+                                    <label>Description</label>
+                                    <input type="text" id="balanceDescription" placeholder="Enter description" />
+                                </div>
+                                <button class="add-btn" onclick="addBalance()">+ Add Balance</button>
+                            </div>
+                            ${!isAdminOrDeveloper() ? '<p class="balance-approval-note">⏳ Balance requests are credited once an Admin or Developer approves them.</p>' : ''}
+                        </div>
+                        `;
+                        // Item 1 - a genuinely separate card, Admin/Developer
+                        // only: recording a business EXPENSE (API costs,
+                        // domain renewal, etc.) - not a user's wallet top-up.
+                        // Always posts as a debit against the Developer's own
+                        // account, so it shows up as a real cost in that
+                        // account's own Payment History.
+                        const expenseCardHtml = isAdminOrDeveloper() ? `
+                        <div class="balance-add-card expense-card">
+                            <h3>💸 Record Expense</h3>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Payment Method</label>
+                                    <select id="expensePaymentMethod"></select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Amount</label>
+                                    <input type="number" id="expenseAmount" placeholder="Enter amount" min="0.01" step="0.01" />
+                                </div>
+                                <div class="form-group">
+                                    <label>Description</label>
+                                    <input type="text" id="expenseDescription" placeholder="e.g. OpenAI API charges - June" />
+                                </div>
+                                <button class="add-btn" onclick="recordExpense()">💸 Record Expense</button>
+                            </div>
+                        </div>
+                        ` : '';
+                        return `
+                        <div class="balance-grid" id="balanceGrid">
+                            <div class="balance-card">
+                                <div class="balance-number credit" id="totalCreditBalance">$0.00</div>
+                                <div class="balance-label">Total Credit</div>
+                            </div>
+                            <div class="balance-card">
+                                <div class="balance-number debit" id="totalDebitBalance">$0.00</div>
+                                <div class="balance-label">Total Debit</div>
+                            </div>
+                            <div class="balance-card">
+                                <div class="balance-number" id="currentBalanceDisplay">$0.00</div>
+                                <div class="balance-label">Current Balance</div>
+                            </div>
+                        </div>
+                        ${addBalanceCardHtml}
+                        ${expenseCardHtml}
+                    `;
+                    }
+                },
+                'payment-mode': {
+                    body: `
+                        <div class="payment-layout">
+                            <div class="payment-left">
+                                <div class="payment-card">
+                                    <h3>💳 Your Payment Methods</h3>
+                                    <div class="card-body">
+                                        <ul class="payment-list" id="paymentList"></ul>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="payment-right">
+                                <div class="payment-card">
+                                    <h3>➕ Add New Payment Method</h3>
+                                    <div class="card-body">
+                                        <div class="payment-form" id="paymentForm">
+                                            <div class="form-group">
+                                                <label>Payment Type</label>
+                                                <select id="paymentType" onchange="togglePaymentForm()">
+                                                    <option value="credit-card">💳 Credit Card</option>
+                                                    <option value="upi">📱 UPI</option>
+                                                </select>
+                                            </div>
+                                            <div id="creditCardFields">
+                                                <div class="form-group">
+                                                    <label>Card Number</label>
+                                                    <input type="text" id="cardNumber" placeholder="1234 5678 9012 3456" />
+                                                </div>
+                                                <div class="form-group">
+                                                    <label>Name on Card</label>
+                                                    <input type="text" id="cardName" placeholder="John Doe" />
+                                                </div>
+                                                <div class="form-row">
+                                                    <div class="form-group">
+                                                        <label>Expiry Date</label>
+                                                        <input type="text" id="expiryDate" placeholder="MM/YYYY" />
+                                                    </div>
+                                                    <div class="form-group">
+                                                        <label>CVV</label>
+                                                        <input type="text" id="cvv" placeholder="***" />
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div id="upiFields" style="display:none;">
+                                                <div class="form-group">
+                                                    <label>UPI ID</label>
+                                                    <input type="text" id="upiId" placeholder="john.doe@upi" />
+                                                </div>
+                                            </div>
+                                            <button class="submit-btn" onclick="addPaymentMethod()">+ Add Payment Method</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `
+                },
+                'payment-history': {
+                    body: function() {
+                    return `
+                        <div class="history-card">
+                            <div class="history-filter-bar">
+                                <div class="filter-group">
+                                    <label>From</label>
+                                    <input type="date" id="historyFromDate" />
+                                </div>
+                                <div class="filter-group">
+                                    <label>To</label>
+                                    <input type="date" id="historyToDate" />
+                                </div>
+                                <button class="filter-btn" onclick="applyHistoryFilter()">🔍 Filter</button>
+                                <button class="filter-btn reset-btn" onclick="clearHistoryFilter()">✖ Clear</button>
+                                ${isAdminOrDeveloper() ? `
+                                    <div class="filter-group">
+                                        <label>User</label>
+                                        <input type="text" id="historyUserFilter" placeholder="User ID or email" oninput="applyHistoryFilter()" />
+                                    </div>
+                                ` : ''}
+                                <button class="filter-btn download-btn" onclick="downloadHistoryExcel()">⬇️ Download Excel</button>
+                                <button class="filter-btn raise-issue-btn" onclick="openRaiseIssueModal()">🚩 Raise Issue</button>
+                            </div>
+                            <div class="card-body payment-history-scroll-outer">
+                                <table class="history-table payment-history-table" id="historyTableHeader">
+                                    <thead>
+                                        <tr>
+                                            <th style="width:36px;"><input type="checkbox" id="historySelectAll" onchange="toggleSelectAllTransactions(this.checked)" /></th>
+                                            <th>Transaction Date & Time</th>
+                                            <th>Transaction ID</th>
+                                            <th>User ID</th>
+                                            <th>Payment Type</th>
+                                            <th>Payment Mode</th>
+                                            <th>Description</th>
+                                            <th>Credit</th>
+                                            <th>Debit</th>
+                                        </tr>
+                                    </thead>
+                                </table>
+                                <div class="history-table-wrapper" id="historyTableWrapper">
+                                    <table class="history-table payment-history-table" id="historyTable">
+                                        <tbody id="historyTableBody"></tbody>
+                                    </table>
+                                </div>
+                                <div class="history-summary" id="historySummary">
+                                    <div class="summary-item">
+                                        <span class="summary-label">Total Credit</span>
+                                        <span class="summary-value credit-value" id="totalCredit">$0.00</span>
+                                    </div>
+                                    <div class="summary-item">
+                                        <span class="summary-label">Total Debit</span>
+                                        <span class="summary-value debit-value" id="totalDebit">$0.00</span>
+                                    </div>
+                                    <div class="summary-item">
+                                        <span class="summary-label">Current Balance</span>
+                                        <span class="summary-value" id="currentBalance">$0.00</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    }
+                },
+                'api-documentation': {
+                    body: `
+                        <div class="api-key-card">
+                            <h3>🔑 API Key</h3>
+                            <p style="font-size:0.85rem;color:rgba(0,0,0,0.6);margin-bottom:10px;">Generate a new API key to authenticate your requests. Keep it secret — treat it like a password.</p>
+                            <div class="api-key-row">
+                                <div class="api-key-box" id="apiKeyDisplay">No API key generated yet.</div>
+                                <div class="api-key-actions" id="apiKeyActions">
+                                    <button class="api-action-btn generate-btn" onclick="generateApiKey()">⚡ Generate New API Key</button>
+                                    <button class="api-action-btn copy-btn" onclick="copyApiKey()">📋 Copy</button>
+                                    <button class="api-action-btn save-btn" onclick="saveApiKey()">💾 Save</button>
+                                    <button class="api-action-btn revoke-btn" onclick="revokeApiKey()">🗑️ Delete</button>
+                                </div>
+                            </div>
+                            <div id="apiKeyHistory"></div>
+                        </div>
+                        <div class="api-key-card">
+                            <h3>🛠️ Services API Reference</h3>
+                            <p style="font-size:0.85rem;color:rgba(0,0,0,0.6);margin-bottom:10px;">GET and POST endpoints with example requests/responses for each service.</p>
+                            <div id="servicesApiList"></div>
+                        </div>
+                    `
+                },
+                support: {
+                    body: function() {
+                    return `
+                        <div class="history-card support-log-card support-log-full">
+                            <div class="support-log-header-row">
+                                <h3>📋 Supports: Log</h3>
+                            </div>
+                            <div class="history-filter-bar">
+                                <div class="filter-group">
+                                    <label>From</label>
+                                    <input type="date" id="supportFromDate" />
+                                </div>
+                                <div class="filter-group">
+                                    <label>To</label>
+                                    <input type="date" id="supportToDate" />
+                                </div>
+                                <div class="filter-group">
+                                    <label>Status</label>
+                                    <select id="supportStatusFilter" onchange="applySupportFilter()">
+                                        <option value="">All</option>
+                                        <option value="Pending">Pending</option>
+                                        <option value="Resolved">Resolved</option>
+                                    </select>
+                                </div>
+                                ${isAdminOrDeveloper() ? `
+                                    <div class="filter-group">
+                                        <label>User</label>
+                                        <input type="text" id="supportUserFilter" placeholder="User ID or email" oninput="applySupportFilter()" />
+                                    </div>
+                                ` : ''}
+                                <button class="filter-btn" onclick="applySupportFilter()">🔍 Filter</button>
+                                <button class="filter-btn reset-btn" onclick="resetSupportFilter()">↺ Reset</button>
+                            </div>
+                            <div class="card-body">
+                                <div class="support-table-scroll" id="supportTableWrapper">
+                                    <table class="support-log-table" id="supportTable">
+                                        <thead>
+                                            <tr>
+                                                <th><input type="checkbox" onchange="toggleSupportSelectAll(this)" /></th>
+                                                <th>Ticket ID</th>
+                                                <th>Date</th>
+                                                <th>Time</th>
+                                                <th>User ID</th>
+                                                <th>Type</th>
+                                                <th>Subject</th>
+                                                <th>Message</th>
+                                                <th>Status</th>
+                                                <th>Response</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="supportTableBody"></tbody>
+                                    </table>
+                                </div>
+                                <div class="support-log-footer-row">
+                                    <button class="filter-btn delete-btn" onclick="deleteSelectedSupport()">🗑️ Delete</button>
+                                    <a class="support-create-new-link" onclick="openMessagePopup('compose')">➕ Create New</a>
+                                    <button class="filter-btn download-btn" onclick="downloadSupportExcel()">⬇️ Download Excel</button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    }
+                },
+                'contact-us': {
+                    body: function() {
+                        const c = COMPANY_INFO || {};
+                        const mapQuery = encodeURIComponent(c.location || c.address || c.name || '');
+                        const mapsLink = mapQuery ? `https://www.google.com/maps/search/?api=1&query=${mapQuery}` : '#';
+                        const mapEmbedSrc = mapQuery ? `https://www.google.com/maps?q=${mapQuery}&output=embed` : '';
+                        // Phone and WhatsApp are nearly always the same number in
+                        // practice, so they're shown as one combined field rather
+                        // than two near-duplicate rows.
+                        const phoneWhatsapp = [c.phone, c.whatsapp].filter((v, i, arr) => v && arr.indexOf(v) === i).join(' / ');
+                        const pairs = [
+                            [{ icon: '🏢', label: 'Company Name', value: c.name },
+                             { icon: '📍', label: 'Address', value: c.address }],
+                            [{ icon: '🕒', label: 'Working Hours', value: c.workingHours },
+                             { icon: '📅', label: 'Working Days', value: c.workingDays }],
+                            [{ icon: '✉️', label: 'Email', value: c.email, href: c.email ? `mailto:${c.email}` : null },
+                             { icon: '📞', label: 'Phone/Mobile/Whatsapp', value: phoneWhatsapp, href: c.phone ? `tel:${c.phone.replace(/[^+\d]/g, '')}` : null }]
+                        ];
+                        const fieldHtml = (f) => `
+                            <div class="contact-field">
+                                <div class="contact-field-label"><span class="contact-icon">${f.icon}</span>${f.label}</div>
+                                <div class="contact-field-value">${
+                                    f.href && f.value ? `<a href="${f.href}" class="contact-value-link">${escapeHtml(f.value)}</a>` : escapeHtml(f.value || '-')
+                                }</div>
+                            </div>`;
+                        return `
+                        <div class="contact-us-row">
+                            <div class="payment-card company-details-card">
+                                <div class="company-details-header">
+                                    <div class="company-details-icon">🏢</div>
+                                    <div>
+                                        <h3 style="margin:0;border:none;padding:0;">${escapeHtml(c.name || 'Company Details')}</h3>
+                                        <div class="company-details-tagline">We'd love to hear from you</div>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    ${pairs.map(pair => `<div class="contact-field-row">${pair.map(fieldHtml).join('')}</div>`).join('')}
+                                </div>
+                            </div>
+                            <div class="payment-card company-map-card">
+                                <h3>🗺️ Find Us</h3>
+                                <div class="card-body company-map-card-body">
+                                    <div class="company-map-wrap">
+                                        ${mapEmbedSrc ? `<iframe class="company-map-frame" src="${mapEmbedSrc}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>` :
+                                            `<div class="company-map-placeholder">🗺️ Add a Location in company.json to show a map here</div>`}
+                                        ${mapQuery ? `<a href="${mapsLink}" target="_blank" rel="noopener" class="company-map-directions">📍 Get Directions</a>` : ''}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    }
+                }
+            };
+
+            // ============================================================
+            // 38b. BACKEND PERSISTENCE
+            // ============================================================
+            // py/server.py exposes PUT /api/data/<name>, which overwrites the
+            // matching json/<name>.json file on disk. Each domain (payment
+            // history, users, contact submissions, ...) is saved straight
+            // back to its own real json file - there's no separate "merge on
+            // load" step anymore, because the json files themselves are now
+            // always the live, current data (the same files load() already
+            // reads on startup). If the backend isn't running (e.g. someone
+            // opened this with `python3 -m http.server` instead of
+            // `python3 py/server.py`), saves fail quietly in the console and
+            // a single one-time warning is shown in the UI.
+            let backendSaveWarningShown = false;
+
+            async function saveJSON(name, data) {
+                try {
+                    const res = await authFetch('/api/data/' + name, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                    if (res.status === 401) return; // authFetch already shows the session-expired message - don't also show this one
+                    if (!res.ok) throw new Error('Save failed with status ' + res.status);
+                } catch (e) {
+                    console.warn(`Could not save json/${name}.json to the backend:`, e);
+                    if (!backendSaveWarningShown && !_sessionExpiredHandled) {
+                        backendSaveWarningShown = true;
+                        showWarning(
+                            'Changes are not being saved to disk right now. Make sure the app is running via ' +
+                            '"python3 py/server.py" (not a plain static server) so json/ files can actually be updated.'
+                        );
+                    }
+                }
+            }
+
+            function persistPaymentHistory() { return saveJSON('payment-history', paymentHistory); }
+            function persistPlanHistory() { return saveJSON('plan-history', planHistory); }
+            function persistPaymentMethods() { return saveJSON('payment-methods', paymentMethods); }
+            function persistContactSubmissions() { return saveJSON('contact-submissions', contactSubmissions); }
+            function persistApiKeys() { return saveJSON('api-keys', apiKeys); }
+            function persistNotifications() { return saveJSON('notifications', notifications); }
+
+            // Patches ONLY the currently logged-in user's own record via
+            // /api/profile/update - replaces the old blanket "overwrite all
+            // of users.json" approach, which is no longer possible now that
+            // users.json holds real passwords for every account (see
+            // py/server.py's ALLOWED_RESOURCES notes).
+            async function persistProfile() {
+                if (!profileData || !CURRENT_USER_ID) return;
+                try {
+                    const res = await authFetch('/api/profile/update', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId: CURRENT_USER_ID, fields: profileData })
+                    });
+                    if (res.status === 401) return; // authFetch already shows the session-expired message
+                    const result = await res.json();
+                    if (!res.ok) throw new Error(result.error || 'Save failed with status ' + res.status);
+                    if (result.user) profileData = result.user;
+                } catch (e) {
+                    console.warn('Could not save profile to the backend:', e);
+                    if (!backendSaveWarningShown && !_sessionExpiredHandled) {
+                        backendSaveWarningShown = true;
+                        showWarning(
+                            'Changes are not being saved to disk right now. Make sure the app is running via ' +
+                            '"python3 py/server.py" (not a plain static server) so json/ files can actually be updated.'
+                        );
+                    }
+                }
+            }
+
+            function persistServiceFiles(serviceId) {
+                if (serviceId === 'translation') {
+                    return Promise.all([
+                        saveJSON('translation-files', translationFiles),
+                        saveJSON('translation-activity-log', translationActivityLog)
+                    ]);
+                }
+                return Promise.all([
+                    saveJSON('lease-files', leaseFiles),
+                    saveJSON('lease-activity-log', leaseActivityLog)
+                ]);
+            }
+
+            // ============================================================
+            // 39. INITIALIZE (loads all data from /json/*.json files)
+            // ============================================================
+            async function fetchJSON(path) {
+                const res = await authFetch(path);
+                if (!res.ok) throw new Error('Failed to load ' + path);
+                return res.json();
+            }
+
+            async function loadAppData() {
+                const [
+                    menuConfig,
+                    paymentMethodsData,
+                    paymentHistoryData,
+                    servicesApiData,
+                    contactSubmissionsData,
+                    meData,
+                    messagesData,
+                    agentsData,
+                    companyData,
+                    apiKeysData,
+                    leaseFilesData,
+                    translationFilesData,
+                    leaseActivityLogData,
+                    translationActivityLogData,
+                    notificationsData,
+                    plansData,
+                    planHistoryData
+                ] = await Promise.all([
+                    fetchJSON('json/menu-config.json'),
+                    fetchJSON('json/payment-methods.json'),
+                    fetchJSON('json/payment-history.json'),
+                    fetchJSON('json/services-api.json'),
+                    fetchJSON('json/contact-submissions.json'),
+                    fetchJSON('/api/auth/me?userId=' + encodeURIComponent(CURRENT_USER_ID)),
+                    fetchJSON('json/messages.json'),
+                    fetchJSON('json/agents.json'),
+                    fetchJSON('json/company.json'),
+                    fetchJSON('json/api-keys.json'),
+                    fetchJSON('json/lease-files.json'),
+                    fetchJSON('json/translation-files.json'),
+                    fetchJSON('json/lease-activity-log.json'),
+                    fetchJSON('json/translation-activity-log.json'),
+                    fetchJSON('json/notifications.json'),
+                    fetchJSON('json/plans.json'),
+                    fetchJSON('json/plan-history.json')
+                ]);
+                PLANS_DATA = plansData || [];
+                planHistory = planHistoryData || [];
+
+                MENU_CONFIG = menuConfig;
+                paymentMethods = paymentMethodsData;
+                paymentHistory = paymentHistoryData;
+                SERVICES_API_DATA = servicesApiData;
+                contactSubmissions = contactSubmissionsData;
+                MESSAGES = messagesData;
+                AGENTS_BY_SERVICE = agentsData;
+                COMPANY_INFO = companyData;
+                apiKeys = apiKeysData;
+                leaseFiles = leaseFilesData;
+                translationFiles = translationFilesData;
+                leaseActivityLog = leaseActivityLogData;
+                translationActivityLog = translationActivityLogData;
+                notifications = notificationsData;
+
+                // The only user record the browser ever holds - just the
+                // currently logged-in one, fetched fresh from the server.
+                profileData = meData.user;
+
+                // System Configuration default comes from the user's own
+                // sysConfig field (users.json), not a separate json file.
+                currentSystemConfig = (profileData && profileData.sysConfig) || 'Desktop';
+
+                nextApiKeyId = apiKeys.length ? Math.max(...apiKeys.map(k => k.id)) + 1 : 1;
+                nextLeaseFileId = leaseFiles.length ? Math.max(...leaseFiles.map(f => Number(f.id) || 0)) + 1 : 1;
+                nextTranslationFileId = translationFiles.length ? Math.max(...translationFiles.map(f => Number(f.id) || 0)) + 1 : 1;
+                nextTransactionId = paymentHistory.length + 1;
+                nextPaymentId = paymentMethods.length + 1;
+                nextNotificationId = notifications.length ?
+                    Math.max(...notifications.map(n => parseInt((n.id || '').replace('NOTIF', '')) || 0)) + 1 : 1;
+            }
+
+            // ============================================================
+            // 38c. AUTHENTICATION (login / register / 2FA / forgot password)
+            // Renders into #authScreen (see index.html). Talks to the
+            // /api/auth/* routes in py/server.py. A real server-issued
+            // session token (not just the userId) is what's kept in
+            // localStorage now - the server decides who you are from the
+            // token on every request after login, instead of trusting a
+            // client-supplied userId field (which used to be editable via
+            // devtools/localStorage to silently act as a different user).
+            // ============================================================
+            const AUTH_SESSION_KEY = 'lexora_session_user_id';
+            const AUTH_TOKEN_KEY = 'lexora_session_token';
+            let AUTH_TOKEN = null;
+
+            // Every authenticated request goes through this instead of a
+            // raw authFetch() - it attaches "Authorization: Bearer <token>"
+            // automatically. The handful of pre-login auth endpoints
+            // (login/register/verify-*/forgot-password/reset-password/
+            // resend-code/email-status) don't have a token yet and use
+            // plain fetch/authPost below instead, since there's nothing to
+            // attach until one of them succeeds.
+            let _sessionExpiredHandled = false;
+
+            function handleSessionExpired() {
+                // Guards against firing more than once if several requests
+                // 401 around the same moment (e.g. a batch of parallel
+                // calls all riding the same now-expired token).
+                if (_sessionExpiredHandled || !AUTH_TOKEN) return;
+                _sessionExpiredHandled = true;
+                AUTH_TOKEN = null;
+                CURRENT_USER_ID = null;
+                localStorage.removeItem(AUTH_SESSION_KEY);
+                document.getElementById('appShell').style.display = 'none';
+                document.getElementById('authScreen').style.display = '';
+                authState.step = 'login';
+                renderAuthScreen();
+                showWarning('You have been logged out. This can happen if your account was signed in from another device or after a period of inactivity. Please log in again.');
+            }
+
+            function authFetch(url, options) {
+                options = options || {};
+                const headers = Object.assign({}, options.headers || {});
+                if (AUTH_TOKEN) headers['Authorization'] = 'Bearer ' + AUTH_TOKEN;
+                return fetch(url, Object.assign({}, options, { headers })).then(res => {
+                    if (res.status === 401 && AUTH_TOKEN) {
+                        handleSessionExpired();
+                    }
+                    return res;
+                });
+            }
+
+            let authState = {
+                step: 'login',           // login | register | forgot | verify | newPassword
+                verifyPurpose: null,     // register | login | reset
+                userId: null,
+                email: null,
+                expiresInMinutes: 4,
+                emailFailed: false,      // true if the verification email send failed server-side
+                resetCode: null,         // the code the user just verified, needed by reset-password
+                countdownInterval: null,
+                countdownSecondsLeft: 0
+            };
+
+            function authPost(path, payload) {
+                return authFetch(path, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                }).then(async (res) => {
+                    let data = {};
+                    try { data = await res.json(); } catch (e) { /* ignore */ }
+                    if (!res.ok) throw new Error(data.error || 'Something went wrong. Please try again.');
+                    return data;
+                });
+            }
+
+            function buildAuthLeftPanel() {
+                const name = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora AI Solutions';
+                const logoPath = (COMPANY_INFO && COMPANY_INFO.logo) || 'Pictures/logo.png';
+                return `
+                    <div class="auth-brand-icon"><img src="${logoPath}" alt="${escapeHtml(name)} logo" onerror="this.onerror=null;this.src='Pictures/logo.png';" /></div>
+                    <h1 class="auth-brand-title">${name}</h1>
+                    <p class="auth-brand-tagline">Lease Abstraction AI Tool</p>
+                    <p class="auth-brand-sub">RAG · Structured Extraction · Review UI.<br/>RAG-grounded Claude extraction with source citations.</p>
+                    <div class="auth-feature-grid">
+                        <div class="auth-feature-card">
+                            <div class="auth-feature-title">📄 Structured Fields</div>
+                            <div class="auth-feature-desc">Insurance, CAM, Options, Late Fee</div>
+                        </div>
+                        <div class="auth-feature-card">
+                            <div class="auth-feature-title">🔍 Rent Roll Audit</div>
+                            <div class="auth-feature-desc">53% rent roll error audit — escalation &amp; CAM caps</div>
+                        </div>
+                        <div class="auth-feature-card">
+                            <div class="auth-feature-title">✏️ Human Review UI</div>
+                            <div class="auth-feature-desc">Verify or Edit every extracted field</div>
+                        </div>
+                        <div class="auth-feature-card">
+                            <div class="auth-feature-title">🗂️ Lease Repository</div>
+                            <div class="auth-feature-desc">All abstracted lease history stored</div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function buildLoginCard() {
+                return `
+                    <h2 class="auth-card-title">Welcome Back</h2>
+                    <div class="auth-form-group">
+                        <input type="email" id="loginEmail" class="auth-input" placeholder="Email Address" />
+                    </div>
+                    <div class="auth-form-group auth-password-group">
+                        <input type="password" id="loginPassword" class="auth-input" placeholder="Password" />
+                        <span class="auth-eye" onclick="authTogglePassword('loginPassword', this)">👁️</span>
+                    </div>
+                    <div id="authErrorBox" class="auth-error-box" style="display:none;"></div>
+                    <div class="auth-btn-row">
+                        <button class="auth-btn-primary" onclick="handleAuthLogin()">Login</button>
+                        <button class="auth-btn-secondary" onclick="authResetForm(['loginEmail','loginPassword'])">Reset</button>
+                    </div>
+                    <div class="auth-links">
+                        <a onclick="authGoTo('forgot')">Forgot Password?</a>
+                        <a onclick="authGoTo('register')">Create Account</a>
+                    </div>
+                `;
+            }
+
+            function buildRegisterCard() {
+                return `
+                    <h2 class="auth-card-title">Create Account</h2>
+                    <p class="auth-card-note">Fill your details — verification code will be sent.</p>
+                    <div class="auth-form-row">
+                        <input type="text" id="regFirstName" class="auth-input" placeholder="First Name *" />
+                        <input type="text" id="regLastName" class="auth-input" placeholder="Last Name *" />
+                    </div>
+                    <div class="auth-form-row">
+                        <select id="regGender" class="auth-input">
+                            <option value="">Select Gender *</option>
+                            <option value="Male">Male</option>
+                            <option value="Female">Female</option>
+                            <option value="Other">Other</option>
+                        </select>
+                        <input type="date" id="regBirthdate" class="auth-input" />
+                    </div>
+                    <div class="auth-form-group">
+                        <input type="text" id="regMobile" class="auth-input" placeholder="Mobile No *" />
+                    </div>
+                    <div class="auth-form-group">
+                        <input type="email" id="regEmail" class="auth-input" placeholder="Email Address *" />
+                    </div>
+                    <div class="auth-form-row">
+                        <div class="auth-password-group">
+                            <input type="password" id="regPassword" class="auth-input" placeholder="Password *" />
+                            <span class="auth-eye" onclick="authTogglePassword('regPassword', this)">👁️</span>
+                        </div>
+                        <div class="auth-password-group">
+                            <input type="password" id="regConfirmPassword" class="auth-input" placeholder="Confirm *" />
+                            <span class="auth-eye" onclick="authTogglePassword('regConfirmPassword', this)">👁️</span>
+                        </div>
+                    </div>
+                    <div class="auth-hint">Min 8 characters, with 1 uppercase, 1 lowercase, 1 number and 1 special character.</div>
+                    <div id="authErrorBox" class="auth-error-box" style="display:none;"></div>
+                    <div class="auth-btn-row">
+                        <button class="auth-btn-primary" onclick="handleAuthRegister()">Submit</button>
+                        <button class="auth-btn-secondary" onclick="authGoTo('login')">Back to Login</button>
+                    </div>
+                `;
+            }
+
+            function buildForgotCard() {
+                return `
+                    <h2 class="auth-card-title">Reset Password</h2>
+                    <p class="auth-card-note">Enter your email to receive a verification code.</p>
+                    <div class="auth-form-group">
+                        <input type="email" id="forgotEmail" class="auth-input" placeholder="Email Address" />
+                    </div>
+                    <div id="authErrorBox" class="auth-error-box" style="display:none;"></div>
+                    <div class="auth-btn-row">
+                        <button class="auth-btn-primary" onclick="handleAuthForgotSubmit()">Send Code</button>
+                        <button class="auth-btn-secondary" onclick="authGoTo('login')">Back to Login</button>
+                    </div>
+                `;
+            }
+
+            function buildVerifyCard() {
+                const titles = {
+                    register: '📝 Verify Registration',
+                    login: '🔒 Login Verify',
+                    reset: '🔑 Reset Password'
+                };
+                const title = titles[authState.verifyPurpose] || 'Verify';
+                // Note: we intentionally never surface the actual code here.
+                // If the email send failed, that's a server-side problem
+                // (SMTP/config) - showing the code as a workaround would mask
+                // a real issue that needs fixing, and would also mean anyone
+                // who can see this screen could log in as this user without
+                // ever touching their inbox.
+                const fallbackBox = authState.emailFailed ? `
+                    <div class="auth-fallback-box">
+                        ⚠️ We couldn't send the verification email right now - this looks like a
+                        temporary server/email issue on our end, not a problem with your account.
+                        Please try <button type="button" class="auth-copy-code-btn" onclick="handleAuthResend()">resending the code</button>
+                        in a minute, or contact support if this keeps happening.
+                    </div>
+                ` : '';
+                return `
+                    <h2 class="auth-card-title">${title}</h2>
+                    <p class="auth-card-note">Enter the 6-digit code sent to<br/>${escapeHtml(authState.email || '')}</p>
+                    ${fallbackBox}
+                    <div class="auth-otp-row" id="authOtpRow">
+                        ${[0, 1, 2, 3, 4, 5].map(i => `<input type="text" maxlength="1" class="auth-otp-box" data-otp-index="${i}" inputmode="numeric" autocomplete="one-time-code" />`).join('')}
+                    </div>
+                    <div class="auth-countdown" id="authCountdown">Expires in --:--</div>
+                    <div id="authErrorBox" class="auth-error-box" style="display:none;"></div>
+                    <div class="auth-btn-row">
+                        <button class="auth-btn-primary" onclick="handleAuthVerifySubmit()">Verify</button>
+                        <button class="auth-btn-secondary" onclick="handleAuthResend()">Resend</button>
+                    </div>
+                    <div class="auth-links">
+                        <a onclick="authGoBackFromVerify()">← Back</a>
+                    </div>
+                `;
+            }
+
+            function buildNewPasswordCard() {
+                return `
+                    <h2 class="auth-card-title">Set New Password</h2>
+                    <p class="auth-card-note">Choose a new password for your account.</p>
+                    <div class="auth-form-group auth-password-group">
+                        <input type="password" id="newPassword1" class="auth-input" placeholder="New Password *" />
+                        <span class="auth-eye" onclick="authTogglePassword('newPassword1', this)">👁️</span>
+                    </div>
+                    <div class="auth-form-group auth-password-group">
+                        <input type="password" id="newPassword2" class="auth-input" placeholder="Confirm New Password *" />
+                        <span class="auth-eye" onclick="authTogglePassword('newPassword2', this)">👁️</span>
+                    </div>
+                    <div class="auth-hint">Min 8 characters, with 1 uppercase, 1 lowercase, 1 number and 1 special character.</div>
+                    <div id="authErrorBox" class="auth-error-box" style="display:none;"></div>
+                    <div class="auth-btn-row">
+                        <button class="auth-btn-primary" onclick="handleAuthSetNewPassword()">Save New Password</button>
+                    </div>
+                `;
+            }
+
+            function buildAuthCard() {
+                switch (authState.step) {
+                    case 'register': return buildRegisterCard();
+                    case 'forgot': return buildForgotCard();
+                    case 'verify': return buildVerifyCard();
+                    case 'newPassword': return buildNewPasswordCard();
+                    default: return buildLoginCard();
+                }
+            }
+
+            function renderAuthScreen() {
+                const root = document.getElementById('authScreen');
+                if (!root) return;
+                root.innerHTML = `
+                    <div class="auth-wrapper">
+                        <div class="auth-left">${buildAuthLeftPanel()}</div>
+                        <div class="auth-right"><div class="auth-card">${buildAuthCard()}</div></div>
+                    </div>
+                `;
+                if (authState.step === 'verify') {
+                    wireOtpBoxes();
+                    startAuthCountdown();
+                }
+            }
+
+            function wireOtpBoxes() {
+                const boxes = Array.from(document.querySelectorAll('.auth-otp-box'));
+                boxes.forEach((box, idx) => {
+                    box.addEventListener('input', () => {
+                        box.value = box.value.replace(/[^0-9]/g, '').slice(0, 1);
+                        if (box.value && idx < boxes.length - 1) boxes[idx + 1].focus();
+                    });
+                    box.addEventListener('keydown', (e) => {
+                        if (e.key === 'Backspace' && !box.value && idx > 0) boxes[idx - 1].focus();
+                    });
+                    box.addEventListener('paste', (e) => {
+                        const pasted = (e.clipboardData || window.clipboardData).getData('text').replace(/[^0-9]/g, '');
+                        if (pasted.length > 1) {
+                            e.preventDefault();
+                            pasted.slice(0, 6).split('').forEach((digit, i) => { if (boxes[i]) boxes[i].value = digit; });
+                            (boxes[Math.min(pasted.length, 6) - 1] || boxes[5]).focus();
+                        }
+                    });
+                });
+                if (boxes[0]) boxes[0].focus();
+            }
+
+            function getOtpValue() {
+                return Array.from(document.querySelectorAll('.auth-otp-box')).map(b => b.value || '').join('');
+            }
+
+            function startAuthCountdown() {
+                clearInterval(authState.countdownInterval);
+                authState.countdownSecondsLeft = Math.round((authState.expiresInMinutes || 4) * 60);
+                updateCountdownDisplay();
+                authState.countdownInterval = setInterval(() => {
+                    authState.countdownSecondsLeft--;
+                    if (authState.countdownSecondsLeft <= 0) {
+                        clearInterval(authState.countdownInterval);
+                        updateCountdownDisplay(true);
+                        return;
+                    }
+                    updateCountdownDisplay();
+                }, 1000);
+            }
+
+            function updateCountdownDisplay(expired) {
+                const el = document.getElementById('authCountdown');
+                if (!el) return;
+                if (expired) {
+                    el.textContent = 'Code expired - tap Resend for a new one.';
+                    el.classList.add('expired');
+                    return;
+                }
+                const m = Math.floor(authState.countdownSecondsLeft / 60);
+                const s = authState.countdownSecondsLeft % 60;
+                el.textContent = `Expires in ${m}:${String(s).padStart(2, '0')}`;
+                el.classList.remove('expired');
+            }
+
+            window.authGoTo = function(step) {
+                clearInterval(authState.countdownInterval);
+                authState.step = step;
+                authState.emailFailed = false;
+                renderAuthScreen();
+            };
+
+            window.authGoBackFromVerify = function() {
+                if (authState.verifyPurpose === 'reset') authGoTo('forgot');
+                else if (authState.verifyPurpose === 'register') authGoTo('register');
+                else authGoTo('login');
+            };
+
+            window.authTogglePassword = function(id, el) {
+                const input = document.getElementById(id);
+                if (!input) return;
+                if (input.type === 'password') { input.type = 'text'; el.textContent = '🙈'; }
+                else { input.type = 'password'; el.textContent = '👁️'; }
+            };
+
+            window.authResetForm = function(ids) {
+                ids.forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+                hideAuthError();
+            };
+
+            function showAuthError(msg) {
+                const box = document.getElementById('authErrorBox');
+                if (box) { box.textContent = msg; box.style.display = 'block'; }
+            }
+
+            function hideAuthError() {
+                const box = document.getElementById('authErrorBox');
+                if (box) box.style.display = 'none';
+            }
+
+            // Verification emails are now sent in the background (see
+            // py/server.py's _send_verification_email_async) so the verify
+            // card shows up immediately instead of waiting on SMTP. This
+            // polls for the outcome right after, and if the send actually
+            // failed, drops the fallback code into the already-visible
+            // card - "immediately" in wall-clock terms, just not blocking
+            // the initial screen.
+            function pollEmailStatus(userId, attemptsLeft) {
+                if (attemptsLeft === undefined) attemptsLeft = 8;
+                setTimeout(async () => {
+                    try {
+                        const res = await fetch('/api/auth/email-status?userId=' + encodeURIComponent(userId));
+                        const data = await res.json();
+                        if (data.status === 'failed') {
+                            authState.emailFailed = true;
+                            renderAuthScreen();
+                            return;
+                        }
+                        if (data.status === 'sent') {
+                            return;
+                        }
+                    } catch (e) { /* keep trying */ }
+                    if (attemptsLeft > 1) pollEmailStatus(userId, attemptsLeft - 1);
+                }, 1000);
+            }
+
+            window.handleAuthLogin = async function() {
+                hideAuthError();
+                const email = document.getElementById('loginEmail').value.trim();
+                const password = document.getElementById('loginPassword').value;
+                if (!email || !password) { showAuthError('Please enter both email and password.'); return; }
+
+                try {
+                    const res = await authPost('/api/auth/login', { email, password });
+                    if (res.requires2FA) {
+                        authState.verifyPurpose = 'login';
+                        authState.userId = res.userId;
+                        authState.email = res.email;
+                        authState.expiresInMinutes = res.expiresInMinutes;
+                        authState.emailFailed = false;
+                        authGoTo('verify');
+                        pollEmailStatus(res.userId);
+                    } else {
+                        completeLogin(res.userId, res.token);
+                    }
+                } catch (err) {
+                    showAuthError(err.message);
+                }
+            };
+
+            window.handleAuthRegister = async function() {
+                hideAuthError();
+                const firstName = document.getElementById('regFirstName').value.trim();
+                const lastName = document.getElementById('regLastName').value.trim();
+                const gender = document.getElementById('regGender').value;
+                const birthdate = document.getElementById('regBirthdate').value;
+                const mobile = document.getElementById('regMobile').value.trim();
+                const email = document.getElementById('regEmail').value.trim();
+                const password = document.getElementById('regPassword').value;
+                const confirmPassword = document.getElementById('regConfirmPassword').value;
+
+                if (!firstName || !lastName || !email || !password) {
+                    showAuthError('Please fill in all required fields.');
+                    return;
+                }
+                if (password !== confirmPassword) {
+                    showAuthError('Password and Confirm do not match.');
+                    return;
+                }
+
+                try {
+                    const res = await authPost('/api/auth/register', {
+                        firstName, lastName, gender, birthdate, mobile, email, password
+                    });
+                    authState.verifyPurpose = 'register';
+                    authState.userId = res.userId;
+                    authState.email = res.email;
+                    authState.expiresInMinutes = res.expiresInMinutes;
+                    authState.emailFailed = false;
+                    authGoTo('verify');
+                    pollEmailStatus(res.userId);
+                } catch (err) {
+                    showAuthError(err.message);
+                }
+            };
+
+            window.handleAuthForgotSubmit = async function() {
+                hideAuthError();
+                const email = document.getElementById('forgotEmail').value.trim();
+                if (!email) { showAuthError('Please enter your email address.'); return; }
+
+                try {
+                    const res = await authPost('/api/auth/forgot-password', { email });
+                    authState.verifyPurpose = 'reset';
+                    authState.userId = res.userId;
+                    authState.email = res.email;
+                    authState.expiresInMinutes = res.expiresInMinutes;
+                    authState.emailFailed = false;
+                    authGoTo('verify');
+                    pollEmailStatus(res.userId);
+                } catch (err) {
+                    showAuthError(err.message);
+                }
+            };
+
+            window.handleAuthVerifySubmit = async function() {
+                hideAuthError();
+                const code = getOtpValue();
+                if (code.length !== 6) { showAuthError('Please enter the 6-digit code.'); return; }
+
+                try {
+                    if (authState.verifyPurpose === 'register') {
+                        await authPost('/api/auth/verify-register', { userId: authState.userId, code });
+                        clearInterval(authState.countdownInterval);
+                        authGoTo('login');
+                        showMessage('✅ Verified', 'Your account has been verified. Please log in.', ['OK']);
+                    } else if (authState.verifyPurpose === 'login') {
+                        const verifyRes = await authPost('/api/auth/verify-login', { userId: authState.userId, code });
+                        clearInterval(authState.countdownInterval);
+                        completeLogin(authState.userId, verifyRes.token);
+                    } else if (authState.verifyPurpose === 'reset') {
+                        await authPost('/api/auth/verify-reset-code', { userId: authState.userId, code });
+                        authState.resetCode = code;
+                        clearInterval(authState.countdownInterval);
+                        authGoTo('newPassword');
+                    }
+                } catch (err) {
+                    showAuthError(err.message);
+                }
+            };
+
+            window.handleAuthResend = async function() {
+                hideAuthError();
+                try {
+                    const res = await authPost('/api/auth/resend-code', { userId: authState.userId });
+                    authState.expiresInMinutes = res.expiresInMinutes;
+                    authState.emailFailed = false;
+                    renderAuthScreen();
+                    pollEmailStatus(authState.userId);
+                    showMessage('📨 Code Resent', 'A new verification code has been sent.', ['OK']);
+                } catch (err) {
+                    showAuthError(err.message);
+                }
+            };
+
+            window.handleAuthSetNewPassword = async function() {
+                hideAuthError();
+                const p1 = document.getElementById('newPassword1').value;
+                const p2 = document.getElementById('newPassword2').value;
+                if (p1 !== p2) { showAuthError('Passwords do not match.'); return; }
+
+                try {
+                    await authPost('/api/auth/reset-password', {
+                        userId: authState.userId, code: authState.resetCode, newPassword: p1
+                    });
+                    authGoTo('login');
+                    showMessage('✅ Password Updated', 'Your password has been reset. Please log in.', ['OK']);
+                } catch (err) {
+                    showAuthError(err.message);
+                }
+            };
+
+            function completeLogin(userId, token) {
+                CURRENT_USER_ID = userId;
+                AUTH_TOKEN = token;
+                localStorage.setItem(AUTH_SESSION_KEY, userId);
+                localStorage.setItem(AUTH_TOKEN_KEY, token);
+                document.getElementById('authScreen').style.display = 'none';
+                document.getElementById('appShell').style.display = '';
+                initializeApp();
+            }
+
+            function performLogout() {
+                // Fire-and-forget - revokes the token server-side too, not
+                // just locally, so it can't be replayed after logout.
+                if (AUTH_TOKEN) {
+                    authFetch('/api/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+                        .catch(() => {});
+                }
+                localStorage.removeItem(AUTH_SESSION_KEY);
+                localStorage.removeItem(AUTH_TOKEN_KEY);
+                CURRENT_USER_ID = null;
+                AUTH_TOKEN = null;
+                profileData = null;
+                document.getElementById('appShell').style.display = 'none';
+                authState = { step: 'login', verifyPurpose: null, userId: null, email: null,
+                    expiresInMinutes: 4, emailFailed: false, resetCode: null,
+                    countdownInterval: null, countdownSecondsLeft: 0 };
+                const authScreen = document.getElementById('authScreen');
+                authScreen.style.display = '';
+                renderAuthScreen();
+            }
+
+            function showAuthScreen() {
+                document.getElementById('appShell').style.display = 'none';
+                document.getElementById('authScreen').style.display = '';
+                authState.step = 'login';
+                renderAuthScreen();
+            }
+
+            // Item 5 - handles the "✅ Fill In Code For Me" link from the
+            // verification email (?verifyCode=&verifyUserId=&verifyPurpose=).
+            // Email clients strip inline JS/onclick, so a real one-click
+            // clipboard copy from inside the email itself isn't reliably
+            // possible anywhere - this sidesteps that entirely by letting
+            // the code travel in the URL instead, then auto-filling the
+            // OTP boxes the moment the app loads. Cleans the URL
+            // afterward so refreshing doesn't repeat it or leave the code
+            // sitting in browser history longer than necessary.
+            function tryHandleMagicVerifyLink() {
+                const params = new URLSearchParams(window.location.search);
+                const code = params.get('verifyCode');
+                const userId = params.get('verifyUserId');
+                if (!code || !userId) return false;
+                const purpose = params.get('verifyPurpose') || 'login';
+
+                history.replaceState({}, '', window.location.pathname);
+
+                document.getElementById('appShell').style.display = 'none';
+                document.getElementById('authScreen').style.display = '';
+                authState.step = 'verify';
+                authState.userId = userId;
+                authState.verifyPurpose = purpose;
+                authState.emailFailed = false;
+                renderAuthScreen();
+                requestAnimationFrame(() => {
+                    const boxes = Array.from(document.querySelectorAll('.auth-otp-box'));
+                    code.slice(0, boxes.length).split('').forEach((digit, i) => { if (boxes[i]) boxes[i].value = digit; });
+                });
+                return true;
+            }
+
+            let _livePollInterval = null;
+
+            // Item - neither side of the balance-approval flow should need
+            // a manual page refresh: a new request should show up for
+            // Admin/Developer, and an approve/reject should show up for
+            // the requesting user, both without reloading. There's no
+            // websocket/SSE layer in this app, so this polls the same
+            // notifications.json / payment-history.json every 15 seconds
+            // (with a cache-busting query param, since static files would
+            // otherwise be served from the browser's HTTP cache) and only
+            // re-renders what's currently on screen if something actually
+            // changed - cheap enough to run continuously, and "new
+            // notification within ~15s" reads as real-time in practice.
+            // ============================================================
+            // Item 1 - proactive session-timeout warning. The backend
+            // auto-logs-out a session after 30 minutes of no activity
+            // (IDLE_TIMEOUT_MINUTES in py/server.py) - this tracks the
+            // same 30-minute window on the client and, 1 minute before it
+            // would hit, shows a countdown with a Resume button instead
+            // of just letting the session silently expire mid-task. Any
+            // real activity (mouse/keyboard/click, or any successful API
+            // call) resets the clock - this is NOT a fixed "log out after
+            // X minutes no matter what" timer.
+            // ============================================================
+            const SESSION_WARNING_AT_MS = 29 * 60 * 1000;   // show the countdown at 29 min idle...
+            const SESSION_TIMEOUT_MS = 30 * 60 * 1000;      // ...matching the server's 30-min idle logout
+            let lastUserActivityTime = Date.now();
+            let sessionWarningInterval = null;
+            let sessionWarningShown = false;
+
+            function recordUserActivity() {
+                lastUserActivityTime = Date.now();
+                if (sessionWarningShown) {
+                    dismissSessionWarning();
+                }
+            }
+
+            ['mousedown', 'keydown', 'touchstart', 'scroll'].forEach(evt => {
+                document.addEventListener(evt, recordUserActivity, { passive: true });
+            });
+
+            function startSessionTimeoutWatcher() {
+                if (sessionWarningInterval) return;
+                sessionWarningInterval = setInterval(() => {
+                    if (!CURRENT_USER_ID || !AUTH_TOKEN) return;
+                    const idleFor = Date.now() - lastUserActivityTime;
+                    if (idleFor >= SESSION_TIMEOUT_MS) {
+                        dismissSessionWarning();
+                        handleSessionExpired();
+                    } else if (idleFor >= SESSION_WARNING_AT_MS && !sessionWarningShown) {
+                        showSessionWarning();
+                    } else if (sessionWarningShown) {
+                        updateSessionWarningCountdown();
+                    }
+                }, 1000);
+            }
+
+            function showSessionWarning() {
+                sessionWarningShown = true;
+                const html = `
+                    <div class="admin-modal-overlay" id="sessionWarningOverlay">
+                        <div class="admin-modal-card" style="max-width:420px;text-align:center;">
+                            <h3 class="admin-modal-title">⏳ Session Expiring Soon</h3>
+                            <p style="font-size:0.9rem;color:rgba(0,0,0,0.7);margin:14px 0;">
+                                You've been inactive for a while. For your security, you'll be logged out in
+                            </p>
+                            <p style="font-size:2.2rem;font-weight:700;color:#c0392b;margin:0 0 16px 0;" id="sessionWarningCountdown">1:00</p>
+                            <div class="lease-review-actions" style="justify-content:center;">
+                                <button class="plan-cta-btn" onclick="resumeSessionFromWarning()">▶ Resume Session</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                const existing = document.getElementById('sessionWarningOverlay');
+                if (existing) existing.remove();
+                document.body.insertAdjacentHTML('beforeend', html);
+            }
+
+            function updateSessionWarningCountdown() {
+                const el = document.getElementById('sessionWarningCountdown');
+                if (!el) return;
+                const remainingMs = Math.max(0, SESSION_TIMEOUT_MS - (Date.now() - lastUserActivityTime));
+                const totalSeconds = Math.ceil(remainingMs / 1000);
+                const mm = Math.floor(totalSeconds / 60);
+                const ss = totalSeconds % 60;
+                el.textContent = `${mm}:${String(ss).padStart(2, '0')}`;
+            }
+
+            function dismissSessionWarning() {
+                sessionWarningShown = false;
+                const overlay = document.getElementById('sessionWarningOverlay');
+                if (overlay) overlay.remove();
+            }
+
+            window.resumeSessionFromWarning = async function() {
+                recordUserActivity();
+                // A lightweight authenticated call to genuinely refresh the
+                // SERVER's own lastActiveAt too (not just the client-side
+                // clock) - /api/auth/me is already a plain read, no side
+                // effects, just needs a valid session to succeed.
+                try { await authFetch('/api/auth/me?userId=' + encodeURIComponent(CURRENT_USER_ID)); } catch (e) { /* handled by authFetch's own 401 handling if it's actually expired */ }
+            };
+
+            function startLivePolling() {
+                if (_livePollInterval) return;
+                _livePollInterval = setInterval(async () => {
+                    if (!CURRENT_USER_ID || !AUTH_TOKEN) return;
+                    try {
+                        const [notifRes, payRes] = await Promise.all([
+                            fetch('json/notifications.json?_=' + Date.now()),
+                            fetch('json/payment-history.json?_=' + Date.now()),
+                        ]);
+                        const [freshNotifications, freshPaymentHistory] = await Promise.all([notifRes.json(), payRes.json()]);
+
+                        const notifChanged = JSON.stringify(freshNotifications) !== JSON.stringify(notifications);
+                        const payChanged = JSON.stringify(freshPaymentHistory) !== JSON.stringify(paymentHistory);
+
+                        if (notifChanged) {
+                            notifications = freshNotifications;
+                            updateNotificationBadge();
+                            if (activeItemId === 'notification') renderNotificationTable();
+                        }
+                        if (payChanged) {
+                            paymentHistory = freshPaymentHistory;
+                            updateBalanceDisplay();
+                            if (activeItemId === 'payment-history') renderPaymentHistory();
+                            if (activeItemId === 'dashboard' && document.getElementById('todayTableBody')) renderTodayTransactions();
+                        }
+                    } catch (e) { /* a missed poll just tries again in 15s - not worth surfacing to the user */ }
+                }, 15000);
+            }
+
+            async function boot() {
+                try {
+                    COMPANY_INFO = await fetchJSON('json/company.json');
+                } catch (e) { /* auth screen falls back to a default name */ }
+
+                if (tryHandleMagicVerifyLink()) return;
+
+                const savedUserId = localStorage.getItem(AUTH_SESSION_KEY);
+                const savedToken = localStorage.getItem(AUTH_TOKEN_KEY);
+                if (savedUserId && savedToken) {
+                    AUTH_TOKEN = savedToken;
+                    try {
+                        // The server derives identity from the token itself
+                        // now (not the userId in the URL) - this doubles as
+                        // validating the saved token is still good.
+                        const res = await authFetch('/api/auth/me');
+                        if (res.ok) {
+                            CURRENT_USER_ID = savedUserId;
+                            document.getElementById('authScreen').style.display = 'none';
+                            document.getElementById('appShell').style.display = '';
+                            return initializeApp();
+                        }
+                    } catch (e) { /* fall through to login */ }
+                    AUTH_TOKEN = null;
+                    localStorage.removeItem(AUTH_SESSION_KEY);
+                    localStorage.removeItem(AUTH_TOKEN_KEY);
+                }
+                showAuthScreen();
+            }
+            async function initializeApp() {
+                try {
+                    await loadAppData();
+                    await loadUserDirectory();
+                } catch (err) {
+                    console.error('Failed to load application data:', err);
+                    document.getElementById('contentBody').innerHTML =
+                        '<div class="content-section"><h3>⚠️ Unable to load data</h3>' +
+                        '<p>Could not load JSON data files. Browsers block local file fetches when you open index.html ' +
+                        'directly (file://) or use a plain static server. Run ' +
+                        '<code>python3 py/server.py</code> in the project folder, and open ' +
+                        '<code>http://localhost:8000/</code>.</p></div>';
+                    return;
+                }
+
+                setupUserProfile();
+                applyCompanyBranding();
+                renderMenu();
+                updateNotificationBadge();
+                startLivePolling();
+                startSessionTimeoutWatcher();
+
+                const dashboardItem = MENU_CONFIG.mainMenu.find(item => item.id === 'dashboard');
+                if (dashboardItem) {
+                    loadContent('dashboard', null);
+                }
+
+                console.log('✅ Menu system ready with JSON configuration!');
+                console.log('Payment Methods:', paymentMethods);
+                console.log('Payment History:', paymentHistory);
+                console.log('Lease Files:', getMyLeaseFiles());
+                console.log('Translation Files:', getMyTranslationFiles());
+            }
+
+            boot();
+        })();
