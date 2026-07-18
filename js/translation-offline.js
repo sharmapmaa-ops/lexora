@@ -1110,7 +1110,10 @@ Important:
     opts = opts || {};
     // apiKey ab server proxy (.env) se lagti hai — browser me nahi
     const apiKey = 'proxy';
-    const model = opts.model || 'google/gemini-2.5-flash';
+    // REFERENCE PARITY: jis model se HTML ka reference output bana tha
+    // wahi model. Same prompt + alag model = alag output — text quality ka
+    // asli farak yahi tha (gemini-2.5-flash vs reference ka model).
+    const model = opts.model || 'google/gemini-3.1-flash-image';
     const withImage = !!opts.withImage;
     const targetLang = opts.targetLang || 'original';
     const keepOriginal = !targetLang || String(targetLang).toLowerCase() === 'original';
