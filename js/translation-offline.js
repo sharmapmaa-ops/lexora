@@ -594,6 +594,174 @@
   // exact bounding box, color (median), font-size (= measured height * 0.8).
   // Isse coords/width/size/color guess se MEASUREMENT ban jaate hain.
   // Canvas-based (sync) — Image load nahi.
+  // ==== HTML-PARITY PORT (Cordinates___Font_Size.html se verbatim) ====
+  // normalizeBlock: permille/percent/fraction/pixel -> dst POINTS space.
+  function normalizeBlockHtml(block, srcW, srcH, dstW, dstH, units){
+    let left = parseFloat(block.left) || 0;
+    let top = parseFloat(block.top) || 0;
+    let width = parseFloat(block.width) || 0;
+    let height = parseFloat(block.height) || 0;
+
+    if (units === 'fraction'){ left *= srcW; width *= srcW; top *= srcH; height *= srcH; }
+    else if (units === 'percent'){ left = left/100*srcW; width = width/100*srcW; top = top/100*srcH; height = height/100*srcH; }
+    else if (units === 'permille'){ left = left/1000*srcW; width = width/1000*srcW; top = top/1000*srcH; height = height/1000*srcH; }
+
+    const sx = dstW / srcW, sy = dstH / srcH;
+    left *= sx; width *= sx; top *= sy; height *= sy;
+
+    left = Math.max(0, Math.min(left, dstW - 1));
+    top = Math.max(0, Math.min(top, dstH - 1));
+    if (width <= 0) width = Math.min(200, dstW - left);
+    if (height <= 0) height = 24;
+    width = Math.min(width, dstW - left);
+    height = Math.min(height, dstH - top);
+
+    let fontPx = parseFloat(block.font_size) || 0;
+    if (fontPx > 0){
+      if (units === 'fraction') fontPx *= srcH;
+      else if (units === 'percent') fontPx = fontPx/100*srcH;
+      else if (units === 'permille') fontPx = fontPx/1000*srcH;
+      fontPx *= sy;
+    }
+    if (!fontPx || fontPx < 3) fontPx = Math.max(6, Math.min(height * 0.72, 48));
+
+    let color = String(block.color || '000000').replace('#', '').trim();
+    if (!/^[0-9a-fA-F]{6}$/.test(color)) color = '000000';
+
+    const style = String(block.style || '').toLowerCase();
+    const alignRaw = String(block.align || 'left').toLowerCase();
+    const jc = alignRaw === 'center' ? 'center' : alignRaw === 'right' ? 'right'
+             : alignRaw === 'justify' ? 'both' : 'left';
+
+    return { left: left, top: top, width: width, height: height, fontPx: fontPx,
+             color: color, bold: style.indexOf('bold') !== -1,
+             italic: style.indexOf('italic') !== -1, jc: jc, text: String(block.text || '') };
+  }
+
+  // HTML ka textbox XML — page-relative, noAutofit, zero insets, NO bidi/rtl,
+  // model ka align. Koi collision/wrap/shrink nahi: box jahan measure hui,
+  // wahin exactly place hoti hai.
+  function textBoxXmlHtmlParity(b, boxId){
+    const E = 12700;
+    const fontHalfPts = Math.max(2, Math.round(b.fontPx * 2));
+    const rPr = '<w:rPr>' + (b.bold ? '<w:b/><w:bCs/>' : '') + (b.italic ? '<w:i/><w:iCs/>' : '') +
+      '<w:color w:val="' + b.color + '"/><w:sz w:val="' + fontHalfPts + '"/>' +
+      '<w:szCs w:val="' + fontHalfPts + '"/></w:rPr>';
+    const pPr = '<w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>' +
+      '<w:jc w:val="' + b.jc + '"/></w:pPr>';
+    const parts = b.text.split(/\r?\n/);
+    let runsXml = '';
+    parts.forEach(function(line, li){
+      if (li > 0) runsXml += '<w:r>' + rPr + '<w:br/></w:r>';
+      runsXml += '<w:r>' + rPr + '<w:t xml:space="preserve">' + esc(line) + '</w:t></w:r>';
+    });
+    const leftEmu = Math.round(b.left * E), topEmu = Math.round(b.top * E);
+    const wEmu = Math.round(b.width * E), hEmu = Math.round(b.height * E);
+    return '<w:r><w:rPr><w:noProof/></w:rPr><mc:AlternateContent><mc:Choice Requires="wps"><w:drawing>' +
+      '<wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="' + (boxId + 100) +
+      '" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>' +
+      '<wp:positionH relativeFrom="page"><wp:posOffset>' + leftEmu + '</wp:posOffset></wp:positionH>' +
+      '<wp:positionV relativeFrom="page"><wp:posOffset>' + topEmu + '</wp:posOffset></wp:positionV>' +
+      '<wp:extent cx="' + wEmu + '" cy="' + hEmu + '"/><wp:effectExtent l="0" t="0" r="0" b="0"/>' +
+      '<wp:wrapNone/><wp:docPr id="' + boxId + '" name="TextBox ' + boxId + '"/><wp:cNvGraphicFramePr/>' +
+      '<a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">' +
+      '<wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:xfrm><a:off x="0" y="0"/>' +
+      '<a:ext cx="' + wEmu + '" cy="' + hEmu + '"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>' +
+      '<a:noFill/><a:ln><a:noFill/></a:ln></wps:spPr><wps:txbx><w:txbxContent><w:p>' + pPr + runsXml +
+      '</w:p></w:txbxContent></wps:txbx>' +
+      '<wps:bodyPr rot="0" vert="horz" wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t">' +
+      '<a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing>' +
+      '</mc:Choice></mc:AlternateContent></w:r>';
+  }
+
+  // HTML ka page structure: har page = ek <w:p> (background + saare boxes),
+  // uske baad sectPr wala alag <w:p>; last page ka sectPr body level pe.
+  async function buildDocxHtmlParity(pages, includeBg){
+    const zip = new JSZip();
+    zip.file('[Content_Types].xml',
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+      '<Default Extension="xml" ContentType="application/xml"/>' +
+      '<Default Extension="jpg" ContentType="image/jpeg"/>' +
+      '<Default Extension="png" ContentType="image/png"/>' +
+      '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+      '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
+      '</Types>');
+    zip.file('_rels/.rels',
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+      '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="word/styles.xml"/>' +
+      '</Relationships>');
+    zip.file('word/styles.xml',
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr>' +
+      '<w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="24"/><w:szCs w:val="24"/>' +
+      '</w:rPr></w:rPrDefault></w:docDefaults></w:styles>');
+
+    let relsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">';
+    let doc = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+      'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
+      'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" ' +
+      'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
+      'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" ' +
+      'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" ' +
+      'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" mc:Ignorable="wps"><w:body>';
+
+    let shapeId = 1;
+    const E = 12700;
+    pages.forEach(function(pg, idx){
+      const pw = pg.wPt, ph = pg.hPt;
+      const orient = pw > ph ? ' w:orient="landscape"' : '';
+      doc += '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>';
+
+      if (includeBg && pg.jpegBase64){
+        const bgId = shapeId++;
+        const relId = 'rIdImg' + (idx + 1);
+        relsXml += '<Relationship Id="' + relId + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/page' + (idx+1) + '.jpg"/>';
+        zip.file('word/media/page' + (idx+1) + '.jpg', pg.jpegBase64, { base64: true });
+        doc += '<w:r><w:rPr><w:noProof/></w:rPr><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" ' +
+          'simplePos="0" relativeHeight="1" behindDoc="1" locked="0" layoutInCell="1" allowOverlap="1">' +
+          '<wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>' +
+          '<wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV>' +
+          '<wp:extent cx="' + Math.round(pw*E) + '" cy="' + Math.round(ph*E) + '"/>' +
+          '<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="' + bgId + '" name="Background ' + (idx+1) + '"/>' +
+          '<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>' +
+          '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic>' +
+          '<pic:nvPicPr><pic:cNvPr id="' + bgId + '" name="Background ' + (idx+1) + '"/><pic:cNvPicPr/></pic:nvPicPr>' +
+          '<pic:blipFill><a:blip r:embed="' + relId + '" cstate="print"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
+          '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + Math.round(pw*E) + '" cy="' + Math.round(ph*E) + '"/></a:xfrm>' +
+          '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>';
+      }
+
+      const blocks = pg.blocks || [];
+      const units = detectCoordUnits(blocks);
+      blocks.forEach(function(raw){
+        const b = normalizeBlockHtml(raw, pg.srcW || pw, pg.srcH || ph, pw, ph, units);
+        if (!b.text.trim()) return;
+        doc += textBoxXmlHtmlParity(b, shapeId++);
+      });
+
+      doc += '</w:p>';
+      const sectPr = '<w:sectPr><w:pgSz w:w="' + Math.round(pw*20) + '" w:h="' + Math.round(ph*20) + '"' + orient + '/>' +
+        '<w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/></w:sectPr>';
+      if (idx < pages.length - 1){
+        doc += '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>' + sectPr + '</w:pPr></w:p>';
+      } else {
+        doc += sectPr;
+      }
+    });
+    doc += '</w:body></w:document>';
+    relsXml += '</Relationships>';
+    zip.file('word/_rels/document.xml.rels', relsXml);
+    zip.file('word/document.xml', doc);
+    return zip.generateAsync({ type: 'blob',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  }
+
   function refineBlocksWithInk(srcCanvas, textBlocks){
     const W = srcCanvas.width, H = srcCanvas.height;
     const ctx = srcCanvas.getContext('2d');
@@ -617,10 +785,7 @@
       if (bw <= 0 || bh <= 0) return blk;
 
       const ex = Math.max(10, Math.round(bw * 0.05 + bh * 0.5));
-      // vertical margin CHHOTA: manuscript me lines paas-paas hoti hain,
-      // bada margin upar/neeche ki line ke ascender/descender pakad leta tha
-      // (boxes 2-3x tall -> overlap -> cascade -> page se bahar).
-      const ey = Math.max(2, Math.round(bh * 0.12));
+      const ey = Math.max(6, Math.round(bh * 0.3));
       const x0 = clampV(Math.round(bx - ex), 0, W - 1);
       const y0 = clampV(Math.round(by - ey), 0, H - 1);
       const x1 = clampV(Math.round(bx + bw + ex), 0, W - 1);
@@ -674,7 +839,7 @@
             }
             const cw = mxx - mnx + 1, ch = mxy - mny + 1;
             const thin = ch <= 5 || cw <= 5;
-            const huge = ch > 1.5 * Math.max(bh, 10);
+            const huge = ch > 3 * Math.max(bh, 20);
             const intersects = !(mxx < seedX0 || mnx > seedX0 + bw || mxy < seedY0 || mny > seedY0 + bh);
             if (intersects && !thin && !huge){
               if (!tight) tight = [mnx, mxx, mny, mxy];
@@ -693,45 +858,21 @@
       }
       if (!tight) return blk;
 
+      // HTML-VERBATIM: measured values (0-1000 permille). Koi guard nahi —
+      // HTML bilkul aisa hi karta hai aur uska output perfect aata hai.
       const mLeft = x0 + tight[0], mTop = y0 + tight[2];
       const mW = tight[1] - tight[0] + 1, mH = tight[3] - tight[2] + 1;
-
-      // GUARD 1 — MERGED COMPONENT REJECT: measured box model se bahut bada
-      // ho to flood-fill ne padosi line/border/illustration jod di hai.
-      if (mH > bh * 1.5 || mW > bw * 1.5) return blk;
+      colorSamples.sort((a, b) => (a[0]+a[1]+a[2]) - (b[0]+b[1]+b[2]));
+      const mc = colorSamples.length ? colorSamples[colorSamples.length >> 1] : [0, 0, 0];
+      const hex = mc.map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
 
       const out = Object.assign({}, blk);
-      // GUARD 2 — SIRF HORIZONTAL measurement lo (left + width). Text lines
-      // horizontally alag hoti hain isliye start/end pixel reliable hai —
-      // yahi user ka asli issue tha (width/position galat). VERTICAL (top/
-      // height) model ka hi rakho: crowded manuscript lines me ink-measure
-      // padosi line pakad leta tha -> 2-3x tall boxes -> overlap -> page
-      // se bahar. Height layout/collision drive karti hai, isliye safe.
       out.left = mLeft / W * 1000;
+      out.top = mTop / H * 1000;
       out.width = mW / W * 1000;
-      // measured height sirf tab lo jab wo model ke kareeb ho (sanity)
-      const mHp = mH / H * 1000, bHp = parseFloat(Ht) || 0;
-      if (bHp > 0 && mHp <= bHp * 1.15) out.height = mHp;
-
-      // GUARD 2 — FONT SIZE override NAHI. measured height me diacritics/
-      // ascenders/descenders shamil hote hain, isliye height*0.8 bahut bada
-      // font deta tha (41pt tak). Model ka font_size rakho; fit-to-box
-      // (shrinkOverflow) waise bhi box ke hisaab se best-fit karta hai.
-
-      // GUARD 3 — COLOR: median lene se scan ke anti-aliased edge pixels
-      // (ink+paper blend) mid-tone muddy brown de rahe the. Ab CORE ink
-      // pixels lo — darkest 25 percentile — aur sirf tab apply karo jab
-      // wo background se saaf contrast rakhe. Warna model ka color.
-      if (colorSamples.length >= 4){
-        colorSamples.sort((a, b) => (a[0]+a[1]+a[2]) - (b[0]+b[1]+b[2]));
-        const q = colorSamples[Math.floor(colorSamples.length * 0.25)];
-        const bgLum = (bg[0] + bg[1] + bg[2]) / 3;
-        const inkLum = (q[0] + q[1] + q[2]) / 3;
-        // dark-on-light ya light-on-dark — dono me achha contrast chahiye
-        if (Math.abs(bgLum - inkLum) > 70){
-          out.color = q.map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
-        }
-      }
+      out.height = mH / H * 1000;
+      out.font_size = (mH / H * 1000) * 0.8;
+      out.color = hex;
       return out;
     });
   }
@@ -820,37 +961,22 @@ Important:
           catch (re) { log('P' + pageNo + ' ink-refine skip: ' + re.message, 'warn'); }
         }
 
-        // permille (0-1000) → absolute points
+        // HTML-PARITY: raw blocks (permille) hi return karo. Points me
+        // conversion build time par normalizeBlockHtml karega — bilkul HTML
+        // jaisa. Yahan koi geometry post-processing NAHI.
         const out = arr.map(function(L){
-          const styleStr = String(L.style || '').toLowerCase();
-          const bold = !!L.bold || styleStr.indexOf('bold') !== -1;
-          const italic = !!L.italic || styleStr.indexOf('italic') !== -1;
-          // font_size 0-1000 (image-height relative) OR legacy pt
-          let fs;
-          if (L.font_size != null) fs = (Number(L.font_size) / 1000) * hPt;
-          else fs = Number(L.font_size_pt) || 11;
-          fs = Math.max(4, Math.min(96, fs));
-          const left = (L.left != null ? L.left : L.x) || 0;
-          const top  = (L.top  != null ? L.top  : L.y) || 0;
-          const w    = (L.width  != null ? L.width  : L.w) || 0;
-          const h    = (L.height != null ? L.height : L.h) || 0;
           return {
-            xPt: (left / 1000) * wPt,
-            yPt: (top / 1000) * hPt,
-            wPt: Math.max(fs * 0.5, (w / 1000) * wPt),
-            hPt: Math.max(fs, (h / 1000) * hPt),
-            align: (L.align || '').toLowerCase(),
-            rtl: hasRTL(L.text),
-            runs: [{
-              text: String(L.text).replace(/\n/g, ' '),
-              sizePt: fs,
-              bold: bold, italic: italic,
-              color: /^#?[0-9a-fA-F]{6}$/.test(L.color || '') ? String(L.color).replace('#','') : '000000',
-              family: 'Arial'
-            }]
+            text: String(L.text).replace(/\n/g, ' '),
+            left: (L.left != null ? L.left : L.x) || 0,
+            top:  (L.top  != null ? L.top  : L.y) || 0,
+            width:  (L.width  != null ? L.width  : L.w) || 0,
+            height: (L.height != null ? L.height : L.h) || 0,
+            font_size: L.font_size != null ? L.font_size : null,
+            color: L.color || '000000',
+            style: L.style || ((L.bold ? 'bold ' : '') + (L.italic ? 'italic' : '')).trim(),
+            align: L.align || ''
           };
         });
-        // page_type sirf translation tone ke liye — box rendering untouched
         out.pageType = (typeof parsed.page_type === 'string') ? parsed.page_type.slice(0, 160) : '';
         if (out.pageType) log('P' + pageNo + ' type: ' + out.pageType);
         return out;
@@ -906,18 +1032,19 @@ Important:
       let lines = await extractApiPage(apiKey, model, ocrDataUrl, vp1.width, vp1.height, p, rawCanvas);
 
       // STOP: OCR ke baad translate call se pehle dobara check — extra call bachao
-      if (_shouldStop()) { abortVision(); return { lines: lines, wPt: vp1.width, hPt: vp1.height, jpegBase64: withImage ? jpegBase64 : null }; }
+      if (_shouldStop()) { abortVision(); return { blocks: lines, srcW: rawCanvas.width, srcH: rawCanvas.height, wPt: vp1.width, hPt: vp1.height, jpegBase64: withImage ? jpegBase64 : null }; }
 
       if (!keepOriginal && lines.length) {
         // OCR aur translation ALAG — pehle OCR ho chuka, ab translate.
         // Translation ke baad text lamba ho sakta hai -> autofit zaroori.
         await translateLinesInPlace(apiKey, model, lines, targetLang);
-        if (lines.length) autofitPage(lines, vp1.width, vp1.height, p);
+        // HTML-PARITY: koi autofit/collision/wrap NAHI. Measured geometry
+        // jaisi hai waisi place hoti hai (yahi HTML ka perfect output deta hai).
       }
       // NO-TRANSLATION (Box-tool parity): autofit NAHI — box size/coords
       // bilkul vision-model ke diye jaise rehte hain, exact clarity.
       // NO-TRANSLATION: box position/size exact — sirf overflow par font shrink
-      if (keepOriginal && lines.length) shrinkOverflow(lines);
+      // HTML-PARITY: font-size measurement se aata hai, koi shrink/grow nahi.
 
       // WITH IMAGE: text ko page image se cv2 inpaint se hata do — cleaned
       // image background banega (text-boxes uske upar). lines pt-coords ko
@@ -925,17 +1052,17 @@ Important:
       let bgBase64 = withImage ? jpegBase64 : null;
       if (withImage && jpegBase64 && lines.length && !_shouldStop()) {
         try {
-          const textLines = lines.filter(function (L) {
-            return L.runs && L.runs.some(function (r) { return r.text && r.text.trim(); });
-          });
-          const boxesPx = textLines.map(function (L) {
-            return { x: L.xPt * scale, y: L.yPt * scale, w: L.wPt * scale, h: L.hPt * scale };
+          // Blocks ab raw permille me hain — image px me convert karo
+          // (rawCanvas ke dimensions par, kyunki wahi image bheji jaati hai).
+          const textLines = lines.filter(function (B) { return B.text && B.text.trim(); });
+          const IW = rawCanvas.width, IH = rawCanvas.height;
+          const boxesPx = textLines.map(function (B) {
+            return { x: (B.left/1000)*IW, y: (B.top/1000)*IH,
+                     w: (B.width/1000)*IW, h: (B.height/1000)*IH };
           });
           // Gemini prompt me exact extracted text — taaki wo pehchan kar
           // sirf wahi hataye aur aas-paas se predict karke fill kare.
-          const texts = textLines.map(function (L) {
-            return L.runs.map(function (r) { return r.text; }).join('');
-          });
+          const texts = textLines.map(function (B) { return B.text; });
           const resp = await _inpaintFetch(jpegBase64, boxesPx, texts);
           if (resp.ok) {
             const j = await resp.json();
@@ -952,33 +1079,34 @@ Important:
         }
       }
       log('P' + p + ': ' + lines.length + ' line-boxes' + (keepOriginal ? ' (OCR only, exact boxes)' : ' (OCR+translate)'));
-      return { lines: lines, wPt: vp1.width, hPt: vp1.height, jpegBase64: bgBase64 };
+      return { blocks: lines, srcW: rawCanvas.width, srcH: rawCanvas.height,
+               wPt: vp1.width, hPt: vp1.height, jpegBase64: bgBase64 };
       } catch (pageErr) {
         // stop ke wajah se abort -> skipped (partial output me ignore).
-        if (_shouldStop()) return { lines: [], wPt: 0, hPt: 0, jpegBase64: null, skipped: true };
+        if (_shouldStop()) return { blocks: [], wPt: 0, hPt: 0, jpegBase64: null, skipped: true };
         // asli failure (stop nahi): ek page fail se pura run mat girao, LEKIN
         // chup mat skip karo — visible error + failed-page record.
         log('P' + p + ' FAILED: ' + pageErr.message + ' — is page ka text nahi aaya', 'error');
-        return { lines: [], wPt: 0, hPt: 0, jpegBase64: null, failed: true, pageNo: p };
+        return { blocks: [], wPt: 0, hPt: 0, jpegBase64: null, failed: true, pageNo: p };
       }
     }, function (done, total) {
       log('Vision OCR: ' + done + '/' + total + ' pages');
     });
 
     // Partial output: skipped (stop) / failed / empty pages nikaal do.
-    const usable = pages.filter(function (pg) { return !pg.skipped && !pg.failed && pg.lines.length; });
+    const usable = pages.filter(function (pg) { return !pg.skipped && !pg.failed && pg.blocks && pg.blocks.length; });
     const failedPages = pages.filter(function (pg) { return pg.failed; }).map(function (pg) { return pg.pageNo; });
     if (_shouldStop()) log('Stop requested — ' + usable.length + '/' + pdf.numPages + ' pages tak ka partial output');
     if (failedPages.length) log('WARNING: page(s) ' + failedPages.join(', ') + ' could not be processed (vision returned no text) — output has ' + usable.length + '/' + pdf.numPages + ' page(s)', 'error');
     // PER-PAGE CONFIRMATION: user ko har page ka result clear pata chale.
     // successfully-processed page numbers explicitly list karo.
-    const okPages = pages.filter(function (pg) { return !pg.skipped && !pg.failed && pg.lines.length; })
+    const okPages = pages.filter(function (pg) { return !pg.skipped && !pg.failed && pg.blocks && pg.blocks.length; })
                          .map(function (pg, i) { return i + 1; });
     log('Pages processed: ' + usable.length + '/' + pdf.numPages +
         (failedPages.length ? ' (failed: ' + failedPages.join(', ') + ')' : ' — all pages OK'), failedPages.length ? 'warn' : 'ok');
-    const totalLines = usable.reduce(function (s, pg) { return s + pg.lines.length; }, 0);
+    const totalLines = usable.reduce(function (a, pg) { return a + pg.blocks.length; }, 0);
     if (totalLines === 0) throw new Error(_shouldStop() ? 'Process stop kiya gaya — koi page complete nahi hua' : 'Kisi bhi page se text nahi aaya — vision model ne kuch nahi padha');
-    return buildDocx(usable, withImage);
+    return buildDocxHtmlParity(usable, withImage);
   }
   async function translateTexts(apiKey, model, texts, targetLang, pageType){
     if (!texts.length) return texts;
@@ -1061,17 +1189,12 @@ ${JSON.stringify(texts)}`;
     }
   }
 
-  async function translateLinesInPlace(apiKey, model, lines, targetLang){
-    const texts = lines.map(function(L){ return L.runs.map(function(r){ return r.text; }).join(''); });
-    const translated = await translateTexts(apiKey, model, texts, targetLang, lines.pageType || '');
-    lines.forEach(function(L, i){
-      const t = translated[i] || texts[i];
-      const base = L.runs[0] || { sizePt: 11, color: '000000', family: 'Arial' };
-      L.runs = [{ text: t, sizePt: base.sizePt, bold: base.bold, italic: base.italic, color: base.color, family: base.family }];
-      L.rtl = hasRTL(t);
-      // NOTE: box width ab NAHI badhate — coordinate fidelity pehle; lamba
-      // text layout-fit engine (autofitPage) font-scale/wrap se sambhalta hai
-    });
+  // HTML-PARITY: blocks (raw permille) par translation — sirf .text badalta
+  // hai, geometry (left/top/width/height/font_size/color) bilkul untouched.
+  async function translateLinesInPlace(apiKey, model, blocks, targetLang){
+    const texts = blocks.map(function(B){ return B.text; });
+    const translated = await translateTexts(apiKey, model, texts, targetLang, blocks.pageType || '');
+    blocks.forEach(function(B, i){ B.text = translated[i] || texts[i]; });
   }
 
   window.buildHybridDocxBlob = buildHybridDocxBlob;
