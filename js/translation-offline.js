@@ -638,7 +638,7 @@
   // (b) text pehle image baad me, (c) poore 8000 tokens JSON ko milte hain
   // (koi image generation nahi). Geometry baad me refineBlocksWithInk se
   // pixel-measure hoti hai (Cordinates HTML wala part).
-  async function processPageCombined(dataUrl, cleanCanvas, imgW, imgH, pageNo, model, wPt, hPt){
+  async function processPageCombined(dataUrl, cleanCanvas, imgW, imgH, pageNo, model, wPt, hPt, ensembleModel){
     const prompt =
 `You are a precise OCR and layout extraction engine. Analyze this document page image (page size: ${Math.round(wPt)} x ${Math.round(hPt)} points).
 
@@ -663,10 +663,12 @@ STRICT RULES:
       ]}]
     };
 
+    async function runOcr(useModel){
     let blocks = [];
+    const body2 = Object.assign({}, body, { model: useModel });
     for (let attempt = 1; attempt <= 2; attempt++){
       if (_shouldStop()) break;
-      const resp = await _visionFetch(body);
+      const resp = await _visionFetch(body2);
       if (!resp.ok){
         const t = await resp.text();
         throw new Error('OpenRouter HTTP ' + resp.status + ': ' + t.slice(0, 300));
@@ -683,13 +685,97 @@ STRICT RULES:
         blocks = arr.filter(function(L){ return L && L.text && String(L.text).trim(); });
         break;
       } catch (e){
-        log('P' + pageNo + ' parse fail (attempt ' + attempt + '): ' + e.message, 'warn');
+        log('P' + pageNo + ' parse fail (attempt ' + attempt + ', ' + useModel + '): ' + e.message, 'warn');
         if (attempt === 2) throw new Error('P' + pageNo + ': malformed JSON twice');
+      }
+    }
+    return blocks;
+    }
+
+    let blocks = await runOcr(model);
+
+    // ENSEMBLE: doosra model bhi wahi page padhta hai. Uske SIRF WO blocks
+    // add hote hain jo pehle model se chhoot gaye (koi overlap nahi) —
+    // isse missing lines recover hoti hain. Geometry hamesha ink-measurement
+    // se aati hai, isliye layout par koi asar nahi padta.
+    if (ensembleModel && !_shouldStop()){
+      try {
+        const b2 = await runOcr(ensembleModel);
+        const gL = b => parseFloat(b.left != null ? b.left : b.x) || 0;
+        const gT = b => parseFloat(b.top  != null ? b.top  : b.y) || 0;
+        const gW = b => parseFloat(b.width  != null ? b.width  : b.w) || 0;
+        const gH = b => parseFloat(b.height != null ? b.height : b.h) || 0;
+        const overlaps = (a, c) => {
+          const ix = Math.max(0, Math.min(gL(a)+gW(a), gL(c)+gW(c)) - Math.max(gL(a), gL(c)));
+          const iy = Math.max(0, Math.min(gT(a)+gH(a), gT(c)+gH(c)) - Math.max(gT(a), gT(c)));
+          const sm = Math.min(gW(a)*gH(a), gW(c)*gH(c));
+          return sm > 0 ? (ix*iy)/sm : 0;
+        };
+        let added = 0;
+        b2.forEach(function(nb){
+          const dup = blocks.some(function(ob){ return overlaps(nb, ob) > 0.4; });
+          if (!dup){ blocks.push(nb); added++; }
+        });
+        if (added) log('P' + pageNo + ': ensemble ne ' + added + ' extra line(s) recover ki', 'ok');
+      } catch (e){
+        log('P' + pageNo + ': ensemble skip — ' + e.message, 'warn');
       }
     }
 
     // GEOMETRY: box/size/color actual ink pixels se measure (Cordinates HTML)
     if (blocks.length > 0) blocks = refineBlocksWithInk(cleanCanvas, blocks);
+
+    // CLEANUP 1 — DUPLICATE/FRAGMENT REMOVAL: model kabhi-kabhi wahi text
+    // dobara chhote fragment ke roop me deta hai (output ke aakhir me
+    // "وهو", "الوفس" jaisi extra lines). Agar ek block ka text kisi bade
+    // block ke andar hai AUR uska box us par bhaari overlap karta hai, to
+    // wo duplicate hai — hata do.
+    if (blocks.length > 1){
+      const gL = b => parseFloat(b.left != null ? b.left : b.x) || 0;
+      const gT = b => parseFloat(b.top  != null ? b.top  : b.y) || 0;
+      const gW = b => parseFloat(b.width  != null ? b.width  : b.w) || 0;
+      const gH = b => parseFloat(b.height != null ? b.height : b.h) || 0;
+      const ov = (a, b) => {
+        const ax=gL(a), ay=gT(a), aw=gW(a), ah=gH(a);
+        const bx=gL(b), by=gT(b), bw=gW(b), bh=gH(b);
+        const ix=Math.max(0, Math.min(ax+aw,bx+bw)-Math.max(ax,bx));
+        const iy=Math.max(0, Math.min(ay+ah,by+bh)-Math.max(ay,by));
+        const inter=ix*iy, sm=Math.min(aw*ah, bw*bh);
+        return sm>0 ? inter/sm : 0;
+      };
+      const norm = t => String(t||'').replace(/\s+/g,'').trim();
+      const drop = new Set();
+      for (let i=0;i<blocks.length;i++){
+        for (let j=0;j<blocks.length;j++){
+          if (i===j || drop.has(i)) continue;
+          const ti=norm(blocks[i].text), tj=norm(blocks[j].text);
+          if (!ti || !tj || ti.length >= tj.length) continue;
+          if (tj.indexOf(ti) !== -1 && ov(blocks[i], blocks[j]) > 0.6) drop.add(i);
+        }
+      }
+      if (drop.size) {
+        blocks = blocks.filter((_,i)=>!drop.has(i));
+        log('P' + pageNo + ': ' + drop.size + ' duplicate fragment(s) removed', 'warn');
+      }
+    }
+
+    // CLEANUP 2 — READING ORDER: blocks ko top-to-bottom sort karo, aur ek
+    // hi line-band me RTL ke liye right-to-left. Isse document ka logical
+    // flow sahi hota hai (box positions par koi asar nahi — wo absolute hain).
+    if (blocks.length > 1){
+      const gL2 = b => parseFloat(b.left != null ? b.left : b.x) || 0;
+      const gT2 = b => parseFloat(b.top  != null ? b.top  : b.y) || 0;
+      const gH2 = b => parseFloat(b.height != null ? b.height : b.h) || 0;
+      const mid = b => gT2(b) + gH2(b)/2;
+      const band = 12;   // permille tolerance — ek hi line maani jaye
+      blocks.sort(function(a,b){
+        const da = mid(a), db = mid(b);
+        if (Math.abs(da-db) > band) return da - db;
+        const la=gL2(a), lb=gL2(b);
+        const rtl = hasRTL(String(a.text||'')) || hasRTL(String(b.text||''));
+        return rtl ? lb - la : la - lb;
+      });
+    }
     log('P' + pageNo + ': ' + blocks.length + ' text lines extracted');
     return { textBlocks: blocks, image: null };
   }
@@ -887,7 +973,9 @@ STRICT RULES:
       units === 'permille' ? v / 1000 * total : v;
     const clampV = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-    return textBlocks.map(function(blk){
+    const OUT = [];
+    textBlocks.forEach(function(blk){
+      const pushed = (function(){
       const L = (blk.left != null ? blk.left : blk.x);
       const T = (blk.top  != null ? blk.top  : blk.y);
       const Wd= (blk.width  != null ? blk.width  : blk.w);
@@ -987,7 +1075,92 @@ STRICT RULES:
       out.height = mH / H * 1000;
       out.font_size = (mH / H * 1000) * 0.8;
       out.color = hex;
+      // WORD-LEVEL SPLIT: sirf tab jab is line me EK SE ZYADA color ya
+      // EK SE ZYADA font-size ho (warna line ek hi block rehti hai —
+      // layout safe). Word segmentation vertical ink-projection se.
+      const segs = wordSegments(d, W, x0, y0, ww, wh, mask, tight);
+      if (segs.length > 1){
+        const cols = segs.map(sg => sg.color);
+        const hts  = segs.map(sg => sg.h);
+        const dist = (a,b) => Math.abs(a[0]-b[0])+Math.abs(a[1]-b[1])+Math.abs(a[2]-b[2]);
+        let multiColor = false;
+        for (let i=0;i<cols.length && !multiColor;i++)
+          for (let j=i+1;j<cols.length;j++)
+            if (dist(cols[i],cols[j]) > 90){ multiColor = true; break; }
+        const mnH = Math.min.apply(null,hts), mxH = Math.max.apply(null,hts);
+        const multiSize = mnH > 0 && (mxH / mnH) > 1.45;
+
+        if (multiColor || multiSize){
+          const tokens = String(blk.text||'').trim().split(/\s+/).filter(Boolean);
+          // sirf tab todo jab visual words aur text words barabar hon —
+          // warna mapping galat hogi aur text bigad jayega
+          if (tokens.length === segs.length){
+            const rtl = hasRTL(String(blk.text||''));
+            const ordered = rtl ? segs.slice().reverse() : segs;
+            ordered.forEach(function(sg, i){
+              const w2 = Object.assign({}, blk);
+              w2.text = tokens[i];
+              w2.left = (x0 + sg.x0) / W * 1000;
+              w2.top = (y0 + sg.y0) / H * 1000;
+              w2.width = sg.w / W * 1000;
+              w2.height = sg.h / H * 1000;
+              w2.font_size = (sg.h / H * 1000) * 0.8;
+              w2.color = sg.color.map(v => Math.round(v).toString(16).padStart(2,'0')).join('');
+              delete w2.x; delete w2.y; delete w2.w; delete w2.h; delete w2.font_size_pt;
+              OUT.push(w2);
+            });
+            return true;
+          }
+        }
+      }
       return out;
+      })();
+      if (pushed === true) return;          // word-blocks already pushed
+      OUT.push(pushed || blk);
+    });
+    return OUT;
+  }
+
+  // Line ke tight box ke andar vertical ink-projection se word segments.
+  // Har segment ka apna bbox, height aur median color.
+  function wordSegments(d, W, x0, y0, ww, wh, mask, tight){
+    const tx0 = tight[0], tx1 = tight[1], ty0 = tight[2], ty1 = tight[3];
+    const bw = tx1 - tx0 + 1, bh = ty1 - ty0 + 1;
+    if (bw < 4 || bh < 4) return [];
+    const col = new Int32Array(bw);
+    for (let x = 0; x < bw; x++){
+      let c = 0;
+      for (let y = 0; y < bh; y++) if (mask[(ty0+y)*ww + (tx0+x)]) c++;
+      col[x] = c;
+    }
+    const gapTh = Math.max(3, Math.round(bh * 0.35));
+    const segs = []; let run = null, gap = 0;
+    for (let x = 0; x < bw; x++){
+      if (col[x] > 0){
+        if (!run) run = { s: x, e: x }; else run.e = x;
+        gap = 0;
+      } else if (run){
+        gap++;
+        if (gap >= gapTh){ segs.push(run); run = null; gap = 0; }
+      }
+    }
+    if (run) segs.push(run);
+    if (segs.length < 2) return [];
+    return segs.map(function(r){
+      let mnY = bh, mxY = -1; const samples = [];
+      for (let x = r.s; x <= r.e; x++){
+        for (let y = 0; y < bh; y++){
+          if (mask[(ty0+y)*ww + (tx0+x)]){
+            if (y < mnY) mnY = y; if (y > mxY) mxY = y;
+            const idx = ((y0+ty0+y)*W + (x0+tx0+x))*4;
+            samples.push([d[idx], d[idx+1], d[idx+2]]);
+          }
+        }
+      }
+      if (mxY < 0){ mnY = 0; mxY = bh - 1; }
+      samples.sort((a,b)=>(a[0]+a[1]+a[2])-(b[0]+b[1]+b[2]));
+      const c = samples.length ? samples[Math.floor(samples.length*0.25)] : [0,0,0];
+      return { x0: tx0 + r.s, y0: ty0 + mnY, w: r.e - r.s + 1, h: mxY - mnY + 1, color: c };
     });
   }
 
@@ -1151,7 +1324,8 @@ Important:
 
       // HTML VERBATIM: ek hi combined call — JSON text_blocks + cleaned image
       const combined = await processPageCombined(cleanedDataUrl, cleanCanvas,
-        cleanCanvas.width, cleanCanvas.height, p, model, vp1.width, vp1.height);
+        cleanCanvas.width, cleanCanvas.height, p, model, vp1.width, vp1.height,
+        opts.ensemble === false ? null : (opts.ensembleModel || 'openai/gpt-4o'));
       let lines = combined.textBlocks || [];
       // HTML: finalImage = combined call ki edited image, warna cleaned image
       let finalImageUrl = combined.image || cleanedDataUrl;
