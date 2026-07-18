@@ -2002,6 +2002,10 @@ class Handler(SimpleHTTPRequestHandler):
             "max_tokens": int(body.get("max_tokens", 8000)),
             "messages": messages,
         }
+        # HTML parity: combined call ke liye modalities ["text","image"] pass
+        # karo taaki ek hi request me JSON + edited image dono aayein.
+        if isinstance(body.get("modalities"), list):
+            payload["modalities"] = body["modalities"]
         req = urllib.request.Request(
             "https://openrouter.ai/api/v1/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
