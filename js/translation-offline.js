@@ -674,7 +674,11 @@
 
     let r = await runAttempt(8000);
     let textBlocks = r.textBlocks, resultImage = r.resultImage;
-    if ((textBlocks.length === 0 || !resultImage || r.wasTruncated) && !_shouldStop()){
+    // COST FIX (HTML se chhota deviation): retry SIRF tab jab text data
+    // adhoora ho (0 blocks ya truncated). Image missing par retry NAHI —
+    // model image return karta hi nahi, isliye HTML har page par bekaar ka
+    // dusra call kar raha tha (2x cost, koi fayda nahi).
+    if ((textBlocks.length === 0 || r.wasTruncated) && !_shouldStop()){
       log('P' + pageNo + ': incomplete response — retry', 'warn');
       try {
         const r2 = await runAttempt(r.wasTruncated ? 16000 : 8000);
@@ -683,7 +687,7 @@
       } catch (e){ log('P' + pageNo + ': retry fail — ' + e.message, 'warn'); }
     }
     if (textBlocks.length > 0) textBlocks = refineBlocksWithInk(cleanCanvas, textBlocks);
-    log('P' + pageNo + ': ' + textBlocks.length + ' text blocks, image ' + (resultImage ? 'mili' : 'NAHI mili'));
+    log('P' + pageNo + ': ' + textBlocks.length + ' text blocks' + (resultImage ? ', edited image mili' : ', background = original page (model ne edited image nahi di)'));
     return { textBlocks: textBlocks, image: resultImage };
   }
 
@@ -1127,8 +1131,40 @@ Important:
       const combined = await processPageCombined(cleanedDataUrl, cleanCanvas,
         cleanCanvas.width, cleanCanvas.height, p, VISION_PROMPT1);
       let lines = combined.textBlocks || [];
-      // HTML: finalImage = model ki edited image, warna cleaned image
-      const finalImageUrl = combined.image || cleanedDataUrl;
+      // HTML: finalImage = combined call ki edited image, warna cleaned image
+      let finalImageUrl = combined.image || cleanedDataUrl;
+
+      // OPTION B — ALAG IMAGE-EDIT CALL: combined call se edited image nahi
+      // aayi (practically kabhi nahi aati) to dedicated Gemini image-edit
+      // model se background ka text hatao. Ye HTML se aage ka step hai —
+      // HTML background me original page hi chhod deta hai.
+      if (withImage && !combined.image && lines.length && !_shouldStop()) {
+        try {
+          const IW = cleanCanvas.width, IH = cleanCanvas.height;
+          const tl = lines.filter(function (B) { return B.text && String(B.text).trim(); });
+          const boxesPx = tl.map(function (B) {
+            return { x: (B.left/1000)*IW, y: (B.top/1000)*IH,
+                     w: (B.width/1000)*IW, h: (B.height/1000)*IH };
+          });
+          const texts = tl.map(function (B) { return B.text; });
+          const b64 = cleanedDataUrl.indexOf('base64,') !== -1
+            ? cleanedDataUrl.split('base64,')[1] : cleanedDataUrl;
+          const resp = await _inpaintFetch(b64, boxesPx, texts);
+          if (resp.ok) {
+            const j = await resp.json();
+            if (j && j.imageBase64) {
+              finalImageUrl = 'data:image/png;base64,' + j.imageBase64;
+              if (j.prompt) log('P' + p + ' image-edit prompt: ' + j.prompt);
+              log('P' + p + ': background text removed (' + (j.method || 'edit') + ')');
+            }
+          } else {
+            log('P' + p + ': image-edit skip — original page background rahega', 'warn');
+          }
+        } catch (e) {
+          if (!_shouldStop()) log('P' + p + ': image-edit fail — ' + e.message, 'warn');
+        }
+      }
+
       const bgBase64 = withImage
         ? (finalImageUrl.indexOf('base64,') !== -1 ? finalImageUrl.split('base64,')[1] : null)
         : null;
