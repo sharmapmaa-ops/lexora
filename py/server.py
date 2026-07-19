@@ -2002,10 +2002,6 @@ class Handler(SimpleHTTPRequestHandler):
             "max_tokens": int(body.get("max_tokens", 8000)),
             "messages": messages,
         }
-        # HTML parity: combined call ke liye modalities ["text","image"] pass
-        # karo taaki ek hi request me JSON + edited image dono aayein.
-        if isinstance(body.get("modalities"), list):
-            payload["modalities"] = body["modalities"]
         req = urllib.request.Request(
             "https://openrouter.ai/api/v1/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -2200,14 +2196,14 @@ class Handler(SimpleHTTPRequestHandler):
                 mask[y0:y1, x0:x1] = 255
                 painted += 1
         if painted == 0:
-            ok, enc = cv2.imencode(".png", img)
+            ok, enc = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
             return 200, {"ok": True, "imageBase64": _b64.b64encode(enc.tobytes()).decode("ascii"), "method": "cv2", "painted": 0}
         radius = max(4, int(round(min(h, w) * 0.010)))
         try:
             result = cv2.inpaint(img, mask, radius, cv2.INPAINT_TELEA)
         except Exception as e:
             return 200, {"ok": True, "imageBase64": img_b64, "method": "original-no-edit"}
-        ok, enc = cv2.imencode(".png", result)
+        ok, enc = cv2.imencode(".jpg", result, [int(cv2.IMWRITE_JPEG_QUALITY), 96])
         out_b64 = _b64.b64encode(enc.tobytes()).decode("ascii")
         print(f"[translation] with-image: cv2 fallback cleaned {painted} region(s)")
         return 200, {"ok": True, "imageBase64": out_b64, "method": "cv2", "painted": painted}
