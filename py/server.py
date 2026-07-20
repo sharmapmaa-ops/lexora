@@ -456,7 +456,7 @@ def _send_verification_email_async(user_id, to_email, user_name, code, purpose, 
             _send_verification_email(to_email, user_name, code, purpose, expiry_minutes, base_url=base_url, user_id=user_id)
             _set_email_job(user_id, status="sent")
         except Exception as err:
-            print(f"Verification email to {to_email} could not be sent (code is still valid - see above): {err}")
+            print(f"Verification email to {to_email} could not be sent (code is still valid - see above): [{type(err).__name__}] {err}")
             _set_email_job(user_id, status="failed", code=code)
 
     threading.Thread(target=_worker, daemon=True).start()
@@ -580,14 +580,20 @@ def _send_email(to_email, subject, body, html_body=None):
     mime_msg["From"] = sender
     mime_msg["To"] = to_email
 
+    # NOTE: 6s was too tight for GoDaddy's smtpout.secureserver.net (which can be
+    # slow to complete the SSL handshake + AUTH round-trip from cloud hosts like
+    # Render) - every _send_email() call already runs inside a background thread
+    # (see _send_verification_email_async / _send_notification_email_async), so a
+    # longer timeout here never blocks the HTTP response. 25s gives real slowness
+    # room to succeed instead of failing on ordinary latency.
     if port == 465:
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(host, port, context=context, timeout=30) as server:
+        with smtplib.SMTP_SSL(host, port, context=context, timeout=25) as server:
             if username and password:
                 server.login(username, password)
             server.sendmail(sender, [to_email], mime_msg.as_string())
     else:
-        with smtplib.SMTP(host, port, timeout=30) as server:
+        with smtplib.SMTP(host, port, timeout=25) as server:
             if use_tls:
                 server.starttls(context=ssl.create_default_context())
             if username and password:
@@ -734,7 +740,7 @@ def _send_notification_email_async(to_email, user_name, title, message, table_ro
         try:
             _send_notification_email(to_email, user_name, title, message, table_rows, table_headers)
         except Exception as err:
-            print(f"Notification email to {to_email} ({title}) could not be sent: {err}")
+            print(f"Notification email to {to_email} ({title}) could not be sent: [{type(err).__name__}] {err}")
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -2002,15 +2008,6 @@ class Handler(SimpleHTTPRequestHandler):
             "max_tokens": int(body.get("max_tokens", 8000)),
             "messages": messages,
         }
-        # v14 Clean Image: image-output models ko "modalities" chahiye.
-        # Un calls ke liye HTML-tool parity — payload me SIRF
-        # model+messages+modalities (temperature/max_tokens nahi, kyunki
-        # HTML tool bhi clean-image call me ye fields nahi bhejta tha).
-        # Normal vision/translation calls par ZERO effect (additive).
-        modalities = body.get("modalities")
-        if isinstance(modalities, list) and modalities:
-            payload = {"model": model, "messages": messages,
-                       "modalities": modalities}
         req = urllib.request.Request(
             "https://openrouter.ai/api/v1/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
