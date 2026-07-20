@@ -40,6 +40,7 @@ import secrets
 import shutil
 import tempfile
 import smtplib
+import socket
 import ssl
 import sys
 import threading
@@ -556,6 +557,30 @@ def _load_smtp_expiry_minutes():
         return 10
 
 
+def _resolve_ipv4(host, port):
+    """getaddrinfo restricted to AF_INET only - used to route around hosts
+    (Render, notably) whose outbound IPv6 path to a given SMTP provider is
+    broken/black-holed, which otherwise makes the default dual-stack
+    socket.create_connection() burn its entire timeout on a dead IPv6 attempt
+    before ever trying IPv4."""
+    infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    return infos[0][4]  # (ipv4_address, port)
+
+
+class _IPv4SMTP_SSL(smtplib.SMTP_SSL):
+    def _get_socket(self, host, port, timeout):
+        ipv4_addr = _resolve_ipv4(host, port)
+        new_socket = socket.create_connection(ipv4_addr, timeout, self.source_address)
+        new_socket = self.context.wrap_socket(new_socket, server_hostname=self._host)
+        return new_socket
+
+
+class _IPv4SMTP(smtplib.SMTP):
+    def _get_socket(self, host, port, timeout):
+        ipv4_addr = _resolve_ipv4(host, port)
+        return socket.create_connection(ipv4_addr, timeout, self.source_address)
+
+
 def _send_email(to_email, subject, body, html_body=None):
     """Generic SMTP sender shared by the contact-us acknowledgement email
     and every verification-code email (register/login/reset). Uses
@@ -580,20 +605,24 @@ def _send_email(to_email, subject, body, html_body=None):
     mime_msg["From"] = sender
     mime_msg["To"] = to_email
 
-    # NOTE: 6s was too tight for GoDaddy's smtpout.secureserver.net (which can be
-    # slow to complete the SSL handshake + AUTH round-trip from cloud hosts like
-    # Render) - every _send_email() call already runs inside a background thread
-    # (see _send_verification_email_async / _send_notification_email_async), so a
-    # longer timeout here never blocks the HTTP response. 25s gives real slowness
-    # room to succeed instead of failing on ordinary latency.
+    # NOTE: every _send_email() call already runs inside a background thread
+    # (see _send_verification_email_async / _send_notification_email_async), so
+    # a generous timeout here never blocks the HTTP response.
+    #
+    # The 25s-but-still-failing symptom traced back to IPv6: smtplib's default
+    # socket.create_connection() resolves the host with AF_UNSPEC and tries
+    # whatever getaddrinfo() returns first - on Render that's often an IPv6
+    # address for smtpout.secureserver.net, and Render's outbound IPv6 route to
+    # GoDaddy is effectively a black hole (connects never complete or fail),
+    # burning the full timeout before ever falling back to IPv4. The IPv4-only
+    # subclasses below skip that by resolving AF_INET explicitly.
     if port == 465:
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(host, port, context=context, timeout=25) as server:
+        with _IPv4SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=25) as server:
             if username and password:
                 server.login(username, password)
             server.sendmail(sender, [to_email], mime_msg.as_string())
     else:
-        with smtplib.SMTP(host, port, timeout=25) as server:
+        with _IPv4SMTP(host, port, timeout=25) as server:
             if use_tls:
                 server.starttls(context=ssl.create_default_context())
             if username and password:
