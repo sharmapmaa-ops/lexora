@@ -485,20 +485,7 @@
                             <label>Output Language</label>
                             <select id="translationLangSelect" style="width:100%;" ${(translationHybridMode && !processState.running) ? '' : 'disabled'}>
                                 <option value="original" ${translationHybridMode ? '' : 'selected'}>Original (No Translation)</option>
-                                ${translationHybridMode ? `
-                                <option value="English" selected>English</option>
-                                <option value="Spanish">Spanish</option>
-                                <option value="French">French</option>
-                                <option value="German">German</option>
-                                <option value="Chinese">Chinese</option>
-                                <option value="Japanese">Japanese</option>
-                                <option value="Arabic">Arabic</option>
-                                <option value="Hindi">Hindi</option>
-                                <option value="Gujarati">Gujarati</option>
-                                <option value="Urdu">Urdu</option>
-                                <option value="Portuguese">Portuguese</option>
-                                <option value="Russian">Russian</option>
-                                ` : ''}
+                                ${translationHybridMode ? TRANSLATION_LANG_OPTIONS : ''}
                             </select>
                           </div>
                           <div style="flex:1;">
@@ -518,14 +505,20 @@
                                 <span>Hybrid</span>
                             </label>
                             <label id="translationWithImageWrap" style="display:${translationHybridMode ? 'flex' : 'none'};align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
-                                   title="Checked: the page background/graphics/logos are preserved in the output (original text is removed and the cleaned image is placed behind). Unchecked: only reconstructed text on a clean white page.">
+                                   title="Checked: the page background/graphics/logos are preserved in the output (the page image is placed behind the textboxes; check Clean Image to remove the original text from it first). Unchecked: only reconstructed text on a clean white page.">
                                 <input type="checkbox" id="translationWithImageCheck" style="width:auto;margin:0;" ${translationWithImage ? 'checked' : ''} ${processState.running ? 'disabled' : ''}
                                        onchange="setTranslationWithImage(this.checked)" />
                                 <span>With Image</span>
                             </label>
+                            <label id="translationCleanImageWrap" style="display:${(translationHybridMode && translationWithImage) ? 'flex' : 'none'};align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
+                                   title="Checked: an extra image-model call per page removes ALL readable text from the background image first (Clean Image), so the original text never shows behind the new textboxes. Unchecked: the original page image is used as the background as-is.">
+                                <input type="checkbox" id="translationCleanImageCheck" style="width:auto;margin:0;" ${translationCleanImage ? 'checked' : ''} ${processState.running ? 'disabled' : ''}
+                                       onchange="setTranslationCleanImage(this.checked)" />
+                                <span>Clean Image</span>
+                            </label>
                         </div>
                         <div id="translationWithImageMsg" style="display:${translationHybridMode && translationWithImage ? 'block' : 'none'};margin-top:6px;padding:8px 10px;border:1px solid #7aa7cc;background:#eef5fb;border-radius:6px;font-size:12.5px;color:#2c5777;">
-                            Note: With Image uses an AI-predicted background (the original text is removed and the empty area is filled by prediction). The reconstructed background is not a pixel-perfect copy, so some changes in image quality and layout may occur.
+                            Note: With Image places the page image behind the textboxes as-is. Check <b>Clean Image</b> to first remove all readable text from that background via an AI image model — the cleaned background is AI-predicted (not a pixel-perfect copy), so minor changes in image quality may occur.
                         </div>
                         <div id="translationOfflineMsg" style="display:${translationHybridMode ? 'none' : 'block'};margin-top:6px;padding:8px 10px;border:1px solid #e0a800;background:#fff8e1;border-radius:6px;font-size:12.5px;color:#7a5c00;">
                             Without API mode: only <b>Text-based PDFs</b> can be processed (not scanned/photo), and the output will contain only the <b>extracted original text</b> — no translation. Output Language is locked to "Original (No Translation)".
@@ -702,12 +695,95 @@
             // refreshServicePage, which would otherwise reset the
             // checkbox). true = Hybrid (layout-preserving), false =
             // Simple (vision reads the page, clean reflowed output).
+            // Output Language list — pdf_to_word_v14 tool ki POORI list
+            // (dono jagah — initial render aur Hybrid toggle — YAHI ek
+            // source use hota hai, taaki lists kabhi drift na karein).
+            const TRANSLATION_LANG_OPTIONS =
+                '<option value="Arabic">Arabic</option>' +
+                '<option value="English" selected>English</option>' +
+                '<option value="Hindi">Hindi</option>' +
+                '<option value="Urdu">Urdu</option>' +
+                '<option value="French">French</option>' +
+                '<option value="Spanish">Spanish</option>' +
+                '<option value="German">German</option>' +
+                '<option value="Italian">Italian</option>' +
+                '<option value="Portuguese">Portuguese</option>' +
+                '<option value="Russian">Russian</option>' +
+                '<option value="Chinese (Simplified)">Chinese (Simplified)</option>' +
+                '<option value="Chinese (Traditional)">Chinese (Traditional)</option>' +
+                '<option value="Japanese">Japanese</option>' +
+                '<option value="Korean">Korean</option>' +
+                '<option value="Turkish">Turkish</option>' +
+                '<option value="Persian (Farsi)">Persian (Farsi)</option>' +
+                '<option value="Bengali">Bengali</option>' +
+                '<option value="Punjabi">Punjabi</option>' +
+                '<option value="Gujarati">Gujarati</option>' +
+                '<option value="Marathi">Marathi</option>' +
+                '<option value="Tamil">Tamil</option>' +
+                '<option value="Telugu">Telugu</option>' +
+                '<option value="Kannada">Kannada</option>' +
+                '<option value="Malayalam">Malayalam</option>' +
+                '<option value="Thai">Thai</option>' +
+                '<option value="Vietnamese">Vietnamese</option>' +
+                '<option value="Indonesian">Indonesian</option>' +
+                '<option value="Malay">Malay</option>' +
+                '<option value="Dutch">Dutch</option>' +
+                '<option value="Polish">Polish</option>' +
+                '<option value="Ukrainian">Ukrainian</option>' +
+                '<option value="Greek">Greek</option>' +
+                '<option value="Hebrew">Hebrew</option>' +
+                '<option value="Swahili">Swahili</option>' +
+                '<option value="Amharic">Amharic</option>' +
+                '<option value="Pashto">Pashto</option>' +
+                '<option value="Nepali">Nepali</option>' +
+                '<option value="Sinhala">Sinhala</option>' +
+                '<option value="Burmese">Burmese</option>' +
+                '<option value="Khmer">Khmer</option>' +
+                '<option value="Lao">Lao</option>' +
+                '<option value="Mongolian">Mongolian</option>' +
+                '<option value="Kazakh">Kazakh</option>' +
+                '<option value="Uzbek">Uzbek</option>' +
+                '<option value="Azerbaijani">Azerbaijani</option>' +
+                '<option value="Armenian">Armenian</option>' +
+                '<option value="Georgian">Georgian</option>' +
+                '<option value="Serbian">Serbian</option>' +
+                '<option value="Croatian">Croatian</option>' +
+                '<option value="Czech">Czech</option>' +
+                '<option value="Slovak">Slovak</option>' +
+                '<option value="Hungarian">Hungarian</option>' +
+                '<option value="Romanian">Romanian</option>' +
+                '<option value="Bulgarian">Bulgarian</option>' +
+                '<option value="Finnish">Finnish</option>' +
+                '<option value="Swedish">Swedish</option>' +
+                '<option value="Norwegian">Norwegian</option>' +
+                '<option value="Danish">Danish</option>' +
+                '<option value="Somali">Somali</option>' +
+                '<option value="Hausa">Hausa</option>' +
+                '<option value="Yoruba">Yoruba</option>' +
+                '<option value="Zulu">Zulu</option>' +
+                '<option value="Afrikaans">Afrikaans</option>' +
+                '<option value="Filipino (Tagalog)">Filipino (Tagalog)</option>';
+
             let translationHybridMode = false;   // default: UNCHECKED (user spec)
             let translationWithImage = true;
+            // v14: Clean Image — background image ka saara text ek extra
+            // image-model call se remove hota hai. Default UNCHECKED.
+            let translationCleanImage = false;
+            window.setTranslationCleanImage = function(c){
+                translationCleanImage = !!c;
+            };
             window.setTranslationWithImage = function(c){
                 translationWithImage = !!c;
                 var wiMsg = document.getElementById('translationWithImageMsg');
                 if (wiMsg) wiMsg.style.display = (c ? 'block' : 'none');
+                // v14 sync rule: With Image OFF -> Clean Image chhipao + uncheck
+                var ciWrap = document.getElementById('translationCleanImageWrap');
+                var ciCheck = document.getElementById('translationCleanImageCheck');
+                if (ciWrap) ciWrap.style.display = (translationHybridMode && c) ? 'flex' : 'none';
+                if (!c) {
+                    translationCleanImage = false;
+                    if (ciCheck) ciCheck.checked = false;
+                }
             };
             window.setTranslationHybridMode = function(checked) {
                 translationHybridMode = !!checked;
@@ -717,6 +793,8 @@
                 const offMsg = document.getElementById('translationOfflineMsg');
                 const langSel = document.getElementById('translationLangSelect');
                 if (wiWrap) wiWrap.style.display = checked ? 'flex' : 'none';
+                var ciWrap2 = document.getElementById('translationCleanImageWrap');
+                if (ciWrap2) ciWrap2.style.display = (checked && translationWithImage) ? 'flex' : 'none';
                 var wiMsg2 = document.getElementById('translationWithImageMsg');
                 if (wiMsg2) wiMsg2.style.display = (checked && translationWithImage) ? 'block' : 'none';
                 if (offMsg) offMsg.style.display = checked ? 'none' : 'block';
@@ -727,21 +805,10 @@
                         langSel.value = 'original';
                         langSel.disabled = true;
                     } else {
-                        // Hybrid ON: saari languages wapas
+                        // Hybrid ON: saari languages wapas (v14 full list)
                         langSel.innerHTML =
                             '<option value="original">Original (No Translation)</option>' +
-                            '<option value="English" selected>English</option>' +
-                            '<option value="Spanish">Spanish</option>' +
-                            '<option value="French">French</option>' +
-                            '<option value="German">German</option>' +
-                            '<option value="Chinese">Chinese</option>' +
-                            '<option value="Japanese">Japanese</option>' +
-                            '<option value="Arabic">Arabic</option>' +
-                            '<option value="Hindi">Hindi</option>' +
-                            '<option value="Gujarati">Gujarati</option>' +
-                            '<option value="Urdu">Urdu</option>' +
-                            '<option value="Portuguese">Portuguese</option>' +
-                            '<option value="Russian">Russian</option>';
+                            TRANSLATION_LANG_OPTIONS;
                         langSel.disabled = false;
                     }
                 }
@@ -1709,6 +1776,10 @@
                     const hybridMode = hybridCheckNow ? !!hybridCheckNow.checked : translationHybridMode;
                     const _wiNow = document.getElementById('translationWithImageCheck');
                     const withImageOpt = _wiNow ? !!_wiNow.checked : translationWithImage;
+                    // Clean Image bhi fresh read (same stale-value reason);
+                    // sirf With Image ke saath hi valid hai.
+                    const _ciNow = document.getElementById('translationCleanImageCheck');
+                    const cleanImageOpt = withImageOpt && (_ciNow ? !!_ciNow.checked : translationCleanImage);
                     const processAgents = getAgents('translation').filter(a => a.phase !== 'scan');
                     const agentName = (list, idx) => (list[idx] && list[idx].name) || 'Unassigned';
 
@@ -1831,6 +1902,7 @@
                                     if (window.setVisionStopCheck) window.setVisionStopCheck(function () { return processState.stopped; });
                                     offlineBlob = await window.buildHybridDocxBlob(blob, {
                                         withImage: withImageOpt,
+                                        cleanImage: cleanImageOpt,
                                         targetLang: targetLanguage
                                     }, onLog);
                                 } else {
@@ -1859,7 +1931,11 @@
                             // Browser me bana docx blob ko sirf is session me rakhte
                             // hain — user isi process ke dauran download karta hai.
                             // Koi server file, koi Output.docx disk pe nahi.
-                            translationBlobStore[file.id] = { blob: offlineBlob, name: docName + '.docx' };
+                            // Hybrid output MHT-format Word hai -> .doc (docx zip
+                            // nahi hai; .docx extension se Word file reject karega).
+                            // Offline (No Hybrid) pehle jaisa .docx hi.
+                            const outExt = hybridMode ? '.doc' : '.docx';
+                            translationBlobStore[file.id] = { blob: offlineBlob, name: docName + outExt };
                             file.progress = '95';
 
                             // billing — same principle as hybrid path
@@ -1883,7 +1959,7 @@
                             file.sessionDownload = true;   // browser-only download
                             file.progress = '100';
                             addActivity('translation', `${fl}System > Output Mode > ${!hybridMode ? 'offline (no API)' : (isTranslate ? 'Hybrid Vision + Translate' : 'Hybrid Vision OCR-only')}`, 'Success');
-                            addActivity('translation', `${fl}System > Generate Output > ${docName}.docx ready for download (this session only)`, 'Success');
+                            addActivity('translation', `${fl}System > Generate Output > ${docName}${outExt} ready for download (this session only)`, 'Success');
                             addActivity('translation', `${fl}File Processing > ${file.name}`, 'Finished');
                             notifyProcessCompletion('Translation', file.name, chargeAmount, txnId);
                             file.status = 'completed';
