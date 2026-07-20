@@ -2002,6 +2002,15 @@ class Handler(SimpleHTTPRequestHandler):
             "max_tokens": int(body.get("max_tokens", 8000)),
             "messages": messages,
         }
+        # v14 Clean Image: image-output models ko "modalities" chahiye.
+        # Un calls ke liye HTML-tool parity — payload me SIRF
+        # model+messages+modalities (temperature/max_tokens nahi, kyunki
+        # HTML tool bhi clean-image call me ye fields nahi bhejta tha).
+        # Normal vision/translation calls par ZERO effect (additive).
+        modalities = body.get("modalities")
+        if isinstance(modalities, list) and modalities:
+            payload = {"model": model, "messages": messages,
+                       "modalities": modalities}
         req = urllib.request.Request(
             "https://openrouter.ai/api/v1/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
