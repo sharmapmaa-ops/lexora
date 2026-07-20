@@ -651,121 +651,1094 @@ STRICT RULES:
   // Hybrid deliverable: har page ka image vision model ko bhejo, line-level
   // blocks lo, wahi makeLine-style boxes + optional background image se docx.
   // keepOriginal=true => sirf OCR (koi translation); warna translate bhi.
+  // ====================================================================
+  // HYBRID v14 — pdf_to_word_v14_translation.html ka EXACT pipeline.
+  // (Without-Hybrid / buildOfflineDocxBlob bilkul untouched hai.)
+  // Flow (HTML tool jaisa hi):
+  //   1) pdf.js render (scale 2.0, PNG)
+  //   2) [optional, Clean Image checked] image-output model se background
+  //      ka saara text remove (CLEAN_IMAGE_PROMPT) — OCR HAMESHA original
+  //      image par hota hai, cleaned sirf background ke liye
+  //   3) per-page OCR: box_2d [ymin,xmin,ymax,xmax] normalized 0-1000
+  //      -> px, repairBlocks -> resolveOverlaps
+  //   4) translation (agar language chuni ho): POORE document ki EK final
+  //      call — document_type + era_tone detect, paragraph-wise context,
+  //      width-aware split-back (kabhi per-page nahi)
+  //   5) VML textboxes (findSmartFontSize binary-search) + MHT container
+  //      (Word data-URL images nahi padhta, isliye images alag MIME parts)
+  //      -> .doc blob (application/msword)
+  // Farq sirf itna: OpenRouter direct nahi — server /vision-proxy ke
+  // through (key .env me, browser me kabhi nahi). Isi wajah se HTML ka
+  // validateApiKey step yahan nahi hai (key server ki zimmedari hai;
+  // galat key hogi to proxy ka error waise hi surface hota hai).
+  // ====================================================================
+
+  function v14BuildExtractionPrompt() {
+    return `You are a high-precision OCR and object-detection engine specialized in text-region grounding.
+Do NOT behave like a general assistant.
+Do NOT explain anything.
+Do NOT summarize.
+Do NOT translate.
+Do NOT correct spelling.
+Do NOT infer missing characters.
+Do NOT hallucinate.
+
+Your task is to detect EVERY visible line of text in the attached image, including:
+• Printed text
+• Handwritten text
+• Any language (English, Arabic, or any other)
+• Numbers, symbols, dates
+• Small labels, stamps, signatures (only readable text)
+• Watermarks if readable
+• Text inside decorative logos, seals, badges and ribbons (treat exactly like normal text, give it its own box, never skip it because it's decorative)
+
+Ignore purely graphical elements that contain no text.
+For every VISUAL LINE OF TEXT output one JSON object.
+Never merge two visual lines into one box.
+Never split one visual line into two boxes.
+If only part of a line is readable, output ONLY the readable characters — never guess the missing part.
+Maintain the document's natural top-to-bottom reading order.
+
+BOUNDING BOX FORMAT — READ CAREFULLY, THIS IS THE MOST IMPORTANT PART
+
+Do NOT output raw pixel coordinates. Large absolute pixel numbers are unreliable for you to estimate accurately, especially for small or closely-spaced text.
+
+Instead, output every bounding box as "box_2d": [ymin, xmin, ymax, xmax] — four integers on a NORMALIZED 0 TO 1000 SCALE, relative to the image's own full width and height:
+- 0 = the very top edge (for y) or very left edge (for x) of the image
+- 1000 = the very bottom edge (for y) or very right edge (for x) of the image
+- This is a proportion of the image, NOT a pixel count, and it does NOT change based on the image's actual resolution.
+
+The box must tightly enclose ALL visible glyphs of that specific line only — including ascenders, descenders, dots, accents and diacritics (for Arabic: letters like ط ظ أ, dots below like ي ب, and any tashkeel marks) — but must NOT include neighboring lines above or below it. Two different visual lines must always get two boxes with different, non-overlapping [ymin,ymax] ranges (a small 1-2 unit touch at the boundary is fine, but the boxes must not substantially overlap into each other's line).
+
+Look very carefully at each line's exact top and bottom edge before deciding ymin/ymax — this is especially important in tightly-packed areas like signature blocks, footers, or multi-line paragraphs where several short lines sit close together. Each line gets its own tight, separate box.
+
+READING ORDER
+
+Sort all detected text by:
+1. top coordinate (ascending)
+2. left coordinate for LTR
+3. right coordinate for RTL
+Return the final JSON in natural reading order.
+
+CONFIDENCE
+
+Confidence must represent the OCR certainty for each individual line.
+Do NOT assign identical confidence values to all lines. Estimate confidence independently for every text line.
+
+For each detected line return exactly this object shape:
+{
+  "paragraph_id":"p4",
+  "reading_order":6,
+  "line_index":2,
+  "text":"راجين لها كل التوفيق والسداد",
+  "language":"ar",
+  "direction":"rtl",
+  "box_2d":[852,256,878,556],
+  "font_family":"unknown",
+  "style":"normal",
+  "color":"#000000",
+  "align":"center",
+  "is_handwritten":false,
+  "rotation":0,
+  "confidence":0.96
+}
+
+Field definitions
+paragraph_id: same paragraph shares the same id (p1,p2,p3...)
+reading_order: 1-based index of this line's position in the final natural reading order across the whole document.
+line_index: 1-based line number inside the paragraph.
+text: exact OCR result. Preserve original spelling, punctuation, spaces. Never normalize Unicode. Never translate. Never complete missing words.
+language: best-guess ISO-like code for the line's language (e.g. "ar", "en"), or "unknown" if unsure.
+direction: "rtl" or "ltr" based on the script of this line.
+box_2d: [ymin, xmin, ymax, xmax], four integers from 0 to 1000, normalized to this image's own dimensions as described above. This is the ONLY geometry field — do not also output x/y/width/height/pixel values.
+font_family: closest estimate, or "unknown" if unsure.
+color: dominant visible text color as hex RGB.
+style: one of normal / bold / italic / bold italic.
+align: visible paragraph alignment of this line, one of left / right / center / justify.
+is_handwritten: true if this line is handwritten, false if printed.
+rotation: clockwise text rotation in degrees, usually 0, 90, 180 or 270.
+confidence: decimal value between 0.00 and 1.00 representing OCR certainty, estimated independently per line — do not reuse the same value for every line.
+
+Rules
+• box_2d values MUST be integers between 0 and 1000 inclusive.
+• Never output raw/absolute pixel coordinates.
+• Never crop, deskew, enhance or denoise the image.
+• Never hallucinate missing text.
+• Preserve reading order.
+• Output valid JSON only.
+
+FINAL VALIDATION
+
+Before returning the JSON, verify EVERY object:
+0 <= xmin < xmax <= 1000
+0 <= ymin < ymax <= 1000
+This box's [ymin,ymax] range does not substantially overlap any other line's [ymin,ymax] range at the same horizontal position.
+
+Reject and recompute any object that fails validation.
+Return JSON only after ALL objects pass validation.
+
+Return exactly:
+{
+  "text_blocks":[
+      ...
+  ]
+}
+Return NOTHING except the JSON object.`;
+  }
+
+  function v14CleanJsonResponse(raw) {
+    let cleaned = String(raw || '').trim();
+    cleaned = cleaned.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '');
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+    }
+    return cleaned.trim();
+  }
+
+  // ---- proxy calls (OpenRouter direct nahi — server key lagata hai) ----
+  async function v14ProxyJson(reqBody) {
+    const resp = await _visionFetch(reqBody);
+    let data = null;
+    try { data = await resp.json(); } catch (e) { /* non-json error body */ }
+    if (!resp.ok) {
+      const msg = (data && (data.error && data.error.message || data.error)) || ('HTTP ' + resp.status);
+      throw new Error('Vision proxy error: ' + (typeof msg === 'string' ? msg.substring(0, 300) : JSON.stringify(msg).substring(0, 300)));
+    }
+    if (!data) throw new Error('Vision proxy se JSON response nahi mila.');
+    return data;
+  }
+
+  async function v14VisionOnce(model, dataUrl, prompt, maxTokens) {
+    const data = await v14ProxyJson({
+      model: model,
+      temperature: 0,
+      max_tokens: maxTokens,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: dataUrl } }
+          ]
+        }
+      ]
+    });
+    if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+      throw new Error('Unexpected API response format from OpenRouter.');
+    }
+    return { content: data.choices[0].message.content, finishReason: data.choices[0].finish_reason };
+  }
+
+  // max_tokens explicit — finish_reason="length" (token-limit truncation)
+  // par EK retry badi limit ke saath. Ye "dobara guess" retry NAHI hai —
+  // sirf already-decided JSON poori likhne ki jagah dena hai. (v13/v14 fix)
+  async function v14VisionCall(model, dataUrl, prompt) {
+    let result = await v14VisionOnce(model, dataUrl, prompt, 16000);
+    if (result.finishReason === 'length') {
+      log('OCR response token-limit par truncate hua — 32000 tokens ke saath retry...', 'warn');
+      result = await v14VisionOnce(model, dataUrl, prompt, 32000);
+    }
+    return result.content;
+  }
+
+  // ---- CLEAN IMAGE (image-output model, HTML tool ka EXACT prompt) ----
+  // Background image se saara readable text remove — taaki Word me
+  // textboxes ke neeche original text ka duplicate na dikhe.
+  // NOTE: OCR hamesha ORIGINAL image pe; cleaned sirf background ke liye.
+  const V14_CLEAN_IMAGE_PROMPT = 'Generate a clean version of this image without changing its original width and height. Completely remove all readable text, printed words, handwritten signatures, and any linguistic characters from the image, as if they never existed. Do not alter any non-readable elements like lines, patterns, textures, abstract shapes, or background designs. The output must have the exact same dimensions as the input and no new text should be added.';
+
+  async function v14CleanImage(cleanModel, dataUrl) {
+    const data = await v14ProxyJson({
+      model: cleanModel,
+      modalities: ['image', 'text'],
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: V14_CLEAN_IMAGE_PROMPT },
+          { type: 'image_url', image_url: { url: dataUrl } }
+        ]
+      }]
+    });
+    const msg = data.choices && data.choices[0] && data.choices[0].message;
+    const images = msg && msg.images;
+    if (!images || !images.length) {
+      throw new Error('Model ne koi image return nahi ki. Kya ye model image-output support karta hai? (e.g. google/gemini-3.1-flash-image)');
+    }
+    const url = images[0].image_url && images[0].image_url.url;
+    if (!url || !/^data:image\//i.test(url)) {
+      throw new Error('Clean-image response me valid image data URL nahi mila.');
+    }
+    return url;
+  }
+
+  // ---- PDF -> IMAGES (v14: scale 2.0, PNG) ----
+  async function v14PdfToImages(pdf) {
+    const numPages = pdf.numPages;
+    const images = [];
+    for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 2.0 });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const context = canvas.getContext('2d');
+      await page.render({ canvasContext: context, viewport: viewport }).promise;
+      images.push({
+        dataUrl: canvas.toDataURL('image/png'),
+        width: viewport.width,
+        height: viewport.height,
+        pageNum: pageNum
+      });
+    }
+    return images;
+  }
+
+  // ---- REPAIR (v14 exact) ----
+  function v14RepairBlocks(blocks, imgW, imgH) {
+    const notes = [];
+    const repaired = blocks.map((b, i) => {
+      const item = Object.assign({}, b);
+      const tag = `[#${i + 1} "${String(item.text).substring(0, 20)}"]`;
+
+      let x = Math.round(Number(item.x)) || 0;
+      let y = Math.round(Number(item.y)) || 0;
+      let w = Math.round(Number(item.width)) || 0;
+      let h = Math.round(Number(item.height)) || 0;
+      let fs = Number(item.font_size_px);
+      let baseline = Number(item.baseline_y);
+
+      if (!Number.isFinite(fs) || fs <= 0) {
+        fs = (h > 2) ? Math.round(h * 0.8) : 14;
+        notes.push(`${tag} font_size_px missing → estimated ${fs}`);
+      }
+
+      if (h < fs * 0.8 || h < 2) {
+        const newH = Math.max(2, Math.round(fs * 1.3));
+        if (Number.isFinite(baseline) && baseline > y + h && baseline <= imgH) {
+          const newY = Math.max(0, Math.round(baseline - fs * 1.05));
+          notes.push(`${tag} y ${y}→${newY} (repositioned from baseline_y=${baseline})`);
+          y = newY;
+        }
+        notes.push(`${tag} height ${h}→${newH} (font_size_px=${fs}, height was impossible)`);
+        h = newH;
+      }
+
+      if (w < 2) {
+        const estW = Math.max(10, Math.round(String(item.text).length * fs * 0.6));
+        notes.push(`${tag} width ${w}→${estW} (estimated from text length)`);
+        w = estW;
+      }
+
+      x = Math.min(Math.max(0, x), Math.max(0, imgW - 1));
+      y = Math.min(Math.max(0, y), Math.max(0, imgH - 1));
+      if (x + w > imgW) { w = Math.max(1, imgW - x); }
+      if (y + h > imgH) {
+        const shiftedY = imgH - h;
+        if (shiftedY >= 0) {
+          notes.push(`${tag} y ${y}→${shiftedY} (box was overflowing bottom edge)`);
+          y = shiftedY;
+        } else {
+          h = Math.max(1, imgH - y);
+          notes.push(`${tag} height clamped to ${h} (image edge)`);
+        }
+      }
+
+      if (!Number.isFinite(baseline) || baseline < y || baseline > y + h) {
+        const newBaseline = Math.round(y + h * 0.8);
+        if (Number.isFinite(baseline)) {
+          notes.push(`${tag} baseline_y ${baseline}→${newBaseline} (was outside box)`);
+        }
+        baseline = newBaseline;
+      }
+
+      if (fs > h) {
+        notes.push(`${tag} font_size_px ${fs}→${h} (cannot exceed box height)`);
+        fs = h;
+      }
+
+      item.x = x;
+      item.y = y;
+      item.width = w;
+      item.height = h;
+      item.right = x + w;
+      item.bottom = y + h;
+      item.baseline_y = baseline;
+      item.font_size_px = fs;
+      return item;
+    });
+
+    return { blocks: repaired, notes: notes };
+  }
+
+  function v14ResolveOverlaps(blocks, imgW, imgH) {
+    const notes = [];
+    const MIN_GAP = 1;
+    const n = blocks.length;
+    const result = blocks.map(b => Object.assign({}, b));
+
+    const geo = result.map(b => ({
+      x: Number(b.x) || 0,
+      y: Number(b.y) || 0,
+      w: Number(b.width) || 0,
+      h: Number(b.height) || 0
+    }));
+
+    function significantOverlap(a, b) {
+      const xOverlap = a.x < b.x + b.w && a.x + a.w > b.x;
+      if (!xOverlap) return false;
+      const yOverlap = a.y < b.y + b.h && a.y + a.h > b.y;
+      if (!yOverlap) return false;
+      const overlapPx = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      const smallerH = Math.min(a.h, b.h);
+      return overlapPx > 2 && overlapPx >= smallerH * 0.15;
+    }
+
+    const parent = Array.from({ length: n }, (_, i) => i);
+    function find(i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+    function union(i, j) { const ri = find(i), rj = find(j); if (ri !== rj) parent[ri] = rj; }
+
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        if (significantOverlap(geo[i], geo[j])) union(i, j);
+      }
+    }
+
+    const clusters = {};
+    for (let i = 0; i < n; i++) {
+      const r = find(i);
+      (clusters[r] = clusters[r] || []).push(i);
+    }
+
+    for (const key in clusters) {
+      const idxs = clusters[key];
+      if (idxs.length < 2) continue;
+
+      idxs.sort((a, b) => {
+        if (geo[a].y !== geo[b].y) return geo[a].y - geo[b].y;
+        const ra = Number(result[a].reading_order) || 0;
+        const rb = Number(result[b].reading_order) || 0;
+        return ra - rb;
+      });
+
+      const envMinY = Math.min(...idxs.map(i => geo[i].y));
+      const envMaxBottom = Math.max(...idxs.map(i => geo[i].y + geo[i].h));
+      const envelope = Math.max(2, envMaxBottom - envMinY);
+
+      const totalGap = (idxs.length - 1) * MIN_GAP;
+      const sumH = idxs.reduce((s, i) => s + geo[i].h, 0);
+
+      let scale = 1;
+      if (sumH + totalGap > envelope) {
+        scale = Math.max(0.35, (envelope - totalGap) / sumH);
+      }
+
+      let cursorY = envMinY;
+      for (const i of idxs) {
+        const item = result[i];
+        const origY = geo[i].y, origH = geo[i].h;
+        const newH = Math.max(4, Math.round(origH * scale));
+        const newY = Math.round(cursorY);
+
+        if (newY !== origY || newH !== origH) {
+          notes.push(`[overlap-fix "${String(item.text).substring(0, 20)}"] y ${origY}→${newY}, height ${origH}→${newH}`);
+        }
+
+        item.y = newY;
+        item.height = newH;
+        item.bottom = newY + newH;
+        item.right = item.x + item.width;
+        item.baseline_y = newY + Math.round(newH * 0.8);
+        if (Number.isFinite(item.font_size_px) && item.font_size_px > newH) {
+          item.font_size_px = newH;
+        }
+
+        cursorY = newY + newH + MIN_GAP;
+      }
+
+      const lastIdx = idxs[idxs.length - 1];
+      if (result[lastIdx].bottom > imgH) {
+        const overflow = result[lastIdx].bottom - imgH;
+        result[lastIdx].height = Math.max(4, result[lastIdx].height - overflow);
+        result[lastIdx].bottom = result[lastIdx].y + result[lastIdx].height;
+      }
+    }
+
+    return { blocks: result, notes };
+  }
+
+  // ---- CANVAS MEASUREMENT + SMART FONT SIZE (v14 exact) ----
+  const v14MeasureCanvas = document.createElement('canvas');
+  const v14MeasureCtx = v14MeasureCanvas.getContext('2d');
+
+  function v14MeasureTextWidthPx(text, fontPt, bold) {
+    const fontPx = fontPt * 96 / 72;
+    v14MeasureCtx.font = `${bold ? 'bold ' : ''}${fontPx}px Arial`;
+    return v14MeasureCtx.measureText(text).width;
+  }
+
+  function v14FindSmartFontSize(text, boxWidth, boxHeight, bold) {
+    if (!text || text.length === 0) {
+      return { fontSize: 1, log: [] };
+    }
+
+    const padding = 2;
+    const effectiveWidth = Math.max(4, boxWidth - padding * 2);
+    const effectiveHeight = Math.max(4, boxHeight - padding * 2);
+
+    const maxByHeightPt = effectiveHeight * 0.75;
+
+    let lo = 1;
+    let hi = Math.max(1, maxByHeightPt);
+    const logArr = [];
+
+    for (let iter = 0; iter < 24; iter++) {
+      const mid = (lo + hi) / 2;
+      const textWidth = v14MeasureTextWidthPx(text, mid, bold);
+      const fits = textWidth <= effectiveWidth;
+      logArr.push({ fontSize: Math.round(mid * 10) / 10, textWidth: textWidth, fontHeight: Math.round(mid * 96 / 72), fits: fits });
+      if (fits) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+      if (hi - lo < 0.05) break;
+    }
+
+    let finalSize = Math.floor(lo * 10) / 10;
+    if (finalSize < 1) finalSize = 1;
+
+    return { fontSize: finalSize, log: logArr };
+  }
+
+  function v14EscapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function v14IsValidHexColor(c) {
+    return typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c);
+  }
+
+  // ---- OCR one page: box_2d 0-1000 -> px, filter, repair, de-overlap ----
+  async function v14ProcessSingleImage(model, dataUrl, width, height, pageNum) {
+    const prompt = v14BuildExtractionPrompt();
+    const rawContent = await v14VisionCall(model, dataUrl, prompt);
+    const cleaned = v14CleanJsonResponse(rawContent);
+
+    let parsed;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (parseErr) {
+      try { console.error('Raw model response (full):', rawContent); } catch (e) {}
+      const looksTruncated = !cleaned.trim().endsWith('}');
+      const tail = cleaned.slice(-80);
+      throw new Error(`Model se valid JSON nahi mila (${cleaned.length} chars, ${looksTruncated ? 'response truncated lagta hai — end: "...' + tail + '"' : 'JSON malformed hai, truncation nahi'}).`);
+    }
+
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.text_blocks)) {
+      try { console.error('Raw model response:', rawContent); } catch (e) {}
+      throw new Error('Model ne expected {"text_blocks":[...]} format nahi bheja.');
+    }
+
+    const filtered = parsed.text_blocks
+      .filter(item => item && typeof item === 'object' && typeof item.text === 'string' && item.text.trim().length > 0)
+      .map((item, i) => {
+        let x = 0, y = 0, w = 10, h = 10;
+        const box = item.box_2d;
+        if (Array.isArray(box) && box.length === 4 && box.every(n => Number.isFinite(Number(n)))) {
+          const ymin = Math.min(Number(box[0]), Number(box[2]));
+          const xmin = Math.min(Number(box[1]), Number(box[3]));
+          const ymax = Math.max(Number(box[0]), Number(box[2]));
+          const xmax = Math.max(Number(box[1]), Number(box[3]));
+
+          const pxXmin = Math.round((xmin / 1000) * width);
+          const pxYmin = Math.round((ymin / 1000) * height);
+          const pxXmax = Math.round((xmax / 1000) * width);
+          const pxYmax = Math.round((ymax / 1000) * height);
+
+          x = pxXmin;
+          y = pxYmin;
+          w = Math.max(1, pxXmax - pxXmin);
+          h = Math.max(1, pxYmax - pxYmin);
+        } else if (Number.isFinite(Number(item.x)) && Number.isFinite(Number(item.width))) {
+          x = Math.round(Number(item.x)) || 0;
+          y = Math.round(Number(item.y)) || 0;
+          w = Math.max(1, Math.round(Number(item.width)) || 10);
+          h = Math.max(1, Math.round(Number(item.height)) || 10);
+        }
+
+        const fontSizePx = Math.max(2, Math.round(h * 0.8));
+        const baselineY = y + fontSizePx;
+
+        return {
+          id: `pg${pageNum}_b${i}`,
+          page: pageNum,
+          paragraph_id: item.paragraph_id || '',
+          reading_order: Number.isFinite(Number(item.reading_order)) ? Number(item.reading_order) : 0,
+          line_index: Number.isFinite(Number(item.line_index)) ? Number(item.line_index) : 0,
+          text: item.text.trim(),
+          language: item.language || 'unknown',
+          direction: item.direction || 'ltr',
+          x: x,
+          y: y,
+          width: w,
+          height: h,
+          right: x + w,
+          bottom: y + h,
+          baseline_y: baselineY,
+          font_size_px: fontSizePx,
+          text_height_px: fontSizePx,
+          bbox_height_px: h,
+          font_family: item.font_family || 'unknown',
+          style: item.style || 'normal',
+          color: item.color || '#000000',
+          align: item.align || 'left',
+          is_handwritten: typeof item.is_handwritten === 'boolean' ? item.is_handwritten : null,
+          rotation: Number(item.rotation) || 0,
+          confidence: Number.isFinite(Number(item.confidence)) ? Number(item.confidence) : null
+        };
+      });
+
+    if (filtered.length === 0) {
+      throw new Error('Image mein koi readable text detect nahi hua.');
+    }
+
+    const rep = v14RepairBlocks(filtered, width, height);
+    const deo = v14ResolveOverlaps(rep.blocks, width, height);
+    return { blocks: deo.blocks, notes: rep.notes.concat(deo.notes), width: width, height: height };
+  }
+
+  // ---- TRANSLATION (single final call, whole document — v14 exact) ----
+  // LAST me, ek hi call, saare pages saath — page-boundary-crossing
+  // paragraphs ki continuity per-page translation tod deti hai.
+  function v14BuildTranslationPrompt(targetLanguageLabel) {
+    return `You are a professional document translator and typesetter.
+
+You will be given the FULL extracted content of a multi-page scanned document, as a flat list of text blocks in reading order (across ALL pages). Each block has: id, page, paragraph_id, order, text (original), width (its textbox's pixel width in the final layout), language, direction.
+
+STEP 1 — CLASSIFY THE DOCUMENT
+Before translating, look at the whole document's content and determine:
+- "document_type": what kind of document this is (e.g. certificate, legal document/contract, official government form, personal/business letter, book or literary excerpt, religious text, invoice/receipt, academic paper, resume/CV, or other — pick the closest fit).
+- "era_tone": the appropriate register for translation based on how old/period-specific the writing feels (e.g. "modern/contemporary" for anything ordinary or recent, or a period label like "formal classical/historical" or an approximate era if the vocabulary, spelling, honorifics or subject matter clearly suggest an older text). Default to "modern/contemporary" unless there is a real signal it's from another era.
+
+STEP 2 — TRANSLATE INTO ${targetLanguageLabel}
+Translate the ENTIRE document into ${targetLanguageLabel}, using a tone/register appropriate to the document_type and era_tone you determined (e.g. a certificate needs a formal ceremonial register, a legal document needs precise legal register, an old book needs period-appropriate literary tone, a casual letter needs a conversational tone).
+
+IMPORTANT — TRANSLATE PARAGRAPH-WISE, NOT LINE-BY-LINE:
+Blocks that share the same "paragraph_id", taken in their given order (across pages if needed — a paragraph_id's blocks may span a page boundary, since blocks are given in full-document reading order), together form ONE continuous paragraph. Join them, understand the FULL paragraph's meaning and grammar, and translate it as one coherent unit — never translate an isolated block without its paragraph's context.
+
+IMPORTANT — SPLIT BACK INTO THE SAME BLOCKS, WIDTH-AWARE:
+After translating a paragraph as a whole, split the translated text back across exactly the same blocks (same count, same order) that paragraph came from. Use each block's given "width" (pixels) as a guide for how much of the translated text that specific block/line should carry — a wider block's line should carry proportionally more translated text than a narrow one — so that when placed into a textbox of that same width, the text fits reasonably (not drastically too long or too short for that line). Blocks that are not part of any multi-line paragraph (isolated labels, single words, dates, numbers, standalone titles) just get their own direct translation.
+
+RULES
+- Never add or remove blocks. Every input id must appear exactly once in your output, in the same order.
+- Never translate the "id", "page", "paragraph_id" values themselves — only the text.
+- Keep numbers, dates and proper nouns sensibly handled per normal translation conventions for ${targetLanguageLabel}.
+- Do not add commentary, explanation, or anything outside the JSON.
+
+Return ONLY this JSON shape, nothing else:
+{
+  "document_type": "...",
+  "era_tone": "...",
+  "translations": [
+    {"id": "pg1_b0", "translated_text": "..."},
+    {"id": "pg1_b1", "translated_text": "..."}
+  ]
+}`;
+  }
+
+  async function v14TranslateAllPages(model, allPagesJsonArr, targetLanguageLabel) {
+    const compact = allPagesJsonArr.map(b => ({
+      id: b.id,
+      page: b.page,
+      paragraph_id: b.paragraph_id,
+      order: b.reading_order,
+      text: b.text,
+      width: b.width,
+      language: b.language,
+      direction: b.direction
+    }));
+
+    const prompt = v14BuildTranslationPrompt(targetLanguageLabel) +
+      '\n\nINPUT BLOCKS (full document, all pages, reading order):\n' +
+      JSON.stringify(compact);
+
+    // Bade documents ka translation JSON bhi bada — max_tokens block-count
+    // se scale, truncate ho to ek retry badi limit se (OCR jaisa pattern).
+    const baseMaxTokens = Math.min(60000, Math.max(16000, compact.length * 200));
+
+    async function callTranslationOnce(maxTokens) {
+      const data = await v14ProxyJson({
+        model: model,
+        temperature: 0,
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content: prompt }]
+      });
+      const finishReason = data.choices && data.choices[0] && data.choices[0].finish_reason;
+      const raw = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+      return { raw: raw, finishReason: finishReason };
+    }
+
+    let res = await callTranslationOnce(baseMaxTokens);
+    if (res.finishReason === 'length') {
+      log('Translation response token-limit par truncate hua — badi limit ke saath retry...', 'warn');
+      res = await callTranslationOnce(Math.min(100000, baseMaxTokens * 2));
+    }
+
+    if (!res.raw) throw new Error('Translation model se koi content nahi mila.');
+
+    const cleaned = v14CleanJsonResponse(res.raw);
+    let parsed;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (e) {
+      try { console.error('Raw translation response (full):', res.raw); } catch (e2) {}
+      throw new Error('Translation model se valid JSON nahi mila (console dekhein).');
+    }
+
+    if (!parsed || !Array.isArray(parsed.translations)) {
+      try { console.error('Raw translation response:', res.raw); } catch (e2) {}
+      throw new Error('Translation response me "translations" array nahi mila.');
+    }
+
+    return parsed;
+  }
+
+  // id-match karke original text ko translated text se REPLACE karta hai.
+  function v14ApplyTranslations(allPagesJsonArr, translations) {
+    const map = {};
+    translations.forEach(t => {
+      if (t && t.id && typeof t.translated_text === 'string' && t.translated_text.trim().length > 0) {
+        map[t.id] = t.translated_text.trim();
+      }
+    });
+    let replacedCount = 0;
+    const result = allPagesJsonArr.map(b => {
+      if (b.id && map[b.id] !== undefined) {
+        replacedCount++;
+        return Object.assign({}, b, { text: map[b.id] });
+      }
+      return b;
+    });
+    return { blocks: result, replacedCount: replacedCount };
+  }
+
+  // ---- MHT (MIME-HTML) BUILDER (v14 exact) ----
+  // Word "Single File Web Page" isi format me save karta hai:
+  //   multipart/related ├─ HTML (base64 utf-8) ├─ har page image apne
+  //   Content-Location ke saath. <v:imagedata src> ka URL part ke
+  //   Content-Location se EXACT match hona zaroori hai.
+  function v14Wrap76(b64) {
+    return b64.replace(/(.{76})/g, '$1\r\n');
+  }
+
+  function v14BuildMhtDocument(html, images) {
+    const boundary = '----=_NextPart_LEXORA_001';
+    // UTF-8 safe base64 (Arabic/Unicode text ke liye zaroori)
+    const htmlB64 = btoa(unescape(encodeURIComponent(html)));
+
+    let mht =
+      'MIME-Version: 1.0\r\n' +
+      'Content-Type: multipart/related; type="text/html"; boundary="' + boundary + '"\r\n' +
+      '\r\n' +
+      '--' + boundary + '\r\n' +
+      'Content-Type: text/html; charset="utf-8"\r\n' +
+      'Content-Transfer-Encoding: base64\r\n' +
+      'Content-Location: file:///C:/fake/document.html\r\n' +
+      '\r\n' +
+      v14Wrap76(htmlB64) + '\r\n' +
+      '\r\n';
+
+    for (const img of images) {
+      mht +=
+        '--' + boundary + '\r\n' +
+        'Content-Type: ' + img.mime + '\r\n' +
+        'Content-Transfer-Encoding: base64\r\n' +
+        'Content-Location: ' + img.location + '\r\n' +
+        '\r\n' +
+        v14Wrap76(img.base64) + '\r\n' +
+        '\r\n';
+    }
+    mht += '--' + boundary + '--';
+    return mht;
+  }
+
+  // data:image/png;base64,XXXX → {mime, base64} (MHT part ke liye)
+  function v14ParseDataUrl(dataUrl) {
+    const m = /^data:(image\/[a-z0-9+.-]+);base64,([\s\S]*)$/i.exec(dataUrl);
+    if (!m) return null;
+    return { mime: m[1], base64: m[2] };
+  }
+
+  // ---- SINGLE PAGE -> VML/HTML (v14 exact) ----
+  function v14GenerateSinglePageWord(pageJson, imgDims, pageNum, hasBgImage) {
+    if (!Array.isArray(pageJson) || pageJson.length === 0) {
+      throw new Error('Page JSON must be a non-empty array.');
+    }
+
+    const imgW = (imgDims && imgDims.width) || 816;
+    const imgH = (imgDims && imgDims.height) || 1056;
+    const MAX_PAGE_PX = 22 * 96;
+    const scale = Math.min(1, MAX_PAGE_PX / imgW, MAX_PAGE_PX / imgH);
+    const pageWpx = Math.round(imgW * scale);
+    const pageHpx = Math.round(imgH * scale);
+
+    let textboxesHtml = '';
+
+    for (let i = 0; i < pageJson.length; i++) {
+      const item = pageJson[i];
+
+      const text = String(item.text || '').trim();
+      const x = (parseFloat(item.x) || 0) * scale;
+      const y = (parseFloat(item.y) || 0) * scale;
+      const boxWidth = (parseFloat(item.width) || 50) * scale;
+      const boxHeight = (parseFloat(item.height) || 20) * scale;
+
+      const isArabic = /[\u0600-\u06FF]/.test(text);
+      const styleStr = String(item.style || 'normal').toLowerCase();
+      const isBold = styleStr.indexOf('bold') !== -1;
+      const isItalic = styleStr.indexOf('italic') !== -1;
+
+      const result = v14FindSmartFontSize(text, boxWidth, boxHeight, isBold);
+      const optimalFontSize = result.fontSize;
+
+      const padding = 2;
+
+      const dir = (item.direction === 'rtl' || item.direction === 'ltr') ? item.direction : (isArabic ? 'rtl' : 'ltr');
+      const color = v14IsValidHexColor(item.color) ? item.color : '#000000';
+      const align = String(item.align || '').toLowerCase();
+      let tdAlign, justifyCss;
+      if (align === 'center') {
+        tdAlign = 'center';
+        justifyCss = 'text-align:center;';
+      } else if (align === 'left') {
+        tdAlign = 'left';
+        justifyCss = 'text-align:left;';
+      } else if (align === 'right') {
+        tdAlign = 'right';
+        justifyCss = 'text-align:right;';
+      } else {
+        tdAlign = 'distribute';
+        justifyCss = 'text-align:distribute;text-justify:distribute-all-lines;mso-text-justify:distribute-all-lines;';
+      }
+
+      const fontWeightCss = isBold ? 'font-weight:bold;' : '';
+      const fontStyleCss = isItalic ? 'font-style:italic;' : '';
+
+      const shapeId = `Textbox_p${pageNum}_${i}`;
+
+      textboxesHtml += `
+          <v:shape id="${shapeId}" 
+              type="#_x0000_t202" 
+              style="position:absolute;left:${x.toFixed(1)}px;top:${y.toFixed(1)}px;width:${boxWidth.toFixed(1)}px;height:${boxHeight.toFixed(1)}px;mso-position-horizontal:absolute;mso-position-vertical:absolute;z-index:1;"
+              fillcolor="white" 
+              stroked="f"
+              o:allowincell="f">
+              <v:fill opacity="0"/>
+              <v:textbox style="mso-fit-shape-to-text:f;mso-next-textbox:auto;mso-textbox-vertical-align:middle;" inset="0,0,0,0">
+                  <table width="100%" height="100%" cellpadding="0" cellspacing="0" border="0" style="border:none;border-collapse:collapse;table-layout:fixed;">
+                      <tr>
+                          <td align="${tdAlign}" valign="middle" 
+                              style="font-family:Arial;font-size:${optimalFontSize}pt;color:${color};${fontWeightCss}${fontStyleCss}padding:${padding}px;border:none;
+                                     white-space:nowrap;word-wrap:normal;overflow:hidden;text-overflow:clip;
+                                     direction:${dir};unicode-bidi:embed;
+                                     ${justifyCss}">
+                              <p style="margin:0;padding:0;line-height:normal;${justifyCss}">${v14EscapeHtml(text)}</p>
+                          </td>
+                      </tr>
+                  </table>
+              </v:textbox>
+          </v:shape>
+      `;
+    }
+
+    // --- IMAGE (MHT-compatible) ---
+    // Word HTML .doc me data:image base64 URI KAAM NAHI KARTA — src me
+    // sirf REFERENCE (file:///C:/fake/imageN.png); asli base64 MHT ke
+    // alag MIME part me jata hai jiska Content-Location isse match karta hai.
+    let imageHtml = '';
+    if (hasBgImage) {
+      imageHtml = `
+          <v:shape id="PageImage_${pageNum}" 
+              type="#_x0000_t75" 
+              style="position:absolute;left:0;top:0;width:${pageWpx}px;height:${pageHpx}px;z-index:0;mso-position-horizontal:absolute;mso-position-vertical:absolute;"
+              fillcolor="white" 
+              stroked="f">
+              <v:imagedata src="file:///C:/fake/image${pageNum}.png" />
+          </v:shape>
+      `;
+    }
+
+    const pageBreakStyle = (pageNum > 1) ? 'page-break-before:always;mso-page-break-before:always;' : '';
+
+    return `
+        <div class="Section${pageNum}" style="position:relative;width:${pageWpx}px;height:${pageHpx}px;margin:0;padding:0;background:white;${pageBreakStyle}">
+            ${imageHtml}
+            ${textboxesHtml}
+        </div>
+    `;
+  }
+
+  // ---- FINAL WORD DOCUMENT (v14 exact) ----
+  function v14BuildFinalWordDocument(pageHtmls, imgDims, totalPages) {
+    const imgW = (imgDims && imgDims.width) || 816;
+    const imgH = (imgDims && imgDims.height) || 1056;
+    const MAX_PAGE_PX = 22 * 96;
+    const scale = Math.min(1, MAX_PAGE_PX / imgW, MAX_PAGE_PX / imgH);
+    const pageWpx = Math.round(imgW * scale);
+    const pageHpx = Math.round(imgH * scale);
+    const pageWin = (pageWpx / 96).toFixed(3);
+    const pageHin = (pageHpx / 96).toFixed(3);
+
+    let pageRules = '';
+    for (let i = 1; i <= totalPages; i++) {
+      pageRules += `
+          @page Section${i} {
+              size: ${pageWin}in ${pageHin}in;
+              margin: 0in 0in 0in 0in;
+              mso-header-margin: 0in;
+              mso-footer-margin: 0in;
+              mso-title-page: no;
+              mso-header: none;
+              mso-footer: none;
+              mso-paper-source: 0;
+          }
+          div.Section${i} { page: Section${i}; }
+      `;
+    }
+
+    return `<!DOCTYPE html>
+    <html xmlns:v="urn:schemas-microsoft-com:vml" 
+          xmlns:o="urn:schemas-microsoft-com:office:office" 
+          xmlns:w="urn:schemas-microsoft-com:office:word" 
+          xmlns="http://www.w3.org/TR/REC-html40">
+    <head>
+        <meta charset="UTF-8">
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        
+        <!--[if gte mso 9]>
+        <xml>
+            <w:WordDocument>
+                <w:View>Print</w:View>
+                <w:Zoom>100</w:Zoom>
+                <w:DoNotOptimizeForBrowser/>
+                <w:DoNotShadeFormData/>
+                <w:DisplayHorizontalDrawingGridEvery>0</w:DisplayHorizontalDrawingGridEvery>
+                <w:DisplayVerticalDrawingGridEvery>0</w:DisplayVerticalDrawingGridEvery>
+            </w:WordDocument>
+        </xml>
+        <![endif]-->
+
+        <style>
+            ${pageRules}
+
+            @page {
+                margin: 0cm 0cm 0cm 0cm;
+                mso-page-orientation: portrait;
+            }
+
+            html, body {
+                margin: 0cm !important;
+                padding: 0cm !important;
+                background: white;
+                background-image: none !important;
+            }
+
+            v\\:shape {
+                behavior: url(#default#VML);
+                display: inline-block;
+            }
+            v\\:textbox {
+                behavior: url(#default#VML);
+            }
+
+            v\\:shape, v\\:textbox, table, td {
+                border: none !important;
+            }
+
+            table {
+                border-collapse: collapse;
+            }
+            td {
+                white-space: nowrap !important;
+                word-wrap: normal !important;
+                overflow: hidden;
+                text-overflow: clip;
+            }
+            td p {
+                margin: 0;
+                padding: 0;
+                line-height: normal;
+            }
+
+            div, p, span, br {
+                margin: 0;
+                padding: 0;
+                line-height: 1;
+            }
+        </style>
+    </head>
+    <body style="margin:0cm;padding:0cm;background:white;">
+        ${pageHtmls.join('\n')}
+    </body>
+    </html>`;
+  }
+
+  // ---- HYBRID ENTRY (public API same: (file, opts, logFn) -> Blob) ----
+  // opts: { withImage, cleanImage, targetLang, model?, cleanModel? }
+  // Output ab MHT-format Word document hai — .doc extension (docx zip nahi).
   async function buildHybridDocxBlob(file, opts, logFn) {
     if (typeof logFn === 'function') _log = logFn;
     opts = opts || {};
-    // apiKey ab server proxy (.env) se lagti hai — browser me nahi
-    const apiKey = 'proxy';
     const model = opts.model || 'google/gemini-2.5-flash';
+    const cleanModel = opts.cleanModel || 'google/gemini-3.1-flash-image';
     const withImage = !!opts.withImage;
+    const cleanImage = withImage && !!opts.cleanImage;   // Clean Image sirf With Image ke saath
     const targetLang = opts.targetLang || 'original';
     const keepOriginal = !targetLang || String(targetLang).toLowerCase() === 'original';
     if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js load nahi hua');
-    if (typeof JSZip === 'undefined') throw new Error('JSZip load nahi hua');
 
     const buf = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-    // Bug 7 SPEED: With Image OFF -> pages parallel (fast, koi image call
-    // nahi to order matter nahi karta). With Image ON -> sequential (1),
-    // taaki har page ka Gemini background apne page ke turant baad bane
-    // aur stop-safe rahe. Sequence har haal me preserve (OCR->translate
-    // ->image per page andar sequential hi hai).
-    const CONCURRENCY = withImage ? 1 : 3;
-    const pageNums = Array.from({ length: pdf.numPages }, function (_, i) { return i + 1; });
     _newAbort();   // fresh AbortController is run ke liye
 
-    const pages = await mapWithConcurrency(pageNums, CONCURRENCY, async function (p) {
-      // STOP: is page ka koi API call mat karo — abort + skip
-      if (_shouldStop()) { abortVision(); return { lines: [], wPt: 0, hPt: 0, jpegBase64: null, skipped: true }; }
+    // 1) PDF -> images (v14: scale 2.0, PNG)
+    const images = await v14PdfToImages(pdf);
+    const totalPages = images.length;
+    if (totalPages === 0) throw new Error('PDF mein koi page nahi hai.');
+
+    let allPagesJson = [];
+    let pageDims = null;
+    const pageBackgrounds = {};   // pageNum -> {bgDataUrl, bgIsCleaned}
+    const pageErrors = [];
+    let stoppedEarly = false;
+
+    // 2) per-page: [Clean Image] -> OCR — v14 ki tarah SEQUENTIAL
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i];
+      const pageNum = i + 1;
+
+      if (_shouldStop()) { abortVision(); stoppedEarly = true; break; }
+
       try {
-      const page = await pdf.getPage(p);
-      const vp1 = page.getViewport({ scale: 1 });
-      // render page to canvas (vision + optional background)
-      const scale = Math.min(3.0, 3000 / Math.max(vp1.width, vp1.height));
-      const vp = page.getViewport({ scale: scale });
-      const rawCanvas = document.createElement('canvas');
-      rawCanvas.width = Math.round(vp.width); rawCanvas.height = Math.round(vp.height);
-      await page.render({ canvasContext: rawCanvas.getContext('2d'), viewport: vp }).promise;
-      const jpegBase64 = withImage ? rawCanvas.toDataURL('image/jpeg', 0.96).split(',')[1] : null;
-
-      const ocrDataUrl = rawCanvas.toDataURL('image/jpeg', 0.92);
-      let lines = await extractApiPage(apiKey, model, ocrDataUrl, vp1.width, vp1.height, p);
-
-      // STOP: OCR ke baad translate call se pehle dobara check — extra call bachao
-      if (_shouldStop()) { abortVision(); return { lines: lines, wPt: vp1.width, hPt: vp1.height, jpegBase64: withImage ? jpegBase64 : null }; }
-
-      if (!keepOriginal && lines.length) {
-        // OCR aur translation ALAG — pehle OCR ho chuka, ab translate.
-        // Translation ke baad text lamba ho sakta hai -> autofit zaroori.
-        await translateLinesInPlace(apiKey, model, lines, targetLang);
-        if (lines.length) autofitPage(lines, vp1.width, vp1.height, p);
-      }
-      // NO-TRANSLATION (Box-tool parity): autofit NAHI — box size/coords
-      // bilkul vision-model ke diye jaise rehte hain, exact clarity.
-      // NO-TRANSLATION: box position/size exact — sirf overflow par font shrink
-      if (keepOriginal && lines.length) shrinkOverflow(lines);
-
-      // WITH IMAGE: text ko page image se cv2 inpaint se hata do — cleaned
-      // image background banega (text-boxes uske upar). lines pt-coords ko
-      // rendered-image px me convert karke server ko bhejte hain.
-      let bgBase64 = withImage ? jpegBase64 : null;
-      if (withImage && jpegBase64 && lines.length && !_shouldStop()) {
-        try {
-          const textLines = lines.filter(function (L) {
-            return L.runs && L.runs.some(function (r) { return r.text && r.text.trim(); });
-          });
-          const boxesPx = textLines.map(function (L) {
-            return { x: L.xPt * scale, y: L.yPt * scale, w: L.wPt * scale, h: L.hPt * scale };
-          });
-          // Gemini prompt me exact extracted text — taaki wo pehchan kar
-          // sirf wahi hataye aur aas-paas se predict karke fill kare.
-          const texts = textLines.map(function (L) {
-            return L.runs.map(function (r) { return r.text; }).join('');
-          });
-          const resp = await _inpaintFetch(jpegBase64, boxesPx, texts);
-          if (resp.ok) {
-            const j = await resp.json();
-            if (j && j.imageBase64) {
-              bgBase64 = j.imageBase64;
-              if (j.prompt) log('P' + p + ' image-edit prompt: ' + j.prompt);
-              log('P' + p + ': background text removed (' + (j.method || 'edit') + ')');
-            }
-          } else {
-            log('P' + p + ': inpaint skip (server) — original image use hogi', 'warn');
+        // ═══ CALL 1: CLEAN IMAGE (agar checked) ═══
+        // Sabse pehle — cleaned image sirf background ke liye; OCR
+        // hamesha ORIGINAL image par hota hai.
+        let bgDataUrl = withImage ? img.dataUrl : null;
+        let bgIsCleaned = false;
+        if (bgDataUrl && cleanImage) {
+          try {
+            log('P' + pageNum + ': [Call 1/2] background image clean ho rahi hai (' + cleanModel + ')...');
+            const cleanedUrl = await v14CleanImage(cleanModel, img.dataUrl);
+            bgDataUrl = cleanedUrl;
+            bgIsCleaned = true;
+            log('P' + pageNum + ': background image clean ho gayi');
+          } catch (cleanErr) {
+            if (_shouldStop()) { abortVision(); stoppedEarly = true; break; }
+            log('P' + pageNum + ': image clean nahi hui (' + cleanErr.message + ') — ORIGINAL image background me use hogi', 'warn');
+            bgDataUrl = img.dataUrl;
           }
-        } catch (e) {
-          if (!_shouldStop()) log('P' + p + ': inpaint fail — original image: ' + e.message, 'warn');
+        }
+
+        if (_shouldStop()) { abortVision(); stoppedEarly = true; break; }
+
+        // ═══ CALL 2: OCR/JSON ═══
+        const result = await v14ProcessSingleImage(model, img.dataUrl, img.width, img.height, pageNum);
+        let currentJson = result.blocks;
+
+        if (!pageDims) pageDims = { width: img.width, height: img.height };
+
+        // translation step ko guaranteed unique id chahiye
+        currentJson = currentJson.map((b, idx) => Object.assign({}, b, {
+          id: b.id || ('pg' + pageNum + '_b' + idx),
+          page: pageNum
+        }));
+
+        allPagesJson = allPagesJson.concat(currentJson);
+        pageBackgrounds[pageNum] = { bgDataUrl: bgDataUrl, bgIsCleaned: bgIsCleaned };
+
+        log('P' + pageNum + ': ' + currentJson.length + ' line-boxes' + (bgIsCleaned ? ' (cleaned background)' : (withImage ? ' (with image)' : '')));
+      } catch (err) {
+        if (_shouldStop()) { abortVision(); stoppedEarly = true; break; }
+        // ek page fail se poora run mat girao — record karke aage badho
+        // (v14 behaviour), lekin chup mat raho.
+        pageErrors.push({ page: pageNum, message: err.message });
+        log('P' + pageNum + ' FAILED: ' + err.message + ' — agle page par continue', 'error');
+      }
+
+      log('Vision OCR: ' + pageNum + '/' + totalPages + ' pages');
+
+      // v14: pages ke beech chhota gap
+      if (pageNum < totalPages && !_shouldStop()) {
+        await new Promise(function (resolve) { setTimeout(resolve, 500); });
+      }
+    }
+
+    if (allPagesJson.length === 0) {
+      if (stoppedEarly) throw new Error('Process stop kiya gaya — koi page complete nahi hua');
+      const errorList = pageErrors.map(function (e) { return 'Page ' + e.page + ': ' + e.message; }).join('; ');
+      throw new Error('Koi bhi text detect nahi hua — 0 textboxes. ' + (errorList || 'Console (F12) check karo.'));
+    }
+    if (stoppedEarly) log('Stop requested — ' + Object.keys(pageBackgrounds).length + '/' + totalPages + ' pages tak ka partial output');
+    if (pageErrors.length) log('WARNING: page(s) ' + pageErrors.map(function (e) { return e.page; }).join(', ') + ' skipped', 'warn');
+
+    // 3) ═══ CALL 3: TRANSLATION — sirf EK baar, POORE document ke liye ═══
+    if (!keepOriginal && !_shouldStop()) {
+      try {
+        log('[Final Call] Poora document ' + targetLang + ' me translate ho raha hai (document-type + tone detect karke)...');
+        const translationResult = await v14TranslateAllPages(model, allPagesJson, targetLang);
+        const applied = v14ApplyTranslations(allPagesJson, translationResult.translations);
+        allPagesJson = applied.blocks;
+        log('Translation: ' + applied.replacedCount + ' line(s) translated');
+        log('Document type: "' + translationResult.document_type + '", Tone/era: "' + translationResult.era_tone + '"');
+      } catch (translateErr) {
+        if (_shouldStop()) {
+          log('Stop requested — translation cancel, ORIGINAL text ke saath output', 'warn');
+        } else {
+          log('Translation fail ho gayi (' + translateErr.message + ') — ORIGINAL text ke saath document ban raha hai', 'warn');
         }
       }
-      log('P' + p + ': ' + lines.length + ' line-boxes' + (keepOriginal ? ' (OCR only, exact boxes)' : ' (OCR+translate)'));
-      return { lines: lines, wPt: vp1.width, hPt: vp1.height, jpegBase64: bgBase64 };
-      } catch (pageErr) {
-        // stop ke wajah se abort -> skipped (partial output me ignore).
-        if (_shouldStop()) return { lines: [], wPt: 0, hPt: 0, jpegBase64: null, skipped: true };
-        // asli failure (stop nahi): ek page fail se pura run mat girao, LEKIN
-        // chup mat skip karo — visible error + failed-page record.
-        log('P' + p + ' FAILED: ' + pageErr.message + ' — is page ka text nahi aaya', 'error');
-        return { lines: [], wPt: 0, hPt: 0, jpegBase64: null, failed: true, pageNo: p };
-      }
-    }, function (done, total) {
-      log('Vision OCR: ' + done + '/' + total + ' pages');
-    });
+    }
 
-    // Partial output: skipped (stop) / failed / empty pages nikaal do.
-    const usable = pages.filter(function (pg) { return !pg.skipped && !pg.failed && pg.lines.length; });
-    const failedPages = pages.filter(function (pg) { return pg.failed; }).map(function (pg) { return pg.pageNo; });
-    if (_shouldStop()) log('Stop requested — ' + usable.length + '/' + pdf.numPages + ' pages tak ka partial output');
-    if (failedPages.length) log('WARNING: page(s) ' + failedPages.join(', ') + ' could not be processed (vision returned no text) — output has ' + usable.length + '/' + pdf.numPages + ' page(s)', 'error');
-    // PER-PAGE CONFIRMATION: user ko har page ka result clear pata chale.
-    // successfully-processed page numbers explicitly list karo.
-    const okPages = pages.filter(function (pg) { return !pg.skipped && !pg.failed && pg.lines.length; })
-                         .map(function (pg, i) { return i + 1; });
-    log('Pages processed: ' + usable.length + '/' + pdf.numPages +
-        (failedPages.length ? ' (failed: ' + failedPages.join(', ') + ')' : ' — all pages OK'), failedPages.length ? 'warn' : 'ok');
-    const totalLines = usable.reduce(function (s, pg) { return s + pg.lines.length; }, 0);
-    if (totalLines === 0) throw new Error(_shouldStop() ? 'Process stop kiya gaya — koi page complete nahi hua' : 'Kisi bhi page se text nahi aaya — vision model ne kuch nahi padha');
-    return buildDocx(usable, withImage);
+    // 4) FINAL TEXT (translated ya original) se har page ka HTML + MHT images
+    const allPageHtmls = [];
+    const mhtImages = [];
+    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+      const pageBlocks = allPagesJson.filter(function (b) { return (Number(b.page) || 1) === pageNum; });
+      if (pageBlocks.length === 0) continue;
+
+      const bg = pageBackgrounds[pageNum] || {};
+      const pageHtml = v14GenerateSinglePageWord(pageBlocks, pageDims, pageNum, !!(withImage && bg.bgDataUrl));
+      allPageHtmls.push(pageHtml);
+
+      if (withImage && bg.bgDataUrl) {
+        const parsedImg = v14ParseDataUrl(bg.bgDataUrl);
+        if (parsedImg) {
+          mhtImages.push({
+            location: 'file:///C:/fake/image' + pageNum + '.png',
+            mime: parsedImg.mime,
+            base64: parsedImg.base64
+          });
+        } else {
+          log('P' + pageNum + ': dataUrl parse nahi hua — is page ki image doc me nahi aayegi', 'warn');
+        }
+      }
+    }
+
+    const finalDoc = v14BuildFinalWordDocument(allPageHtmls, pageDims, totalPages);
+    // Images hain to MHT container me pack karo (warna plain HTML) —
+    // extension .doc hi rehta hai, Word MHT natively kholta hai.
+    const finalOut = mhtImages.length > 0 ? v14BuildMhtDocument(finalDoc, mhtImages) : finalDoc;
+
+    log('Word document ready: ' + allPageHtmls.length + ' page(s), ' + allPagesJson.length + ' textboxes');
+    return new Blob([finalOut], { type: 'application/msword' });
   }
+
   async function translateTexts(apiKey, model, texts, targetLang, pageType){
     if (!texts.length) return texts;
     const prompt =
