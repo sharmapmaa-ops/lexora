@@ -582,12 +582,12 @@ def _send_email(to_email, subject, body, html_body=None):
 
     if port == 465:
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(host, port, context=context, timeout=6) as server:
+        with smtplib.SMTP_SSL(host, port, context=context, timeout=30) as server:
             if username and password:
                 server.login(username, password)
             server.sendmail(sender, [to_email], mime_msg.as_string())
     else:
-        with smtplib.SMTP(host, port, timeout=6) as server:
+        with smtplib.SMTP(host, port, timeout=30) as server:
             if use_tls:
                 server.starttls(context=ssl.create_default_context())
             if username and password:
