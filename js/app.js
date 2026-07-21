@@ -610,7 +610,7 @@
                                         </colgroup>
                                         <thead>
                                             <tr>
-                                                <th><input type="checkbox" id="translationSelectAll" onchange="toggleSelectAllFiles('${serviceId}', this.checked)" title="Select all" /></th>
+                                                <th><input type="checkbox" id="translationSelectAll" ${(files.length > 0 && files.every(f => f.selected !== false)) ? 'checked' : ''} onchange="toggleSelectAllFiles('${serviceId}', this.checked)" title="Select all" /></th>
                                                 <th>File Name</th>
                                                 <th>Pages</th>
                                                 <th>Scan Result</th>
@@ -1181,9 +1181,12 @@
                     return;
                 }
 
-                // Only files that haven't already been dealt with actually
-                // cost anything (or count toward File(N/Total)) this run -
-                // completed/needs_review ones are skipped by the loop below.
+                // Billing/estimate only: files already completed or in
+                // needs_review don't get charged again this run. NOTE for
+                // translation - completed files are NOT skipped in the
+                // processing loop anymore (see processTranslationFileAt);
+                // they still get reprocessed if selected, just without an
+                // extra wallet charge, since it's a free redo.
                 const billable = files.filter(f => f.status !== 'completed' && f.status !== 'needs_review');
                 const myPlan = getMyPlan();
                 const isPerPage = (serviceId === 'translation' ? (myPlan.translationBillingUnit || 'page') : myPlan.billingUnit) === 'page';
@@ -1217,7 +1220,12 @@
                 processState.isPaused = false;
                 processState.isComplete = false;
                 processState.stopped = false;
-                processState.totalInBatch = billable.length;
+                // Translation: every selected file (re)runs regardless of
+                // prior status, so the progress label's total is the full
+                // selected count. Lease-abstraction still skips completed/
+                // needs_review in its own loop, so billable.length stays
+                // correct there (unchanged behaviour).
+                processState.totalInBatch = (serviceId === 'translation') ? files.length : billable.length;
                 processState.runIndex = 0;
 
                 refreshServicePage(serviceId);
@@ -1731,7 +1739,12 @@
                     if (processState.stopped) return;
 
                     const file = myFiles[fileIndex];
-                    if (file.status === 'completed') {
+                    // Skip only files the user has deselected. A selected
+                    // file always (re)runs on Start, regardless of its
+                    // previous status - completed or errored files are
+                    // NOT silently skipped anymore, so clicking Start
+                    // again reprocesses every selected file in the list.
+                    if (file.selected === false) {
                         continue;
                     }
 
@@ -2228,6 +2241,13 @@
                 const arr = (activeServiceId === 'translation') ? translationFiles : leaseFiles;
                 const f = arr.find(x => String(x.id) === String(fileId));
                 if (f) f.selected = !!checked;
+                // Keep the "select all" header checkbox in sync: checked
+                // only when every listed file is selected, unchecked the
+                // moment any single file gets unchecked. Direct DOM update
+                // (no full re-render) so focus/scroll aren't disrupted.
+                const mine = arr.filter(x => x.userId === CURRENT_USER_ID);
+                const selectAllEl = document.getElementById('translationSelectAll');
+                if (selectAllEl) selectAllEl.checked = mine.length > 0 && mine.every(x => x.selected !== false);
             };
             window.toggleSelectAllFiles = function(serviceId, checked) {
                 const arr = (serviceId === 'translation') ? translationFiles : leaseFiles;
@@ -2475,6 +2495,7 @@
                         scanResult: '0',
                         progress: '0',
                         action: 'Pending',
+                        selected: true,
                         savedPath: getUserClientFilePath(CURRENT_USER_ID, file.name)
                     };
 
