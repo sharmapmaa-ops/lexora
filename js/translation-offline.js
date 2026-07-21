@@ -502,10 +502,34 @@
     };
   }
 
+  // Converts a (possibly non-JPEG) data URL to a JPEG base64 string sized
+  // to (w,h) - used to normalize a Clean Image result back to JPEG since
+  // the offline docx builder's zip only declares a jpg content type.
+  function v14DataUrlToJpegBase64(dataUrl, w, h) {
+    return new Promise(function (resolve, reject) {
+      const img = new Image();
+      img.onload = function () {
+        try {
+          const c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          c.getContext('2d').drawImage(img, 0, 0, w, h);
+          resolve(c.toDataURL('image/jpeg', 0.92).split(',')[1]);
+        } catch (e) { reject(e); }
+      };
+      img.onerror = function () { reject(new Error('Failed to load cleaned image')); };
+      img.src = dataUrl;
+    });
+  }
+
   async function buildOfflineDocxBlob(file, opts, logFn) {
     if (typeof logFn === 'function') _log = logFn;
     opts = opts || {};
     const withImage = !!opts.withImage;
+    const cleanImage = withImage && !!opts.cleanImage;
+    const model = opts.model || 'google/gemini-2.5-flash';
+    const cleanModel = opts.cleanModel || 'google/gemini-3.1-flash-image';
+    const targetLang = opts.targetLang || 'original';
+    const keepOriginal = !targetLang || String(targetLang).toLowerCase() === 'original';
     if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js failed to load');
     if (typeof JSZip === 'undefined') throw new Error('JSZip failed to load');
     const buf = await file.arrayBuffer();
@@ -516,7 +540,7 @@
       sampleItems += tc0.items.filter(function (it) { return it.str && it.str.trim(); }).length;
     }
     if (sampleItems < 3)
-      throw new Error('This PDF looks scanned/image-based — offline (Hybrid off) mode only processes text-based PDFs. Enable Hybrid and retry.');
+      throw new Error('This PDF looks scanned/image-based — text-based mode only processes text-based PDFs. Enable With OCR and retry.');
     const pages = [];
     let totalLines = 0;
     for (let p = 1; p <= pdf.numPages; p++) {
@@ -526,10 +550,10 @@
       if (lines.length) autofitPage(lines, vp1.width, vp1.height, p);
       totalLines += lines.length;
 
-      // WITH IMAGE (client-side render, no API call - stays "offline"):
-      // text-layer extraction above used the raw page at scale 1 (points)
-      // for exact coordinate math; this is a separate, higher-pixel-scale
-      // render of the SAME page purely for a crisp-looking background.
+      // WITH IMAGE (client-side render): text-layer extraction above used
+      // the raw page at scale 1 (points) for exact coordinate math; this
+      // is a separate, higher-pixel-scale render of the SAME page purely
+      // for a crisp-looking background.
       let jpegBase64 = null;
       if (withImage) {
         const bgScale = Math.min(3.0, 2000 / Math.max(vp1.width, vp1.height));
@@ -538,7 +562,25 @@
         bgCanvas.width = Math.round(bgVp.width);
         bgCanvas.height = Math.round(bgVp.height);
         await page.render({ canvasContext: bgCanvas.getContext('2d'), viewport: bgVp }).promise;
-        jpegBase64 = bgCanvas.toDataURL('image/jpeg', 0.92).split(',')[1];
+
+        // CLEAN IMAGE: the one exception to "no API call" in text-based
+        // mode - an extra image-model call removes readable text from
+        // the background so it doesn't show doubled-up behind the
+        // (possibly translated) text boxes.
+        if (cleanImage) {
+          try {
+            log('P' + p + ': cleaning background image (' + cleanModel + ')...');
+            const rawDataUrl = bgCanvas.toDataURL('image/png');
+            const cleanedDataUrl = await v14CleanImage(cleanModel, rawDataUrl);
+            jpegBase64 = await v14DataUrlToJpegBase64(cleanedDataUrl, bgCanvas.width, bgCanvas.height);
+            log('P' + p + ': background image cleaned');
+          } catch (cleanErr) {
+            log('P' + p + ': image clean failed (' + cleanErr.message + ') — using the ORIGINAL image as background', 'warn');
+            jpegBase64 = bgCanvas.toDataURL('image/jpeg', 0.92).split(',')[1];
+          }
+        } else {
+          jpegBase64 = bgCanvas.toDataURL('image/jpeg', 0.92).split(',')[1];
+        }
       }
 
       pages.push({ lines: lines, wPt: vp1.width, hPt: vp1.height, jpegBase64: jpegBase64 });
@@ -546,8 +588,70 @@
     }
     if (totalLines === 0)
       throw new Error('No selectable text found in this PDF — offline mode only processes text-based PDFs');
+
+    // TRANSLATION: the other exception to "no API call" in text-based
+    // mode. Each extracted LINE is translated as its own independent
+    // unit (no cross-line paragraph joining - unlike the OCR/Hybrid
+    // pipeline, plain text-layer extraction has no paragraph grouping
+    // to join on), reusing the same whole-document translate call as
+    // the OCR pipeline for consistent tone/terminology handling.
+    if (!keepOriginal) {
+      let counter = 0;
+      const flatLines = [];
+      pages.forEach(function (pg, pIdx) {
+        pg.lines.forEach(function (L, lIdx) {
+          const fullText = L.runs.map(function (r) { return r.text; }).join(' ').trim();
+          if (!fullText) return;
+          const id = 'off_p' + (pIdx + 1) + '_l' + lIdx;
+          L._translateId = id;
+          counter++;
+          flatLines.push({
+            id: id,
+            page: pIdx + 1,
+            paragraph_id: id,   // each line translated independently
+            reading_order: counter,
+            text: fullText,
+            width: L.wPt,
+            language: 'unknown',
+            direction: L.rtl ? 'rtl' : 'ltr'
+          });
+        });
+      });
+
+      if (flatLines.length > 0) {
+        try {
+          log('Translating extracted text to ' + targetLang + '...');
+          const translationResult = await v14TranslateAllPages(model, flatLines, targetLang);
+          const map = {};
+          (translationResult.translations || []).forEach(function (t) {
+            if (t && t.id && typeof t.translated_text === 'string' && t.translated_text.trim()) {
+              map[t.id] = t.translated_text.trim();
+            }
+          });
+          let replaced = 0;
+          pages.forEach(function (pg) {
+            pg.lines.forEach(function (L) {
+              if (L._translateId && map[L._translateId] !== undefined && L.runs.length > 0) {
+                // Whole translated line goes into the first run (keeps
+                // its original styling); other runs on the same line are
+                // cleared so the line doesn't show the original text
+                // twice - geometry (position/size) stays as extracted.
+                L.runs[0] = Object.assign({}, L.runs[0], { text: map[L._translateId] });
+                for (let k = 1; k < L.runs.length; k++) {
+                  L.runs[k] = Object.assign({}, L.runs[k], { text: '' });
+                }
+                replaced++;
+              }
+            });
+          });
+          log('Translation: ' + replaced + ' line(s) translated');
+        } catch (translateErr) {
+          log('Translation failed (' + translateErr.message + ') — keeping the original extracted text', 'warn');
+        }
+      }
+    }
+
     return buildDocx(pages, withImage);
-    return buildDocx(pages, false);
   }
 
 
@@ -1109,7 +1213,7 @@ Return NOTHING except the JSON object.`;
 
   function v14FindSmartFontSize(text, boxWidth, boxHeight, bold) {
     if (!text || text.length === 0) {
-      return { fontSize: 1, log: [] };
+      return { fontSize: 1, log: [], overflowed: false };
     }
 
     const padding = 2;
@@ -1117,6 +1221,14 @@ Return NOTHING except the JSON object.`;
     const effectiveHeight = Math.max(4, boxHeight - padding * 2);
 
     const maxByHeightPt = effectiveHeight * 0.75;
+    // Don't shrink past a readable floor. Translated text is very often
+    // longer than the original line (English vs Arabic word counts
+    // differ a lot in both directions) - without a floor, the old binary
+    // search would keep shrinking toward ~1pt trying to make it "fit",
+    // producing invisible text. Below MIN_FONT_PT we stop shrinking and
+    // instead let the render step show the overflow rather than clip it.
+    const MIN_FONT_PT = 6;
+    const lowestUsable = Math.min(MIN_FONT_PT, Math.max(1, maxByHeightPt));
 
     let lo = 1;
     let hi = Math.max(1, maxByHeightPt);
@@ -1138,7 +1250,19 @@ Return NOTHING except the JSON object.`;
     let finalSize = Math.floor(lo * 10) / 10;
     if (finalSize < 1) finalSize = 1;
 
-    return { fontSize: finalSize, log: logArr };
+    // If shrinking to fit would require going below the readable floor,
+    // use the floor instead and flag it as overflowing - the renderer
+    // then lets the (small amount of) extra text spill past the box
+    // edge instead of invisibly clipping it. A slightly-overflowing but
+    // COMPLETE line (including its trailing comma/period) beats a
+    // perfectly-boxed line that's missing its last character.
+    let overflowed = false;
+    if (finalSize < lowestUsable) {
+      finalSize = lowestUsable;
+      overflowed = true;
+    }
+
+    return { fontSize: finalSize, log: logArr, overflowed: overflowed };
   }
 
   function v14EscapeHtml(s) {
@@ -1454,6 +1578,12 @@ Return ONLY this JSON shape, nothing else:
 
       const result = v14FindSmartFontSize(text, boxWidth, boxHeight, isBold);
       const optimalFontSize = result.fontSize;
+      // Clipping fix: if even the readable-floor font size doesn't fit
+      // the box, let the (small) excess spill past the box edge instead
+      // of clipping it - a slightly-overflowing complete line beats a
+      // perfectly-boxed one that's silently missing its last character
+      // (this is what showed up as "comma/full-stop galat aa raha he").
+      const overflowCss = result.overflowed ? 'overflow:visible;' : 'overflow:hidden;text-overflow:clip;';
 
       const padding = 2;
 
@@ -1493,7 +1623,7 @@ Return ONLY this JSON shape, nothing else:
                       <tr>
                           <td align="${tdAlign}" valign="middle" 
                               style="font-family:Arial;font-size:${optimalFontSize}pt;color:${color};${fontWeightCss}${fontStyleCss}padding:${padding}px;border:none;
-                                     white-space:nowrap;word-wrap:normal;overflow:hidden;text-overflow:clip;
+                                     white-space:nowrap;word-wrap:normal;${overflowCss}
                                      direction:${dir};unicode-bidi:embed;
                                      ${justifyCss}">
                               <p style="margin:0;padding:0;line-height:normal;${justifyCss}">${v14EscapeHtml(text)}</p>
