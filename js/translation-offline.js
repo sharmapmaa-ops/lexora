@@ -982,6 +982,47 @@ Return NOTHING except the JSON object.`;
   // NOTE: OCR hamesha ORIGINAL image pe; cleaned sirf background ke liye.
   const V14_CLEAN_IMAGE_PROMPT = 'Generate a clean version of this image without changing its original width and height. Completely remove all readable text, printed words, handwritten signatures, and any linguistic characters from the image, as if they never existed. Do not alter any non-readable elements like lines, patterns, textures, abstract shapes, or background designs. The output must have the exact same dimensions as the input and no new text should be added.';
 
+  // Some image-editing models silently no-op on near-100%-text pages
+  // (a dense multi-paragraph legal document has no real "background"
+  // separate from the text itself, so there's nothing meaningful to
+  // preserve) - they return the SAME image back rather than erroring,
+  // which used to look like a successful clean while actually leaving
+  // every word of the original text fully intact. This does a cheap
+  // downsampled pixel-difference check so that case gets caught instead
+  // of silently reported as success.
+  function v14ImagesLookNearlyIdentical(dataUrlA, dataUrlB) {
+    return new Promise(function (resolve) {
+      const SIZE = 32;
+      function toSamples(dataUrl) {
+        return new Promise(function (res, rej) {
+          const img = new Image();
+          img.onload = function () {
+            try {
+              const c = document.createElement('canvas');
+              c.width = SIZE; c.height = SIZE;
+              const ctx = c.getContext('2d');
+              ctx.drawImage(img, 0, 0, SIZE, SIZE);
+              res(ctx.getImageData(0, 0, SIZE, SIZE).data);
+            } catch (e) { rej(e); }
+          };
+          img.onerror = function () { rej(new Error('image load failed')); };
+          img.src = dataUrl;
+        });
+      }
+      Promise.all([toSamples(dataUrlA), toSamples(dataUrlB)])
+        .then(function (pair) {
+          const a = pair[0], b = pair[1];
+          let totalDiff = 0;
+          for (let i = 0; i < a.length; i += 4) {
+            totalDiff += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+          }
+          const maxDiff = (a.length / 4) * 3 * 255;
+          resolve((totalDiff / maxDiff) < 0.02);   // <2% average difference = "nearly identical"
+        })
+        .catch(function () { resolve(false); });   // comparison itself failing shouldn't block a real result
+    });
+  }
+
   async function v14CleanImage(cleanModel, dataUrl) {
     const data = await v14ProxyJson({
       model: cleanModel,
@@ -1002,6 +1043,10 @@ Return NOTHING except the JSON object.`;
     const url = images[0].image_url && images[0].image_url.url;
     if (!url || !/^data:image\//i.test(url)) {
       throw new Error('Clean-image response did not contain a valid image data URL.');
+    }
+    const nearlyIdentical = await v14ImagesLookNearlyIdentical(dataUrl, url);
+    if (nearlyIdentical) {
+      throw new Error('The model returned an image nearly identical to the original - it likely could not remove the readable text (this happens on pages that are almost entirely body text, with no real background to preserve)');
     }
     return url;
   }
