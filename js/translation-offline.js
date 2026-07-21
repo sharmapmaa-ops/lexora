@@ -834,13 +834,28 @@ Return NOTHING except the JSON object.`;
   // max_tokens explicit — finish_reason="length" (token-limit truncation)
   // par EK retry badi limit ke saath. Ye "dobara guess" retry NAHI hai —
   // sirf already-decided JSON poori likhne ki jagah dena hai. (v13/v14 fix)
+  //
+  // ROOT CAUSE FIX (2 pages me se 1 page missing bug): kabhi-kabhi vision
+  // model (Gemini) finish_reason "stop" bhejta hai lekin content khud hi
+  // beech me kat jaata hai (RECITATION/SAFETY-style internal cutoff jo
+  // OpenRouter kabhi "length" ke roop me report nahi karta) — decorative/
+  // stylized-calligraphy pages (jaise certificates) par ye zyada hota hai.
+  // Pehle: sirf finishReason==='length' par retry hota tha, isliye aisa
+  // case seedha "malformed JSON" error bankar poora page skip kar deta
+  // tha. Ab: finishReason 'stop'/undefined ke alawa kuch bhi ho (ya khali
+  // content aaye) to bhi EK fresh retry hota hai, aur asli finishReason
+  // failure-log me dikhta hai taaki root cause hamesha traceable rahe.
   async function v14VisionCall(model, dataUrl, prompt) {
     let result = await v14VisionOnce(model, dataUrl, prompt, 16000);
     if (result.finishReason === 'length') {
       log('OCR response token-limit par truncate hua — 32000 tokens ke saath retry...', 'warn');
       result = await v14VisionOnce(model, dataUrl, prompt, 32000);
+    } else if (!result.content || !result.content.trim() ||
+               (result.finishReason && result.finishReason !== 'stop')) {
+      log('OCR response abnormal finish_reason="' + result.finishReason + '" (ya khali content) — fresh retry ho raha hai...', 'warn');
+      result = await v14VisionOnce(model, dataUrl, prompt, 16000);
     }
-    return result.content;
+    return { content: result.content, finishReason: result.finishReason };
   }
 
   // ---- CLEAN IMAGE (image-output model, HTML tool ka EXACT prompt) ----
@@ -1125,25 +1140,44 @@ Return NOTHING except the JSON object.`;
   }
 
   // ---- OCR one page: box_2d 0-1000 -> px, filter, repair, de-overlap ----
+  // ROOT CAUSE FIX: agar pehli call ka JSON malformed/incomplete nikle
+  // (flaky vision-model output — v14VisionCall ke reason dekho), to
+  // seedha page skip karne ki jagah EK poora fresh OCR attempt aur
+  // karte hain — dusra attempt zyada baar sahi JSON deta hai. Sirf
+  // dusri baar bhi fail ho to page fail hota hai (jaisa pehle tha),
+  // par ab asli finish_reason bhi error message me dikhta hai.
   async function v14ProcessSingleImage(model, dataUrl, width, height, pageNum) {
     const prompt = v14BuildExtractionPrompt();
-    const rawContent = await v14VisionCall(model, dataUrl, prompt);
-    const cleaned = v14CleanJsonResponse(rawContent);
 
-    let parsed;
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch (parseErr) {
-      try { console.error('Raw model response (full):', rawContent); } catch (e) {}
-      const looksTruncated = !cleaned.trim().endsWith('}');
-      const tail = cleaned.slice(-80);
-      throw new Error(`Model se valid JSON nahi mila (${cleaned.length} chars, ${looksTruncated ? 'response truncated lagta hai — end: "...' + tail + '"' : 'JSON malformed hai, truncation nahi'}).`);
-    }
+    let parsed, rawContent, finishReason, lastErr;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const callResult = await v14VisionCall(model, dataUrl, prompt);
+      rawContent = callResult.content;
+      finishReason = callResult.finishReason;
+      const cleaned = v14CleanJsonResponse(rawContent);
 
-    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.text_blocks)) {
-      try { console.error('Raw model response:', rawContent); } catch (e) {}
-      throw new Error('Model ne expected {"text_blocks":[...]} format nahi bheja.');
+      try {
+        const p = JSON.parse(cleaned);
+        if (!p || typeof p !== 'object' || !Array.isArray(p.text_blocks)) {
+          throw new Error('Model ne expected {"text_blocks":[...]} format nahi bheja.');
+        }
+        parsed = p;
+        lastErr = null;
+        break;
+      } catch (parseErr) {
+        try { console.error('Raw model response (attempt ' + attempt + ', finish_reason=' + finishReason + '):', rawContent); } catch (e) {}
+        const looksTruncated = !cleaned.trim().endsWith('}');
+        const tail = cleaned.slice(-80);
+        const detail = (parseErr.message === 'Model ne expected {"text_blocks":[...]} format nahi bheja.')
+          ? parseErr.message
+          : `JSON parse fail (${cleaned.length} chars, finish_reason="${finishReason}", ${looksTruncated ? 'response truncated lagta hai — end: "...' + tail + '"' : 'JSON malformed hai'})`;
+        lastErr = new Error(detail);
+        if (attempt === 1) {
+          log('P' + pageNum + ': OCR JSON invalid (' + detail + ') — dusra fresh attempt ho raha hai...', 'warn');
+        }
+      }
     }
+    if (lastErr) throw lastErr;
 
     const filtered = parsed.text_blocks
       .filter(item => item && typeof item === 'object' && typeof item.text === 'string' && item.text.trim().length > 0)
