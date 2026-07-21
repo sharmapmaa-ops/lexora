@@ -502,8 +502,10 @@
     };
   }
 
-  async function buildOfflineDocxBlob(file, logFn) {
+  async function buildOfflineDocxBlob(file, opts, logFn) {
     if (typeof logFn === 'function') _log = logFn;
+    opts = opts || {};
+    const withImage = !!opts.withImage;
     if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js failed to load');
     if (typeof JSZip === 'undefined') throw new Error('JSZip failed to load');
     const buf = await file.arrayBuffer();
@@ -523,11 +525,28 @@
       let lines = await extractOfflinePage(page, vp1, p);
       if (lines.length) autofitPage(lines, vp1.width, vp1.height, p);
       totalLines += lines.length;
-      pages.push({ lines: lines, wPt: vp1.width, hPt: vp1.height, jpegBase64: null });
-      log('P' + p + ': ' + lines.length + ' text line(s) extracted (no API)');
+
+      // WITH IMAGE (client-side render, no API call - stays "offline"):
+      // text-layer extraction above used the raw page at scale 1 (points)
+      // for exact coordinate math; this is a separate, higher-pixel-scale
+      // render of the SAME page purely for a crisp-looking background.
+      let jpegBase64 = null;
+      if (withImage) {
+        const bgScale = Math.min(3.0, 2000 / Math.max(vp1.width, vp1.height));
+        const bgVp = page.getViewport({ scale: bgScale });
+        const bgCanvas = document.createElement('canvas');
+        bgCanvas.width = Math.round(bgVp.width);
+        bgCanvas.height = Math.round(bgVp.height);
+        await page.render({ canvasContext: bgCanvas.getContext('2d'), viewport: bgVp }).promise;
+        jpegBase64 = bgCanvas.toDataURL('image/jpeg', 0.92).split(',')[1];
+      }
+
+      pages.push({ lines: lines, wPt: vp1.width, hPt: vp1.height, jpegBase64: jpegBase64 });
+      log('P' + p + ': ' + lines.length + ' text line(s) extracted (no API)' + (withImage ? ' + page image rendered' : ''));
     }
     if (totalLines === 0)
       throw new Error('No selectable text found in this PDF — offline mode only processes text-based PDFs');
+    return buildDocx(pages, withImage);
     return buildDocx(pages, false);
   }
 
