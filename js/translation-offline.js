@@ -504,8 +504,8 @@
 
   async function buildOfflineDocxBlob(file, logFn) {
     if (typeof logFn === 'function') _log = logFn;
-    if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js load nahi hua');
-    if (typeof JSZip === 'undefined') throw new Error('JSZip load nahi hua');
+    if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js failed to load');
+    if (typeof JSZip === 'undefined') throw new Error('JSZip failed to load');
     const buf = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
     let sampleItems = 0;
@@ -514,7 +514,7 @@
       sampleItems += tc0.items.filter(function (it) { return it.str && it.str.trim(); }).length;
     }
     if (sampleItems < 3)
-      throw new Error('Ye PDF Scanned/Image-based lagti hai — offline (Hybrid off) mode sirf Text-based PDFs process karta hai. Hybrid enable karke retry karo.');
+      throw new Error('This PDF looks scanned/image-based — offline (Hybrid off) mode only processes text-based PDFs. Enable Hybrid and retry.');
     const pages = [];
     let totalLines = 0;
     for (let p = 1; p <= pdf.numPages; p++) {
@@ -527,7 +527,7 @@
       log('P' + p + ': ' + lines.length + ' text line(s) extracted (no API)');
     }
     if (totalLines === 0)
-      throw new Error('Is PDF me koi selectable text nahi mila — offline mode sirf Text-based PDFs process karta hai');
+      throw new Error('No selectable text found in this PDF — offline mode only processes text-based PDFs');
     return buildDocx(pages, false);
   }
 
@@ -806,7 +806,7 @@ Return NOTHING except the JSON object.`;
       const msg = (data && (data.error && data.error.message || data.error)) || ('HTTP ' + resp.status);
       throw new Error('Vision proxy error: ' + (typeof msg === 'string' ? msg.substring(0, 300) : JSON.stringify(msg).substring(0, 300)));
     }
-    if (!data) throw new Error('Vision proxy se JSON response nahi mila.');
+    if (!data) throw new Error('Vision proxy did not return a JSON response.');
     return data;
   }
 
@@ -835,25 +835,20 @@ Return NOTHING except the JSON object.`;
   // par EK retry badi limit ke saath. Ye "dobara guess" retry NAHI hai —
   // sirf already-decided JSON poori likhne ki jagah dena hai. (v13/v14 fix)
   //
-  // ROOT CAUSE FIX (2 pages me se 1 page missing bug): kabhi-kabhi vision
-  // model (Gemini) finish_reason "stop" bhejta hai lekin content khud hi
-  // beech me kat jaata hai (RECITATION/SAFETY-style internal cutoff jo
-  // OpenRouter kabhi "length" ke roop me report nahi karta) — decorative/
-  // stylized-calligraphy pages (jaise certificates) par ye zyada hota hai.
-  // Pehle: sirf finishReason==='length' par retry hota tha, isliye aisa
-  // case seedha "malformed JSON" error bankar poora page skip kar deta
-  // tha. Ab: finishReason 'stop'/undefined ke alawa kuch bhi ho (ya khali
-  // content aaye) to bhi EK fresh retry hota hai, aur asli finishReason
-  // failure-log me dikhta hai taaki root cause hamesha traceable rahe.
+  // NOTE: ek speculative extra retry ("finish_reason !== 'stop' to retry
+  // karo") pehle yahan tha, lekin providers finish_reason ko alag-alag
+  // spelling/case me bhejte hain (e.g. "STOP" vs "stop", ya bilkul field
+  // hi missing) — us guess ki wajah se HAR page do baar call ho raha tha
+  // (speed aadhi ho gayi thi, aur "HTML me 1 call, Lexora me multiple
+  // calls" wala mismatch yahi tha). Hata diya — asli truncation/garbage
+  // output ko JSON.parse hi reliably pakadta hai (v14ProcessSingleImage
+  // ka apna retry-on-parse-failure), isliye normal path par hamesha
+  // sirf EK hi call lagti hai, jaisa HTML tool me hota hai.
   async function v14VisionCall(model, dataUrl, prompt) {
     let result = await v14VisionOnce(model, dataUrl, prompt, 16000);
     if (result.finishReason === 'length') {
-      log('OCR response token-limit par truncate hua — 32000 tokens ke saath retry...', 'warn');
+      log('OCR response was truncated by the token limit — retrying with 32000 tokens...', 'warn');
       result = await v14VisionOnce(model, dataUrl, prompt, 32000);
-    } else if (!result.content || !result.content.trim() ||
-               (result.finishReason && result.finishReason !== 'stop')) {
-      log('OCR response abnormal finish_reason="' + result.finishReason + '" (ya khali content) — fresh retry ho raha hai...', 'warn');
-      result = await v14VisionOnce(model, dataUrl, prompt, 16000);
     }
     return { content: result.content, finishReason: result.finishReason };
   }
@@ -879,11 +874,11 @@ Return NOTHING except the JSON object.`;
     const msg = data.choices && data.choices[0] && data.choices[0].message;
     const images = msg && msg.images;
     if (!images || !images.length) {
-      throw new Error('Model ne koi image return nahi ki. Kya ye model image-output support karta hai? (e.g. google/gemini-3.1-flash-image)');
+      throw new Error('The model did not return an image. Does this model support image output? (e.g. google/gemini-3.1-flash-image)');
     }
     const url = images[0].image_url && images[0].image_url.url;
     if (!url || !/^data:image\//i.test(url)) {
-      throw new Error('Clean-image response me valid image data URL nahi mila.');
+      throw new Error('Clean-image response did not contain a valid image data URL.');
     }
     return url;
   }
@@ -1159,7 +1154,7 @@ Return NOTHING except the JSON object.`;
       try {
         const p = JSON.parse(cleaned);
         if (!p || typeof p !== 'object' || !Array.isArray(p.text_blocks)) {
-          throw new Error('Model ne expected {"text_blocks":[...]} format nahi bheja.');
+          throw new Error('Model did not return the expected {"text_blocks":[...]} format.');
         }
         parsed = p;
         lastErr = null;
@@ -1168,12 +1163,12 @@ Return NOTHING except the JSON object.`;
         try { console.error('Raw model response (attempt ' + attempt + ', finish_reason=' + finishReason + '):', rawContent); } catch (e) {}
         const looksTruncated = !cleaned.trim().endsWith('}');
         const tail = cleaned.slice(-80);
-        const detail = (parseErr.message === 'Model ne expected {"text_blocks":[...]} format nahi bheja.')
+        const detail = (parseErr.message === 'Model did not return the expected {"text_blocks":[...]} format.')
           ? parseErr.message
-          : `JSON parse fail (${cleaned.length} chars, finish_reason="${finishReason}", ${looksTruncated ? 'response truncated lagta hai — end: "...' + tail + '"' : 'JSON malformed hai'})`;
+          : `JSON parse failed (${cleaned.length} chars, finish_reason="${finishReason}", ${looksTruncated ? 'response looks truncated — end: "...' + tail + '"' : 'JSON is malformed'})`;
         lastErr = new Error(detail);
         if (attempt === 1) {
-          log('P' + pageNum + ': OCR JSON invalid (' + detail + ') — dusra fresh attempt ho raha hai...', 'warn');
+          log('P' + pageNum + ': OCR JSON invalid (' + detail + ') — retrying with a fresh attempt...', 'warn');
         }
       }
     }
@@ -1239,7 +1234,7 @@ Return NOTHING except the JSON object.`;
       });
 
     if (filtered.length === 0) {
-      throw new Error('Image mein koi readable text detect nahi hua.');
+      throw new Error('No readable text was detected in the image.');
     }
 
     const rep = v14RepairBlocks(filtered, width, height);
@@ -1320,11 +1315,11 @@ Return ONLY this JSON shape, nothing else:
 
     let res = await callTranslationOnce(baseMaxTokens);
     if (res.finishReason === 'length') {
-      log('Translation response token-limit par truncate hua — badi limit ke saath retry...', 'warn');
+      log('Translation response was truncated by the token limit — retrying with a higher limit...', 'warn');
       res = await callTranslationOnce(Math.min(100000, baseMaxTokens * 2));
     }
 
-    if (!res.raw) throw new Error('Translation model se koi content nahi mila.');
+    if (!res.raw) throw new Error('No content received from the translation model.');
 
     const cleaned = v14CleanJsonResponse(res.raw);
     let parsed;
@@ -1332,12 +1327,12 @@ Return ONLY this JSON shape, nothing else:
       parsed = JSON.parse(cleaned);
     } catch (e) {
       try { console.error('Raw translation response (full):', res.raw); } catch (e2) {}
-      throw new Error('Translation model se valid JSON nahi mila (console dekhein).');
+      throw new Error('Translation model did not return valid JSON (see console).');
     }
 
     if (!parsed || !Array.isArray(parsed.translations)) {
       try { console.error('Raw translation response:', res.raw); } catch (e2) {}
-      throw new Error('Translation response me "translations" array nahi mila.');
+      throw new Error('Translation response did not include a "translations" array.');
     }
 
     return parsed;
@@ -1635,7 +1630,7 @@ Return ONLY this JSON shape, nothing else:
     const cleanImage = withImage && !!opts.cleanImage;   // Clean Image sirf With Image ke saath
     const targetLang = opts.targetLang || 'original';
     const keepOriginal = !targetLang || String(targetLang).toLowerCase() === 'original';
-    if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js load nahi hua');
+    if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js failed to load');
 
     const buf = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
@@ -1644,7 +1639,7 @@ Return ONLY this JSON shape, nothing else:
     // 1) PDF -> images (v14: scale 2.0, PNG)
     const images = await v14PdfToImages(pdf);
     const totalPages = images.length;
-    if (totalPages === 0) throw new Error('PDF mein koi page nahi hai.');
+    if (totalPages === 0) throw new Error('This PDF has no pages.');
 
     let allPagesJson = [];
     let pageDims = null;
@@ -1667,14 +1662,14 @@ Return ONLY this JSON shape, nothing else:
         let bgIsCleaned = false;
         if (bgDataUrl && cleanImage) {
           try {
-            log('P' + pageNum + ': [Call 1/2] background image clean ho rahi hai (' + cleanModel + ')...');
+            log('P' + pageNum + ': [Call 1/2] cleaning background image (' + cleanModel + ')...');
             const cleanedUrl = await v14CleanImage(cleanModel, img.dataUrl);
             bgDataUrl = cleanedUrl;
             bgIsCleaned = true;
-            log('P' + pageNum + ': background image clean ho gayi');
+            log('P' + pageNum + ': background image cleaned');
           } catch (cleanErr) {
             if (_shouldStop()) { abortVision(); stoppedEarly = true; break; }
-            log('P' + pageNum + ': image clean nahi hui (' + cleanErr.message + ') — ORIGINAL image background me use hogi', 'warn');
+            log('P' + pageNum + ': image clean failed (' + cleanErr.message + ') — using the ORIGINAL image as background', 'warn');
             bgDataUrl = img.dataUrl;
           }
         }
@@ -1702,7 +1697,7 @@ Return ONLY this JSON shape, nothing else:
         // ek page fail se poora run mat girao — record karke aage badho
         // (v14 behaviour), lekin chup mat raho.
         pageErrors.push({ page: pageNum, message: err.message });
-        log('P' + pageNum + ' FAILED: ' + err.message + ' — agle page par continue', 'error');
+        log('P' + pageNum + ' FAILED: ' + err.message + ' — continuing with the next page', 'error');
       }
 
       log('Vision OCR: ' + pageNum + '/' + totalPages + ' pages');
@@ -1714,17 +1709,17 @@ Return ONLY this JSON shape, nothing else:
     }
 
     if (allPagesJson.length === 0) {
-      if (stoppedEarly) throw new Error('Process stop kiya gaya — koi page complete nahi hua');
+      if (stoppedEarly) throw new Error('Process was stopped — no page completed');
       const errorList = pageErrors.map(function (e) { return 'Page ' + e.page + ': ' + e.message; }).join('; ');
-      throw new Error('Koi bhi text detect nahi hua — 0 textboxes. ' + (errorList || 'Console (F12) check karo.'));
+      throw new Error('No text was detected — 0 textboxes. ' + (errorList || 'Check the console (F12).'));
     }
-    if (stoppedEarly) log('Stop requested — ' + Object.keys(pageBackgrounds).length + '/' + totalPages + ' pages tak ka partial output');
+    if (stoppedEarly) log('Stop requested — partial output up to ' + Object.keys(pageBackgrounds).length + '/' + totalPages + ' pages');
     if (pageErrors.length) log('WARNING: page(s) ' + pageErrors.map(function (e) { return e.page; }).join(', ') + ' skipped', 'warn');
 
     // 3) ═══ CALL 3: TRANSLATION — sirf EK baar, POORE document ke liye ═══
     if (!keepOriginal && !_shouldStop()) {
       try {
-        log('[Final Call] Poora document ' + targetLang + ' me translate ho raha hai (document-type + tone detect karke)...');
+        log('[Final Call] Translating the whole document to ' + targetLang + ' (detecting document type + tone)...');
         const translationResult = await v14TranslateAllPages(model, allPagesJson, targetLang);
         const applied = v14ApplyTranslations(allPagesJson, translationResult.translations);
         allPagesJson = applied.blocks;
@@ -1732,9 +1727,9 @@ Return ONLY this JSON shape, nothing else:
         log('Document type: "' + translationResult.document_type + '", Tone/era: "' + translationResult.era_tone + '"');
       } catch (translateErr) {
         if (_shouldStop()) {
-          log('Stop requested — translation cancel, ORIGINAL text ke saath output', 'warn');
+          log('Stop requested — translation cancelled, output uses the ORIGINAL text', 'warn');
         } else {
-          log('Translation fail ho gayi (' + translateErr.message + ') — ORIGINAL text ke saath document ban raha hai', 'warn');
+          log('Translation failed (' + translateErr.message + ') — building the document with the ORIGINAL text', 'warn');
         }
       }
     }
@@ -1759,7 +1754,7 @@ Return ONLY this JSON shape, nothing else:
             base64: parsedImg.base64
           });
         } else {
-          log('P' + pageNum + ': dataUrl parse nahi hua — is page ki image doc me nahi aayegi', 'warn');
+          log('P' + pageNum + ': dataUrl failed to parse — this page\'s image will not appear in the document', 'warn');
         }
       }
     }
