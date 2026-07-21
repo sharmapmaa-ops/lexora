@@ -616,8 +616,10 @@ def _send_email(to_email, subject, body, html_body=None):
     # GoDaddy is effectively a black hole (connects never complete or fail),
     # burning the full timeout before ever falling back to IPv4. The IPv4-only
     # subclasses below skip that by resolving AF_INET explicitly.
+    print("STEP 2")
     if port == 465:
         with _IPv4SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=25) as server:
+            print("STEP 3")
             server.set_debuglevel(1)
             if username and password:
                 print("Logging in...")
@@ -630,6 +632,7 @@ def _send_email(to_email, subject, body, html_body=None):
             server.sendmail(sender, [to_email], mime_msg.as_string())
             print("Mail sent.")
     else:
+        print("STEP 3")
         with _IPv4SMTP(host, port, timeout=25) as server:
             server.set_debuglevel(1)
             if use_tls:
