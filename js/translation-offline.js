@@ -1401,6 +1401,9 @@ Before translating, look at the whole document's content and determine:
 STEP 2 — TRANSLATE INTO ${targetLanguageLabel}
 Translate the ENTIRE document into ${targetLanguageLabel}, using a tone/register appropriate to the document_type and era_tone you determined (e.g. a certificate needs a formal ceremonial register, a legal document needs precise legal register, an old book needs period-appropriate literary tone, a casual letter needs a conversational tone).
 
+IMPORTANT — TERMINOLOGY MUST STAY CONSISTENT ACROSS THE WHOLE DOCUMENT:
+Before translating, mentally note the key recurring legal/financial/technical terms in the document (e.g. rent, tenant, landlord, terminate, deposit, premises, party, agreement - whatever actually recurs in THIS document). For each such term, pick ONE precise ${targetLanguageLabel} equivalent appropriate to the document_type's register, and use that EXACT SAME word every single time that term appears, on every page. Do not vary it with casual synonyms from one occurrence to the next (e.g. don't translate "rent" as one word in paragraph 2 and a different word meaning "fee" in paragraph 9; don't translate "terminate" as one word here and a word meaning "withdraw" elsewhere) - inconsistent terminology changes the legal/technical meaning of a document like this, it isn't a stylistic choice. When in doubt between a casual/colloquial word and a more precise formal one for the document's register, prefer the precise formal one and keep it consistent.
+
 IMPORTANT — TRANSLATE PARAGRAPH-WISE, NOT LINE-BY-LINE:
 Blocks that share the same "paragraph_id", taken in their given order (across pages if needed — a paragraph_id's blocks may span a page boundary, since blocks are given in full-document reading order), together form ONE continuous paragraph. Join them, understand the FULL paragraph's meaning and grammar, and translate it as one coherent unit — never translate an isolated block without its paragraph's context.
 
