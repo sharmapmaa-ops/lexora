@@ -616,37 +616,18 @@ def _send_email(to_email, subject, body, html_body=None):
     # GoDaddy is effectively a black hole (connects never complete or fail),
     # burning the full timeout before ever falling back to IPv4. The IPv4-only
     # subclasses below skip that by resolving AF_INET explicitly.
-    print("STEP 2")
     if port == 465:
         with _IPv4SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=25) as server:
-            print("STEP 3")
-            server.set_debuglevel(1)
             if username and password:
-                print("Logging in...")
                 server.login(username, password)
-            print("Sending mail...")
-            print("SMTP HOST :", host)
-            print("SMTP PORT :", port)
-            print("SMTP USER :", username)
-            print("SMTP TLS  :", use_tls)
             server.sendmail(sender, [to_email], mime_msg.as_string())
-            print("Mail sent.")
     else:
-        print("STEP 3")
         with _IPv4SMTP(host, port, timeout=25) as server:
-            server.set_debuglevel(1)
             if use_tls:
                 server.starttls(context=ssl.create_default_context())
             if username and password:
-                print("Logging in...")
                 server.login(username, password)
-            print("Sending mail...")
-            print("SMTP HOST :", host)
-            print("SMTP PORT :", port)
-            print("SMTP USER :", username)
-            print("SMTP TLS  :", use_tls)
             server.sendmail(sender, [to_email], mime_msg.as_string())
-            print("Mail sent.")
 
 
 def _html_email_wrapper(company_name, preheader, body_html):
@@ -1053,6 +1034,65 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _handle_smtp_diag(self, query):
+        """TEMPORARY DIAGNOSTIC ROUTE - delete this once the SMTP timeout issue
+        is resolved. Runs the exact same connect -> (STARTTLS) -> login sequence
+        as _send_email(), but from Render itself and WITHOUT sending a real
+        email, so we can see precisely which step hangs/fails and how long
+        each step took. Gated behind SMTP_DIAG_KEY (set this env var to any
+        random string on Render; the route is a 403 no-op if it's unset).
+
+        Usage: GET /api/debug/smtp-diag?key=<SMTP_DIAG_KEY>
+        """
+        expected = os.environ.get("SMTP_DIAG_KEY", "")
+        provided = (query.get("key") or [""])[0]
+        if not expected or provided != expected:
+            return self._send_json(403, {"error": "forbidden"})
+
+        account = _primary_smtp_account()
+        host = account["host"]
+        port = int(account.get("port", 465))
+        username = account.get("username")
+        password = account.get("password")
+
+        steps = []
+        t0 = time.time()
+
+        def mark(label):
+            steps.append({"step": label, "elapsed_sec": round(time.time() - t0, 2)})
+
+        try:
+            mark("start")
+            ipv4_addr = _resolve_ipv4(host, port)
+            mark(f"dns_resolved:{ipv4_addr[0]}")
+
+            if port == 465:
+                with _IPv4SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=20) as server:
+                    mark("tcp_connect_and_tls_handshake_ok")
+                    if username and password:
+                        server.login(username, password)
+                        mark("login_ok")
+            else:
+                with _IPv4SMTP(host, port, timeout=20) as server:
+                    mark("tcp_connect_ok")
+                    server.starttls(context=ssl.create_default_context())
+                    mark("starttls_ok")
+                    if username and password:
+                        server.login(username, password)
+                        mark("login_ok")
+
+            mark("done")
+            return self._send_json(200, {"ok": True, "host": host, "port": port, "steps": steps})
+        except Exception as err:
+            mark(f"FAILED: [{type(err).__name__}] {err}")
+            return self._send_json(500, {
+                "ok": False,
+                "host": host,
+                "port": port,
+                "steps": steps,
+                "error": f"[{type(err).__name__}] {err}"
+            })
+
     # ------------------------------------------------------------------
     # Session-based auth. Every protected route calls _resolve_user_id()
     # (POST, body-based) or _resolve_user_id_query() (GET, query-string
@@ -1163,6 +1203,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/rules/list": self._handle_rules_list,
             "/api/lease/download": self._handle_lease_download,
             "/api/translation/download": self._handle_translation_download,
+            "/api/debug/smtp-diag": self._handle_smtp_diag,  # TEMPORARY - see handler docstring, remove after diagnosing
         }
         get_handler = get_routes.get(path)
         if get_handler:
