@@ -126,6 +126,46 @@
                 return perUnit * Math.max(1, pageCount || 1);
             }
 
+            // Est. charge shown on the Uploaded Files card - only when at
+            // least one file is checkbox-selected, and shows BOTH the
+            // current per-page/per-document rate and the overall total for
+            // exactly the selected files (not "all not-yet-completed" like
+            // before - selection is now what actually governs what Start
+            // will process, see processTranslationFileAt/processLeaseFileAt).
+            function buildChargeEstimateHtml(serviceId, files) {
+                const selectedFiles = files.filter(f => f.selected !== false);
+                if (selectedFiles.length === 0) return '';
+                const myPlan = getMyPlan();
+                let perUnit, unitLabel, modeOpts;
+                if (serviceId === 'translation') {
+                    modeOpts = getCurrentTranslationModeOpts();
+                    const categoryKey = translationCategoryKey(!!modeOpts.ocr, !!modeOpts.translate);
+                    const pricing = (myPlan.translationPricing && myPlan.translationPricing[categoryKey]) || {};
+                    perUnit = modeOpts.withImage
+                        ? (pricing.withImage != null ? pricing.withImage : 1)
+                        : (pricing.withoutImage != null ? pricing.withoutImage : 1);
+                    unitLabel = 'page';
+                } else {
+                    perUnit = myPlan.pricePerLeaseAbstraction != null ? myPlan.pricePerLeaseAbstraction : 1;
+                    unitLabel = (myPlan.billingUnit || 'document') === 'page' ? 'page' : 'document';
+                }
+                const total = selectedFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount, modeOpts), 0);
+                const estimateNote = unitLabel === 'page' ? ' (estimate - final charge depends on each file\'s actual page count)' : '';
+                return `💰 Rate: $${perUnit.toFixed(2)}/${unitLabel} · Est. total: $${total.toFixed(2)} for ${selectedFiles.length} selected file(s)${estimateNote}`;
+            }
+
+            // Keeps the Est. charge line in sync the moment file selection
+            // or the OCR/Image/Language mode changes - called from
+            // toggleFileSelect, toggleSelectAllFiles, and the mode
+            // checkboxes/dropdown, without needing a full page re-render.
+            function updateChargeEstimateLive() {
+                const serviceId = activeSubItemId === 'translation' ? 'translation' : 'lease-abstraction';
+                if (activeSubItemId !== 'translation' && activeSubItemId !== 'lease-abstraction') return;
+                const files = serviceId === 'translation' ? getMyTranslationFiles() : getMyLeaseFiles();
+                const el = document.getElementById('fileListChargeEstimate');
+                if (el) el.innerHTML = buildChargeEstimateHtml(serviceId, files);
+            }
+
             function isPlanExpired() {
                 // Item 3 - no plan/no end-date at all means no active
                 // plan, which blocks service use exactly like an expired
@@ -514,15 +554,12 @@
                 const activityRows = buildActivityLogRows(activityLog);
                 const agentPills = buildAgentPillsHTML(serviceId);
 
-                // Item 8 - auto-calculated charge for the current batch,
-                // shown top-right of the Uploaded Files card. Only counts
-                // files not already completed/needs_review (same set
-                // startProcess() would actually charge for).
-                const billableFiles = files.filter(f => f.status !== 'completed' && f.status !== 'needs_review');
-                const myPlanForEstimate = getMyPlan();
-                const batchChargeEstimate = billableFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
-                const chargeEstimateHtml = billableFiles.length > 0 ?
-                    `💰 Est. charge: $${batchChargeEstimate.toFixed(2)}${serviceId === 'translation' || myPlanForEstimate.billingUnit === 'page' ? ' (per page)' : ' (per document)'}` : '';
+                // Est. charge for the current SELECTION, shown top-right of
+                // the Uploaded Files card. Only shows when at least one
+                // file is checkbox-selected, and shows both the per-page/
+                // per-document RATE and the overall total for the selection
+                // - see buildChargeEstimateHtml().
+                const chargeEstimateHtml = buildChargeEstimateHtml(serviceId, files);
                 const controlButtons = buildControlButtonsHTML(serviceId, files.length > 0);
 
                 // File count text for drop zone
@@ -536,7 +573,7 @@
                         <div style="display:flex;gap:12px;align-items:flex-start;">
                           <div style="flex:1;">
                             <label>Output Language</label>
-                            <select id="translationLangSelect" style="width:100%;" ${processState.running ? 'disabled' : ''}>
+                            <select id="translationLangSelect" style="width:100%;" onchange="updateChargeEstimateLive()" ${processState.running ? 'disabled' : ''}>
                                 <option value="original">Original (No Translation)</option>
                                 ${TRANSLATION_LANG_OPTIONS}
                             </select>
@@ -836,6 +873,7 @@
             window.setTranslationWithImage = function(c){
                 translationWithImage = !!c;
                 syncCleanImageVisibility();
+                updateChargeEstimateLive();
             };
             window.setTranslationHybridMode = function(checked) {
                 translationHybridMode = !!checked;
@@ -844,6 +882,7 @@
                 // text-based (local, offline) extraction now support
                 // translation and image handling the same way; this
                 // checkbox only changes HOW the text is extracted.
+                updateChargeEstimateLive();
             };
 
             // Translation output file format: 'docx' (default) or 'pdf'.
@@ -2285,7 +2324,7 @@
 
             // File selection (checkbox) — user specific files run/clear kar sake
             window.toggleFileSelect = function(fileId, checked) {
-                const arr = (activeServiceId === 'translation') ? translationFiles : leaseFiles;
+                const arr = (activeSubItemId === 'translation') ? translationFiles : leaseFiles;
                 const f = arr.find(x => String(x.id) === String(fileId));
                 if (f) f.selected = !!checked;
                 // Keep the "select all" header checkbox in sync: checked
@@ -2295,6 +2334,7 @@
                 const mine = arr.filter(x => x.userId === CURRENT_USER_ID);
                 const selectAllEl = document.getElementById('translationSelectAll');
                 if (selectAllEl) selectAllEl.checked = mine.length > 0 && mine.every(x => x.selected !== false);
+                updateChargeEstimateLive();
             };
             window.toggleSelectAllFiles = function(serviceId, checked) {
                 const arr = (serviceId === 'translation') ? translationFiles : leaseFiles;
@@ -2432,11 +2472,7 @@
 
                 const chargeEstimateEl = document.getElementById('fileListChargeEstimate');
                 if (chargeEstimateEl) {
-                    const billableFiles = files.filter(f => f.status !== 'completed' && f.status !== 'needs_review');
-                    const myPlanForEstimate = getMyPlan();
-                    const batchChargeEstimate = billableFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
-                    chargeEstimateEl.innerHTML = billableFiles.length > 0 ?
-                        `💰 Est. charge: $${batchChargeEstimate.toFixed(2)}${serviceId === 'translation' || myPlanForEstimate.billingUnit === 'page' ? ' (per page)' : ' (per document)'}` : '';
+                    chargeEstimateEl.innerHTML = buildChargeEstimateHtml(serviceId, files);
                 }
 
                 const activityListEl = document.getElementById('activityList');
