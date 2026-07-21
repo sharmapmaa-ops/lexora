@@ -483,9 +483,9 @@
                         <div style="display:flex;gap:12px;align-items:flex-start;">
                           <div style="flex:1;">
                             <label>Output Language</label>
-                            <select id="translationLangSelect" style="width:100%;" ${(translationHybridMode && !processState.running) ? '' : 'disabled'}>
-                                <option value="original" ${translationHybridMode ? '' : 'selected'}>Original (No Translation)</option>
-                                ${translationHybridMode ? TRANSLATION_LANG_OPTIONS : ''}
+                            <select id="translationLangSelect" style="width:100%;" ${processState.running ? 'disabled' : ''}>
+                                <option value="original">Original (No Translation)</option>
+                                ${TRANSLATION_LANG_OPTIONS}
                             </select>
                           </div>
                           <div style="flex:1;">
@@ -499,31 +499,23 @@
                         </div>
                         <div style="display:flex;align-items:center;gap:20px;margin-top:10px;">
                             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
-                                   title="Checked: full API processing (Vision + High Accuracy + Ensemble OCR, all internally ON). Unchecked: WITHOUT API — text-based PDFs only, text extraction only, no translation.">
+                                   title="Checked (With OCR): full vision-based OCR - reads scanned/photographed pages too, and supports translation. Unchecked: faster local text extraction - text-based PDFs only (not scanned/photo), translation still available.">
                                 <input type="checkbox" id="translationHybridCheck" style="width:auto;margin:0;" ${translationHybridMode ? 'checked' : ''} ${processState.running ? 'disabled' : ''}
                                        onchange="setTranslationHybridMode(this.checked)" />
-                                <span>Hybrid</span>
+                                <span>With OCR</span>
                             </label>
                             <label id="translationWithImageWrap" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
-                                   title="Checked: the page background/graphics/logos are preserved in the output (the page image is placed behind the textboxes). In Hybrid mode you can also check Clean Image to remove the original text from it first. Unchecked: only reconstructed text on a clean white page.">
+                                   title="Checked: the page background/graphics/logos are preserved in the output (the page image is placed behind the textboxes). Check Clean Image too to remove the original text from it first. Unchecked: only reconstructed text on a clean white page.">
                                 <input type="checkbox" id="translationWithImageCheck" style="width:auto;margin:0;" ${translationWithImage ? 'checked' : ''} ${processState.running ? 'disabled' : ''}
                                        onchange="setTranslationWithImage(this.checked)" />
                                 <span>With Image</span>
                             </label>
-                            <label id="translationCleanImageWrap" style="display:${(translationHybridMode && translationWithImage) ? 'flex' : 'none'};align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
+                            <label id="translationCleanImageWrap" style="display:${translationWithImage ? 'flex' : 'none'};align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
                                    title="Checked: an extra image-model call per page removes ALL readable text from the background image first (Clean Image), so the original text never shows behind the new textboxes. Unchecked: the original page image is used as the background as-is.">
                                 <input type="checkbox" id="translationCleanImageCheck" style="width:auto;margin:0;" ${translationCleanImage ? 'checked' : ''} ${processState.running ? 'disabled' : ''}
                                        onchange="setTranslationCleanImage(this.checked)" />
                                 <span>Clean Image</span>
                             </label>
-                        </div>
-                        <div id="translationWithImageMsg" style="display:${translationWithImage ? 'block' : 'none'};margin-top:6px;padding:8px 10px;border:1px solid #7aa7cc;background:#eef5fb;border-radius:6px;font-size:12.5px;color:#2c5777;">
-                            ${translationHybridMode
-                                ? 'Note: With Image places the page image behind the textboxes as-is. Check <b>Clean Image</b> to first remove all readable text from that background via an AI image model — the cleaned background is AI-predicted (not a pixel-perfect copy), so minor changes in image quality may occur.'
-                                : 'Note: With Image renders the page itself (client-side, no API call) and places it behind the extracted text, as-is. Clean Image is only available in Hybrid mode.'}
-                        </div>
-                        <div id="translationOfflineMsg" style="display:${translationHybridMode ? 'none' : 'block'};margin-top:6px;padding:8px 10px;border:1px solid #e0a800;background:#fff8e1;border-radius:6px;font-size:12.5px;color:#7a5c00;">
-                            Without API mode: only <b>Text-based PDFs</b> can be processed (not scanned/photo), and the output will contain only the <b>extracted original text</b> — no translation. Output Language is locked to "Original (No Translation)".
                         </div>
                     </div>
                 ` : `
@@ -768,14 +760,15 @@
 
             let translationHybridMode = false;   // default: UNCHECKED (user spec)
             let translationWithImage = true;
-            // Clean Image (Hybrid-only - needs an extra API call to remove
-            // text from the background). Whenever this checkbox transitions
-            // from hidden to visible (Hybrid + With Image both on), it
-            // defaults back to CHECKED - see syncCleanImageVisibility().
+            // Clean Image - needs an extra image-model API call to remove
+            // text from the background. Available in both With-OCR and
+            // text-based (offline) modes now - only With Image gates it.
+            // Whenever it transitions from hidden to visible (With Image
+            // just got checked), it defaults back to CHECKED.
             let translationCleanImage = true;
             let _cleanImageWasVisible = false;
             function syncCleanImageVisibility() {
-                const visible = translationHybridMode && translationWithImage;
+                const visible = translationWithImage;
                 const ciWrap = document.getElementById('translationCleanImageWrap');
                 const ciCheck = document.getElementById('translationCleanImageCheck');
                 if (visible && !_cleanImageWasVisible) translationCleanImage = true;
@@ -789,37 +782,15 @@
             };
             window.setTranslationWithImage = function(c){
                 translationWithImage = !!c;
-                var wiMsg = document.getElementById('translationWithImageMsg');
-                if (wiMsg) wiMsg.style.display = (c ? 'block' : 'none');
                 syncCleanImageVisibility();
             };
             window.setTranslationHybridMode = function(checked) {
                 translationHybridMode = !!checked;
-                // Hybrid OFF = offline: offline message dikhao, Output
-                // Language ko "original" par lock karo. With Image ab
-                // hamesha visible rehta hai (offline mode me bhi client-
-                // side page-image render supported hai), isliye ab yahan
-                // usse hide nahi karna.
-                const offMsg = document.getElementById('translationOfflineMsg');
-                const langSel = document.getElementById('translationLangSelect');
-                syncCleanImageVisibility();
-                var wiMsg2 = document.getElementById('translationWithImageMsg');
-                if (wiMsg2) wiMsg2.style.display = translationWithImage ? 'block' : 'none';
-                if (offMsg) offMsg.style.display = checked ? 'none' : 'block';
-                if (langSel){
-                    if (!checked){
-                        // Hybrid OFF: sirf Original, baaki languages hatao + lock
-                        langSel.innerHTML = '<option value="original" selected>Original (No Translation)</option>';
-                        langSel.value = 'original';
-                        langSel.disabled = true;
-                    } else {
-                        // Hybrid ON: saari languages wapas (v14 full list)
-                        langSel.innerHTML =
-                            '<option value="original">Original (No Translation)</option>' +
-                            TRANSLATION_LANG_OPTIONS;
-                        langSel.disabled = false;
-                    }
-                }
+                // Output Language, With Image and Clean Image are no longer
+                // gated by this toggle - both With-OCR (vision) and
+                // text-based (local, offline) extraction now support
+                // translation and image handling the same way; this
+                // checkbox only changes HOW the text is extracted.
             };
 
             // Translation output file format: 'docx' (default) or 'pdf'.
@@ -1822,39 +1793,37 @@
                         if (processState.stopped) return;
 
                         // ============================================================
-                        // OFFLINE (Hybrid OFF) — WITHOUT API. Test.html ka EXACT
-                        // offline logic browser me chalta hai (translation-offline.js):
-                        // pdf.js se text extract + JSZip se docx. Server pe sirf
-                        // save hota hai (folder + billing + download link). Koi
-                        // extraction/vision/translate API call NAHI.
+                        // TEXT-BASED (With OCR unchecked): local pdf.js text-layer
+                        // extraction, run entirely in the browser (translation-
+                        // offline.js). Translation and Clean Image are the only
+                        // two API calls this mode makes (when the user asks for
+                        // them) - OCR itself never happens here.
                         // ============================================================
                         // Browser-side deliverable banega jab:
-                        //  (a) Hybrid OFF  -> offline text-layer (no API), YA
-                        //  (b) Hybrid ON + Original(No Translation) -> vision OCR
+                        //  (a) With OCR unchecked -> local text-layer extraction, YA
+                        //  (b) With OCR checked + Original(No Translation) -> vision OCR
                         //      browser me (Box-tool jaisa line-level, tez),
                         //      koi translation nahi, image sirf With Image par.
-                        // Hybrid ON -> sab kuch browser vision path me (OCR-only
-                        // ya OCR+translate, dono Test.html criteria ke saath:
-                        // page-type detect + tone). Hybrid OFF -> offline text-layer.
+                        // With OCR checked -> sab kuch browser vision path me
+                        // (OCR-only ya OCR+translate, dono Test.html criteria ke
+                        // saath: page-type detect + tone). With OCR unchecked ->
+                        // local text-layer extraction.
                         const browserBuild = true;
                         if (browserBuild) {
                             const baseName = originalFileName.replace(/\.[^.]+$/, '');
-                            const isTranslate = hybridMode && targetLanguage !== 'original';
-                            // OUTPUT FILENAME (user spec):
-                            //  Hybrid OFF (text-based, no API): "<name> No Hybrid - Without Translation - Translation"
-                            //  Hybrid ON + Original:            "<name> Hybrid - Without Translation - Translation"
-                            //  Hybrid ON + <language>:          "<name> Hybrid - <language> - Translation"
-                            let docName;
-                            if (!hybridMode) {
-                                docName = baseName + ' No Hybrid - Without Translation - Translation';
-                            } else if (!isTranslate) {
-                                docName = baseName + ' Hybrid - Without Translation - Translation';
-                            } else {
-                                docName = baseName + ' Hybrid - ' + targetLanguage + ' - Translation';
-                            }
-                            const modeLabel = !hybridMode ? 'Offline (no API)'
-                                : (isTranslate ? ('Hybrid - Vision OCR + Translate -> ' + targetLanguage)
-                                               : 'Hybrid - Vision OCR only');
+                            // FIX: translation is now available in BOTH modes (not
+                            // just With OCR) - this used to be gated by hybridMode,
+                            // which mislabeled text-based+translation runs as "no
+                            // translation" in the filename/activity log/billing text.
+                            const isTranslate = targetLanguage !== 'original';
+                            const modeName = hybridMode ? 'With OCR' : 'Text-based';
+                            // OUTPUT FILENAME:
+                            //  Text-based + Original:  "<name> Text-based - Without Translation - Translation"
+                            //  Text-based + <language>: "<name> Text-based - <language> - Translation"
+                            //  With OCR + Original:    "<name> With OCR - Without Translation - Translation"
+                            //  With OCR + <language>:   "<name> With OCR - <language> - Translation"
+                            const docName = baseName + ' ' + modeName + ' - ' + (isTranslate ? targetLanguage : 'Without Translation') + ' - Translation';
+                            const modeLabel = modeName + (hybridMode ? ' (Vision)' : ' (local extraction)') + (isTranslate ? (' + Translate -> ' + targetLanguage) : ' only');
                             // ACTIVITY LOG FIX: har distinct step apni ALAG line
                             // banata hai (updateActivity se overwrite NAHI). Error
                             // aaye to wo line rehti hai; solve/agla step nayi line.
@@ -1918,16 +1887,20 @@
                                     addActivity('translation', `${fl}${m}`, 'Info');
                                     refreshServicePage('translation');
                                 };
+                                if (window.setVisionAuthToken) window.setVisionAuthToken(AUTH_TOKEN || '');
+                                if (window.setVisionStopCheck) window.setVisionStopCheck(function () { return processState.stopped; });
                                 if (hybridMode) {
-                                    if (window.setVisionAuthToken) window.setVisionAuthToken(AUTH_TOKEN || '');
-                                    if (window.setVisionStopCheck) window.setVisionStopCheck(function () { return processState.stopped; });
                                     offlineBlob = await window.buildHybridDocxBlob(blob, {
                                         withImage: withImageOpt,
                                         cleanImage: cleanImageOpt,
                                         targetLang: targetLanguage
                                     }, onLog);
                                 } else {
-                                    offlineBlob = await window.buildOfflineDocxBlob(blob, { withImage: withImageOpt }, onLog);
+                                    offlineBlob = await window.buildOfflineDocxBlob(blob, {
+                                        withImage: withImageOpt,
+                                        cleanImage: cleanImageOpt,
+                                        targetLang: targetLanguage
+                                    }, onLog);
                                 }
                             } catch (offErr) {
                                 // ERROR LINE: rehti hai (hatti nahi), aur File Processing
@@ -1970,7 +1943,7 @@
                                 userId: CURRENT_USER_ID,
                                 paymentType: 'Service Fee',
                                 paymentMode: 'Wallet Balance',
-                                description: `Translation - ${file.name} (${!hybridMode ? 'No Hybrid' : (isTranslate ? 'Hybrid ' + targetLanguage : 'Hybrid Original')})`,
+                                description: `Translation - ${file.name} (${modeName}${isTranslate ? ' ' + targetLanguage : ' Original'})`,
                                 credit: 0,
                                 debit: chargeAmount
                             });
@@ -1979,7 +1952,7 @@
                             file.outputFormat = 'docx';
                             file.sessionDownload = true;   // browser-only download
                             file.progress = '100';
-                            addActivity('translation', `${fl}System > Output Mode > ${!hybridMode ? 'offline (no API)' : (isTranslate ? 'Hybrid Vision + Translate' : 'Hybrid Vision OCR-only')}`, 'Success');
+                            addActivity('translation', `${fl}System > Output Mode > ${modeLabel}`, 'Success');
                             addActivity('translation', `${fl}System > Generate Output > ${docName}${outExt} ready for download (this session only)`, 'Success');
                             addActivity('translation', `${fl}File Processing > ${file.name}`, 'Finished');
                             notifyProcessCompletion('Translation', file.name, chargeAmount, txnId);
