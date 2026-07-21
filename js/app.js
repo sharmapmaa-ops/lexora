@@ -504,8 +504,8 @@
                                        onchange="setTranslationHybridMode(this.checked)" />
                                 <span>Hybrid</span>
                             </label>
-                            <label id="translationWithImageWrap" style="display:${translationHybridMode ? 'flex' : 'none'};align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
-                                   title="Checked: the page background/graphics/logos are preserved in the output (the page image is placed behind the textboxes; check Clean Image to remove the original text from it first). Unchecked: only reconstructed text on a clean white page.">
+                            <label id="translationWithImageWrap" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
+                                   title="Checked: the page background/graphics/logos are preserved in the output (the page image is placed behind the textboxes). In Hybrid mode you can also check Clean Image to remove the original text from it first. Unchecked: only reconstructed text on a clean white page.">
                                 <input type="checkbox" id="translationWithImageCheck" style="width:auto;margin:0;" ${translationWithImage ? 'checked' : ''} ${processState.running ? 'disabled' : ''}
                                        onchange="setTranslationWithImage(this.checked)" />
                                 <span>With Image</span>
@@ -517,8 +517,10 @@
                                 <span>Clean Image</span>
                             </label>
                         </div>
-                        <div id="translationWithImageMsg" style="display:${translationHybridMode && translationWithImage ? 'block' : 'none'};margin-top:6px;padding:8px 10px;border:1px solid #7aa7cc;background:#eef5fb;border-radius:6px;font-size:12.5px;color:#2c5777;">
-                            Note: With Image places the page image behind the textboxes as-is. Check <b>Clean Image</b> to first remove all readable text from that background via an AI image model — the cleaned background is AI-predicted (not a pixel-perfect copy), so minor changes in image quality may occur.
+                        <div id="translationWithImageMsg" style="display:${translationWithImage ? 'block' : 'none'};margin-top:6px;padding:8px 10px;border:1px solid #7aa7cc;background:#eef5fb;border-radius:6px;font-size:12.5px;color:#2c5777;">
+                            ${translationHybridMode
+                                ? 'Note: With Image places the page image behind the textboxes as-is. Check <b>Clean Image</b> to first remove all readable text from that background via an AI image model — the cleaned background is AI-predicted (not a pixel-perfect copy), so minor changes in image quality may occur.'
+                                : 'Note: With Image renders the page itself (client-side, no API call) and places it behind the extracted text, as-is. Clean Image is only available in Hybrid mode.'}
                         </div>
                         <div id="translationOfflineMsg" style="display:${translationHybridMode ? 'none' : 'block'};margin-top:6px;padding:8px 10px;border:1px solid #e0a800;background:#fff8e1;border-radius:6px;font-size:12.5px;color:#7a5c00;">
                             Without API mode: only <b>Text-based PDFs</b> can be processed (not scanned/photo), and the output will contain only the <b>extracted original text</b> — no translation. Output Language is locked to "Original (No Translation)".
@@ -766,9 +768,22 @@
 
             let translationHybridMode = false;   // default: UNCHECKED (user spec)
             let translationWithImage = true;
-            // v14: Clean Image — background image ka saara text ek extra
-            // image-model call se remove hota hai. Default UNCHECKED.
-            let translationCleanImage = false;
+            // Clean Image (Hybrid-only - needs an extra API call to remove
+            // text from the background). Whenever this checkbox transitions
+            // from hidden to visible (Hybrid + With Image both on), it
+            // defaults back to CHECKED - see syncCleanImageVisibility().
+            let translationCleanImage = true;
+            let _cleanImageWasVisible = false;
+            function syncCleanImageVisibility() {
+                const visible = translationHybridMode && translationWithImage;
+                const ciWrap = document.getElementById('translationCleanImageWrap');
+                const ciCheck = document.getElementById('translationCleanImageCheck');
+                if (visible && !_cleanImageWasVisible) translationCleanImage = true;
+                if (!visible) translationCleanImage = false;
+                if (ciWrap) ciWrap.style.display = visible ? 'flex' : 'none';
+                if (ciCheck) ciCheck.checked = translationCleanImage;
+                _cleanImageWasVisible = visible;
+            }
             window.setTranslationCleanImage = function(c){
                 translationCleanImage = !!c;
             };
@@ -776,27 +791,20 @@
                 translationWithImage = !!c;
                 var wiMsg = document.getElementById('translationWithImageMsg');
                 if (wiMsg) wiMsg.style.display = (c ? 'block' : 'none');
-                // v14 sync rule: With Image OFF -> Clean Image chhipao + uncheck
-                var ciWrap = document.getElementById('translationCleanImageWrap');
-                var ciCheck = document.getElementById('translationCleanImageCheck');
-                if (ciWrap) ciWrap.style.display = (translationHybridMode && c) ? 'flex' : 'none';
-                if (!c) {
-                    translationCleanImage = false;
-                    if (ciCheck) ciCheck.checked = false;
-                }
+                syncCleanImageVisibility();
             };
             window.setTranslationHybridMode = function(checked) {
                 translationHybridMode = !!checked;
-                // Hybrid OFF = offline: With Image chhipao, offline message
-                // dikhao, Output Language ko "original" par lock karo
-                const wiWrap = document.getElementById('translationWithImageWrap');
+                // Hybrid OFF = offline: offline message dikhao, Output
+                // Language ko "original" par lock karo. With Image ab
+                // hamesha visible rehta hai (offline mode me bhi client-
+                // side page-image render supported hai), isliye ab yahan
+                // usse hide nahi karna.
                 const offMsg = document.getElementById('translationOfflineMsg');
                 const langSel = document.getElementById('translationLangSelect');
-                if (wiWrap) wiWrap.style.display = checked ? 'flex' : 'none';
-                var ciWrap2 = document.getElementById('translationCleanImageWrap');
-                if (ciWrap2) ciWrap2.style.display = (checked && translationWithImage) ? 'flex' : 'none';
+                syncCleanImageVisibility();
                 var wiMsg2 = document.getElementById('translationWithImageMsg');
-                if (wiMsg2) wiMsg2.style.display = (checked && translationWithImage) ? 'block' : 'none';
+                if (wiMsg2) wiMsg2.style.display = translationWithImage ? 'block' : 'none';
                 if (offMsg) offMsg.style.display = checked ? 'none' : 'block';
                 if (langSel){
                     if (!checked){
@@ -1919,7 +1927,7 @@
                                         targetLang: targetLanguage
                                     }, onLog);
                                 } else {
-                                    offlineBlob = await window.buildOfflineDocxBlob(blob, onLog);
+                                    offlineBlob = await window.buildOfflineDocxBlob(blob, { withImage: withImageOpt }, onLog);
                                 }
                             } catch (offErr) {
                                 // ERROR LINE: rehti hai (hatti nahi), aur File Processing
@@ -1977,7 +1985,15 @@
                             notifyProcessCompletion('Translation', file.name, chargeAmount, txnId);
                             file.status = 'completed';
                             activeAgentId = null;
-                            delete translationFileBlobs[file.id];
+                            // NOTE: previously deleted translationFileBlobs[file.id]
+                            // here as a memory-cleanup step, but that broke
+                            // re-processing (Start again on an already-completed,
+                            // still-selected file threw "file not available"
+                            // since its blob was gone). The blob is kept now so
+                            // the same file can be reprocessed any number of
+                            // times in this session; it's only cleared when the
+                            // user explicitly removes/clears the file (see
+                            // clearFiles()).
                             refreshServicePage('translation');
                             persistPaymentHistory();
                             persistServiceFiles('translation');
@@ -7602,7 +7618,8 @@
                 localStorage.setItem(AUTH_SESSION_KEY, userId);
                 localStorage.setItem(AUTH_TOKEN_KEY, token);
                 document.getElementById('authScreen').style.display = 'none';
-                document.getElementById('appShell').style.display = '';
+                // appShell reveal happens inside initializeApp(), after the
+                // real company/user name is applied - see boot() note.
                 initializeApp();
             }
 
@@ -7817,7 +7834,14 @@
                         if (res.ok) {
                             CURRENT_USER_ID = savedUserId;
                             document.getElementById('authScreen').style.display = 'none';
-                            document.getElementById('appShell').style.display = '';
+                            // NOTE: appShell reveal moved to the end of
+                            // initializeApp() (after setupUserProfile() /
+                            // applyCompanyBranding() run) - this used to
+                            // show the shell right here, which meant the
+                            // static placeholder in index.html ("TechCorp
+                            // Solutions" / "John Doe") flashed on screen
+                            // until loadAppData() finished and swapped in
+                            // the real company/user name.
                             return initializeApp();
                         }
                     } catch (e) { /* fall through to login */ }
@@ -7833,6 +7857,7 @@
                     await loadUserDirectory();
                 } catch (err) {
                     console.error('Failed to load application data:', err);
+                    document.getElementById('appShell').style.display = '';
                     document.getElementById('contentBody').innerHTML =
                         '<div class="content-section"><h3>⚠️ Unable to load data</h3>' +
                         '<p>Could not load JSON data files. Browsers block local file fetches when you open index.html ' +
@@ -7844,6 +7869,9 @@
 
                 setupUserProfile();
                 applyCompanyBranding();
+                // Real company/user name is in place now - safe to reveal
+                // the shell (see boot()/completeLogin() notes).
+                document.getElementById('appShell').style.display = '';
                 renderMenu();
                 updateNotificationBadge();
                 startLivePolling();
