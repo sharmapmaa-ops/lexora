@@ -5,16 +5,30 @@
     "icon": "🆓",
     "monthlyPrice": 0,
     "pricePerLeaseAbstraction": 10,
-    "pricePerTranslation": 5,
+    "billingUnit": "document",
     "featured": false,
+    "translationPricing": {
+      "textBased": {
+        "withoutImage": 0,
+        "withImage": 5
+      },
+      "ocr": {
+        "withoutImage": 7,
+        "withImage": 10
+      },
+      "textBasedTranslation": {
+        "withoutImage": 7,
+        "withImage": 9
+      },
+      "ocrTranslation": {
+        "withoutImage": 7,
+        "withImage": 10
+      }
+    },
     "features": [
-      "$10 / Lease Abstraction",
-      "$5 / Translation",
       "Community Support",
       "Basic Dashboard Access"
-    ],
-    "billingUnit": "document",
-    "translationBillingUnit": "page"
+    ]
   },
   {
     "id": "standard",
@@ -22,16 +36,30 @@
     "icon": "⭐",
     "monthlyPrice": 29,
     "pricePerLeaseAbstraction": 8,
-    "pricePerTranslation": 2,
+    "billingUnit": "document",
     "featured": false,
+    "translationPricing": {
+      "textBased": {
+        "withoutImage": 0,
+        "withImage": 3
+      },
+      "ocr": {
+        "withoutImage": 5,
+        "withImage": 8
+      },
+      "textBasedTranslation": {
+        "withoutImage": 5,
+        "withImage": 7
+      },
+      "ocrTranslation": {
+        "withoutImage": 5,
+        "withImage": 8
+      }
+    },
     "features": [
-      "$8 / Lease Abstraction",
-      "$2 / Translation",
       "Email Support",
       "Standard Dashboard Access"
-    ],
-    "billingUnit": "document",
-    "translationBillingUnit": "page"
+    ]
   },
   {
     "id": "professional",
@@ -39,15 +67,29 @@
     "icon": "🚀",
     "monthlyPrice": 79,
     "pricePerLeaseAbstraction": 5,
-    "pricePerTranslation": 1,
+    "billingUnit": "document",
     "featured": true,
+    "translationPricing": {
+      "textBased": {
+        "withoutImage": 0,
+        "withImage": 1
+      },
+      "ocr": {
+        "withoutImage": 2,
+        "withImage": 6
+      },
+      "textBasedTranslation": {
+        "withoutImage": 3,
+        "withImage": 5
+      },
+      "ocrTranslation": {
+        "withoutImage": 3,
+        "withImage": 6
+      }
+    },
     "features": [
-      "$5 / Lease Abstraction",
-      "$1 / Translation",
       "Priority Support",
       "Advanced Dashboard Access"
-    ],
-    "billingUnit": "document",
-    "translationBillingUnit": "page"
+    ]
   }
 ]
