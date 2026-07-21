@@ -54,23 +54,76 @@
                 return PLANS_DATA.find(p => p.name === planName) ||
                     PLANS_DATA.find(p => p.name === 'Free') ||
                     PLANS_DATA[0] ||
-                    { name: 'Free', pricePerLeaseAbstraction: 1, pricePerTranslation: 1 };
+                    { name: 'Free', pricePerLeaseAbstraction: 1, translationPricing: {} };
             }
 
-            function getServicePrice(serviceId, pageCount) {
+            // The 4 translation categories x 2 image variants = 8 price
+            // points per plan. Category key -> display label, in the exact
+            // order the pricing was given (Text-based, OCR, Text-based+
+            // Translation, OCR+Translation).
+            const TRANSLATION_PRICE_CATEGORIES = [
+                { key: 'textBased', label: 'Text-based' },
+                { key: 'ocr', label: 'OCR' },
+                { key: 'textBasedTranslation', label: 'Text-based+Translation' },
+                { key: 'ocrTranslation', label: 'OCR+Translation' }
+            ];
+
+            // ocr + translate -> which of the 4 categories applies.
+            function translationCategoryKey(ocr, translate) {
+                return ocr ? (translate ? 'ocrTranslation' : 'ocr') : (translate ? 'textBasedTranslation' : 'textBased');
+            }
+
+            // Builds the 8 "$X / PDF Data Extract(...) / Per Page (...)"
+            // lines for a plan, in a fixed order - used by both the plan
+            // cards (customer-facing) and the admin pricing editor.
+            function buildTranslationPricingLines(plan) {
+                const tp = (plan && plan.translationPricing) || {};
+                const lines = [];
+                TRANSLATION_PRICE_CATEGORIES.forEach(function (cat) {
+                    const p = tp[cat.key] || {};
+                    const withoutImage = Number(p.withoutImage != null ? p.withoutImage : 0);
+                    const withImage = Number(p.withImage != null ? p.withImage : 0);
+                    lines.push(`$${withoutImage} /PDF Data Extract(${cat.label})/ Per Page(Without Image)`);
+                    lines.push(`$${withImage} /PDF Data Extract(${cat.label})/ Per Page(With Image)`);
+                });
+                return lines;
+            }
+
+            // Reads the CURRENT translation mode from the on-screen
+            // checkboxes/dropdown (falls back to the tracked state
+            // variables if the elements aren't in the DOM right now) -
+            // used for live cost estimates. The actual charge at the end
+            // of processing a file uses that file's own captured settings
+            // instead of a fresh DOM read, since the DOM may have moved on
+            // to a different file's settings by the time this one finishes.
+            function getCurrentTranslationModeOpts() {
+                const hybridCheckNow = document.getElementById('translationHybridCheck');
+                const ocr = hybridCheckNow ? !!hybridCheckNow.checked : translationHybridMode;
+                const wiNow = document.getElementById('translationWithImageCheck');
+                const withImage = wiNow ? !!wiNow.checked : translationWithImage;
+                const langSelectNow = document.getElementById('translationLangSelect');
+                const lang = (langSelectNow && langSelectNow.value) || 'original';
+                return { ocr: ocr, translate: (lang !== 'original'), withImage: withImage };
+            }
+
+            function getServicePrice(serviceId, pageCount, modeOpts) {
                 const plan = getMyPlan();
-                const perUnit = serviceId === 'translation' ?
-                    (plan.pricePerTranslation != null ? plan.pricePerTranslation : 1) :
-                    (plan.pricePerLeaseAbstraction != null ? plan.pricePerLeaseAbstraction : 1);
-                // translation ka apna billing unit (per-page). lease ke liye
-                // plan.billingUnit. Translation = per-page (user spec).
-                const unit = serviceId === 'translation'
-                    ? (plan.translationBillingUnit || 'page')
-                    : (plan.billingUnit || 'document');
-                if (unit === 'page') {
-                    return perUnit * Math.max(1, pageCount || 1);
+                if (serviceId !== 'translation') {
+                    // Lease Abstraction: unchanged, flat per-document pricing.
+                    const perUnit = plan.pricePerLeaseAbstraction != null ? plan.pricePerLeaseAbstraction : 1;
+                    const unit = plan.billingUnit || 'document';
+                    return unit === 'page' ? perUnit * Math.max(1, pageCount || 1) : perUnit;
                 }
-                return perUnit;
+                // Translation: always per-page, rate depends on the mode
+                // combination (Text-based/OCR x Translate/No-translate x
+                // With/Without Image) - 8 possible rates per plan.
+                const opts = modeOpts || getCurrentTranslationModeOpts();
+                const categoryKey = translationCategoryKey(!!opts.ocr, !!opts.translate);
+                const pricing = (plan.translationPricing && plan.translationPricing[categoryKey]) || {};
+                const perUnit = opts.withImage
+                    ? (pricing.withImage != null ? pricing.withImage : 1)
+                    : (pricing.withoutImage != null ? pricing.withoutImage : 1);
+                return perUnit * Math.max(1, pageCount || 1);
             }
 
             function isPlanExpired() {
@@ -469,7 +522,7 @@
                 const myPlanForEstimate = getMyPlan();
                 const batchChargeEstimate = billableFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
                 const chargeEstimateHtml = billableFiles.length > 0 ?
-                    `💰 Est. charge: $${batchChargeEstimate.toFixed(2)}${(serviceId === 'translation' ? (myPlanForEstimate.translationBillingUnit || 'page') : myPlanForEstimate.billingUnit) === 'page' ? ' (per page)' : ' (per document)'}` : '';
+                    `💰 Est. charge: $${batchChargeEstimate.toFixed(2)}${serviceId === 'translation' || myPlanForEstimate.billingUnit === 'page' ? ' (per page)' : ' (per document)'}` : '';
                 const controlButtons = buildControlButtonsHTML(serviceId, files.length > 0);
 
                 // File count text for drop zone
@@ -1168,7 +1221,7 @@
                 // extra wallet charge, since it's a free redo.
                 const billable = files.filter(f => f.status !== 'completed' && f.status !== 'needs_review');
                 const myPlan = getMyPlan();
-                const isPerPage = (serviceId === 'translation' ? (myPlan.translationBillingUnit || 'page') : myPlan.billingUnit) === 'page';
+                const isPerPage = serviceId === 'translation' || myPlan.billingUnit === 'page';
                 // Item 7 - a per-page plan can't know the EXACT charge for a
                 // not-yet-scanned file up front (page count isn't known
                 // until OCR runs) - this uses each file's already-known
@@ -1932,8 +1985,13 @@
                             translationBlobStore[file.id] = { blob: offlineBlob, name: docName + outExt };
                             file.progress = '95';
 
-                            // billing — same principle as hybrid path
-                            const chargeAmount = getServicePrice('translation', file.pageCount);
+                            // billing — same principle as hybrid path.
+                            // NOTE: uses THIS file's own captured settings
+                            // (not a fresh DOM read) since in a multi-file
+                            // batch the checkboxes may already reflect a
+                            // different file's mode by the time this runs.
+                            const chargeAmount = getServicePrice('translation', file.pageCount,
+                                { ocr: hybridMode, translate: isTranslate, withImage: withImageOpt });
                             const now = new Date();
                             const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
                             paymentHistory.push({
@@ -2378,7 +2436,7 @@
                     const myPlanForEstimate = getMyPlan();
                     const batchChargeEstimate = billableFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
                     chargeEstimateEl.innerHTML = billableFiles.length > 0 ?
-                        `💰 Est. charge: $${batchChargeEstimate.toFixed(2)}${(serviceId === 'translation' ? (myPlanForEstimate.translationBillingUnit || 'page') : myPlanForEstimate.billingUnit) === 'page' ? ' (per page)' : ' (per document)'}` : '';
+                        `💰 Est. charge: $${batchChargeEstimate.toFixed(2)}${serviceId === 'translation' || myPlanForEstimate.billingUnit === 'page' ? ' (per page)' : ' (per document)'}` : '';
                 }
 
                 const activityListEl = document.getElementById('activityList');
@@ -2934,7 +2992,6 @@
                         frequency: 'Monthly',
                         amount: plan.monthlyPrice,
                         pricePerLeaseAbstraction: plan.pricePerLeaseAbstraction,
-                        pricePerTranslation: plan.pricePerTranslation,
                     });
                     persistPlanHistory();
 
@@ -2945,7 +3002,7 @@
                             profileData.email, `${profileData.firstName} ${profileData.lastName}`,
                             `You're now on the ${plan.name} plan`,
                             `Your plan is now ${plan.name}. It's valid from ${profileData.planStartDate} to ${profileData.planEndDate}. ` +
-                            `Pricing: $${plan.pricePerLeaseAbstraction}/Lease Abstraction, $${plan.pricePerTranslation}/Translation.`
+                            `Translation pricing depends on mode (Text-based/OCR, with/without Translation, with/without Image) - see Plans & Offers for the full breakdown.`
                         );
                     }
                 };
@@ -5293,6 +5350,7 @@
                             <button class="admin-btn admin-btn-add-folder" onclick="adminAddFolder()">📁 Add Folder</button>
                             <button class="admin-btn admin-btn-delete" onclick="adminDeleteSelected()">🗑️ Delete</button>
                             <button class="admin-btn admin-btn-download" onclick="adminDownloadSelected()">⬇️ Download</button>
+                            <button class="admin-btn admin-btn-add-folder" onclick="adminOpenPricingEditor()">💲 Plan Pricing</button>
                             <input type="file" id="adminFileInput" style="display:none;" onchange="adminUploadFile(event)" />
                         </div>
                         <div class="admin-breadcrumb" id="adminBreadcrumb"></div>
@@ -5327,6 +5385,128 @@
                 });
                 return html;
             }
+
+            // ---- Plan Pricing editor (Admin/Developer only) ----
+            // Purpose-built form instead of the generic JSON-blob editor:
+            // plans.json's translationPricing is a 2-level-nested object
+            // (category -> withImage/withoutImage), and the generic editor
+            // would show that as raw JSON text per cell - a typo'd key name
+            // there wouldn't error, it would just silently fall back to $1
+            // (see getServicePrice's `!= null ? ... : 1` fallback). Labeled
+            // number inputs make that class of mistake much harder.
+            window.adminOpenPricingEditor = function() {
+                const catFields = [
+                    { key: 'textBased', label: 'Text-based' },
+                    { key: 'ocr', label: 'OCR' },
+                    { key: 'textBasedTranslation', label: 'Text-based+Translation' },
+                    { key: 'ocrTranslation', label: 'OCR+Translation' }
+                ];
+
+                const planColumns = PLANS_DATA.map((plan, pIdx) => {
+                    const tp = plan.translationPricing || {};
+                    const catInputsHtml = catFields.map((cat) => {
+                        const p = tp[cat.key] || {};
+                        return `
+                            <div style="margin-bottom:10px;">
+                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">${escapeHtml(cat.label)}</label>
+                                <div style="display:flex;gap:6px;">
+                                    <div style="flex:1;">
+                                        <label style="font-size:0.66rem;color:rgba(0,0,0,0.5);display:block;">Without Image</label>
+                                        <input type="number" step="0.01" min="0" class="admin-price-input"
+                                               data-plan-idx="${pIdx}" data-field="translationPricing.${cat.key}.withoutImage"
+                                               value="${Number(p.withoutImage != null ? p.withoutImage : 0)}" style="width:100%;" />
+                                    </div>
+                                    <div style="flex:1;">
+                                        <label style="font-size:0.66rem;color:rgba(0,0,0,0.5);display:block;">With Image</label>
+                                        <input type="number" step="0.01" min="0" class="admin-price-input"
+                                               data-plan-idx="${pIdx}" data-field="translationPricing.${cat.key}.withImage"
+                                               value="${Number(p.withImage != null ? p.withImage : 0)}" style="width:100%;" />
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+
+                    return `
+                        <div style="flex:1;min-width:250px;border:1px solid rgba(0,0,139,0.15);border-radius:8px;padding:14px;">
+                            <h4 style="margin:0 0 10px 0;">${plan.icon || ''} ${escapeHtml(plan.name)}</h4>
+                            <div style="margin-bottom:8px;">
+                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Monthly Price ($)</label>
+                                <input type="number" step="0.01" min="0" class="admin-price-input"
+                                       data-plan-idx="${pIdx}" data-field="monthlyPrice"
+                                       value="${Number(plan.monthlyPrice || 0)}" style="width:100%;" />
+                            </div>
+                            <div style="margin-bottom:8px;">
+                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Lease Abstraction ($ / document)</label>
+                                <input type="number" step="0.01" min="0" class="admin-price-input"
+                                       data-plan-idx="${pIdx}" data-field="pricePerLeaseAbstraction"
+                                       value="${Number(plan.pricePerLeaseAbstraction || 0)}" style="width:100%;" />
+                            </div>
+                            <div style="font-size:0.72rem;color:rgba(0,0,0,0.5);margin:12px 0 8px;font-weight:600;border-top:1px solid rgba(0,0,139,0.1);padding-top:8px;">Translation - $ / Page</div>
+                            ${catInputsHtml}
+                        </div>
+                    `;
+                }).join('');
+
+                const html = `
+                    <div class="admin-modal-overlay" id="adminFileModalOverlay">
+                        <div class="admin-modal-card admin-table-modal">
+                            <button class="admin-modal-close" onclick="adminCloseFileModal()">✕</button>
+                            <h3 class="admin-modal-title">💲 Plan Pricing</h3>
+                            <p style="font-size:0.8rem;color:rgba(0,0,0,0.55);margin:-4px 0 12px 0;">
+                                Translation is always billed per page across all 8 mode combinations below. Lease Abstraction is billed per document.
+                            </p>
+                            <div style="overflow:auto;max-height:60vh;display:flex;gap:14px;flex-wrap:wrap;padding:2px;">
+                                ${planColumns}
+                            </div>
+                            <div class="admin-modal-actions" style="margin-top:16px;">
+                                <button class="admin-modal-save" onclick="adminSavePricingEditor()">💾 Save</button>
+                                <button class="admin-modal-cancel" onclick="adminCloseFileModal()">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                openAdminModal(html);
+            };
+
+            window.adminSavePricingEditor = async function() {
+                const inputs = document.querySelectorAll('#adminFileModalOverlay .admin-price-input');
+                // Deep clone so a failed save never corrupts the in-memory
+                // PLANS_DATA the rest of the app is currently using.
+                const updated = JSON.parse(JSON.stringify(PLANS_DATA));
+                let invalid = false;
+                inputs.forEach(function (inp) {
+                    const pIdx = Number(inp.dataset.planIdx);
+                    const path = inp.dataset.field.split('.');
+                    const val = parseFloat(inp.value);
+                    if (!Number.isFinite(val) || val < 0) { invalid = true; return; }
+                    let target = updated[pIdx];
+                    for (let i = 0; i < path.length - 1; i++) {
+                        if (typeof target[path[i]] !== 'object' || target[path[i]] === null) target[path[i]] = {};
+                        target = target[path[i]];
+                    }
+                    target[path[path.length - 1]] = val;
+                });
+                if (invalid) {
+                    showWarning('All prices must be valid numbers of 0 or more.');
+                    return;
+                }
+                try {
+                    const res = await authFetch('/api/admin/write', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: 'json/plans.json', content: JSON.stringify(updated, null, 2) })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Save failed');
+                    PLANS_DATA = updated;
+                    adminCloseFileModal();
+                    showMessage('✅ Saved', 'Plan pricing updated successfully.', ['OK']);
+                    if (activeSubItemId === null && activeItemId === 'plans-offers') loadContent('plans-offers');
+                } catch (err) {
+                    showWarning(err.message || 'Could not save pricing.');
+                }
+            };
 
             window.loadAdminDirectory = async function(path) {
                 adminCurrentPath = path || '';
@@ -6537,6 +6717,7 @@
                                     <div class="plan-name">${plan.icon || ''} ${escapeHtml(plan.name)}</div>
                                     <div class="plan-price">$${plan.monthlyPrice}<span>/month</span></div>
                                     <ul class="plan-features">
+                                        ${buildTranslationPricingLines(plan).map(f => `<li>✅ ${escapeHtml(f)}</li>`).join('')}
                                         ${(plan.features || []).map(f => `<li>✅ ${escapeHtml(f)}</li>`).join('')}
                                     </ul>
                                     <button class="plan-cta-btn" ${plan.name === myPlanName ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
@@ -6553,10 +6734,10 @@
                                     <thead><tr>
                                         ${isAdminOrDev ? '<th>User</th>' : ''}
                                         <th>Plan Name</th><th>Start Date</th><th>End Date</th>
-                                        <th>Frequency</th><th>Amount</th><th>Price/Lease Abstraction</th><th>Price/Translation</th>
+                                        <th>Frequency</th><th>Amount</th><th>Price/Lease Abstraction</th>
                                     </tr></thead>
                                     <tbody>
-                                        ${historyRows.length === 0 ? `<tr><td colspan="${isAdminOrDev ? 7 : 6}" style="text-align:center;">No plan changes yet.</td></tr>` :
+                                        ${historyRows.length === 0 ? `<tr><td colspan="${isAdminOrDev ? 6 : 5}" style="text-align:center;">No plan changes yet.</td></tr>` :
                                         historyRows.map(h => `
                                             <tr>
                                                 ${isAdminOrDev ? `<td>${escapeHtml(h.userId)}</td>` : ''}
@@ -6566,7 +6747,6 @@
                                                 <td>${escapeHtml(h.frequency)}</td>
                                                 <td>$${Number(h.amount).toFixed(2)}</td>
                                                 <td>$${Number(h.pricePerLeaseAbstraction).toFixed(2)}</td>
-                                                <td>$${Number(h.pricePerTranslation).toFixed(2)}</td>
                                             </tr>
                                         `).join('')}
                                     </tbody>
