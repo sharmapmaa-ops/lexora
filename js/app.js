@@ -54,76 +54,21 @@
                 return PLANS_DATA.find(p => p.name === planName) ||
                     PLANS_DATA.find(p => p.name === 'Free') ||
                     PLANS_DATA[0] ||
-                    { name: 'Free', pricePerLeaseAbstraction: 1, translationPricing: {} };
+                    { name: 'Free', pricePerLeaseAbstraction: 1, pricePerTranslation: 1 };
             }
 
-            // The 4 translation categories x 2 image variants = 8 price
-            // points per plan. Category key -> display label, in the exact
-            // order the pricing was given (Text-based, OCR, Text-based+
-            // Translation, OCR+Translation).
-            const TRANSLATION_PRICE_CATEGORIES = [
-                { key: 'textBased', label: 'Text-based' },
-                { key: 'ocr', label: 'OCR' },
-                { key: 'textBasedTranslation', label: 'Text-based+Translation' },
-                { key: 'ocrTranslation', label: 'OCR+Translation' }
-            ];
-
-            // ocr + translate -> which of the 4 categories applies.
-            function translationCategoryKey(ocr, translate) {
-                return ocr ? (translate ? 'ocrTranslation' : 'ocr') : (translate ? 'textBasedTranslation' : 'textBased');
-            }
-
-            // Builds the 8 "$X / PDF Data Extract(...) / Per Page (...)"
-            // lines for a plan, in a fixed order - used by both the plan
-            // cards (customer-facing) and the admin pricing editor.
-            function buildTranslationPricingLines(plan) {
-                const tp = (plan && plan.translationPricing) || {};
-                const lines = [];
-                TRANSLATION_PRICE_CATEGORIES.forEach(function (cat) {
-                    const p = tp[cat.key] || {};
-                    const withoutImage = Number(p.withoutImage != null ? p.withoutImage : 0);
-                    const withImage = Number(p.withImage != null ? p.withImage : 0);
-                    lines.push(`$${withoutImage} /PDF Data Extract(${cat.label})/ Per Page(Without Image)`);
-                    lines.push(`$${withImage} /PDF Data Extract(${cat.label})/ Per Page(With Image)`);
-                });
-                return lines;
-            }
-
-            // Reads the CURRENT translation mode from the on-screen
-            // checkboxes/dropdown (falls back to the tracked state
-            // variables if the elements aren't in the DOM right now) -
-            // used for live cost estimates. The actual charge at the end
-            // of processing a file uses that file's own captured settings
-            // instead of a fresh DOM read, since the DOM may have moved on
-            // to a different file's settings by the time this one finishes.
-            function getCurrentTranslationModeOpts() {
-                const hybridCheckNow = document.getElementById('translationHybridCheck');
-                const ocr = hybridCheckNow ? !!hybridCheckNow.checked : translationHybridMode;
-                const wiNow = document.getElementById('translationWithImageCheck');
-                const withImage = wiNow ? !!wiNow.checked : translationWithImage;
-                const langSelectNow = document.getElementById('translationLangSelect');
-                const lang = (langSelectNow && langSelectNow.value) || 'original';
-                return { ocr: ocr, translate: (lang !== 'original'), withImage: withImage };
-            }
-
-            function getServicePrice(serviceId, pageCount, modeOpts) {
+            function getServicePrice(serviceId, pageCount) {
                 const plan = getMyPlan();
-                if (serviceId !== 'translation') {
-                    // Lease Abstraction: unchanged, flat per-document pricing.
-                    const perUnit = plan.pricePerLeaseAbstraction != null ? plan.pricePerLeaseAbstraction : 1;
-                    const unit = plan.billingUnit || 'document';
-                    return unit === 'page' ? perUnit * Math.max(1, pageCount || 1) : perUnit;
+                if (serviceId === 'translation') {
+                    // Translation: flat per-page rate for the plan,
+                    // regardless of With OCR / With Image / language chosen.
+                    const perUnit = plan.pricePerTranslation != null ? plan.pricePerTranslation : 1;
+                    return perUnit * Math.max(1, pageCount || 1);
                 }
-                // Translation: always per-page, rate depends on the mode
-                // combination (Text-based/OCR x Translate/No-translate x
-                // With/Without Image) - 8 possible rates per plan.
-                const opts = modeOpts || getCurrentTranslationModeOpts();
-                const categoryKey = translationCategoryKey(!!opts.ocr, !!opts.translate);
-                const pricing = (plan.translationPricing && plan.translationPricing[categoryKey]) || {};
-                const perUnit = opts.withImage
-                    ? (pricing.withImage != null ? pricing.withImage : 1)
-                    : (pricing.withoutImage != null ? pricing.withoutImage : 1);
-                return perUnit * Math.max(1, pageCount || 1);
+                // Lease Abstraction: flat per-document pricing.
+                const perUnit = plan.pricePerLeaseAbstraction != null ? plan.pricePerLeaseAbstraction : 1;
+                const unit = plan.billingUnit || 'document';
+                return unit === 'page' ? perUnit * Math.max(1, pageCount || 1) : perUnit;
             }
 
             // Est. charge shown on the Uploaded Files card - only when at
@@ -136,28 +81,22 @@
                 const selectedFiles = files.filter(f => f.selected !== false);
                 if (selectedFiles.length === 0) return '';
                 const myPlan = getMyPlan();
-                let perUnit, unitLabel, modeOpts;
+                let perUnit, unitLabel;
                 if (serviceId === 'translation') {
-                    modeOpts = getCurrentTranslationModeOpts();
-                    const categoryKey = translationCategoryKey(!!modeOpts.ocr, !!modeOpts.translate);
-                    const pricing = (myPlan.translationPricing && myPlan.translationPricing[categoryKey]) || {};
-                    perUnit = modeOpts.withImage
-                        ? (pricing.withImage != null ? pricing.withImage : 1)
-                        : (pricing.withoutImage != null ? pricing.withoutImage : 1);
+                    perUnit = myPlan.pricePerTranslation != null ? myPlan.pricePerTranslation : 1;
                     unitLabel = 'page';
                 } else {
                     perUnit = myPlan.pricePerLeaseAbstraction != null ? myPlan.pricePerLeaseAbstraction : 1;
                     unitLabel = (myPlan.billingUnit || 'document') === 'page' ? 'page' : 'document';
                 }
-                const total = selectedFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount, modeOpts), 0);
+                const total = selectedFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
                 const estimateNote = unitLabel === 'page' ? ' (estimate - final charge depends on each file\'s actual page count)' : '';
                 return `💰 Rate: $${perUnit.toFixed(2)}/${unitLabel} · Est. total: $${total.toFixed(2)} for ${selectedFiles.length} selected file(s)${estimateNote}`;
             }
 
             // Keeps the Est. charge line in sync the moment file selection
-            // or the OCR/Image/Language mode changes - called from
-            // toggleFileSelect, toggleSelectAllFiles, and the mode
-            // checkboxes/dropdown, without needing a full page re-render.
+            // changes - called from toggleFileSelect and toggleSelectAllFiles
+            // (via refreshServicePage), without needing a full page re-render.
             function updateChargeEstimateLive() {
                 const serviceId = activeSubItemId === 'translation' ? 'translation' : 'lease-abstraction';
                 if (activeSubItemId !== 'translation' && activeSubItemId !== 'lease-abstraction') return;
@@ -573,7 +512,7 @@
                         <div style="display:flex;gap:12px;align-items:flex-start;">
                           <div style="flex:1;">
                             <label>Output Language</label>
-                            <select id="translationLangSelect" style="width:100%;" onchange="updateChargeEstimateLive()" ${processState.running ? 'disabled' : ''}>
+                            <select id="translationLangSelect" style="width:100%;" ${processState.running ? 'disabled' : ''}>
                                 <option value="original">Original (No Translation)</option>
                                 ${TRANSLATION_LANG_OPTIONS}
                             </select>
@@ -873,7 +812,6 @@
             window.setTranslationWithImage = function(c){
                 translationWithImage = !!c;
                 syncCleanImageVisibility();
-                updateChargeEstimateLive();
             };
             window.setTranslationHybridMode = function(checked) {
                 translationHybridMode = !!checked;
@@ -881,8 +819,8 @@
                 // gated by this toggle - both With-OCR (vision) and
                 // text-based (local, offline) extraction now support
                 // translation and image handling the same way; this
-                // checkbox only changes HOW the text is extracted.
-                updateChargeEstimateLive();
+                // checkbox only changes HOW the text is extracted (price
+                // is a flat per-plan rate regardless of mode).
             };
 
             // Translation output file format: 'docx' (default) or 'pdf'.
@@ -2024,13 +1962,8 @@
                             translationBlobStore[file.id] = { blob: offlineBlob, name: docName + outExt };
                             file.progress = '95';
 
-                            // billing — same principle as hybrid path.
-                            // NOTE: uses THIS file's own captured settings
-                            // (not a fresh DOM read) since in a multi-file
-                            // batch the checkboxes may already reflect a
-                            // different file's mode by the time this runs.
-                            const chargeAmount = getServicePrice('translation', file.pageCount,
-                                { ocr: hybridMode, translate: isTranslate, withImage: withImageOpt });
+                            // billing — flat per-page rate for the plan
+                            const chargeAmount = getServicePrice('translation', file.pageCount);
                             const now = new Date();
                             const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
                             paymentHistory.push({
@@ -3027,7 +2960,7 @@
                         endDate: endDateStr,
                         frequency: 'Monthly',
                         amount: plan.monthlyPrice,
-                        pricePerLeaseAbstraction: plan.pricePerLeaseAbstraction,
+                        pricePerTranslation: plan.pricePerTranslation,
                     });
                     persistPlanHistory();
 
@@ -3038,7 +2971,7 @@
                             profileData.email, `${profileData.firstName} ${profileData.lastName}`,
                             `You're now on the ${plan.name} plan`,
                             `Your plan is now ${plan.name}. It's valid from ${profileData.planStartDate} to ${profileData.planEndDate}. ` +
-                            `Translation pricing depends on mode (Text-based/OCR, with/without Translation, with/without Image) - see Plans & Offers for the full breakdown.`
+                            `Translation is billed at $${plan.pricePerTranslation}/page.`
                         );
                     }
                 };
@@ -5424,47 +5357,14 @@
 
             // ---- Plan Pricing editor (Admin/Developer only) ----
             // Purpose-built form instead of the generic JSON-blob editor:
-            // plans.json's translationPricing is a 2-level-nested object
-            // (category -> withImage/withoutImage), and the generic editor
-            // would show that as raw JSON text per cell - a typo'd key name
-            // there wouldn't error, it would just silently fall back to $1
-            // (see getServicePrice's `!= null ? ... : 1` fallback). Labeled
-            // number inputs make that class of mistake much harder.
+            // labeled number inputs make a typo'd/missing field much easier
+            // to notice than a raw JSON blob would (a missing key here
+            // would otherwise silently fall back to $1 - see
+            // getServicePrice's `!= null ? ... : 1` fallback).
             window.adminOpenPricingEditor = function() {
-                const catFields = [
-                    { key: 'textBased', label: 'Text-based' },
-                    { key: 'ocr', label: 'OCR' },
-                    { key: 'textBasedTranslation', label: 'Text-based+Translation' },
-                    { key: 'ocrTranslation', label: 'OCR+Translation' }
-                ];
-
                 const planColumns = PLANS_DATA.map((plan, pIdx) => {
-                    const tp = plan.translationPricing || {};
-                    const catInputsHtml = catFields.map((cat) => {
-                        const p = tp[cat.key] || {};
-                        return `
-                            <div style="margin-bottom:10px;">
-                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">${escapeHtml(cat.label)}</label>
-                                <div style="display:flex;gap:6px;">
-                                    <div style="flex:1;">
-                                        <label style="font-size:0.66rem;color:rgba(0,0,0,0.5);display:block;">Without Image</label>
-                                        <input type="number" step="0.01" min="0" class="admin-price-input"
-                                               data-plan-idx="${pIdx}" data-field="translationPricing.${cat.key}.withoutImage"
-                                               value="${Number(p.withoutImage != null ? p.withoutImage : 0)}" style="width:100%;" />
-                                    </div>
-                                    <div style="flex:1;">
-                                        <label style="font-size:0.66rem;color:rgba(0,0,0,0.5);display:block;">With Image</label>
-                                        <input type="number" step="0.01" min="0" class="admin-price-input"
-                                               data-plan-idx="${pIdx}" data-field="translationPricing.${cat.key}.withImage"
-                                               value="${Number(p.withImage != null ? p.withImage : 0)}" style="width:100%;" />
-                                    </div>
-                                </div>
-                            </div>
-                        `;
-                    }).join('');
-
                     return `
-                        <div style="flex:1;min-width:250px;border:1px solid rgba(0,0,139,0.15);border-radius:8px;padding:14px;">
+                        <div style="flex:1;min-width:220px;border:1px solid rgba(0,0,139,0.15);border-radius:8px;padding:14px;">
                             <h4 style="margin:0 0 10px 0;">${plan.icon || ''} ${escapeHtml(plan.name)}</h4>
                             <div style="margin-bottom:8px;">
                                 <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Monthly Price ($)</label>
@@ -5473,13 +5373,18 @@
                                        value="${Number(plan.monthlyPrice || 0)}" style="width:100%;" />
                             </div>
                             <div style="margin-bottom:8px;">
+                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Translation ($ / page)</label>
+                                <input type="number" step="0.01" min="0" class="admin-price-input"
+                                       data-plan-idx="${pIdx}" data-field="pricePerTranslation"
+                                       value="${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)}" style="width:100%;" />
+                            </div>
+                            <div style="margin-bottom:8px;">
                                 <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Lease Abstraction ($ / document)</label>
                                 <input type="number" step="0.01" min="0" class="admin-price-input"
                                        data-plan-idx="${pIdx}" data-field="pricePerLeaseAbstraction"
                                        value="${Number(plan.pricePerLeaseAbstraction || 0)}" style="width:100%;" />
+                                <div style="font-size:0.66rem;color:rgba(0,0,0,0.45);margin-top:2px;">Not shown to customers while Lease Abstraction is Coming Soon.</div>
                             </div>
-                            <div style="font-size:0.72rem;color:rgba(0,0,0,0.5);margin:12px 0 8px;font-weight:600;border-top:1px solid rgba(0,0,139,0.1);padding-top:8px;">Translation - $ / Page</div>
-                            ${catInputsHtml}
                         </div>
                     `;
                 }).join('');
@@ -5490,7 +5395,7 @@
                             <button class="admin-modal-close" onclick="adminCloseFileModal()">✕</button>
                             <h3 class="admin-modal-title">💲 Plan Pricing</h3>
                             <p style="font-size:0.8rem;color:rgba(0,0,0,0.55);margin:-4px 0 12px 0;">
-                                Translation is always billed per page across all 8 mode combinations below. Lease Abstraction is billed per document.
+                                Translation is billed per page. Lease Abstraction is billed per document.
                             </p>
                             <div style="overflow:auto;max-height:60vh;display:flex;gap:14px;flex-wrap:wrap;padding:2px;">
                                 ${planColumns}
@@ -6753,7 +6658,7 @@
                                     <div class="plan-name">${plan.icon || ''} ${escapeHtml(plan.name)}</div>
                                     <div class="plan-price">$${plan.monthlyPrice}<span>/month</span></div>
                                     <ul class="plan-features">
-                                        ${buildTranslationPricingLines(plan).map(f => `<li>✅ ${escapeHtml(f)}</li>`).join('')}
+                                        <li>✅ $${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / page (Translation)</li>
                                         ${(plan.features || []).map(f => `<li>✅ ${escapeHtml(f)}</li>`).join('')}
                                     </ul>
                                     <button class="plan-cta-btn" ${plan.name === myPlanName ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
@@ -6770,7 +6675,7 @@
                                     <thead><tr>
                                         ${isAdminOrDev ? '<th>User</th>' : ''}
                                         <th>Plan Name</th><th>Start Date</th><th>End Date</th>
-                                        <th>Frequency</th><th>Amount</th><th>Price/Lease Abstraction</th>
+                                        <th>Frequency</th><th>Amount</th><th>Price/Translation (per page)</th>
                                     </tr></thead>
                                     <tbody>
                                         ${historyRows.length === 0 ? `<tr><td colspan="${isAdminOrDev ? 6 : 5}" style="text-align:center;">No plan changes yet.</td></tr>` :
@@ -6782,7 +6687,7 @@
                                                 <td>${escapeHtml(h.endDate)}</td>
                                                 <td>${escapeHtml(h.frequency)}</td>
                                                 <td>$${Number(h.amount).toFixed(2)}</td>
-                                                <td>$${Number(h.pricePerLeaseAbstraction).toFixed(2)}</td>
+                                                <td>$${Number(h.pricePerTranslation).toFixed(2)}</td>
                                             </tr>
                                         `).join('')}
                                     </tbody>
