@@ -40,7 +40,6 @@ import secrets
 import shutil
 import tempfile
 import smtplib
-import socket
 import ssl
 import sys
 import threading
@@ -457,7 +456,7 @@ def _send_verification_email_async(user_id, to_email, user_name, code, purpose, 
             _send_verification_email(to_email, user_name, code, purpose, expiry_minutes, base_url=base_url, user_id=user_id)
             _set_email_job(user_id, status="sent")
         except Exception as err:
-            print(f"Verification email to {to_email} could not be sent (code is still valid - see above): [{type(err).__name__}] {err}")
+            print(f"Verification email to {to_email} could not be sent (code is still valid - see above): {err}")
             _set_email_job(user_id, status="failed", code=code)
 
     threading.Thread(target=_worker, daemon=True).start()
@@ -557,30 +556,6 @@ def _load_smtp_expiry_minutes():
         return 10
 
 
-def _resolve_ipv4(host, port):
-    """getaddrinfo restricted to AF_INET only - used to route around hosts
-    (Render, notably) whose outbound IPv6 path to a given SMTP provider is
-    broken/black-holed, which otherwise makes the default dual-stack
-    socket.create_connection() burn its entire timeout on a dead IPv6 attempt
-    before ever trying IPv4."""
-    infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
-    return infos[0][4]  # (ipv4_address, port)
-
-
-class _IPv4SMTP_SSL(smtplib.SMTP_SSL):
-    def _get_socket(self, host, port, timeout):
-        ipv4_addr = _resolve_ipv4(host, port)
-        new_socket = socket.create_connection(ipv4_addr, timeout, self.source_address)
-        new_socket = self.context.wrap_socket(new_socket, server_hostname=self._host)
-        return new_socket
-
-
-class _IPv4SMTP(smtplib.SMTP):
-    def _get_socket(self, host, port, timeout):
-        ipv4_addr = _resolve_ipv4(host, port)
-        return socket.create_connection(ipv4_addr, timeout, self.source_address)
-
-
 def _send_email(to_email, subject, body, html_body=None):
     """Generic SMTP sender shared by the contact-us acknowledgement email
     and every verification-code email (register/login/reset). Uses
@@ -605,24 +580,14 @@ def _send_email(to_email, subject, body, html_body=None):
     mime_msg["From"] = sender
     mime_msg["To"] = to_email
 
-    # NOTE: every _send_email() call already runs inside a background thread
-    # (see _send_verification_email_async / _send_notification_email_async), so
-    # a generous timeout here never blocks the HTTP response.
-    #
-    # The 25s-but-still-failing symptom traced back to IPv6: smtplib's default
-    # socket.create_connection() resolves the host with AF_UNSPEC and tries
-    # whatever getaddrinfo() returns first - on Render that's often an IPv6
-    # address for smtpout.secureserver.net, and Render's outbound IPv6 route to
-    # GoDaddy is effectively a black hole (connects never complete or fail),
-    # burning the full timeout before ever falling back to IPv4. The IPv4-only
-    # subclasses below skip that by resolving AF_INET explicitly.
     if port == 465:
-        with _IPv4SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=25) as server:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(host, port, context=context, timeout=6) as server:
             if username and password:
                 server.login(username, password)
             server.sendmail(sender, [to_email], mime_msg.as_string())
     else:
-        with _IPv4SMTP(host, port, timeout=25) as server:
+        with smtplib.SMTP(host, port, timeout=6) as server:
             if use_tls:
                 server.starttls(context=ssl.create_default_context())
             if username and password:
@@ -769,7 +734,7 @@ def _send_notification_email_async(to_email, user_name, title, message, table_ro
         try:
             _send_notification_email(to_email, user_name, title, message, table_rows, table_headers)
         except Exception as err:
-            print(f"Notification email to {to_email} ({title}) could not be sent: [{type(err).__name__}] {err}")
+            print(f"Notification email to {to_email} ({title}) could not be sent: {err}")
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -1034,65 +999,6 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _handle_smtp_diag(self, query):
-        """TEMPORARY DIAGNOSTIC ROUTE - delete this once the SMTP timeout issue
-        is resolved. Runs the exact same connect -> (STARTTLS) -> login sequence
-        as _send_email(), but from Render itself and WITHOUT sending a real
-        email, so we can see precisely which step hangs/fails and how long
-        each step took. Gated behind SMTP_DIAG_KEY (set this env var to any
-        random string on Render; the route is a 403 no-op if it's unset).
-
-        Usage: GET /api/debug/smtp-diag?key=<SMTP_DIAG_KEY>
-        """
-        expected = os.environ.get("SMTP_DIAG_KEY", "")
-        provided = (query.get("key") or [""])[0]
-        if not expected or provided != expected:
-            return self._send_json(403, {"error": "forbidden"})
-
-        account = _primary_smtp_account()
-        host = account["host"]
-        port = int(account.get("port", 465))
-        username = account.get("username")
-        password = account.get("password")
-
-        steps = []
-        t0 = time.time()
-
-        def mark(label):
-            steps.append({"step": label, "elapsed_sec": round(time.time() - t0, 2)})
-
-        try:
-            mark("start")
-            ipv4_addr = _resolve_ipv4(host, port)
-            mark(f"dns_resolved:{ipv4_addr[0]}")
-
-            if port == 465:
-                with _IPv4SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=20) as server:
-                    mark("tcp_connect_and_tls_handshake_ok")
-                    if username and password:
-                        server.login(username, password)
-                        mark("login_ok")
-            else:
-                with _IPv4SMTP(host, port, timeout=20) as server:
-                    mark("tcp_connect_ok")
-                    server.starttls(context=ssl.create_default_context())
-                    mark("starttls_ok")
-                    if username and password:
-                        server.login(username, password)
-                        mark("login_ok")
-
-            mark("done")
-            return self._send_json(200, {"ok": True, "host": host, "port": port, "steps": steps})
-        except Exception as err:
-            mark(f"FAILED: [{type(err).__name__}] {err}")
-            return self._send_json(500, {
-                "ok": False,
-                "host": host,
-                "port": port,
-                "steps": steps,
-                "error": f"[{type(err).__name__}] {err}"
-            })
-
     # ------------------------------------------------------------------
     # Session-based auth. Every protected route calls _resolve_user_id()
     # (POST, body-based) or _resolve_user_id_query() (GET, query-string
@@ -1203,7 +1109,6 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/rules/list": self._handle_rules_list,
             "/api/lease/download": self._handle_lease_download,
             "/api/translation/download": self._handle_translation_download,
-            "/api/debug/smtp-diag": self._handle_smtp_diag,  # TEMPORARY - see handler docstring, remove after diagnosing
         }
         get_handler = get_routes.get(path)
         if get_handler:
@@ -2086,7 +1991,7 @@ class Handler(SimpleHTTPRequestHandler):
         orc = cfg.get("openrouter", {}) or {}
         api_key = (orc.get("apiKey") or os.environ.get("OPENROUTER_API_KEY") or "").strip()
         if not api_key:
-            return 400, {"error": "OPENROUTER_API_KEY server .env me set nahi hai"}
+            return 400, {"error": "OPENROUTER_API_KEY is not set in the server .env"}
         messages = body.get("messages")
         if not isinstance(messages, list) or not messages:
             return 400, {"error": "messages[] required"}
@@ -2097,6 +2002,15 @@ class Handler(SimpleHTTPRequestHandler):
             "max_tokens": int(body.get("max_tokens", 8000)),
             "messages": messages,
         }
+        # v14 Clean Image: image-output models ko "modalities" chahiye.
+        # Un calls ke liye HTML-tool parity — payload me SIRF
+        # model+messages+modalities (temperature/max_tokens nahi, kyunki
+        # HTML tool bhi clean-image call me ye fields nahi bhejta tha).
+        # Normal vision/translation calls par ZERO effect (additive).
+        modalities = body.get("modalities")
+        if isinstance(modalities, list) and modalities:
+            payload = {"model": model, "messages": messages,
+                       "modalities": modalities}
         req = urllib.request.Request(
             "https://openrouter.ai/api/v1/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -2429,8 +2343,8 @@ class Handler(SimpleHTTPRequestHandler):
             # OFFLINE spec violation: scanned/image PDF without API — process
             # possible nahi. User ko clear message, koi vision call nahi.
             translation_diagnostics["fatalError"] = (
-                "Ye PDF Scanned/Image-based hai — offline (Hybrid off) mode me "
-                "sirf Text-based PDFs process ho sakti hain. Hybrid enable karke retry karo.")
+                "This PDF is scanned/image-based — offline (Hybrid off) mode "
+                "only processes text-based PDFs. Enable Hybrid and retry.")
             print(f"[translation:{doc_name}] offline mode: scanned PDF rejected (no API calls allowed)")
         elif (not hybrid_mode) and source_is_pdf:
             # OFFLINE spec: No_Hybrid.html (Test.html offline mode) jaisa
