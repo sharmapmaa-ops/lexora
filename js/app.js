@@ -6502,6 +6502,19 @@
                 },
                 'lease-abstraction': {
                     body: function() {
+                        if (!isAdminOrDeveloper()) {
+                            return `
+                                <div class="content-section" style="text-align:center;padding:48px 20px;">
+                                    <div style="font-size:3rem;margin-bottom:12px;">🚧</div>
+                                    <h3 style="font-size:1.3rem;margin-bottom:8px;">Lease Abstraction - Coming Soon</h3>
+                                    <p style="color:#555;max-width:480px;margin:0 auto;">
+                                        This service is still being built out and isn't available yet.
+                                        We'll let you know as soon as it's ready - in the meantime,
+                                        Translation is fully available from the Services menu.
+                                    </p>
+                                </div>
+                            `;
+                        }
                         return buildServiceUploadHTML('lease-abstraction', 'Lease Abstraction', '📄');
                     }
                 },
