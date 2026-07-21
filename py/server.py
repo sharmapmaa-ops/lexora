@@ -618,16 +618,32 @@ def _send_email(to_email, subject, body, html_body=None):
     # subclasses below skip that by resolving AF_INET explicitly.
     if port == 465:
         with _IPv4SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=25) as server:
+            server.set_debuglevel(1)
             if username and password:
+                print("Logging in...")
                 server.login(username, password)
+            print("Sending mail...")
+            print("SMTP HOST :", host)
+            print("SMTP PORT :", port)
+            print("SMTP USER :", username)
+            print("SMTP TLS  :", use_tls)
             server.sendmail(sender, [to_email], mime_msg.as_string())
+            print("Mail sent.")
     else:
         with _IPv4SMTP(host, port, timeout=25) as server:
+            server.set_debuglevel(1)
             if use_tls:
                 server.starttls(context=ssl.create_default_context())
             if username and password:
+                print("Logging in...")
                 server.login(username, password)
+            print("Sending mail...")
+            print("SMTP HOST :", host)
+            print("SMTP PORT :", port)
+            print("SMTP USER :", username)
+            print("SMTP TLS  :", use_tls)
             server.sendmail(sender, [to_email], mime_msg.as_string())
+            print("Mail sent.")
 
 
 def _html_email_wrapper(company_name, preheader, body_html):
