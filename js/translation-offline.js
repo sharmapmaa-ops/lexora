@@ -502,32 +502,12 @@
     };
   }
 
-  // Converts a (possibly non-JPEG) data URL to a JPEG base64 string sized
-  // to (w,h) - used to normalize a Clean Image result back to JPEG since
-  // the offline docx builder's zip only declares a jpg content type.
-  function v14DataUrlToJpegBase64(dataUrl, w, h) {
-    return new Promise(function (resolve, reject) {
-      const img = new Image();
-      img.onload = function () {
-        try {
-          const c = document.createElement('canvas');
-          c.width = w; c.height = h;
-          c.getContext('2d').drawImage(img, 0, 0, w, h);
-          resolve(c.toDataURL('image/jpeg', 0.92).split(',')[1]);
-        } catch (e) { reject(e); }
-      };
-      img.onerror = function () { reject(new Error('Failed to load cleaned image')); };
-      img.src = dataUrl;
-    });
-  }
-
   async function buildOfflineDocxBlob(file, opts, logFn) {
     if (typeof logFn === 'function') _log = logFn;
     opts = opts || {};
     const withImage = !!opts.withImage;
     const cleanImage = withImage && !!opts.cleanImage;
     const model = opts.model || 'google/gemini-2.5-flash';
-    const cleanModel = opts.cleanModel || 'google/gemini-3.1-flash-image';
     const targetLang = opts.targetLang || 'original';
     const keepOriginal = !targetLang || String(targetLang).toLowerCase() === 'original';
     if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js failed to load');
@@ -563,24 +543,32 @@
         bgCanvas.height = Math.round(bgVp.height);
         await page.render({ canvasContext: bgCanvas.getContext('2d'), viewport: bgVp }).promise;
 
-        // CLEAN IMAGE: the one exception to "no API call" in text-based
-        // mode - an extra image-model call removes readable text from
-        // the background so it doesn't show doubled-up behind the
-        // (possibly translated) text boxes.
+        // CLEAN IMAGE (text-based mode): DETERMINISTIC, not AI-based.
+        // Text-based mode already knows the EXACT position of every line
+        // of text - straight from the real PDF text layer, that's what
+        // `lines` already is - so instead of asking an image model to
+        // visually guess where the text is and remove it, we just paint
+        // over each known line's exact box with white directly. This is
+        // 100% reliable, instant, and free. (An AI-based clean-image call
+        // was tried here first, but on dense legal-text pages - which is
+        // the overwhelming majority of what text-based mode processes -
+        // it failed in testing: sometimes it returned the image completely
+        // unchanged, and sometimes it regenerated a different-looking
+        // image that still had every word of the original text intact.
+        // A page that's almost entirely body text has no real
+        // "background" for an image model to fall back to, but we don't
+        // need to guess at all since we already have the ground truth.)
         if (cleanImage) {
-          try {
-            log('P' + p + ': cleaning background image (' + cleanModel + ')...');
-            const rawDataUrl = bgCanvas.toDataURL('image/png');
-            const cleanedDataUrl = await v14CleanImage(cleanModel, rawDataUrl);
-            jpegBase64 = await v14DataUrlToJpegBase64(cleanedDataUrl, bgCanvas.width, bgCanvas.height);
-            log('P' + p + ': background image cleaned');
-          } catch (cleanErr) {
-            log('P' + p + ': image clean failed (' + cleanErr.message + ') — using the ORIGINAL image as background', 'warn');
-            jpegBase64 = bgCanvas.toDataURL('image/jpeg', 0.92).split(',')[1];
-          }
-        } else {
-          jpegBase64 = bgCanvas.toDataURL('image/jpeg', 0.92).split(',')[1];
+          const cctx = bgCanvas.getContext('2d');
+          cctx.fillStyle = '#ffffff';
+          const pad = 1;   // small padding so anti-aliased glyph edges don't peek out
+          lines.forEach(function (L) {
+            cctx.fillRect(L.xPt * bgScale - pad, L.yPt * bgScale - pad,
+              L.wPt * bgScale + pad * 2, L.hPt * bgScale + pad * 2);
+          });
+          log('P' + p + ': background image cleaned (' + lines.length + ' text region(s) painted over)');
         }
+        jpegBase64 = bgCanvas.toDataURL('image/jpeg', 0.92).split(',')[1];
       }
 
       pages.push({ lines: lines, wPt: vp1.width, hPt: vp1.height, jpegBase64: jpegBase64 });
@@ -980,7 +968,7 @@ Return NOTHING except the JSON object.`;
   // Background image se saara readable text remove — taaki Word me
   // textboxes ke neeche original text ka duplicate na dikhe.
   // NOTE: OCR hamesha ORIGINAL image pe; cleaned sirf background ke liye.
-  const V14_CLEAN_IMAGE_PROMPT = 'Generate a clean version of this image without changing its original width and height. Completely remove all readable text, printed words, handwritten signatures, and any linguistic characters from the image, as if they never existed. Do not alter any non-readable elements like lines, patterns, textures, abstract shapes, or background designs. The output must have the exact same dimensions as the input and no new text should be added.';
+  const V14_CLEAN_IMAGE_PROMPT = 'Generate a clean version of this image without changing its original width and height. Completely remove all readable text, printed words, handwritten signatures, and any linguistic characters from the image, as if they never existed. Do not alter any non-readable elements like lines, patterns, textures, abstract shapes, or background designs. If, after removing all text, the image would have no meaningful non-text content left (e.g. a plain page that is almost entirely body text, with no logo, graphic, texture, or design element worth preserving), do not attempt to reconstruct or invent any detail - just output a plain page filled with the single dominant background color of the original image (matching its actual shade, not necessarily pure white), with nothing else on it. The output must have the exact same dimensions as the input and no new text should be added.';
 
   // Some image-editing models silently no-op on near-100%-text pages
   // (a dense multi-paragraph legal document has no real "background"
