@@ -965,78 +965,34 @@ Return NOTHING except the JSON object.`;
   }
 
   // ---- CLEAN IMAGE (image-output model, HTML tool ka EXACT prompt) ----
-  // Background image se saara readable text remove — taaki Word me
-  // textboxes ke neeche original text ka duplicate na dikhe.
-  // NOTE: OCR hamesha ORIGINAL image pe; cleaned sirf background ke liye.
-  const V14_CLEAN_IMAGE_PROMPT = 'Generate a clean version of this image without changing its original width and height. Completely remove all readable text, printed words, handwritten signatures, and any linguistic characters from the image, as if they never existed. Do not alter any non-readable elements like lines, patterns, textures, abstract shapes, or background designs. If, after removing all text, the image would have no meaningful non-text content left (e.g. a plain page that is almost entirely body text, with no logo, graphic, texture, or design element worth preserving), do not attempt to reconstruct or invent any detail - just output a plain page filled with the single dominant background color of the original image (matching its actual shade, not necessarily pure white), with nothing else on it. The output must have the exact same dimensions as the input and no new text should be added.';
-
-  // Some image-editing models silently no-op on near-100%-text pages
-  // (a dense multi-paragraph legal document has no real "background"
-  // separate from the text itself, so there's nothing meaningful to
-  // preserve) - they return the SAME image back rather than erroring,
-  // which used to look like a successful clean while actually leaving
-  // every word of the original text fully intact. This does a cheap
-  // downsampled pixel-difference check so that case gets caught instead
-  // of silently reported as success.
-  function v14ImagesLookNearlyIdentical(dataUrlA, dataUrlB) {
-    return new Promise(function (resolve) {
-      const SIZE = 32;
-      function toSamples(dataUrl) {
-        return new Promise(function (res, rej) {
-          const img = new Image();
-          img.onload = function () {
-            try {
-              const c = document.createElement('canvas');
-              c.width = SIZE; c.height = SIZE;
-              const ctx = c.getContext('2d');
-              ctx.drawImage(img, 0, 0, SIZE, SIZE);
-              res(ctx.getImageData(0, 0, SIZE, SIZE).data);
-            } catch (e) { rej(e); }
-          };
-          img.onerror = function () { rej(new Error('image load failed')); };
-          img.src = dataUrl;
-        });
-      }
-      Promise.all([toSamples(dataUrlA), toSamples(dataUrlB)])
-        .then(function (pair) {
-          const a = pair[0], b = pair[1];
-          let totalDiff = 0;
-          for (let i = 0; i < a.length; i += 4) {
-            totalDiff += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
-          }
-          const maxDiff = (a.length / 4) * 3 * 255;
-          resolve((totalDiff / maxDiff) < 0.02);   // <2% average difference = "nearly identical"
-        })
-        .catch(function () { resolve(false); });   // comparison itself failing shouldn't block a real result
+  // Deterministic Clean Image for the With-OCR (vision) pipeline: load
+  // the page image into a canvas and paint white over every OCR text
+  // block's exact box. v14ProcessSingleImage already converted each
+  // block's box_2d (normalized 0-1000) into pixel x/y/width/height, so
+  // we just paint those. No AI call, 100% reliable.
+  function v14PaintOverTextBoxes(dataUrl, blocks) {
+    return new Promise(function (resolve, reject) {
+      const img = new Image();
+      img.onload = function () {
+        try {
+          const c = document.createElement('canvas');
+          c.width = img.naturalWidth || img.width;
+          c.height = img.naturalHeight || img.height;
+          const ctx = c.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          ctx.fillStyle = '#ffffff';
+          const pad = 1;   // cover anti-aliased glyph edges
+          blocks.forEach(function (b) {
+            const x = Number(b.x) || 0, y = Number(b.y) || 0;
+            const w = Number(b.width) || 0, h = Number(b.height) || 0;
+            if (w > 0 && h > 0) ctx.fillRect(x - pad, y - pad, w + pad * 2, h + pad * 2);
+          });
+          resolve(c.toDataURL('image/png'));
+        } catch (e) { reject(e); }
+      };
+      img.onerror = function () { reject(new Error('failed to load page image for cleaning')); };
+      img.src = dataUrl;
     });
-  }
-
-  async function v14CleanImage(cleanModel, dataUrl) {
-    const data = await v14ProxyJson({
-      model: cleanModel,
-      modalities: ['image', 'text'],
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: V14_CLEAN_IMAGE_PROMPT },
-          { type: 'image_url', image_url: { url: dataUrl } }
-        ]
-      }]
-    });
-    const msg = data.choices && data.choices[0] && data.choices[0].message;
-    const images = msg && msg.images;
-    if (!images || !images.length) {
-      throw new Error('The model did not return an image. Does this model support image output? (e.g. google/gemini-3.1-flash-image)');
-    }
-    const url = images[0].image_url && images[0].image_url.url;
-    if (!url || !/^data:image\//i.test(url)) {
-      throw new Error('Clean-image response did not contain a valid image data URL.');
-    }
-    const nearlyIdentical = await v14ImagesLookNearlyIdentical(dataUrl, url);
-    if (nearlyIdentical) {
-      throw new Error('The model returned an image nearly identical to the original - it likely could not remove the readable text (this happens on pages that are almost entirely body text, with no real background to preserve)');
-    }
-    return url;
   }
 
   // ---- PDF -> IMAGES (v14: scale 2.0, PNG) ----
@@ -1810,13 +1766,12 @@ Return ONLY this JSON shape, nothing else:
   }
 
   // ---- HYBRID ENTRY (public API same: (file, opts, logFn) -> Blob) ----
-  // opts: { withImage, cleanImage, targetLang, model?, cleanModel? }
+  // opts: { withImage, cleanImage, targetLang, model? }
   // Output ab MHT-format Word document hai — .doc extension (docx zip nahi).
   async function buildHybridDocxBlob(file, opts, logFn) {
     if (typeof logFn === 'function') _log = logFn;
     opts = opts || {};
     const model = opts.model || 'google/gemini-2.5-flash';
-    const cleanModel = opts.cleanModel || 'google/gemini-3.1-flash-image';
     const withImage = !!opts.withImage;
     const cleanImage = withImage && !!opts.cleanImage;   // Clean Image sirf With Image ke saath
     const targetLang = opts.targetLang || 'original';
@@ -1846,32 +1801,32 @@ Return ONLY this JSON shape, nothing else:
       if (_shouldStop()) { abortVision(); stoppedEarly = true; break; }
 
       try {
-        // ═══ CALL 1: CLEAN IMAGE (agar checked) ═══
-        // Sabse pehle — cleaned image sirf background ke liye; OCR
-        // hamesha ORIGINAL image par hota hai.
+        // ═══ CALL 1: OCR/JSON (now FIRST) ═══
+        // Clean Image is no longer a separate AI call. We OCR first to
+        // get every text block's exact bounding box, then (if Clean Image
+        // is on) paint white over those exact boxes deterministically -
+        // same reliable approach as Text-based mode. The old AI clean-
+        // image call was verified to leave the original text fully intact
+        // on dense pages, and it cost an extra API call per page.
+        const result = await v14ProcessSingleImage(model, img.dataUrl, img.width, img.height, pageNum);
+        let currentJson = result.blocks;
+
+        if (!pageDims) pageDims = { width: img.width, height: img.height };
+
         let bgDataUrl = withImage ? img.dataUrl : null;
         let bgIsCleaned = false;
-        if (bgDataUrl && cleanImage) {
+        if (bgDataUrl && cleanImage && currentJson.length > 0) {
           try {
-            log('P' + pageNum + ': [Call 1/2] cleaning background image (' + cleanModel + ')...');
-            const cleanedUrl = await v14CleanImage(cleanModel, img.dataUrl);
-            bgDataUrl = cleanedUrl;
+            bgDataUrl = await v14PaintOverTextBoxes(img.dataUrl, currentJson);
             bgIsCleaned = true;
-            log('P' + pageNum + ': background image cleaned');
+            log('P' + pageNum + ': background image cleaned (' + currentJson.length + ' text region(s) painted over)');
           } catch (cleanErr) {
-            if (_shouldStop()) { abortVision(); stoppedEarly = true; break; }
             log('P' + pageNum + ': image clean failed (' + cleanErr.message + ') — using the ORIGINAL image as background', 'warn');
             bgDataUrl = img.dataUrl;
           }
         }
 
         if (_shouldStop()) { abortVision(); stoppedEarly = true; break; }
-
-        // ═══ CALL 2: OCR/JSON ═══
-        const result = await v14ProcessSingleImage(model, img.dataUrl, img.width, img.height, pageNum);
-        let currentJson = result.blocks;
-
-        if (!pageDims) pageDims = { width: img.width, height: img.height };
 
         // translation step ko guaranteed unique id chahiye
         currentJson = currentJson.map((b, idx) => Object.assign({}, b, {
