@@ -2,6 +2,28 @@
             "use strict";
 
             // ============================================================
+            // 0. LOCAL DATE/TIME HELPERS
+            // ============================================================
+            // toISOString() always converts to UTC - using it for anything
+            // shown to the user (activity log timestamps, transaction
+            // dates, filename date-stamps, "today" comparisons) shows the
+            // wrong clock time and can even show the wrong CALENDAR DATE
+            // depending on the user's timezone relative to UTC. These two
+            // helpers use the browser's LOCAL time instead, everywhere a
+            // date/time needs to be turned into a "YYYY-MM-DD" or
+            // "YYYY-MM-DD HH:MM" string for display or storage.
+            function localDateStr(d) {
+                d = d || new Date();
+                const pad = n => String(n).padStart(2, '0');
+                return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+            }
+            function localDateTimeStr(d) {
+                d = d || new Date();
+                const pad = n => String(n).padStart(2, '0');
+                return `${localDateStr(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+            }
+
+            // ============================================================
             // 1. JSON CONFIGURATION
             // ============================================================
             let MENU_CONFIG = null;
@@ -112,7 +134,7 @@
                 // (i.e. allowed) in that case, which was backwards.
                 if (!profileData || !profileData.plan || !profileData.planEndDate) return true;
                 if (profileData.planStatus === 'Expired') return true;
-                const today = new Date().toISOString().split('T')[0];
+                const today = localDateStr();
                 return profileData.planEndDate < today;
             }
 
@@ -294,7 +316,7 @@
             // it later via updateActivity().
             function addActivity(serviceId, activity, result) {
                 const now = new Date();
-                const timeStr = now.toISOString().replace('T', ' ').slice(0, 16);
+                const timeStr = localDateTimeStr(now);
                 const entry = { id: _nextActivityEntryId++, time: timeStr, activity: activity, result: result, userId: CURRENT_USER_ID };
                 if (serviceId === 'translation') {
                     translationActivityLog.unshift(entry);
@@ -1494,7 +1516,7 @@
                         const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
                         paymentHistory.push({
                             id: txnId,
-                            date: now.toISOString().split('T')[0],
+                            date: localDateStr(now),
                             time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
                             userId: CURRENT_USER_ID,
                             paymentType: 'Service Fee',
@@ -1968,7 +1990,7 @@
                             const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
                             paymentHistory.push({
                                 id: txnId,
-                                date: now.toISOString().split('T')[0],
+                                date: localDateStr(now),
                                 time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
                                 userId: CURRENT_USER_ID,
                                 paymentType: 'Service Fee',
@@ -2068,7 +2090,7 @@
                         const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
                         paymentHistory.push({
                             id: txnId,
-                            date: now.toISOString().split('T')[0],
+                            date: localDateStr(now),
                             time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
                             userId: CURRENT_USER_ID,
                             paymentType: 'Service Fee',
@@ -2361,7 +2383,7 @@
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `Activity_Log_${new Date().toISOString().split('T')[0]}.txt`;
+                a.download = `Activity_Log_${localDateStr()}.txt`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -2722,8 +2744,8 @@
                 const today = new Date();
                 const fromDate = new Date();
                 fromDate.setDate(today.getDate() - 4);
-                const toStr = today.toISOString().split('T')[0];
-                const fromStr = fromDate.toISOString().split('T')[0];
+                const toStr = localDateStr(today);
+                const fromStr = localDateStr(fromDate);
                 return { from: fromStr, to: toStr };
             }
 
@@ -2871,7 +2893,7 @@
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = 'Payment_History_' + new Date().toISOString().split('T')[0] + '.xls';
+                a.download = 'Payment_History_' + localDateStr() + '.xls';
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -2943,8 +2965,8 @@
                     // Item 3 - Free is a 7-day trial-style period; every
                     // paid plan renews monthly (30 days).
                     endDate.setDate(endDate.getDate() + (plan.name === 'Free' ? 7 : 30));
-                    const startDateStr = now.toISOString().split('T')[0];
-                    const endDateStr = endDate.toISOString().split('T')[0];
+                    const startDateStr = localDateStr(now);
+                    const endDateStr = localDateStr(endDate);
                     profileData.plan = plan.name;
                     profileData.planStartDate = startDateStr;
                     profileData.planEndDate = endDateStr;
@@ -2985,7 +3007,7 @@
                     const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
                     paymentHistory.push({
                         id: txnId,
-                        date: now.toISOString().split('T')[0],
+                        date: localDateStr(now),
                         time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
                         userId: CURRENT_USER_ID,
                         paymentType: 'Plan Subscription',
@@ -3024,7 +3046,7 @@
                 const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
                 paymentHistory.push({
                     id: txnId,
-                    date: now.toISOString().split('T')[0],
+                    date: localDateStr(now),
                     time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
                     userId: developerId,
                     paymentType: 'Expense',
@@ -3072,7 +3094,7 @@
                 const selfApprove = isAdminOrDeveloper();
                 const newTransaction = {
                     id: txnId,
-                    date: now.toISOString().split('T')[0],
+                    date: localDateStr(now),
                     time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
                     userId: CURRENT_USER_ID,
                     paymentType: method.type === 'upi' ? 'UPI' : method.type === 'credit-card' ? 'Credit Card' :
@@ -3621,7 +3643,7 @@
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = 'Support_Submissions_' + new Date().toISOString().split('T')[0] + '.xls';
+                a.download = 'Support_Submissions_' + localDateStr() + '.xls';
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -3868,7 +3890,7 @@
                 contactSubmissions.push({
                     id: ticketId,
                     userId: CURRENT_USER_ID,
-                    date: now.toISOString().split('T')[0],
+                    date: localDateStr(now),
                     time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
                     type: 'Billing Issue',
                     subject: subject,
@@ -3909,7 +3931,7 @@
                 contactSubmissions.push({
                     id: ticketId,
                     userId: CURRENT_USER_ID,
-                    date: now.toISOString().split('T')[0],
+                    date: localDateStr(now),
                     time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
                     type: type,
                     subject: subject,
@@ -3996,7 +4018,7 @@
                 if (!tbody) return;
 
                 const myHistory = getMyPaymentHistory();
-                const todayStr = new Date().toISOString().split('T')[0];
+                const todayStr = localDateStr();
                 const todayList = myHistory.filter(t => t.date === todayStr);
 
                 if (todayList.length === 0) {
@@ -4625,7 +4647,7 @@
                 notifications.push(Object.assign({
                     id: 'NOTIF' + String(nextNotificationId++).padStart(3, '0'),
                     userId: userId,
-                    date: now.toISOString().split('T')[0],
+                    date: localDateStr(now),
                     time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
                     description: description,
                     read: false
