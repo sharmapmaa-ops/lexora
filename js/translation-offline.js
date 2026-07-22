@@ -505,8 +505,11 @@
   async function buildOfflineDocxBlob(file, opts, logFn) {
     if (typeof logFn === 'function') _log = logFn;
     opts = opts || {};
-    const withImage = !!opts.withImage;
-    const cleanImage = withImage && !!opts.cleanImage;
+    // Image is always kept behind the text now, and text-based mode
+    // always cleans it via deterministic local paint (we have the exact
+    // text positions from the PDF text layer - no AI needed, no checkbox).
+    const withImage = true;
+    const cleanImage = true;
     const model = opts.model || 'google/gemini-2.5-flash';
     const targetLang = opts.targetLang || 'original';
     const keepOriginal = !targetLang || String(targetLang).toLowerCase() === 'original';
@@ -888,8 +891,15 @@ This box's [ymin,ymax] range does not substantially overlap any other line's [ym
 Reject and recompute any object that fails validation.
 Return JSON only after ALL objects pass validation.
 
+ALSO REPORT THE PAGE BACKGROUND TYPE:
+In addition to text_blocks, include a top-level boolean field "has_visual_background" describing the page as a whole:
+- true if the page has ANY meaningful non-text visual content that should be preserved - a logo, emblem, stamp/seal, photograph, drawing, decorative border or frame, watermark graphic, a colored or textured (non-white) background, or handwritten content mixed with the layout.
+- false if the page is essentially plain text on a plain, near-white background with no such graphical elements worth preserving (a typical typed document page).
+Judge the page overall, not individual lines.
+
 Return exactly:
 {
+  "has_visual_background": true,
   "text_blocks":[
       ...
   ]
@@ -965,6 +975,75 @@ Return NOTHING except the JSON object.`;
   }
 
   // ---- CLEAN IMAGE (image-output model, HTML tool ka EXACT prompt) ----
+  // AI-based clean, used ONLY for pages the OCR flags as having a real
+  // visual background (logo/seal/photo/texture) worth preserving. An
+  // image-output model removes the text while keeping the graphics.
+  const V14_CLEAN_IMAGE_PROMPT = 'Generate a clean version of this image without changing its original width and height. Completely remove all readable text, printed words, handwritten signatures, and any linguistic characters from the image, as if they never existed. Do not alter any non-readable elements like logos, seals, stamps, photographs, drawings, lines, borders, patterns, textures, colors, or background designs - preserve all of those exactly. The output must have the exact same dimensions as the input and no new text should be added.';
+
+  // A model can silently return an unchanged image on hard pages. Cheap
+  // downsampled diff so the caller can treat that as failure and fall
+  // back to deterministic local paint.
+  function v14ImagesLookNearlyIdentical(dataUrlA, dataUrlB) {
+    return new Promise(function (resolve) {
+      const SIZE = 32;
+      function toSamples(dataUrl) {
+        return new Promise(function (res, rej) {
+          const im = new Image();
+          im.onload = function () {
+            try {
+              const c = document.createElement('canvas');
+              c.width = SIZE; c.height = SIZE;
+              const ctx = c.getContext('2d');
+              ctx.drawImage(im, 0, 0, SIZE, SIZE);
+              res(ctx.getImageData(0, 0, SIZE, SIZE).data);
+            } catch (e) { rej(e); }
+          };
+          im.onerror = function () { rej(new Error('image load failed')); };
+          im.src = dataUrl;
+        });
+      }
+      Promise.all([toSamples(dataUrlA), toSamples(dataUrlB)])
+        .then(function (pair) {
+          const a = pair[0], b = pair[1];
+          let totalDiff = 0;
+          for (let i = 0; i < a.length; i += 4) {
+            totalDiff += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+          }
+          const maxDiff = (a.length / 4) * 3 * 255;
+          resolve((totalDiff / maxDiff) < 0.02);
+        })
+        .catch(function () { resolve(false); });
+    });
+  }
+
+  async function v14CleanImageAI(cleanModel, dataUrl) {
+    const data = await v14ProxyJson({
+      model: cleanModel,
+      modalities: ['image', 'text'],
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: V14_CLEAN_IMAGE_PROMPT },
+          { type: 'image_url', image_url: { url: dataUrl } }
+        ]
+      }]
+    });
+    const msg = data.choices && data.choices[0] && data.choices[0].message;
+    const images = msg && msg.images;
+    if (!images || !images.length) {
+      throw new Error('the model did not return an image (does this model support image output?)');
+    }
+    const url = images[0].image_url && images[0].image_url.url;
+    if (!url || !/^data:image\//i.test(url)) {
+      throw new Error('clean-image response did not contain a valid image data URL');
+    }
+    const nearlyIdentical = await v14ImagesLookNearlyIdentical(dataUrl, url);
+    if (nearlyIdentical) {
+      throw new Error('model returned a near-identical image (could not remove the text)');
+    }
+    return url;
+  }
+
   // Deterministic Clean Image for the With-OCR (vision) pipeline: load
   // the page image into a canvas and paint white over every OCR text
   // block's exact box. v14ProcessSingleImage already converted each
@@ -1371,7 +1450,8 @@ Return NOTHING except the JSON object.`;
 
     const rep = v14RepairBlocks(filtered, width, height);
     const deo = v14ResolveOverlaps(rep.blocks, width, height);
-    return { blocks: deo.blocks, notes: rep.notes.concat(deo.notes), width: width, height: height };
+    const hasVisualBackground = (parsed.has_visual_background === true);
+    return { blocks: deo.blocks, notes: rep.notes.concat(deo.notes), width: width, height: height, hasVisualBackground: hasVisualBackground };
   }
 
   // ---- TRANSLATION (single final call, whole document — v14 exact) ----
@@ -1772,8 +1852,8 @@ Return ONLY this JSON shape, nothing else:
     if (typeof logFn === 'function') _log = logFn;
     opts = opts || {};
     const model = opts.model || 'google/gemini-2.5-flash';
-    const withImage = !!opts.withImage;
-    const cleanImage = withImage && !!opts.cleanImage;   // Clean Image sirf With Image ke saath
+    const cleanModel = opts.cleanModel || 'google/gemini-3.1-flash-image';
+    const withImage = true;   // image is always kept behind the text now
     const targetLang = opts.targetLang || 'original';
     const keepOriginal = !targetLang || String(targetLang).toLowerCase() === 'original';
     if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js failed to load');
@@ -1810,19 +1890,45 @@ Return ONLY this JSON shape, nothing else:
         // on dense pages, and it cost an extra API call per page.
         const result = await v14ProcessSingleImage(model, img.dataUrl, img.width, img.height, pageNum);
         let currentJson = result.blocks;
+        const pageHasVisualBg = !!result.hasVisualBackground;
 
         if (!pageDims) pageDims = { width: img.width, height: img.height };
 
-        let bgDataUrl = withImage ? img.dataUrl : null;
+        // Image is always kept behind the text. Cleaning method is decided
+        // per page from the OCR's has_visual_background flag:
+        //  - real background (logo/seal/photo/texture) -> AI clean (removes
+        //    text, keeps graphics), with local-paint fallback if it fails
+        //  - plain text page -> deterministic local paint (reliable, free)
+        let bgDataUrl = img.dataUrl;
         let bgIsCleaned = false;
-        if (bgDataUrl && cleanImage && currentJson.length > 0) {
-          try {
-            bgDataUrl = await v14PaintOverTextBoxes(img.dataUrl, currentJson);
-            bgIsCleaned = true;
-            log('P' + pageNum + ': background image cleaned (' + currentJson.length + ' text region(s) painted over)');
-          } catch (cleanErr) {
-            log('P' + pageNum + ': image clean failed (' + cleanErr.message + ') — using the ORIGINAL image as background', 'warn');
-            bgDataUrl = img.dataUrl;
+        if (currentJson.length > 0) {
+          if (pageHasVisualBg) {
+            try {
+              log('P' + pageNum + ': page has a visual background — AI-cleaning (' + cleanModel + ')...');
+              bgDataUrl = await v14CleanImageAI(cleanModel, img.dataUrl);
+              bgIsCleaned = true;
+              log('P' + pageNum + ': background AI-cleaned (graphics preserved)');
+            } catch (cleanErr) {
+              if (_shouldStop()) { abortVision(); stoppedEarly = true; break; }
+              log('P' + pageNum + ': AI clean failed (' + cleanErr.message + ') — falling back to local paint', 'warn');
+              try {
+                bgDataUrl = await v14PaintOverTextBoxes(img.dataUrl, currentJson);
+                bgIsCleaned = true;
+                log('P' + pageNum + ': background cleaned via local paint (' + currentJson.length + ' region(s))');
+              } catch (paintErr) {
+                log('P' + pageNum + ': local paint also failed (' + paintErr.message + ') — using ORIGINAL image', 'warn');
+                bgDataUrl = img.dataUrl;
+              }
+            }
+          } else {
+            try {
+              bgDataUrl = await v14PaintOverTextBoxes(img.dataUrl, currentJson);
+              bgIsCleaned = true;
+              log('P' + pageNum + ': background cleaned via local paint (' + currentJson.length + ' region(s))');
+            } catch (paintErr) {
+              log('P' + pageNum + ': local paint failed (' + paintErr.message + ') — using ORIGINAL image', 'warn');
+              bgDataUrl = img.dataUrl;
+            }
           }
         }
 
