@@ -550,22 +550,10 @@
                         </div>
                         <div style="display:flex;align-items:center;gap:20px;margin-top:10px;">
                             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
-                                   title="Checked (With OCR): full vision-based OCR - reads scanned/photographed pages too, and supports translation. Unchecked: faster local text extraction - text-based PDFs only (not scanned/photo), translation still available.">
+                                   title="Checked (With OCR): full vision-based OCR - reads scanned/photographed pages too. Unchecked: faster local text extraction - text-based PDFs only (not scanned/photo). Translation works in both. The original page background is always kept behind the text automatically.">
                                 <input type="checkbox" id="translationHybridCheck" style="width:auto;margin:0;" ${translationHybridMode ? 'checked' : ''} ${processState.running ? 'disabled' : ''}
                                        onchange="setTranslationHybridMode(this.checked)" />
                                 <span>With OCR</span>
-                            </label>
-                            <label id="translationWithImageWrap" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
-                                   title="Checked: the page background/graphics/logos are preserved in the output (the page image is placed behind the textboxes). Check Clean Image too to remove the original text from it first. Unchecked: only reconstructed text on a clean white page.">
-                                <input type="checkbox" id="translationWithImageCheck" style="width:auto;margin:0;" ${translationWithImage ? 'checked' : ''} ${processState.running ? 'disabled' : ''}
-                                       onchange="setTranslationWithImage(this.checked)" />
-                                <span>With Image</span>
-                            </label>
-                            <label id="translationCleanImageWrap" style="display:${translationWithImage ? 'flex' : 'none'};align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
-                                   title="Checked: an extra image-model call per page removes ALL readable text from the background image first (Clean Image), so the original text never shows behind the new textboxes. Unchecked: the original page image is used as the background as-is.">
-                                <input type="checkbox" id="translationCleanImageCheck" style="width:auto;margin:0;" ${translationCleanImage ? 'checked' : ''} ${processState.running ? 'disabled' : ''}
-                                       onchange="setTranslationCleanImage(this.checked)" />
-                                <span>Clean Image</span>
                             </label>
                         </div>
                     </div>
@@ -810,39 +798,17 @@
                 '<option value="Filipino (Tagalog)">Filipino (Tagalog)</option>';
 
             let translationHybridMode = false;   // default: UNCHECKED (user spec)
-            let translationWithImage = true;
-            // Clean Image - needs an extra image-model API call to remove
-            // text from the background. Available in both With-OCR and
-            // text-based (offline) modes now - only With Image gates it.
-            // Whenever it transitions from hidden to visible (With Image
-            // just got checked), it defaults back to CHECKED.
-            let translationCleanImage = true;
-            let _cleanImageWasVisible = false;
-            function syncCleanImageVisibility() {
-                const visible = translationWithImage;
-                const ciWrap = document.getElementById('translationCleanImageWrap');
-                const ciCheck = document.getElementById('translationCleanImageCheck');
-                if (visible && !_cleanImageWasVisible) translationCleanImage = true;
-                if (!visible) translationCleanImage = false;
-                if (ciWrap) ciWrap.style.display = visible ? 'flex' : 'none';
-                if (ciCheck) ciCheck.checked = translationCleanImage;
-                _cleanImageWasVisible = visible;
-            }
-            window.setTranslationCleanImage = function(c){
-                translationCleanImage = !!c;
-            };
-            window.setTranslationWithImage = function(c){
-                translationWithImage = !!c;
-                syncCleanImageVisibility();
-            };
+            // Image is ALWAYS placed behind the text now (no more With Image
+            // checkbox), and cleaning is automatic: Text-based mode always
+            // uses deterministic local paint; With-OCR mode uses the page's
+            // own OCR JSON background flag to decide between AI clean (real
+            // background/graphics present) and local paint (text-only page).
             window.setTranslationHybridMode = function(checked) {
                 translationHybridMode = !!checked;
-                // Output Language, With Image and Clean Image are no longer
-                // gated by this toggle - both With-OCR (vision) and
-                // text-based (local, offline) extraction now support
-                // translation and image handling the same way; this
-                // checkbox only changes HOW the text is extracted (price
-                // is a flat per-plan rate regardless of mode).
+                // This toggle now only changes HOW text is extracted
+                // (local text-layer vs vision OCR). Image handling and
+                // translation are the same either way; price is a flat
+                // per-plan rate regardless of mode.
             };
 
             // Translation output file format: 'docx' (default) or 'pdf'.
@@ -1818,12 +1784,10 @@
                     // Hybrid + With Image — render ke waqt fresh read
                     const hybridCheckNow = document.getElementById('translationHybridCheck');
                     const hybridMode = hybridCheckNow ? !!hybridCheckNow.checked : translationHybridMode;
-                    const _wiNow = document.getElementById('translationWithImageCheck');
-                    const withImageOpt = _wiNow ? !!_wiNow.checked : translationWithImage;
-                    // Clean Image bhi fresh read (same stale-value reason);
-                    // sirf With Image ke saath hi valid hai.
-                    const _ciNow = document.getElementById('translationCleanImageCheck');
-                    const cleanImageOpt = withImageOpt && (_ciNow ? !!_ciNow.checked : translationCleanImage);
+                    // Image is ALWAYS included behind the text now (no
+                    // checkbox). Cleaning is automatic and decided inside the
+                    // pipeline per page, so no cleanImage flag is passed.
+                    const withImageOpt = true;
                     const processAgents = getAgents('translation').filter(a => a.phase !== 'scan');
                     const agentName = (list, idx) => (list[idx] && list[idx].name) || 'Unassigned';
 
@@ -1952,13 +1916,11 @@
                                 if (hybridMode) {
                                     offlineBlob = await window.buildHybridDocxBlob(blob, {
                                         withImage: withImageOpt,
-                                        cleanImage: cleanImageOpt,
                                         targetLang: targetLanguage
                                     }, onLog);
                                 } else {
                                     offlineBlob = await window.buildOfflineDocxBlob(blob, {
                                         withImage: withImageOpt,
-                                        cleanImage: cleanImageOpt,
                                         targetLang: targetLanguage
                                     }, onLog);
                                 }
@@ -6522,10 +6484,35 @@
                 });
             }
 
+            // Called when navigation is about to LEAVE the translation
+            // section. Translation processing is browser-side and session-
+            // only (blobs live in memory, files aren't persisted server-
+            // side the way lease files are), so leaving mid-run would strand
+            // a half-done process and leave stale files/log behind. Instead:
+            // stop any running process and clear this user's translation
+            // files, in-memory blobs, and activity log. Returning to
+            // Translation then shows a clean empty state.
+            function leaveTranslationSection() {
+                if (processState.running) {
+                    processState.stopped = true;
+                    processState.running = false;
+                }
+                translationFiles = translationFiles.filter(f => f.userId !== CURRENT_USER_ID);
+                translationActivityLog = translationActivityLog.filter(a => a.userId !== CURRENT_USER_ID);
+                translationFileBlobs = {};
+                translationBlobStore = {};
+                persistServiceFiles('translation');
+            }
+
             // ============================================================
             // 36. LOAD CONTENT
             // ============================================================
             function loadContent(parentId, subId) {
+                // If we're navigating AWAY from an in-progress/active
+                // translation view to anywhere else, tear it down first.
+                if (activeSubItemId === 'translation' && subId !== 'translation') {
+                    leaveTranslationSection();
+                }
                 resetContentArea();
 
                 setTimeout(() => {
@@ -7758,6 +7745,12 @@
             }
 
             function performLogout() {
+                // Stop any in-progress translation run before tearing down
+                // the session (same reason as leaveTranslationSection).
+                if (processState.running) {
+                    processState.stopped = true;
+                    processState.running = false;
+                }
                 // Fire-and-forget - revokes the token server-side too, not
                 // just locally, so it can't be replayed after logout.
                 if (AUTH_TOKEN) {
