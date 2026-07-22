@@ -1882,8 +1882,17 @@
                             addActivity('translation', `${fl}File Processing > ${file.name} > Started (${modeLabel})`, 'Started');
                             refreshServicePage('translation');
 
-                            // SCANNING: pehle poora scan (100%) — tabhi aage process.
-                            let scanId = addActivity('translation', `${fl}File Scanning > 0%`, 'Pending');
+                            // SCANNING: file upload already completed above, so
+                            // the scan step is effectively done here. Mark it
+                            // Success right away - the real work (extraction /
+                            // translation) is tracked by its own counter lines
+                            // below. (Previously this stayed "Pending" until ALL
+                            // processing finished, which looked wrong: the log
+                            // showed "Scanning Pending" alongside "Text extracted"
+                            // running - scanning appearing unfinished while later
+                            // steps were clearly already underway.)
+                            let scanId = addActivity('translation', `${fl}File Scanning > 100%`, 'Success');
+                            addActivity('translation', `${fl}File Scanning > Extraction complete`, 'Success');
                             refreshServicePage('translation');
                             let offlineBlob;
                             let lastLoggedMsg = '';
@@ -1901,7 +1910,6 @@
                                         const done = parseInt(mm[1], 10), total = parseInt(mm[2], 10) || 1;
                                         const pct = Math.min(80, Math.round((done / total) * 80));
                                         file.progress = String(pct);
-                                        updateActivity('translation', scanId, 'Pending', `${fl}File Scanning > ${pct}%`);
                                         refreshServicePage('translation');
                                         return;
                                     }
@@ -1967,10 +1975,7 @@
                                 persistServiceFiles('translation');
                                 continue;
                             }
-                            // SCANNING 100% — ab hi process aage badha
-                            updateActivity('translation', scanId, 'Success', `${fl}File Scanning > 100%`);
-                            addActivity('translation', `${fl}File Scanning > Extraction complete`, 'Success');
-                            file.progress = '85';   // monotonic: scan(0-80) -> build 85
+                            file.progress = '85';   // extraction/translation done -> building output
                             refreshServicePage('translation');
 
                             // Bug 4: translation output ab SERVER PE SAVE NAHI hota.
