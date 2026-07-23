@@ -1184,7 +1184,12 @@
                 // processing loop anymore (see processTranslationFileAt);
                 // they still get reprocessed if selected, just without an
                 // extra wallet charge, since it's a free redo.
-                const billable = files.filter(f => f.status !== 'completed' && f.status !== 'needs_review');
+                // Must match exactly what the processing loop will run:
+                // selection. (This previously excluded completed files, but
+                // re-running a selected completed file IS supported - so the
+                // check announced "$0.00 for 0 file(s)" and then still billed
+                // per page for it.)
+                const billable = files.filter(f => f.selected !== false);
                 const myPlan = getMyPlan();
                 const isPerPage = serviceId === 'translation' || myPlan.billingUnit === 'page';
                 // Item 7 - a per-page plan can't know the EXACT charge for a
@@ -1200,7 +1205,7 @@
                     ? `${myPlan.name} plan: Translation $${(myPlan.pricePerTranslation != null ? myPlan.pricePerTranslation : 0)}/Per Page`
                     : `${myPlan.name} plan`;
                 const balanceCheckId = addActivity(serviceId,
-                    `System > Checking Wallet Balance > $${totalNeeded.toFixed(2)} required for ${billable.length} file(s) (${rateLabel})${estimateNote}`, 'Processing');
+                    `System > Checking Wallet Balance > $${totalNeeded.toFixed(2)} required for ${billable.length} file(s) (${rateLabel})`, 'Processing');
                 refreshServicePage(serviceId);
 
                 if (totalNeeded > 0 && getCurrentBalance() < totalNeeded) {
@@ -1213,7 +1218,7 @@
                     showWarning(`Insufficient balance. Processing ${billable.length} file(s) requires $${totalNeeded.toFixed(2)}${estimateNote} on your ${myPlan.name} plan, but your wallet only has $${getCurrentBalance().toFixed(2)}. Please add balance and click Start again.`);
                     return;
                 }
-                updateActivity(serviceId, balanceCheckId, 'Success');
+                updateActivity(serviceId, balanceCheckId, 'Info');
 
                 // What the user actually selected for this run.
                 if (serviceId === 'translation') {
@@ -1766,8 +1771,10 @@
                     file.batchLabel = `File(${processState.runIndex}/${processState.totalInBatch || processState.runIndex}): `;
                     const fl = file.batchLabel;
 
-                    addActivity('translation', `${fl}File Processing > ${file.name}`, 'Started');
-                    refreshServicePage('translation');
+                    // NOTE: the "File Processing" row is emitted by the new
+                    // Activity Log block further down (once the file's mode is
+                    // known) - emitting one here too produced a duplicate row
+                    // for the same step.
                     await sleep(120);
                     if (processState.stopped) return;
 
@@ -1862,7 +1869,7 @@
                             // counts), not by regex-scraping free-text logs.
                             // Status meaning: Processing = step started,
                             // Success = step finished, Info = informational.
-                            const fileProcId = addActivity('translation', `${fl}File Processing > ${file.name}`, 'Processing');
+                            const fileProcId = addActivity('translation', `${fl}File Processing > ${file.name}`, 'Info');
                             refreshServicePage('translation');
 
                             // Upload already finished above, so scanning is done.
@@ -1928,14 +1935,19 @@
                                     }
                                 };
 
-                                // Free-text log lines: only warnings/errors and
-                                // other genuinely notable messages still get their
-                                // own row (the per-page numbers come from events).
-                                const onLog = (m) => {
-                                    if (/^(P\d+:|Vision OCR:|Translation:|Translating|\[Final Call\])/.test(m)) return;
+                                // Free-text log lines. Warnings/errors ALWAYS get
+                                // a row (they tell the user something actually went
+                                // wrong, e.g. a page skipped or an image clean that
+                                // fell back). Routine info-level progress chatter is
+                                // suppressed - the structured per-page rows above
+                                // already carry those numbers.
+                                const NOISE = /^(P\d+\b|Vision OCR:|Translation:|Translating|\[Final Call\]|Word document ready|Document type:)/;
+                                const onLog = (m, level) => {
+                                    const isProblem = (level === 'warn' || level === 'error');
+                                    if (!isProblem && NOISE.test(m)) return;
                                     if (m === lastLoggedMsg) return;
                                     lastLoggedMsg = m;
-                                    addActivity('translation', `${fl}${m}`, 'Info');
+                                    addActivity('translation', `${fl}${m}`, isProblem ? 'Failed' : 'Info');
                                     refreshServicePage('translation');
                                 };
                                 if (window.setVisionAuthToken) window.setVisionAuthToken(AUTH_TOKEN || '');
@@ -1962,9 +1974,9 @@
                                     // complete were already charged - show that
                                     // total so the partial charge isn't a surprise.
                                     addActivity('translation',
-                                        `${fl}Total API Call(s) > JSON=${totalJsonCalls}, IMAGE=${totalImageCalls}`, 'Info');
+                                        `${fl}Page(All) > API Call(s) > JSON=${totalJsonCalls}, IMAGE=${totalImageCalls}`, 'Info');
                                     addActivity('translation',
-                                        `${fl}Total API Call(s) > Amount Deducted from Wallet=$${totalCharged.toFixed(2)} (${pagesCharged} completed page(s))`, 'Info');
+                                        `${fl}Page(All) > Amount Deducted from Wallet=$${totalCharged.toFixed(2)} (${pagesCharged} completed page(s))`, 'Info');
                                 }
                                 file.status = 'error';
                                 file.errorLabel = 'Error';
@@ -1993,16 +2005,15 @@
                             // completed (see onEvent above) - no charge here,
                             // that would double-bill. These are the summary rows.
                             addActivity('translation',
-                                `${fl}Total API Call(s) > JSON=${totalJsonCalls}, IMAGE=${totalImageCalls}`, 'Info');
+                                `${fl}Page(All) > API Call(s) > JSON=${totalJsonCalls}, IMAGE=${totalImageCalls}`, 'Info');
                             addActivity('translation',
-                                `${fl}Total API Call(s) > Amount Deducted from Wallet=$${totalCharged.toFixed(2)}`, 'Info');
+                                `${fl}Page(All) > Amount Deducted from Wallet=$${totalCharged.toFixed(2)}`, 'Info');
 
                             file.docName = docName;
                             file.outputFormat = 'docx';
                             file.sessionDownload = true;   // browser-only download
                             file.progress = '100';
                             addActivity('translation', `${fl}Generate Output > ${docName}${outExt}`, 'Success');
-                            updateActivity('translation', fileProcId, 'Success', `${fl}File Processing > ${file.name}`);
                             if (totalCharged > 0) {
                                 notifyProcessCompletion('Translation', file.name, totalCharged, pageTxnIds[pageTxnIds.length - 1] || '');
                             }
@@ -6567,6 +6578,18 @@
                     activeItemId = parentId;
 
                     let data = CONTENT_DATA[dataKey];
+                    // Free Services tools live in their own module (js/free-
+                    // services.js) and are looked up by id, so a new free tool
+                    // only needs registering there + in menu-config.json -
+                    // no CONTENT_DATA entry and no change in this file.
+                    if (!data && window.FreeServices && window.FreeServices.has(dataKey)) {
+                        data = { body: function () { return window.FreeServices.render(dataKey); } };
+                    }
+                    if (!data && dataKey === 'free-services') {
+                        data = { body: '<div class="content-section"><h3>🎁 Free Services</h3>' +
+                            '<p>Pick a tool from the menu. These run entirely in your browser - ' +
+                            'nothing is uploaded, nothing is charged.</p></div>' };
+                    }
                     if (!data) {
                         data = { body: '<div class="content-section"><p>Content not available for this section.</p></div>' };
                     }
