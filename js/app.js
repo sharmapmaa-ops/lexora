@@ -6578,17 +6578,11 @@
                     activeItemId = parentId;
 
                     let data = CONTENT_DATA[dataKey];
-                    // Free Services tools live in their own module (js/free-
-                    // services.js) and are looked up by id, so a new free tool
-                    // only needs registering there + in menu-config.json -
-                    // no CONTENT_DATA entry and no change in this file.
+                    // "Other Services" (and each free tool inside it) lives in
+                    // js/free-services.js and is looked up by id, so adding a
+                    // new free tool needs no change in this file.
                     if (!data && window.FreeServices && window.FreeServices.has(dataKey)) {
                         data = { body: function () { return window.FreeServices.render(dataKey); } };
-                    }
-                    if (!data && dataKey === 'free-services') {
-                        data = { body: '<div class="content-section"><h3>🎁 Free Services</h3>' +
-                            '<p>Pick a tool from the menu. These run entirely in your browser - ' +
-                            'nothing is uploaded, nothing is charged.</p></div>' };
                     }
                     if (!data) {
                         data = { body: '<div class="content-section"><p>Content not available for this section.</p></div>' };
