@@ -378,9 +378,25 @@
       (!!window.ServiceRunner && ServiceRunner.has(id));
   }
 
+  // Tool pages are opened by swapping contentBody directly (no loadContent),
+  // so the page header has to be updated here too - otherwise it keeps
+  // showing the parent section ("Services / Other Services") after drilling
+  // into a tool.
+  function titleOf(id) {
+    const t = TOOLS.find(function (x) { return x.id === id; });
+    if (t) return t.label;
+    if (window.ServiceRunner && ServiceRunner.has(id)) return id;
+    return '';
+  }
+
   function open(id) {
     const host = document.getElementById('contentBody');
     if (host) host.innerHTML = render(id);
+    if (window.setLexoraBreadcrumb) {
+      const base = window.__lexoraBreadcrumb || '\ud83d\udee0\ufe0f Services / Other Services';
+      const name = id === 'other-services' ? '' : titleOf(id);
+      window.setLexoraBreadcrumb(name ? base + ' / ' + name : base);
+    }
   }
 
   window.FreeServices = {

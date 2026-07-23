@@ -6592,6 +6592,10 @@
                         data = { body: '<div class="content-section"><p>Content not available for this section.</p></div>' };
                     }
 
+                    // Remember the current breadcrumb prefix so modules that
+                    // swap contentBody themselves (Other Services tool pages)
+                    // can append their own tool name to it.
+                    window.__lexoraBreadcrumb = breadcrumb;
                     updateContent(data, breadcrumb);
 
                     document.querySelectorAll('.menu-item > a').forEach((el) => {
@@ -7142,6 +7146,13 @@
             // would silently drift from the plans the admin edits), it goes
             // through this one small surface - same rate, same wallet, same
             // transaction record as Translation.
+            // Lets standalone service modules update the page header when they
+            // navigate internally without going through loadContent().
+            window.setLexoraBreadcrumb = function (text) {
+                const el = document.getElementById('currentMenuDisplay');
+                if (el) el.textContent = text;
+            };
+
             window.LexoraBilling = {
                 perPageRate: function () { return getServicePrice('translation', 1); },
                 planName: function () { return getMyPlan().name; },

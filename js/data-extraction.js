@@ -123,13 +123,6 @@
     setStatus('Deleted the selected field(s) (not saved yet).', 'ok');
   }
 
-  function removeField(i) {
-    readFieldsFromDom();
-    STATE.fields.splice(i, 1);
-    if (!STATE.fields.length) STATE.fields.push({ header: '', description: '', checked: false });
-    rerender();
-  }
-
   function resetFields() {
     STATE.fields = DEFAULT_FIELDS.map(function (f) { return { header: f.header, description: f.description, checked: false }; });
     rerender();
@@ -435,28 +428,6 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
   // ── rendering ──────────────────────────────────────────────────────
   // Mirrors Translation's estimate line: only shows when something is
   // selected, and gives both the plan rate and the total for the selection.
-  function chargeEstimateHtml() {
-    const b = window.LexoraBilling;
-    if (!b) return '';
-    const sel = STATE.files.filter(function (f) { return f.selected !== false; });
-    if (!sel.length) return '';
-    const rate = b.perPageRate();
-    const total = sel.reduce(function (sum, f) { return sum + rate * Math.max(1, f.pageCount || 1); }, 0);
-    return `💰 Rate: $${rate.toFixed(2)}/page · Est. total: $${total.toFixed(2)} for ${sel.length} selected file(s)`;
-  }
-
-  function toggleAll(checked) {
-    STATE.files.forEach(function (f) { f.selected = !!checked; });
-    rerender();
-  }
-
-  function statusClass(s) {
-    if (s === 'Success') return 'completed';
-    if (s === 'Failed') return 'error';
-    if (s === 'Processing') return 'processing';
-    return 'pending';
-  }
-
   function fieldsTable() {
     const fields = loadFields();
     return `
@@ -515,38 +486,6 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     if (s === 'Failed') return 'error';
     if (s === 'Processing') return 'processing';
     return 'pending';
-  }
-
-  function fieldsTable() {
-    const fields = loadFields();
-    return `
-      <div style="overflow:auto;">
-        <table class="admin-json-table" style="width:100%;">
-          <thead><tr>
-            <th style="width:44px;">#</th>
-            <th style="width:34%;">Field Header</th>
-            <th>Description (what this field means)</th>
-            <th style="width:60px;"></th>
-          </tr></thead>
-          <tbody>
-            ${fields.map(function (f, i) {
-              return `<tr>
-                <td>${i + 1}</td>
-                <td><input type="text" id="deH_${i}" value="${esc(f.header)}" placeholder="e.g. Invoice No" style="width:100%;" /></td>
-                <td><input type="text" id="deD_${i}" value="${esc(f.description)}" placeholder="Describe it so the extractor knows what to look for" style="width:100%;" /></td>
-                <td><button class="filter-btn" style="padding:2px 8px;" onclick="DataExtraction.removeField(${i})">✕</button></td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>
-      <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-        <button class="filter-btn" onclick="DataExtraction.addField()">➕ Add Field</button>
-        <button class="filter-btn" onclick="DataExtraction.saveFields()">💾 Save</button>
-        <button class="filter-btn" onclick="DataExtraction.resetFields()">↩️ Reset to defaults</button>
-        <span style="font-size:0.78rem;color:rgba(0,0,0,0.5);">${fields.length}/${MAX_FIELDS} fields</span>
-      </div>
-      <div id="deStatus" style="margin-top:8px;font-size:0.86rem;min-height:1.1em;"></div>`;
   }
 
   function fileRows() {
@@ -736,7 +675,6 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
   window.DataExtraction = {
     render: render,
     addField: addField,
-    removeField: removeField,
     toggleField: toggleField,
     toggleAllFields: toggleAllFields,
     deleteChecked: deleteChecked,
