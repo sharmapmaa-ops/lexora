@@ -2,12 +2,12 @@
     "mainMenu": [
         {
             "id": "dashboard",
-            "label": "\ud83d\udcca Dashboard",
+            "label": "📊 Dashboard",
             "subItems": []
         },
         {
             "id": "services",
-            "label": "\ud83d\udee0\ufe0f Services",
+            "label": "🛠️ Services",
             "subItems": [
                 {
                     "id": "lease-abstraction",
@@ -20,13 +20,47 @@
             ]
         },
         {
+            "id": "free-services",
+            "label": "🎁 Free Services",
+            "subItems": [
+                {
+                    "id": "pdf-split",
+                    "label": "PDF Split"
+                },
+                {
+                    "id": "pdf-merge",
+                    "label": "PDF Merge"
+                },
+                {
+                    "id": "pdf-unprotect",
+                    "label": "PDF Unprotect"
+                },
+                {
+                    "id": "image-to-pdf",
+                    "label": "Image to PDF"
+                },
+                {
+                    "id": "pdf-to-image",
+                    "label": "PDF to Image"
+                },
+                {
+                    "id": "emi-calculator",
+                    "label": "EMI Calculator"
+                },
+                {
+                    "id": "gratuity-calculator",
+                    "label": "Gratuity Calculator"
+                }
+            ]
+        },
+        {
             "id": "plans-offers",
-            "label": "\ud83d\udccb Plans & Offers",
+            "label": "📋 Plans & Offers",
             "subItems": []
         },
         {
             "id": "payment",
-            "label": "\ud83d\udcb3 Payment",
+            "label": "💳 Payment",
             "subItems": [
                 {
                     "id": "balance",
@@ -44,7 +78,7 @@
         },
         {
             "id": "help",
-            "label": "\u2753 Help",
+            "label": "❓ Help",
             "subItems": [
                 {
                     "id": "api-documentation",
@@ -64,12 +98,12 @@
     "profileMenu": [
         {
             "id": "profile",
-            "label": "\ud83d\udc64 My Profile",
+            "label": "👤 My Profile",
             "action": "Profile"
         },
         {
             "id": "admin",
-            "label": "\ud83d\uddc2\ufe0f Admin",
+            "label": "🗂️ Admin",
             "action": "Admin",
             "rolesAllowed": [
                 "Developer",
@@ -78,7 +112,7 @@
         },
         {
             "id": "notification",
-            "label": "\ud83d\udd14 Notification",
+            "label": "🔔 Notification",
             "action": "Notification"
         },
         {
@@ -86,7 +120,7 @@
         },
         {
             "id": "logout",
-            "label": "\ud83d\udeaa Logout",
+            "label": "🚪 Logout",
             "action": "Logout",
             "isLogout": true
         }
