@@ -30,6 +30,30 @@
     { header: 'Total Amount', description: 'The final total payable, including tax' }
   ];
 
+  // Loaded by the "Default" button - the fields an invoice normally
+  // carries. Anything not present in a given document simply comes back
+  // empty, so an over-complete list costs nothing but a blank column.
+  const INVOICE_FIELDS = [
+    { header: 'Invoice No', description: 'The invoice or document reference number' },
+    { header: 'Invoice Date', description: 'The date the invoice was issued' },
+    { header: 'Due Date', description: 'The date payment is due' },
+    { header: 'PO Number', description: 'Purchase order number this invoice relates to' },
+    { header: 'Vendor Name', description: 'The company or person issuing the invoice' },
+    { header: 'Vendor Address', description: 'Full address of the issuing company' },
+    { header: 'Vendor Tax ID', description: 'Vendor GST / VAT / tax registration number' },
+    { header: 'Bill To Name', description: 'The customer the invoice is addressed to' },
+    { header: 'Bill To Address', description: 'Billing address of the customer' },
+    { header: 'Customer Tax ID', description: 'Customer GST / VAT / tax registration number' },
+    { header: 'Currency', description: 'Currency of the amounts, e.g. INR, USD, EUR' },
+    { header: 'Subtotal', description: 'Total before tax and discounts' },
+    { header: 'Discount', description: 'Any discount applied' },
+    { header: 'Tax Amount', description: 'Total tax charged (GST/VAT/sales tax)' },
+    { header: 'Total Amount', description: 'The final total payable, including tax' },
+    { header: 'Amount in Words', description: 'The total written out in words, if shown' },
+    { header: 'Payment Terms', description: 'Payment terms, e.g. Net 30, Due on receipt' },
+    { header: 'Bank Details', description: 'Bank account / IFSC / IBAN details for payment' }
+  ];
+
   const STATE = {
     fields: null,        // loaded lazily
     rows: [],            // extracted results, one per processed file
@@ -121,6 +145,14 @@
     if (!STATE.fields.length) STATE.fields.push({ header: '', description: '', checked: false });
     rerender();
     setStatus('Deleted the selected field(s) (not saved yet).', 'ok');
+  }
+
+  function loadInvoiceDefaults() {
+    STATE.fields = INVOICE_FIELDS.slice(0, MAX_FIELDS).map(function (f) {
+      return { header: f.header, description: f.description, checked: false };
+    });
+    rerender();
+    setStatus(`Loaded ${STATE.fields.length} standard invoice field(s) - press Save to keep them.`, 'ok');
   }
 
   function resetFields() {
@@ -440,7 +472,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
             <th>#</th><th>Field Header</th><th>Description (what this field means)</th>
           </tr></thead>
         </table>
-        <div class="file-table-scroll" style="max-height:220px;">
+        <div class="file-table-scroll" style="height:220px;max-height:220px;overflow-y:scroll;">
           <table class="file-table">
             <colgroup><col style="width:6%;"><col style="width:6%;"><col style="width:32%;"><col style="width:56%;"></colgroup>
             <tbody>
@@ -461,6 +493,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
         <button class="process-btn start-btn" onclick="DataExtraction.addField()">➕ Add</button>
         <button class="process-btn clear-btn" onclick="DataExtraction.deleteChecked()">🗑️ Delete</button>
         <button class="process-btn clear-btn" onclick="DataExtraction.saveFields()">💾 Save</button>
+        <button class="process-btn clear-btn" onclick="DataExtraction.loadInvoiceDefaults()">📄 Default</button>
         <span style="font-size:0.78rem;color:rgba(0,0,0,0.5);align-self:center;margin-left:6px;">${fields.length}/${MAX_FIELDS} fields</span>
       </div>
       <div id="deStatus" style="margin-top:8px;font-size:0.86rem;min-height:1.1em;"></div>`;
@@ -680,6 +713,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     deleteChecked: deleteChecked,
     saveFields: saveFields,
     resetFields: resetFields,
+    loadInvoiceDefaults: loadInvoiceDefaults,
     onPick: onPick,
     toggleSelect: toggleSelect,
     toggleAll: toggleAll,
