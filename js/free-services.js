@@ -341,6 +341,16 @@
   }
 
   // ── Other Services landing page ────────────────────────────────────
+  // Cards contributed by js/tools.js (pure-JS utilities). Merged in at
+  // render time so adding a tool there needs no change in this file.
+  function extraCards() {
+    if (!window.Tools || !Tools.cards) return [];
+    return Object.keys(Tools.cards).map(function (id) {
+      const c = Tools.cards[id];
+      return { id: id, label: c.label, icon: c.icon, desc: c.desc };
+    });
+  }
+
   const TOOLS = [
     { id: 'pdf-split', label: 'PDF Split', icon: '✂️', desc: 'Extract selected pages into a new PDF.' },
     { id: 'pdf-merge', label: 'PDF Merge', icon: '🔗', desc: 'Combine several PDFs into one.' },
@@ -353,7 +363,7 @@
   function renderIndex() {
     return `
       <div class="plans-grid">
-        ${TOOLS.map(function (t) {
+        ${TOOLS.concat(extraCards()).map(function (t) {
           return `
             <div class="plan-card" style="cursor:pointer;" onclick="FreeServices.open('${t.id}')">
               <div class="plan-name">${t.icon} ${esc(t.label)}</div>
@@ -368,6 +378,7 @@
 
   function render(id) {
     if (id === 'other-services') return renderIndex();
+    if (window.Tools && Tools.cards[id]) return backBar() + Tools.cards[id].render();
     if (CALCULATORS[id]) return backBar() + CALCULATORS[id]();
     if (window.ServiceRunner && ServiceRunner.has(id)) return ServiceRunner.render(id);
     return '<div class="content-section"><p>This tool is not available.</p></div>';
@@ -375,6 +386,7 @@
 
   function has(id) {
     return id === 'other-services' || !!CALCULATORS[id] ||
+      (!!window.Tools && !!Tools.cards[id]) ||
       (!!window.ServiceRunner && ServiceRunner.has(id));
   }
 
@@ -383,7 +395,7 @@
   // showing the parent section ("Services / Other Services") after drilling
   // into a tool.
   function titleOf(id) {
-    const t = TOOLS.find(function (x) { return x.id === id; });
+    const t = TOOLS.concat(extraCards()).find(function (x) { return x.id === id; });
     if (t) return t.label;
     if (window.ServiceRunner && ServiceRunner.has(id)) return id;
     return '';

@@ -472,7 +472,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
             <th>#</th><th>Field Header</th><th>Description (what this field means)</th>
           </tr></thead>
         </table>
-        <div class="file-table-scroll" style="height:220px;max-height:220px;overflow-y:scroll;">
+        <div class="file-table-scroll" style="height:180px;max-height:180px;overflow-y:scroll;">
           <table class="file-table">
             <colgroup><col style="width:6%;"><col style="width:6%;"><col style="width:32%;"><col style="width:56%;"></colgroup>
             <tbody>
@@ -668,7 +668,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
 
         ${resultsTable()}
 
-        <div class="file-list-card">
+        <div class="file-list-card" style="height:auto;">
           <div class="file-list-card-header">
             <h3>🧾 Fields to Extract</h3>
           </div>
