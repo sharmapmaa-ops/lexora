@@ -6578,6 +6578,10 @@
                     activeItemId = parentId;
 
                     let data = CONTENT_DATA[dataKey];
+                    // Data Extraction lives in js/data-extraction.js.
+                    if (!data && dataKey === 'data-extraction' && window.DataExtraction) {
+                        data = { body: function () { return window.DataExtraction.render(); } };
+                    }
                     // "Other Services" (and each free tool inside it) lives in
                     // js/free-services.js and is looked up by id, so adding a
                     // new free tool needs no change in this file.
@@ -7784,6 +7788,7 @@
             function completeLogin(userId, token) {
                 CURRENT_USER_ID = userId;
                 AUTH_TOKEN = token;
+                window.__lexoraAuthToken = token;   // for standalone service modules
                 localStorage.setItem(AUTH_SESSION_KEY, userId);
                 localStorage.setItem(AUTH_TOKEN_KEY, token);
                 document.getElementById('authScreen').style.display = 'none';
@@ -7809,6 +7814,7 @@
                 localStorage.removeItem(AUTH_TOKEN_KEY);
                 CURRENT_USER_ID = null;
                 AUTH_TOKEN = null;
+                window.__lexoraAuthToken = null;
                 profileData = null;
                 document.getElementById('appShell').style.display = 'none';
                 authState = { step: 'login', verifyPurpose: null, userId: null, email: null,
@@ -8001,6 +8007,7 @@
                 const savedToken = localStorage.getItem(AUTH_TOKEN_KEY);
                 if (savedUserId && savedToken) {
                     AUTH_TOKEN = savedToken;
+                    window.__lexoraAuthToken = savedToken;
                     try {
                         // The server derives identity from the token itself
                         // now (not the userId in the URL) - this doubles as

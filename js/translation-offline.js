@@ -2200,6 +2200,11 @@ ${JSON.stringify(texts)}`;
   window.setVisionAuthToken = setVisionAuthToken;
   window.setVisionStopCheck = setStopCheck;
   window.setPipelineEventHandler = setPipelineEventHandler;
+  // Shared LLM access for other service modules (e.g. Data Extraction).
+  // Everything still goes through the server proxy, so the API key never
+  // reaches the browser, and calls are counted/abortable like the rest.
+  window.lexoraProxyJson = v14ProxyJson;
+  window.lexoraPdfToImages = v14PdfToImages;
   window.resetPipelineApiCounters = resetApiCalls;
   window.abortVision = abortVision;
 
