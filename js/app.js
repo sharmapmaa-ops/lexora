@@ -1195,10 +1195,12 @@
                 // is surprised if the real per-file charge (shown next to
                 // each row once scanning finishes) comes out higher.
                 const totalNeeded = billable.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
-                const pricePerFile = getServicePrice(serviceId);
                 const estimateNote = isPerPage ? ' (estimate - final charge depends on each file\'s actual page count)' : '';
+                const rateLabel = serviceId === 'translation'
+                    ? `${myPlan.name} plan: Translation $${(myPlan.pricePerTranslation != null ? myPlan.pricePerTranslation : 0)}/Per Page`
+                    : `${myPlan.name} plan`;
                 const balanceCheckId = addActivity(serviceId,
-                    `System > Checking Wallet Balance > $${totalNeeded.toFixed(2)} required for ${billable.length} file(s)${estimateNote} (${myPlan.name} plan)`, 'Pending');
+                    `System > Checking Wallet Balance > $${totalNeeded.toFixed(2)} required for ${billable.length} file(s) (${rateLabel})${estimateNote}`, 'Processing');
                 refreshServicePage(serviceId);
 
                 if (totalNeeded > 0 && getCurrentBalance() < totalNeeded) {
@@ -1212,6 +1214,19 @@
                     return;
                 }
                 updateActivity(serviceId, balanceCheckId, 'Success');
+
+                // What the user actually selected for this run.
+                if (serviceId === 'translation') {
+                    const _hc = document.getElementById('translationHybridCheck');
+                    const _ocrOn = _hc ? !!_hc.checked : translationHybridMode;
+                    const _ls = document.getElementById('translationLangSelect');
+                    const _lang = (_ls && _ls.value) || 'original';
+                    const _translateOn = _lang !== 'original';
+                    addActivity(serviceId,
+                        `System > ${_ocrOn ? 'With OCR' : 'Without OCR'} + ${_translateOn ? 'With Translation (' + _lang + ')' : 'Without Translation'}`,
+                        'Success');
+                    refreshServicePage(serviceId);
+                }
 
                 processState.isRunning = true;
                 processState.isPaused = false;
@@ -1840,72 +1855,84 @@
                             //  With OCR + <language>:   "<name> With OCR - <language> - Translation"
                             const docName = baseName + ' ' + modeName + ' - ' + (isTranslate ? targetLanguage : 'Without Translation') + ' - Translation';
                             const modeLabel = modeName + (hybridMode ? ' (Vision)' : ' (local extraction)') + (isTranslate ? (' + Translate -> ' + targetLanguage) : ' only');
-                            // ACTIVITY LOG FIX: har distinct step apni ALAG line
-                            // banata hai (updateActivity se overwrite NAHI). Error
-                            // aaye to wo line rehti hai; solve/agla step nayi line.
-                            addActivity('translation', `${fl}File Processing > ${file.name} > Started (${modeLabel})`, 'Started');
+
+                            // ── NEW ACTIVITY LOG FORMAT ───────────────────
+                            // Rows are driven by STRUCTURED events from the
+                            // pipeline (exact per-page API-call and text-block
+                            // counts), not by regex-scraping free-text logs.
+                            // Status meaning: Processing = step started,
+                            // Success = step finished, Info = informational.
+                            const fileProcId = addActivity('translation', `${fl}File Processing > ${file.name}`, 'Processing');
                             refreshServicePage('translation');
 
-                            // SCANNING: file upload already completed above, so
-                            // the scan step is effectively done here. Mark it
-                            // Success right away - the real work (extraction /
-                            // translation) is tracked by its own counter lines
-                            // below. (Previously this stayed "Pending" until ALL
-                            // processing finished, which looked wrong: the log
-                            // showed "Scanning Pending" alongside "Text extracted"
-                            // running - scanning appearing unfinished while later
-                            // steps were clearly already underway.)
-                            let scanId = addActivity('translation', `${fl}File Scanning > 100%`, 'Success');
-                            addActivity('translation', `${fl}File Scanning > Extraction complete`, 'Success');
+                            // Upload already finished above, so scanning is done.
+                            addActivity('translation', `${fl}Scanning > 100%`, 'Success');
                             refreshServicePage('translation');
+
+                            const perPageRate = getServicePrice('translation', 1);
+                            let totalJsonCalls = 0, totalImageCalls = 0;
+                            let totalCharged = 0, pagesCharged = 0;
+                            const pageTxnIds = [];
+
                             let offlineBlob;
                             let lastLoggedMsg = '';
-                            // ACTIVITY LOG: extraction/translation ke liye ALAG lines
-                            // banane ki jagah EK updating counter line rakho.
-                            //   "File(x/y): Text(N) extracted"  — N badhta rehta hai
-                            //   "File(x/y): Text(N) translated"
-                            let extractedCount = 0, translatedCount = 0;
-                            let extractLineId = null, translateLineId = null;
                             try {
-                                const onLog = (m) => {
-                                    // PROGRESS BAR: "Vision OCR: X/Y pages" se real progress
-                                    const mm = m.match(/Vision OCR:\s*(\d+)\/(\d+)\s*pages/);
-                                    if (mm) {
-                                        const done = parseInt(mm[1], 10), total = parseInt(mm[2], 10) || 1;
-                                        const pct = Math.min(80, Math.round((done / total) * 80));
+                                // PER-PAGE / UPDATE-DATA events from the pipeline.
+                                const onEvent = (ev) => {
+                                    if (!ev) return;
+                                    if (ev.type === 'page') {
+                                        const lbl = `Page(${ev.page}/${ev.totalPages})`;
+                                        addActivity('translation',
+                                            `${fl}${lbl} > API Call(s) > JSON=${ev.jsonCalls}, IMAGE=${ev.imageCalls}`, 'Success');
+                                        totalJsonCalls += ev.jsonCalls;
+                                        totalImageCalls += ev.imageCalls;
+
+                                        // PER-PAGE BILLING: charge as soon as this
+                                        // page completes, so if a later page fails
+                                        // the user keeps the finished pages and is
+                                        // only billed for those.
+                                        if (ev.ok) {
+                                            const nowP = new Date();
+                                            const txnIdP = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                                            pageTxnIds.push(txnIdP);
+                                            paymentHistory.push({
+                                                id: txnIdP,
+                                                date: localDateStr(nowP),
+                                                time: nowP.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                                                userId: CURRENT_USER_ID,
+                                                paymentType: 'Service Fee',
+                                                paymentMode: 'Wallet Balance',
+                                                description: `Translation - ${file.name} - page ${ev.page}/${ev.totalPages} (${modeName}${isTranslate ? ' ' + targetLanguage : ' Original'})`,
+                                                credit: 0,
+                                                debit: perPageRate
+                                            });
+                                            totalCharged += perPageRate;
+                                            pagesCharged++;
+                                            addActivity('translation',
+                                                `${fl}${lbl} > Amount Deducted from Wallet=$${perPageRate.toFixed(2)}`, 'Info');
+                                        }
+                                        addActivity('translation', `${fl}${lbl} > Text Data = ${ev.textData}`, 'Info');
+
+                                        const pct = Math.min(80, Math.round((ev.page / (ev.totalPages || 1)) * 80));
                                         file.progress = String(pct);
                                         refreshServicePage('translation');
                                         return;
                                     }
-                                    // EXTRACTION: "P{n}: {count} line-boxes ..." → ek counter line
-                                    const em = m.match(/P\d+:\s*(\d+)\s*line-boxes/);
-                                    if (em) {
-                                        extractedCount += parseInt(em[1], 10) || 0;
-                                        if (!extractLineId) extractLineId = addActivity('translation', `${fl}Text(${extractedCount}) extracted`, 'Info');
-                                        else updateActivity('translation', extractLineId, 'Info', `${fl}Text(${extractedCount}) extracted`);
+                                    if (ev.type === 'update') {
+                                        addActivity('translation',
+                                            `${fl}Update Data > API Call(s) > JSON=${ev.jsonCalls}, IMAGE=${ev.imageCalls}`, 'Success');
+                                        addActivity('translation', `${fl}Update Data > Text Data = ${ev.textData}`, 'Info');
+                                        totalJsonCalls += ev.jsonCalls;
+                                        totalImageCalls += ev.imageCalls;
                                         refreshServicePage('translation');
-                                        return;
                                     }
-                                    // TRANSLATION: "Translation: {N} line(s) translated" → counter line
-                                    const tm = m.match(/Translation:\s*(\d+)\s*line\(s\) translated/);
-                                    if (tm) {
-                                        translatedCount += parseInt(tm[1], 10) || 0;
-                                        if (!translateLineId) translateLineId = addActivity('translation', `${fl}Text(${translatedCount}) translated`, 'Info');
-                                        else updateActivity('translation', translateLineId, 'Info', `${fl}Text(${translatedCount}) translated`);
-                                        refreshServicePage('translation');
-                                        return;
-                                    }
-                                    // OFFLINE: "P{n}: {count} text line(s) extracted (no API)"
-                                    const om = m.match(/P\d+:\s*(\d+)\s*text line\(s\) extracted/);
-                                    if (om) {
-                                        extractedCount += parseInt(om[1], 10) || 0;
-                                        if (!extractLineId) extractLineId = addActivity('translation', `${fl}Text(${extractedCount}) extracted`, 'Info');
-                                        else updateActivity('translation', extractLineId, 'Info', `${fl}Text(${extractedCount}) extracted`);
-                                        refreshServicePage('translation');
-                                        return;
-                                    }
-                                    // baaki important messages (background removed, warnings,
-                                    // page-summary, errors) apni alag line — lekin duplicate skip.
+                                };
+
+                                // Free-text log lines: only warnings/errors and
+                                // other genuinely notable messages still get their
+                                // own row (the per-page numbers come from events).
+                                const onLog = (m) => {
+                                    if (/^(P\d+:|Vision OCR:|Translation:|Translating|\[Final Call\])/.test(m)) return;
                                     if (m === lastLoggedMsg) return;
                                     lastLoggedMsg = m;
                                     addActivity('translation', `${fl}${m}`, 'Info');
@@ -1913,6 +1940,8 @@
                                 };
                                 if (window.setVisionAuthToken) window.setVisionAuthToken(AUTH_TOKEN || '');
                                 if (window.setVisionStopCheck) window.setVisionStopCheck(function () { return processState.stopped; });
+                                if (window.setPipelineEventHandler) window.setPipelineEventHandler(onEvent);
+                                if (window.resetPipelineApiCounters) window.resetPipelineApiCounters();
                                 if (hybridMode) {
                                     offlineBlob = await window.buildHybridDocxBlob(blob, {
                                         withImage: withImageOpt,
@@ -1927,11 +1956,20 @@
                             } catch (offErr) {
                                 // ERROR LINE: rehti hai (hatti nahi), aur File Processing
                                 // ki alag failed line bhi.
-                                updateActivity('translation', scanId, 'Failed', `${fl}File Scanning > FAILED`);
                                 addActivity('translation', `${fl}Error > ${offErr.message}`, 'Failed');
+                                if (pagesCharged > 0) {
+                                    // Per-page billing means the pages that DID
+                                    // complete were already charged - show that
+                                    // total so the partial charge isn't a surprise.
+                                    addActivity('translation',
+                                        `${fl}Total API Call(s) > JSON=${totalJsonCalls}, IMAGE=${totalImageCalls}`, 'Info');
+                                    addActivity('translation',
+                                        `${fl}Total API Call(s) > Amount Deducted from Wallet=$${totalCharged.toFixed(2)} (${pagesCharged} completed page(s))`, 'Info');
+                                }
                                 file.status = 'error';
                                 file.errorLabel = 'Error';
                                 file.errorReason = offErr.message || 'Processing failed';
+                                updateActivity('translation', fileProcId, 'Failed', `${fl}File Processing > ${file.name}`);
                                 addActivity('translation', `${fl}File Processing > ${file.name} > Aborted: ${file.errorReason}`, 'Failed');
                                 refreshServicePage('translation');
                                 persistServiceFiles('translation');
@@ -1951,30 +1989,23 @@
                             translationBlobStore[file.id] = { blob: offlineBlob, name: docName + outExt };
                             file.progress = '95';
 
-                            // billing — flat per-page rate for the plan
-                            const chargeAmount = getServicePrice('translation', file.pageCount);
-                            const now = new Date();
-                            const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
-                            paymentHistory.push({
-                                id: txnId,
-                                date: localDateStr(now),
-                                time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
-                                userId: CURRENT_USER_ID,
-                                paymentType: 'Service Fee',
-                                paymentMode: 'Wallet Balance',
-                                description: `Translation - ${file.name} (${modeName}${isTranslate ? ' ' + targetLanguage : ' Original'})`,
-                                credit: 0,
-                                debit: chargeAmount
-                            });
+                            // Billing already happened PER PAGE as each page
+                            // completed (see onEvent above) - no charge here,
+                            // that would double-bill. These are the summary rows.
+                            addActivity('translation',
+                                `${fl}Total API Call(s) > JSON=${totalJsonCalls}, IMAGE=${totalImageCalls}`, 'Info');
+                            addActivity('translation',
+                                `${fl}Total API Call(s) > Amount Deducted from Wallet=$${totalCharged.toFixed(2)}`, 'Info');
 
                             file.docName = docName;
                             file.outputFormat = 'docx';
                             file.sessionDownload = true;   // browser-only download
                             file.progress = '100';
-                            addActivity('translation', `${fl}System > Output Mode > ${modeLabel}`, 'Success');
-                            addActivity('translation', `${fl}System > Generate Output > ${docName}${outExt} ready for download (this session only)`, 'Success');
-                            addActivity('translation', `${fl}File Processing > ${file.name}`, 'Finished');
-                            notifyProcessCompletion('Translation', file.name, chargeAmount, txnId);
+                            addActivity('translation', `${fl}Generate Output > ${docName}${outExt}`, 'Success');
+                            updateActivity('translation', fileProcId, 'Success', `${fl}File Processing > ${file.name}`);
+                            if (totalCharged > 0) {
+                                notifyProcessCompletion('Translation', file.name, totalCharged, pageTxnIds[pageTxnIds.length - 1] || '');
+                            }
                             file.status = 'completed';
                             activeAgentId = null;
                             // NOTE: previously deleted translationFileBlobs[file.id]
