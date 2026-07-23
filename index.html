@@ -90,6 +90,10 @@
          Test.html ka exact offline logic (translation-offline.js). -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- pdf-lib: client-side PDF writing (split/merge/image-to-PDF). pdf.js
+         above only READS PDFs; this writes them. Both run in the browser, so
+         the Free Services tools need no server round-trip and cost nothing. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
     <script>
       if (window.pdfjsLib) {
         pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -97,6 +101,7 @@
       }
     </script>
     <script src="js/translation-offline.js"></script>
+    <script src="js/free-services.js"></script>
     <script src="js/app.js"></script>
 
 </body>
