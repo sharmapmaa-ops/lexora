@@ -55,6 +55,12 @@
   }
 
   // ── rendering ──────────────────────────────────────────────────────
+  // Deliberately mirrors buildServiceUploadHTML() in app.js class-for-class
+  // (service-upload-layout / service-card / drop-zone / file-list-card /
+  // activity-log-card / file-table), so these services look identical to
+  // Translation without sharing its translation-specific state.
+  // IDs are scoped per service (srX_<id>) so they never collide with the
+  // Translation page's own element IDs.
   function statusClass(s) {
     if (s === 'Success') return 'completed';
     if (s === 'Failed') return 'error';
@@ -65,17 +71,33 @@
   function fileRows(id) {
     const st = state(id);
     if (!st.files.length) {
-      return `<tr><td colspan="5" style="text-align:center;color:rgba(0,0,0,0.45);">No files uploaded yet.</td></tr>`;
+      return '<tr><td colspan="6" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No files uploaded yet.</td></tr>';
     }
-    return st.files.map(function (f, i) {
+    return st.files.map(function (f) {
+      const cls = statusClass(f.status);
+      const pct = f.progress != null ? f.progress : (f.status === 'Success' ? 100 : 0);
+      const progressCell = `
+        <div class="progress-bar-container">
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill ${cls}" style="width:${pct}%;"></div>
+          </div>
+          <span class="progress-label">${pct}%</span>
+        </div>`;
+      const action = f.status === 'Success'
+        ? '<span class="file-action-link disabled">Done</span>'
+        : (f.status === 'Failed'
+            ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">Error</span>`
+            : `<span class="file-action-link disabled">${esc(f.status || 'Pending')}</span>`);
       return `
         <tr>
-          <td><input type="checkbox" ${f.selected !== false ? 'checked' : ''} ${st.running ? 'disabled' : ''}
+          <td><input type="checkbox" class="file-select-checkbox" ${f.selected !== false ? 'checked' : ''}
+                     ${st.running ? 'disabled' : ''}
                      onchange="ServiceRunner.toggleSelect('${id}', ${f.uid}, this.checked)" /></td>
-          <td>${i + 1}</td>
-          <td>${esc(f.file.name)}</td>
-          <td>${(f.file.size / 1024).toFixed(0)} KB</td>
-          <td><span class="activity-result ${statusClass(f.status)}">${esc(f.status || 'Pending')}</span></td>
+          <td class="file-name"><span class="file-name-link">${esc(f.file.name)}</span></td>
+          <td>${f.pageCount || '-'}</td>
+          <td><span class="scan-result-text ${cls}">${esc(f.status || 'Pending')}</span></td>
+          <td>${progressCell}</td>
+          <td>${action}</td>
         </tr>`;
     }).join('');
   }
@@ -83,7 +105,7 @@
   function logRows(id) {
     const st = state(id);
     if (!st.log.length) {
-      return `<tr><td colspan="3" style="text-align:center;color:rgba(0,0,0,0.45);">No activity yet.</td></tr>`;
+      return '<tr><td colspan="3" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No activities recorded.</td></tr>';
     }
     return st.log.map(function (e) {
       return `<tr>
@@ -99,52 +121,97 @@
     if (!svc) return '<div class="content-section"><p>This service is not available.</p></div>';
     const st = state(id);
     const setup = typeof svc.setupHtml === 'function' ? svc.setupHtml(st) : '';
+    const countText = st.files.length ? `${st.files.length} file(s) uploaded` : 'No files uploaded yet';
+    const accept = svc.accept || '';
+    const browseHint = svc.browseHint || (accept.indexOf('image') !== -1 ? 'or click to browse (JPG / PNG)' : 'or click to browse (PDF only)');
 
     return `
-      <div class="content-section">
-        <h3>${svc.icon} ${esc(svc.title)}</h3>
-        ${svc.description ? `<p style="color:#555;margin:-2px 0 12px 0;font-size:0.9rem;">${svc.description}</p>` : ''}
-      </div>
+      <div>
+        <div class="service-upload-layout">
+          <div class="service-card">
+            <h3>📤 Upload File(s)</h3>
+            <div class="card-body">
+              <div class="drop-zone" onclick="${st.running ? 'void(0)' : `document.getElementById('srIn_${id}').click()`}"
+                   style="${st.running ? 'opacity:0.5;pointer-events:none;' : ''}">
+                <div class="drop-icon">📤</div>
+                <div class="drop-text">Drag &amp; drop files here</div>
+                <div class="drop-sub">${esc(browseHint)}</div>
+                <div class="file-count-text">${countText}</div>
+              </div>
+              <input type="file" id="srIn_${id}" ${svc.multiple === false ? '' : 'multiple'} style="display:none;"
+                     accept="${accept}" onchange="ServiceRunner.onPick('${id}', event)" />
+            </div>
+          </div>
 
-      ${setup ? `<div class="content-section"><h3>⚙️ Setup</h3>${setup}</div>` : ''}
-
-      <div class="content-section">
-        <h3>📤 Upload Files</h3>
-        <input type="file" id="srInput_${id}" ${svc.multiple === false ? '' : 'multiple'}
-               accept="${svc.accept || ''}" ${st.running ? 'disabled' : ''}
-               onchange="ServiceRunner.onPick('${id}', event)" />
-        <div style="margin-top:14px;overflow:auto;">
-          <table class="admin-json-table" style="width:100%;">
-            <thead><tr><th style="width:36px;"></th><th style="width:44px;">#</th><th>File</th><th style="width:90px;">Size</th><th style="width:110px;">Status</th></tr></thead>
-            <tbody>${fileRows(id)}</tbody>
-          </table>
+          <div class="service-card">
+            <h3>⚙️ Setup</h3>
+            <div class="card-body">
+              ${setup || '<div class="setup-group"><label>&nbsp;</label><div style="font-size:0.84rem;color:rgba(0,0,0,0.5);">No options for this tool - just upload and press Start.</div></div>'}
+              <div class="setup-group" style="margin-top:8px;">
+                <div class="process-controls">
+                  <button class="process-btn start-btn" ${st.running || !st.files.length ? 'disabled' : ''}
+                          onclick="ServiceRunner.start('${id}')">▶️ Start</button>
+                  <button class="process-btn clear-btn" ${st.running ? 'disabled' : ''}
+                          onclick="ServiceRunner.clear('${id}')">🗑️ Clear Files</button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;">
-          <button class="filter-btn" ${st.running ? 'disabled' : ''} onclick="ServiceRunner.start('${id}')">▶️ Start</button>
-          <button class="filter-btn" ${st.running ? 'disabled' : ''} onclick="ServiceRunner.clear('${id}')">🗑️ Clear</button>
-        </div>
-      </div>
 
-      <div class="content-section">
-        <h3>📋 Activity Log</h3>
-        <div style="max-height:320px;overflow:auto;">
-          <table class="admin-json-table" style="width:100%;">
-            <thead><tr><th style="width:140px;">Date &amp; Time</th><th>Activity</th><th style="width:110px;">Status</th></tr></thead>
-            <tbody id="srLog_${id}">${logRows(id)}</tbody>
-          </table>
+        <div class="file-list-card">
+          <div class="file-list-card-header">
+            <h3>📁 Uploaded Files</h3>
+            <span class="file-list-charge-estimate">${svc.freeNote === false ? '' : '🎁 Free - runs in your browser'}</span>
+          </div>
+          <div class="card-body">
+            <div class="file-table-wrapper">
+              <table class="file-table file-table-files">
+                <colgroup><col style="width:5%;"><col style="width:33%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;"></colgroup>
+                <thead><tr>
+                  <th><input type="checkbox" ${(st.files.length > 0 && st.files.every(function (f) { return f.selected !== false; })) ? 'checked' : ''}
+                             ${st.running ? 'disabled' : ''} onchange="ServiceRunner.toggleAll('${id}', this.checked)" title="Select all" /></th>
+                  <th>File Name</th><th>Pages</th><th>Scan Result</th><th>Progress</th><th>Action</th>
+                </tr></thead>
+              </table>
+              <div class="file-table-scroll">
+                <table class="file-table file-table-files">
+                  <colgroup><col style="width:5%;"><col style="width:33%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;"></colgroup>
+                  <tbody>${fileRows(id)}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
 
-      <p style="font-size:0.78rem;color:rgba(0,0,0,0.45);">
-        Runs entirely in your browser - your files are never uploaded${svc.freeNote === false ? '' : ', and this service is free to use'}.
-      </p>`;
+        <div class="activity-log-section">
+          <div class="activity-log-card">
+            <div class="log-header">
+              <h3>📋 Activity Log</h3>
+            </div>
+            <div class="card-body">
+              <div class="file-table-wrapper">
+                <table class="file-table file-table-activity">
+                  <colgroup><col style="width:20%;"><col style="width:62%;"><col style="width:18%;"></colgroup>
+                  <thead><tr><th>Date &amp; Time</th><th>Activity</th><th>Status</th></tr></thead>
+                </table>
+                <div class="file-table-scroll">
+                  <table class="file-table file-table-activity">
+                    <colgroup><col style="width:20%;"><col style="width:62%;"><col style="width:18%;"></colgroup>
+                    <tbody>${logRows(id)}</tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>`;
   }
 
   function refresh(id) {
-    // Re-render in place if this service's page is currently showing.
     const host = document.getElementById('contentBody');
     if (!host) return;
-    if (!document.getElementById('srInput_' + id)) return;
+    if (!document.getElementById('srIn_' + id)) return;
     host.innerHTML = render(id);
   }
 
@@ -155,6 +222,11 @@
     picked.forEach(function (f) {
       st.files.push({ uid: st.nextId++, file: f, selected: true, status: 'Pending' });
     });
+    refresh(id);
+  }
+
+  function toggleAll(id, checked) {
+    state(id).files.forEach(function (f) { f.selected = !!checked; });
     refresh(id);
   }
 
@@ -198,13 +270,20 @@
         const entry = selected[i];
         const label = `File(${i + 1}/${selected.length})`;
         entry.status = 'Processing';
-        ctx.log(`${label} > Processing > ${entry.file.name}`, 'Info');
+        entry.progress = 5;
+        ctx.log(`${label} > File Processing > ${entry.file.name}`, 'Info');
+        refresh(id);
         try {
+          // Services can report progress for the file they're working on.
+          ctx.progress = function (pct) { entry.progress = Math.max(0, Math.min(100, Math.round(pct))); refresh(id); };
+          ctx.pages = function (n) { entry.pageCount = n; refresh(id); };
           await svc.process([entry.file], ctx, label);
           entry.status = 'Success';
+          entry.progress = 100;
         } catch (e) {
           entry.status = 'Failed';
-          ctx.log(`${label} > Error > ${e.message || 'Processing failed'}`, 'Failed');
+          entry.error = e.message || 'Processing failed';
+          ctx.log(`${label} > Error > ${entry.error}`, 'Failed');
         }
         refresh(id);
       }
@@ -233,11 +312,19 @@
       shouldStop: function () { return st.stopped; }
     };
     try {
+      ctx.progress = function (pct) {
+        const v = Math.max(0, Math.min(100, Math.round(pct)));
+        st.files.forEach(function (f) { if (f.selected !== false) f.progress = v; });
+        refresh(id);
+      };
+      ctx.pages = function () {};
+      st.files.forEach(function (f) { if (f.selected !== false) { f.status = 'Processing'; f.progress = 5; } });
+      refresh(id);
       await svc.process(selected, ctx, 'Batch');
-      st.files.forEach(function (f) { if (f.selected !== false) f.status = 'Success'; });
+      st.files.forEach(function (f) { if (f.selected !== false) { f.status = 'Success'; f.progress = 100; } });
     } catch (e) {
       ctx.log(`Error > ${e.message || 'Processing failed'}`, 'Failed');
-      st.files.forEach(function (f) { if (f.selected !== false) f.status = 'Failed'; });
+      st.files.forEach(function (f) { if (f.selected !== false) { f.status = 'Failed'; f.error = e.message; } });
     } finally {
       st.running = false;
       refresh(id);
@@ -256,6 +343,7 @@
     state: state,
     onPick: onPick,
     toggleSelect: toggleSelect,
+    toggleAll: toggleAll,
     clear: clear,
     start: start,
     startBatch: startBatch,

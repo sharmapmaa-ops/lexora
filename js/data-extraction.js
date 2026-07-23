@@ -126,12 +126,13 @@
   }
 
   // ── PDF reading ────────────────────────────────────────────────────
-  async function readPdfTextLocal(file) {
+  async function readPdfTextLocal(file, onPage) {
     const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
     const pages = [];
     for (let p = 1; p <= pdf.numPages; p++) {
       const tc = await (await pdf.getPage(p)).getTextContent();
       pages.push(tc.items.map(function (it) { return it.str; }).join(' ').replace(/\s+/g, ' ').trim());
+      if (onPage) onPage(p, pdf.numPages);
     }
     return { pages: pages, apiCalls: 0 };
   }
@@ -283,9 +284,26 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     const selected = STATE.files.filter(function (f) { return f.selected !== false; });
     if (!selected.length) return setStatus('Select at least one file to process.', 'error');
 
+    const billing = window.LexoraBilling;
+    if (!billing) return setStatus('Billing is unavailable right now - please reload the page.', 'error');
+
     const ocrEl = document.getElementById('deOcr');
     const useOcr = ocrEl ? !!ocrEl.checked : false;
     const model = 'google/gemini-2.5-flash';
+
+    // ── wallet check (same shape as Translation) ──────────────────
+    // Page counts aren't known until each PDF is opened, so this is a
+    // minimum: at least one page per selected file. Real billing happens
+    // per page below.
+    const perPageRate = billing.perPageRate();
+    const minNeeded = perPageRate * selected.length;
+    const balance = billing.balance();
+    log(`System > Checking Wallet Balance > $${minNeeded.toFixed(2)} required for ${selected.length} file(s) (${billing.planName()} plan: Data Extraction $${perPageRate}/Per Page)`, 'Info');
+    if (minNeeded > 0 && balance < minNeeded) {
+      log(`System > Process Aborted > Insufficient balance - you have $${balance.toFixed(2)}, but $${minNeeded.toFixed(2)} is required`, 'Failed');
+      rerender();
+      return setStatus(`Insufficient balance. You have $${balance.toFixed(2)} but at least $${minNeeded.toFixed(2)} is needed.`, 'error');
+    }
 
     STATE.running = true;
     STATE.rows = [];
@@ -298,31 +316,53 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
       const entry = selected[i];
       const label = `File(${i + 1}/${selected.length})`;
       entry.status = 'Processing';
+      entry.progress = 5;
       log(`${label} > File Processing > ${entry.file.name}`, 'Info');
       rerender();
+
+      let fileCharged = 0, fileJson = 0, fileImage = 0;
       try {
+        // Charging happens per page AS each page is read, so if a later
+        // page fails the user keeps what completed and only pays for that.
+        const chargePage = function (pageNo, total, jsonCalls) {
+          fileJson += jsonCalls;
+          billing.charge(
+            `Data Extraction - ${entry.file.name} - page ${pageNo}/${total}`,
+            perPageRate
+          );
+          fileCharged += perPageRate;
+          log(`${label} > Page(${pageNo}/${total}) > API Call(s) > JSON=${jsonCalls}, IMAGE=0`, 'Success');
+          log(`${label} > Page(${pageNo}/${total}) > Amount Deducted from Wallet=$${perPageRate.toFixed(2)}`, 'Info');
+          entry.pageCount = total;
+          entry.progress = Math.round((pageNo / total) * 80);
+          rerender();
+        };
+
         const read = useOcr
-          ? await readPdfTextOcr(entry.file, model, function (p, t) {
-              log(`${label} > Page(${p}/${t}) > API Call(s) > JSON=1, IMAGE=0`, 'Success');
-              rerender();
-            })
-          : await readPdfTextLocal(entry.file);
+          ? await readPdfTextOcr(entry.file, model, function (p, t) { chargePage(p, t, 1); })
+          : await readPdfTextLocal(entry.file, function (p, t) { chargePage(p, t, 0); });
 
         const joined = read.pages.join('\n\n').trim();
         log(`${label} > Text Data = ${joined.length} character(s) from ${read.pages.length} page(s)`, 'Info');
         if (!joined) throw new Error('No readable text found. If this is a scanned PDF, enable With OCR.');
 
         const values = await extractFields(joined, fields, model);
+        fileJson += 1;
         const filled = Object.keys(values).filter(function (k) { return values[k]; }).length;
         log(`${label} > Extract Data > API Call(s) > JSON=1, IMAGE=0`, 'Success');
-        log(`${label} > Fields found = ${filled}/${fields.length}`, 'Info');
+        log(`${label} > Extract Data > Fields found = ${filled}/${fields.length}`, 'Info');
 
         STATE.rows.push({ file: entry.file.name, values: values });
         entry.status = 'Success';
+        entry.progress = 100;
       } catch (e) {
         entry.status = 'Failed';
-        log(`${label} > Error > ${e.message || 'Extraction failed'}`, 'Failed');
+        entry.error = e.message || 'Extraction failed';
+        log(`${label} > Error > ${entry.error}`, 'Failed');
       }
+
+      log(`${label} > Page(All) > API Call(s) > JSON=${fileJson}, IMAGE=${fileImage}`, 'Info');
+      log(`${label} > Page(All) > Amount Deducted from Wallet=$${fileCharged.toFixed(2)}`, 'Info');
       rerender();
     }
 
@@ -351,6 +391,23 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
   }
 
   // ── rendering ──────────────────────────────────────────────────────
+  // Mirrors Translation's estimate line: only shows when something is
+  // selected, and gives both the plan rate and the total for the selection.
+  function chargeEstimateHtml() {
+    const b = window.LexoraBilling;
+    if (!b) return '';
+    const sel = STATE.files.filter(function (f) { return f.selected !== false; });
+    if (!sel.length) return '';
+    const rate = b.perPageRate();
+    const total = sel.reduce(function (sum, f) { return sum + rate * Math.max(1, f.pageCount || 1); }, 0);
+    return `💰 Rate: $${rate.toFixed(2)}/page · Est. total: $${total.toFixed(2)} for ${sel.length} selected file(s)`;
+  }
+
+  function toggleAll(checked) {
+    STATE.files.forEach(function (f) { f.selected = !!checked; });
+    rerender();
+  }
+
   function statusClass(s) {
     if (s === 'Success') return 'completed';
     if (s === 'Failed') return 'error';
@@ -392,40 +449,59 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
 
   function fileRows() {
     if (!STATE.files.length) {
-      return `<tr><td colspan="5" style="text-align:center;color:rgba(0,0,0,0.45);">No files uploaded yet.</td></tr>`;
+      return '<tr><td colspan="6" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No files uploaded yet.</td></tr>';
     }
-    return STATE.files.map(function (f, i) {
+    return STATE.files.map(function (f) {
+      const cls = statusClass(f.status);
+      const pct = f.progress != null ? f.progress : (f.status === 'Success' ? 100 : 0);
+      const action = f.status === 'Success'
+        ? '<span class="file-action-link disabled">Done</span>'
+        : (f.status === 'Failed'
+            ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">Error</span>`
+            : `<span class="file-action-link disabled">${esc(f.status || 'Pending')}</span>`);
       return `<tr>
-        <td><input type="checkbox" ${f.selected !== false ? 'checked' : ''} ${STATE.running ? 'disabled' : ''}
-                   onchange="DataExtraction.toggleSelect(${f.uid}, this.checked)" /></td>
-        <td>${i + 1}</td>
-        <td>${esc(f.file.name)}</td>
-        <td>${(f.file.size / 1024).toFixed(0)} KB</td>
-        <td><span class="activity-result ${statusClass(f.status)}">${esc(f.status)}</span></td>
+        <td><input type="checkbox" class="file-select-checkbox" ${f.selected !== false ? 'checked' : ''}
+                   ${STATE.running ? 'disabled' : ''} onchange="DataExtraction.toggleSelect(${f.uid}, this.checked)" /></td>
+        <td class="file-name"><span class="file-name-link">${esc(f.file.name)}</span></td>
+        <td>${f.pageCount || '-'}</td>
+        <td><span class="scan-result-text ${cls}">${esc(f.status || 'Pending')}</span></td>
+        <td>
+          <div class="progress-bar-container">
+            <div class="progress-bar-track"><div class="progress-bar-fill ${cls}" style="width:${pct}%;"></div></div>
+            <span class="progress-label">${pct}%</span>
+          </div>
+        </td>
+        <td>${action}</td>
       </tr>`;
     }).join('');
   }
 
   function resultsTable() {
     if (!STATE.rows.length) return '';
-    const { heads, body } = asMatrix();
+    const m = asMatrix();
     return `
-      <div class="content-section">
-        <h3>📊 Extracted Data</h3>
-        <div style="overflow:auto;max-height:360px;">
-          <table class="admin-json-table" style="width:100%;">
-            <thead><tr>${heads.map(function (h) { return `<th>${esc(h)}</th>`; }).join('')}</tr></thead>
-            <tbody>${body.map(function (row) {
-              return `<tr>${row.map(function (c) { return `<td>${esc(c) || '<span style="color:rgba(0,0,0,0.3);">—</span>'}</td>`; }).join('')}</tr>`;
-            }).join('')}</tbody>
-          </table>
+      <div class="file-list-card">
+        <div class="file-list-card-header"><h3>📊 Extracted Data</h3></div>
+        <div class="card-body">
+          <div class="file-table-wrapper">
+            <div class="file-table-scroll" style="max-height:320px;">
+              <table class="file-table">
+                <thead><tr>${m.heads.map(function (h) { return `<th>${esc(h)}</th>`; }).join('')}</tr></thead>
+                <tbody>${m.body.map(function (row) {
+                  return `<tr>${row.map(function (c) {
+                    return `<td>${esc(c) || '<span style="color:rgba(0,0,0,0.3);">—</span>'}</td>`;
+                  }).join('')}</tr>`;
+                }).join('')}</tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </div>`;
   }
 
   function logRows() {
     if (!STATE.log.length) {
-      return `<tr><td colspan="3" style="text-align:center;color:rgba(0,0,0,0.45);">No activity yet.</td></tr>`;
+      return '<tr><td colspan="3" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No activities recorded.</td></tr>';
     }
     return STATE.log.map(function (e) {
       return `<tr><td>${esc(e.time)}</td><td>${esc(e.activity)}</td>
@@ -433,66 +509,121 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     }).join('');
   }
 
+  // Same card/class structure as buildServiceUploadHTML() in app.js so this
+  // page looks identical to Translation, plus one extra card above the
+  // Activity Log for the field definitions.
   function render() {
+    const countText = STATE.files.length ? `${STATE.files.length} file(s) uploaded` : 'No files uploaded yet';
     return `
-      <div class="content-section">
-        <h3>🧾 Data Extraction</h3>
-        <p style="color:#555;margin:-2px 0 0 0;font-size:0.9rem;">
-          Define the fields you need, upload PDFs, and get one table with those fields pulled out of every document.
-        </p>
-      </div>
-
-      <div class="content-section">
-        <h3>⚙️ Fields to Extract</h3>
-        ${fieldsTable()}
-      </div>
-
-      <div class="content-section">
-        <h3>⚙️ Setup</h3>
-        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;">
-          <div class="setup-group" style="flex:1;min-width:200px;">
-            <label>Output Format</label>
-            <select id="deFormat" style="width:100%;">
-              <option value="json">JSON (.json)</option>
-              <option value="excel">Excel (.xlsx)</option>
-              <option value="csv">CSV (.csv)</option>
-              <option value="word">Word (.doc)</option>
-            </select>
+      <div>
+        <div class="service-upload-layout">
+          <div class="service-card">
+            <h3>📤 Upload File(s)</h3>
+            <div class="card-body">
+              <div class="drop-zone" onclick="${STATE.running ? 'void(0)' : "document.getElementById('deInput').click()"}"
+                   style="${STATE.running ? 'opacity:0.5;pointer-events:none;' : ''}">
+                <div class="drop-icon">📤</div>
+                <div class="drop-text">Drag &amp; drop files here</div>
+                <div class="drop-sub">or click to browse (PDF only)</div>
+                <div class="file-count-text">${countText}</div>
+              </div>
+              <input type="file" id="deInput" multiple style="display:none;" accept=".pdf"
+                     onchange="DataExtraction.onPick(event)" />
+            </div>
           </div>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;padding-bottom:8px;"
-                 title="Checked: each page is read by the vision model - works on scanned/photographed PDFs. Unchecked: faster local text read, for text-based PDFs only.">
-            <input type="checkbox" id="deOcr" style="width:auto;margin:0;" ${STATE.running ? 'disabled' : ''} />
-            <span>With OCR</span>
-          </label>
-        </div>
-      </div>
 
-      <div class="content-section">
-        <h3>📤 Upload Files</h3>
-        <input type="file" id="deInput" accept="application/pdf" multiple ${STATE.running ? 'disabled' : ''}
-               onchange="DataExtraction.onPick(event)" />
-        <div style="margin-top:14px;overflow:auto;">
-          <table class="admin-json-table" style="width:100%;">
-            <thead><tr><th style="width:36px;"></th><th style="width:44px;">#</th><th>File</th><th style="width:90px;">Size</th><th style="width:110px;">Status</th></tr></thead>
-            <tbody>${fileRows()}</tbody>
-          </table>
+          <div class="service-card">
+            <h3>⚙️ Setup</h3>
+            <div class="card-body">
+              <div class="setup-group">
+                <div style="display:flex;gap:12px;align-items:flex-start;">
+                  <div style="flex:1;">
+                    <label>Output Format</label>
+                    <select id="deFormat" style="width:100%;" ${STATE.running ? 'disabled' : ''}>
+                      <option value="json">JSON (.json)</option>
+                      <option value="excel">Excel (.xlsx)</option>
+                      <option value="csv">CSV (.csv)</option>
+                      <option value="word">Word (.doc)</option>
+                    </select>
+                  </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:20px;margin-top:10px;">
+                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
+                         title="Checked (With OCR): each page is read by the vision model - works on scanned/photographed PDFs. Unchecked: faster local text read, for text-based PDFs only.">
+                    <input type="checkbox" id="deOcr" style="width:auto;margin:0;" ${STATE.running ? 'disabled' : ''} />
+                    <span>With OCR</span>
+                  </label>
+                </div>
+              </div>
+              <div class="setup-group" style="margin-top:8px;">
+                <div class="process-controls">
+                  <button class="process-btn start-btn" ${STATE.running || !STATE.files.length ? 'disabled' : ''}
+                          onclick="DataExtraction.start()">▶️ Start</button>
+                  <button class="process-btn clear-btn" ${STATE.running ? 'disabled' : ''}
+                          onclick="DataExtraction.clearAll()">🗑️ Clear Files</button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;">
-          <button class="filter-btn" ${STATE.running ? 'disabled' : ''} onclick="DataExtraction.start()">▶️ Start</button>
-          <button class="filter-btn" ${STATE.running ? 'disabled' : ''} onclick="DataExtraction.exportOutput()">⬇️ Download Output</button>
-          <button class="filter-btn" ${STATE.running ? 'disabled' : ''} onclick="DataExtraction.clearAll()">🗑️ Clear</button>
+
+        <div class="file-list-card">
+          <div class="file-list-card-header">
+            <h3>📁 Uploaded Files</h3>
+            <span class="file-list-charge-estimate" id="deChargeEstimate">${chargeEstimateHtml()}</span>
+          </div>
+          <div class="card-body">
+            <div class="file-table-wrapper">
+              <table class="file-table file-table-files">
+                <colgroup><col style="width:5%;"><col style="width:33%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;"></colgroup>
+                <thead><tr>
+                  <th><input type="checkbox" ${(STATE.files.length > 0 && STATE.files.every(function (f) { return f.selected !== false; })) ? 'checked' : ''}
+                             ${STATE.running ? 'disabled' : ''} onchange="DataExtraction.toggleAll(this.checked)" title="Select all" /></th>
+                  <th>File Name</th><th>Pages</th><th>Scan Result</th><th>Progress</th><th>Action</th>
+                </tr></thead>
+              </table>
+              <div class="file-table-scroll">
+                <table class="file-table file-table-files">
+                  <colgroup><col style="width:5%;"><col style="width:33%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;"></colgroup>
+                  <tbody>${fileRows()}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
 
-      ${resultsTable()}
+        ${resultsTable()}
 
-      <div class="content-section">
-        <h3>📋 Activity Log</h3>
-        <div style="max-height:320px;overflow:auto;">
-          <table class="admin-json-table" style="width:100%;">
-            <thead><tr><th style="width:140px;">Date &amp; Time</th><th>Activity</th><th style="width:110px;">Status</th></tr></thead>
-            <tbody>${logRows()}</tbody>
-          </table>
+        <div class="file-list-card">
+          <div class="file-list-card-header">
+            <h3>🧾 Fields to Extract</h3>
+            <span class="file-list-charge-estimate">
+              <button class="process-btn clear-btn" style="padding:4px 10px;" onclick="DataExtraction.exportOutput()">⬇️ Download Output</button>
+            </span>
+          </div>
+          <div class="card-body">
+            ${fieldsTable()}
+          </div>
+        </div>
+
+        <div class="activity-log-section">
+          <div class="activity-log-card">
+            <div class="log-header"><h3>📋 Activity Log</h3></div>
+            <div class="card-body">
+              <div class="file-table-wrapper">
+                <table class="file-table file-table-activity">
+                  <colgroup><col style="width:20%;"><col style="width:62%;"><col style="width:18%;"></colgroup>
+                  <thead><tr><th>Date &amp; Time</th><th>Activity</th><th>Status</th></tr></thead>
+                </table>
+                <div class="file-table-scroll">
+                  <table class="file-table file-table-activity">
+                    <colgroup><col style="width:20%;"><col style="width:62%;"><col style="width:18%;"></colgroup>
+                    <tbody>${logRows()}</tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>`;
   }
@@ -511,6 +642,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     resetFields: resetFields,
     onPick: onPick,
     toggleSelect: toggleSelect,
+    toggleAll: toggleAll,
     clearAll: clearAll,
     start: start,
     exportOutput: exportOutput

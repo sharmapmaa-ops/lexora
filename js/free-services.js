@@ -84,6 +84,7 @@
       const src = await PDFLib.PDFDocument.load(await f.arrayBuffer(), { ignoreEncryption: true });
       const total = src.getPageCount();
       const stem = baseName(f.name);
+      if (ctx.pages) ctx.pages(total);
       ctx.log(`${label} > Pages found = ${total}`, 'Info');
 
       if (!spec) {
@@ -94,6 +95,7 @@
           const [pg] = await out.copyPages(src, [i]);
           out.addPage(pg);
           zip.file(`${stem}_page_${i + 1}.pdf`, await out.save());
+          if (ctx.progress) ctx.progress(((i + 1) / total) * 100);
         }
         ctx.download(await zip.generateAsync({ type: 'blob' }), `${stem}_split_pages.zip`);
         ctx.log(`${label} > Generate Output > ${stem}_split_pages.zip (${total} file(s))`, 'Success');
@@ -124,6 +126,7 @@
         const src = await PDFLib.PDFDocument.load(await files[i].arrayBuffer(), { ignoreEncryption: true });
         (await out.copyPages(src, src.getPageIndices())).forEach(function (p) { out.addPage(p); pages++; });
         ctx.log(`Merged ${i + 1}/${files.length} > ${files[i].name}`, 'Info');
+        if (ctx.progress) ctx.progress(((i + 1) / files.length) * 100);
       }
       ctx.download(new Blob([await out.save()], { type: 'application/pdf' }), 'merged.pdf');
       ctx.log(`Generate Output > merged.pdf (${files.length} file(s), ${pages} page(s))`, 'Success');
@@ -148,6 +151,7 @@
         const page = out.addPage([img.width, img.height]);
         page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
         ctx.log(`Added ${i + 1}/${files.length} > ${f.name}`, 'Info');
+        if (ctx.progress) ctx.progress(((i + 1) / files.length) * 100);
       }
       ctx.download(new Blob([await out.save()], { type: 'application/pdf' }), 'images.pdf');
       ctx.log(`Generate Output > images.pdf (${files.length} page(s))`, 'Success');
@@ -178,6 +182,7 @@
       const f = files[0];
       const stem = baseName(f.name);
       const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise;
+      if (ctx.pages) ctx.pages(pdf.numPages);
       const zip = new JSZip();
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
@@ -188,6 +193,7 @@
         const blob = await new Promise(function (res) { canvas.toBlob(res, 'image/png'); });
         zip.file(`${stem}_page_${i}.png`, blob);
         ctx.log(`${label} > Page(${i}/${pdf.numPages}) > rendered`, 'Info');
+        if (ctx.progress) ctx.progress((i / pdf.numPages) * 100);
       }
       ctx.download(await zip.generateAsync({ type: 'blob' }), `${stem}_images.zip`);
       ctx.log(`${label} > Generate Output > ${stem}_images.zip (${pdf.numPages} image(s))`, 'Success');

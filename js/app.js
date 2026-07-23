@@ -7134,6 +7134,37 @@
             }
 
             function persistPaymentHistory() { return saveJSON('payment-history', paymentHistory); }
+
+            // ── Billing bridge for standalone service modules ──────────
+            // Data Extraction (js/data-extraction.js) lives outside this
+            // IIFE, so it can't reach getServicePrice/paymentHistory
+            // directly. Rather than letting it invent its own pricing (which
+            // would silently drift from the plans the admin edits), it goes
+            // through this one small surface - same rate, same wallet, same
+            // transaction record as Translation.
+            window.LexoraBilling = {
+                perPageRate: function () { return getServicePrice('translation', 1); },
+                planName: function () { return getMyPlan().name; },
+                balance: function () { return getCurrentBalance(); },
+                charge: function (description, amount) {
+                    const now = new Date();
+                    const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                    paymentHistory.push({
+                        id: txnId,
+                        date: localDateStr(now),
+                        time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                        userId: CURRENT_USER_ID,
+                        paymentType: 'Service Fee',
+                        paymentMode: 'Wallet Balance',
+                        description: description,
+                        credit: 0,
+                        debit: amount
+                    });
+                    persistPaymentHistory();
+                    return txnId;
+                }
+            };
+
             function persistPlanHistory() { return saveJSON('plan-history', planHistory); }
             function persistPaymentMethods() { return saveJSON('payment-methods', paymentMethods); }
             function persistContactSubmissions() { return saveJSON('contact-submissions', contactSubmissions); }
