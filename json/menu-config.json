@@ -22,6 +22,10 @@
                     "label": "Data Extraction"
                 },
                 {
+                    "id": "bai2",
+                    "label": "BAI2"
+                },
+                {
                     "id": "other-services",
                     "label": "Other Services"
                 }
