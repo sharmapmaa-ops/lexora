@@ -66,6 +66,7 @@
     title: 'PDF Split',
     icon: '✂️',
     accept: 'application/pdf',
+    backTo: "FreeServices.open('other-services')",
     description: 'Pull selected pages out of a PDF into a new file.',
     setupHtml: function () {
       return `
@@ -115,6 +116,7 @@
     title: 'PDF Merge',
     icon: '🔗',
     accept: 'application/pdf',
+    backTo: "FreeServices.open('other-services')",
     batch: true,      // merge needs ALL selected files together, not one-by-one
     description: 'Combine several PDFs into one, in the order they appear in the list.',
     process: async function (files, ctx) {
@@ -138,6 +140,7 @@
     title: 'Image to PDF',
     icon: '🖼️',
     accept: 'image/jpeg,image/png',
+    backTo: "FreeServices.open('other-services')",
     batch: true,      // all selected images become one PDF
     description: 'Turn JPG/PNG images into a single PDF - one image per page.',
     process: async function (files, ctx) {
@@ -163,6 +166,7 @@
     title: 'PDF to Image',
     icon: '📸',
     accept: 'application/pdf',
+    backTo: "FreeServices.open('other-services')",
     description: 'Export each PDF page as a PNG image.',
     setupHtml: function () {
       return `
@@ -204,122 +208,136 @@
   // CALCULATORS (single card, result renders in the same card)
   // ══════════════════════════════════════════════════════════════════
 
-  function calcCard(title, icon, description, fieldsHtml, onclick, btnLabel, resultId, statusId) {
+  // Every tool page gets a way back to the Other Services list.
+  function backBar() {
+    return `<div style="margin-bottom:14px;">
+      <button class="process-btn clear-btn" onclick="FreeServices.open('other-services')">← Back to Other Services</button>
+    </div>`;
+  }
+
+  // ── calculators ────────────────────────────────────────────────────
+  // Slider + typed-value pairs that recalculate live (no Calculate button),
+  // matching the reference design. Both controls write the same underlying
+  // value, so dragging updates the box and typing moves the slider.
+  const INR = function (v) {
+    return '\u20b9' + Math.round(v).toLocaleString('en-IN');
+  };
+
+  function sliderRow(label, id, value, min, max, step, suffix, prefix) {
     return `
-      <div class="content-section">
-        <h3>${icon} ${esc(title)}</h3>
-        <p style="color:#555;margin:-2px 0 14px 0;font-size:0.9rem;">${description}</p>
-        ${fieldsHtml}
-        <button class="filter-btn" style="margin-top:12px;" onclick="${onclick}">${btnLabel}</button>
-        <div id="${statusId}" style="margin-top:10px;font-size:0.86rem;color:#b3261e;min-height:1.1em;"></div>
-        <div id="${resultId}" style="margin-top:12px;"></div>
+      <div style="margin-bottom:22px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+          <label style="font-weight:500;color:#3d4a5c;">${esc(label)}</label>
+          <div style="display:flex;align-items:center;gap:6px;background:#e8f6f0;border-radius:6px;padding:6px 10px;min-width:130px;justify-content:flex-end;">
+            ${prefix ? `<span style="color:#12a37a;font-weight:600;">${prefix}</span>` : ''}
+            <input type="number" id="${id}" value="${value}" min="${min}" max="${max}" step="${step}"
+                   oninput="FreeServices.syncFromBox('${id}')"
+                   style="border:none;background:transparent;text-align:right;width:92px;padding:0;font-weight:700;color:#12a37a;" />
+            ${suffix ? `<span style="color:#12a37a;font-weight:600;">${suffix}</span>` : ''}
+          </div>
+        </div>
+        <input type="range" id="${id}_r" value="${value}" min="${min}" max="${max}" step="${step}"
+               oninput="FreeServices.syncFromSlider('${id}')"
+               style="width:100%;margin-top:12px;accent-color:#12a37a;" />
       </div>`;
   }
 
+  // Keep the number box and its slider in step, then recalculate.
+  function syncFromBox(id) {
+    const box = document.getElementById(id), sl = document.getElementById(id + '_r');
+    if (box && sl) sl.value = box.value;
+    recalc(id);
+  }
+  function syncFromSlider(id) {
+    const box = document.getElementById(id), sl = document.getElementById(id + '_r');
+    if (box && sl) box.value = sl.value;
+    recalc(id);
+  }
+  function recalc(id) {
+    if (id.indexOf('fsEmi') === 0) runEmi();
+    else runGratuity();
+  }
+
+  function resultRow(label, value, strong) {
+    return `<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid rgba(0,0,0,0.06);">
+      <span style="color:#6b7280;">${esc(label)}</span>
+      <span style="${strong ? 'font-weight:700;' : ''}color:#3d4a5c;">${value}</span>
+    </div>`;
+  }
+
   function renderEmi() {
-    return calcCard('EMI Calculator', '🏦',
-      'Work out the monthly instalment on a loan, plus the total interest you would pay.', `
-      <div style="display:flex;gap:12px;flex-wrap:wrap;">
-        <div class="setup-group" style="flex:1;min-width:170px;">
-          <label>Loan amount</label>
-          <input type="number" id="fsEmiAmount" min="0" step="any" placeholder="e.g. 500000" />
+    setTimeout(runEmi, 0);   // first paint of the result, after insertion
+    return `
+      <div class="service-card">
+        <h3>🏦 EMI Calculator</h3>
+        <div class="card-body">
+          ${sliderRow('Loan amount', 'fsEmiAmount', 1000000, 10000, 20000000, 10000, '', '\u20b9')}
+          ${sliderRow('Rate of interest (p.a)', 'fsEmiRate', 6.5, 1, 30, 0.1, '%', '')}
+          ${sliderRow('Loan tenure', 'fsEmiMonths', 5, 1, 30, 1, 'Yr', '')}
+          <div id="fsEmiResult" style="margin-top:8px;"></div>
+          <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:12px;">
+            Reducing-balance basis. Your lender's figure can differ slightly depending on
+            fees, rounding, and how the first instalment is counted.
+          </p>
         </div>
-        <div class="setup-group" style="flex:1;min-width:170px;">
-          <label>Annual interest rate (%)</label>
-          <input type="number" id="fsEmiRate" min="0" step="any" placeholder="e.g. 8.5" />
-        </div>
-        <div class="setup-group" style="flex:1;min-width:170px;">
-          <label>Tenure (months)</label>
-          <input type="number" id="fsEmiMonths" min="1" step="1" placeholder="e.g. 60" />
-        </div>
-      </div>`,
-      'FreeServices.runEmi()', '🏦 Calculate', 'fsEmiResult', 'fsEmiStatus');
+      </div>`;
   }
 
   function runEmi() {
     const num = (id) => parseFloat((document.getElementById(id) || {}).value);
-    const P = num('fsEmiAmount'), annual = num('fsEmiRate'), n = num('fsEmiMonths');
+    const P = num('fsEmiAmount'), annual = num('fsEmiRate'), years = num('fsEmiMonths');
     const res = document.getElementById('fsEmiResult');
-    const stat = document.getElementById('fsEmiStatus');
-    if (res) res.innerHTML = '';
-    const fail = (m) => { if (stat) stat.textContent = m; };
-    if (stat) stat.textContent = '';
-
-    if (!Number.isFinite(P) || P <= 0) return fail('Enter a loan amount greater than 0.');
-    if (!Number.isFinite(annual) || annual < 0) return fail('Enter a valid interest rate (0 or more).');
-    if (!Number.isFinite(n) || n < 1) return fail('Enter a tenure of at least 1 month.');
-
+    if (!res) return;
+    if (!Number.isFinite(P) || P <= 0 || !Number.isFinite(annual) || annual < 0 || !Number.isFinite(years) || years < 1) {
+      res.innerHTML = '<div style="color:#b3261e;font-size:0.86rem;">Enter a loan amount, a rate of 0 or more, and a tenure of at least 1 year.</div>';
+      return;
+    }
+    const n = Math.round(years * 12);
     const r = annual / 12 / 100;
-    // r === 0 would divide by zero in the standard formula, so a 0% loan is
-    // simply the principal split evenly across the tenure.
+    // r === 0 would divide by zero in the standard formula, so an interest-free
+    // loan is simply the principal split evenly across the tenure.
     const emi = r === 0 ? (P / n) : (P * r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
-    const total = emi * n, interest = total - P;
-    const fmt = (v) => v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-    if (res) res.innerHTML = `
-      <table class="admin-json-table" style="width:100%;">
-        <tbody>
-          <tr><td><b>Monthly EMI</b></td><td style="text-align:right;"><b>${fmt(emi)}</b></td></tr>
-          <tr><td>Principal</td><td style="text-align:right;">${fmt(P)}</td></tr>
-          <tr><td>Total interest</td><td style="text-align:right;">${fmt(interest)}</td></tr>
-          <tr><td>Total payable</td><td style="text-align:right;">${fmt(total)}</td></tr>
-        </tbody>
-      </table>
-      <p style="font-size:0.78rem;color:rgba(0,0,0,0.5);margin-top:8px;">
-        Reducing-balance basis. Your lender's actual figure can differ slightly
-        depending on fees, rounding, and how they count the first instalment.
-      </p>`;
+    const total = emi * n;
+    res.innerHTML =
+      resultRow('Monthly EMI', INR(emi), true) +
+      resultRow('Principal amount', INR(P)) +
+      resultRow('Total interest', INR(total - P)) +
+      resultRow('Total amount', INR(total));
   }
 
   function renderGratuity() {
-    return calcCard('Gratuity Calculator', '💼',
-      'Estimate a gratuity payout from last drawn salary and years of service.', `
-      <div style="display:flex;gap:12px;flex-wrap:wrap;">
-        <div class="setup-group" style="flex:1;min-width:200px;">
-          <label>Last drawn monthly salary (basic + DA)</label>
-          <input type="number" id="fsGraSalary" min="0" step="any" placeholder="e.g. 50000" />
+    setTimeout(runGratuity, 0);
+    return `
+      <div class="service-card">
+        <h3>💼 Gratuity Calculator</h3>
+        <div class="card-body">
+          ${sliderRow('Monthly salary (Basic + DA)', 'fsGraSalary', 60000, 5000, 1000000, 1000, '', '\u20b9')}
+          ${sliderRow('Years of service', 'fsGraYears', 20, 1, 50, 1, '', '')}
+          <div id="fsGraResult" style="margin-top:18px;"></div>
+          <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:16px;">
+            Estimate only, using the salary x 15/26 x years formula. Eligibility rules,
+            caps and formulas vary by country and employer - check your own terms and
+            treat this as a guide rather than a statement of what you are owed.
+          </p>
         </div>
-        <div class="setup-group" style="flex:1;min-width:170px;">
-          <label>Years of service</label>
-          <input type="number" id="fsGraYears" min="0" step="any" placeholder="e.g. 7" />
-        </div>
-      </div>`,
-      'FreeServices.runGratuity()', '💼 Calculate', 'fsGraResult', 'fsGraStatus');
+      </div>`;
   }
 
   function runGratuity() {
     const num = (id) => parseFloat((document.getElementById(id) || {}).value);
     const salary = num('fsGraSalary'), years = num('fsGraYears');
     const res = document.getElementById('fsGraResult');
-    const stat = document.getElementById('fsGraStatus');
-    if (res) res.innerHTML = '';
-    const fail = (m) => { if (stat) stat.textContent = m; };
-    if (stat) stat.textContent = '';
-
-    if (!Number.isFinite(salary) || salary <= 0) return fail('Enter a salary greater than 0.');
-    if (!Number.isFinite(years) || years < 0) return fail('Enter a valid number of years.');
-
-    // Common statutory formula: salary x 15/26 x completed years, with a
-    // part-year over 6 months counting as a full year. Rules vary by country
-    // and employer, so the result is labelled an estimate below.
-    const roundedYears = Math.floor(years) + ((years - Math.floor(years)) > 0.5 ? 1 : 0);
-    const amount = salary * (15 / 26) * roundedYears;
-    const fmt = (v) => v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-    if (res) res.innerHTML = `
-      <table class="admin-json-table" style="width:100%;">
-        <tbody>
-          <tr><td><b>Estimated gratuity</b></td><td style="text-align:right;"><b>${fmt(amount)}</b></td></tr>
-          <tr><td>Salary used</td><td style="text-align:right;">${fmt(salary)}</td></tr>
-          <tr><td>Years counted</td><td style="text-align:right;">${roundedYears}</td></tr>
-        </tbody>
-      </table>
-      <p style="font-size:0.78rem;color:rgba(0,0,0,0.5);margin-top:8px;">
-        Estimate only, using the salary x 15/26 x years formula (a part-year
-        above 6 months counted as a full year). Eligibility rules, caps and
-        formulas vary by country and employer - check your own terms and treat
-        this as a guide rather than a statement of what you are owed.
-      </p>`;
+    if (!res) return;
+    if (!Number.isFinite(salary) || salary <= 0 || !Number.isFinite(years) || years < 1) {
+      res.innerHTML = '<div style="color:#b3261e;font-size:0.86rem;">Enter a salary above 0 and at least 1 year of service.</div>';
+      return;
+    }
+    const amount = salary * (15 / 26) * years;
+    res.innerHTML = `
+      <div style="text-align:center;padding:10px 0;">
+        <div style="color:#6b7280;font-size:0.9rem;">Total Gratuity payable</div>
+        <div style="font-size:2rem;font-weight:700;color:#3d4a5c;margin-top:6px;">${INR(amount)}</div>
+      </div>`;
   }
 
   // ── Other Services landing page ────────────────────────────────────
@@ -334,10 +352,6 @@
 
   function renderIndex() {
     return `
-      <div class="content-section">
-        <h3>🎁 Other Services</h3>
-        <p style="color:#555;">Free tools that run entirely in your browser - nothing is uploaded, nothing is charged.</p>
-      </div>
       <div class="plans-grid">
         ${TOOLS.map(function (t) {
           return `
@@ -354,7 +368,7 @@
 
   function render(id) {
     if (id === 'other-services') return renderIndex();
-    if (CALCULATORS[id]) return CALCULATORS[id]();
+    if (CALCULATORS[id]) return backBar() + CALCULATORS[id]();
     if (window.ServiceRunner && ServiceRunner.has(id)) return ServiceRunner.render(id);
     return '<div class="content-section"><p>This tool is not available.</p></div>';
   }
@@ -373,6 +387,8 @@
     render: render,
     has: has,
     open: open,
+    syncFromBox: syncFromBox,
+    syncFromSlider: syncFromSlider,
     runEmi: runEmi,
     runGratuity: runGratuity
   };

@@ -125,8 +125,13 @@
     const accept = svc.accept || '';
     const browseHint = svc.browseHint || (accept.indexOf('image') !== -1 ? 'or click to browse (JPG / PNG)' : 'or click to browse (PDF only)');
 
+    const backBar = svc.backTo ? `<div style="margin-bottom:14px;">
+          <button class="process-btn clear-btn" onclick="${svc.backTo}">← Back to Other Services</button>
+        </div>` : '';
+
     return `
       <div>
+        ${backBar}
         <div class="service-upload-layout">
           <div class="service-card">
             <h3>📤 Upload File(s)</h3>
@@ -146,7 +151,7 @@
           <div class="service-card">
             <h3>⚙️ Setup</h3>
             <div class="card-body">
-              ${setup || '<div class="setup-group"><label>&nbsp;</label><div style="font-size:0.84rem;color:rgba(0,0,0,0.5);">No options for this tool - just upload and press Start.</div></div>'}
+              ${setup}
               <div class="setup-group" style="margin-top:8px;">
                 <div class="process-controls">
                   <button class="process-btn start-btn" ${st.running || !st.files.length ? 'disabled' : ''}

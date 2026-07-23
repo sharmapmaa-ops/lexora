@@ -54,13 +54,13 @@
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length) {
           STATE.fields = parsed.slice(0, MAX_FIELDS).map(function (f) {
-            return { header: String(f.header || ''), description: String(f.description || '') };
+            return { header: String(f.header || ''), description: String(f.description || ''), checked: false };
           });
           return STATE.fields;
         }
       }
     } catch (e) { /* corrupt/unavailable storage - fall through to defaults */ }
-    STATE.fields = DEFAULT_FIELDS.map(function (f) { return { header: f.header, description: f.description }; });
+    STATE.fields = DEFAULT_FIELDS.map(function (f) { return { header: f.header, description: f.description, checked: false }; });
     return STATE.fields;
   }
 
@@ -69,7 +69,9 @@
     const bad = STATE.fields.filter(function (f) { return !f.header.trim(); });
     if (bad.length) return setStatus('Every field needs a header name.', 'error');
     try {
-      localStorage.setItem(LS_KEY, JSON.stringify(STATE.fields));
+      localStorage.setItem(LS_KEY, JSON.stringify(STATE.fields.map(function (f) {
+        return { header: f.header, description: f.description };
+      })));
       setStatus(`Saved ${STATE.fields.length} field(s).`, 'ok');
     } catch (e) {
       setStatus('Could not save - your browser blocked local storage.', 'error');
@@ -93,19 +95,43 @@
     if (STATE.fields.length >= MAX_FIELDS) {
       return setStatus(`You can define at most ${MAX_FIELDS} fields.`, 'error');
     }
-    STATE.fields.push({ header: '', description: '' });
+    STATE.fields.push({ header: '', description: '', checked: false });
     rerender();
+  }
+
+  function toggleField(i, checked) {
+    readFieldsFromDom();
+    if (STATE.fields[i]) STATE.fields[i].checked = !!checked;
+    rerender();
+  }
+
+  function toggleAllFields(checked) {
+    readFieldsFromDom();
+    STATE.fields.forEach(function (f) { f.checked = !!checked; });
+    rerender();
+  }
+
+  // Deletes every ticked row at once (the table has a checkbox per line
+  // rather than a delete button per line).
+  function deleteChecked() {
+    readFieldsFromDom();
+    const keep = STATE.fields.filter(function (f) { return f.checked === false; });
+    if (keep.length === STATE.fields.length) return setStatus('Tick the row(s) you want to delete first.', 'error');
+    STATE.fields = keep;
+    if (!STATE.fields.length) STATE.fields.push({ header: '', description: '', checked: false });
+    rerender();
+    setStatus('Deleted the selected field(s) (not saved yet).', 'ok');
   }
 
   function removeField(i) {
     readFieldsFromDom();
     STATE.fields.splice(i, 1);
-    if (!STATE.fields.length) STATE.fields.push({ header: '', description: '' });
+    if (!STATE.fields.length) STATE.fields.push({ header: '', description: '', checked: false });
     rerender();
   }
 
   function resetFields() {
-    STATE.fields = DEFAULT_FIELDS.map(function (f) { return { header: f.header, description: f.description }; });
+    STATE.fields = DEFAULT_FIELDS.map(function (f) { return { header: f.header, description: f.description, checked: false }; });
     rerender();
     setStatus('Reset to the default fields (not saved yet).', 'ok');
   }
@@ -240,26 +266,42 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   }
 
+  // Download one processed file's row in the chosen Output Format - same
+  // idea as Translation's per-file Download link.
+  function downloadFile(uid) {
+    const entry = STATE.files.find(function (f) { return f.uid === uid; });
+    if (!entry) return;
+    const row = STATE.rows.find(function (r) { return r.file === entry.file.name; });
+    if (!row) return setStatus('That file has no extracted data yet.', 'error');
+    exportRows([row], entry.file.name.replace(/\.[^.]+$/, ''));
+  }
+
   function exportOutput() {
     if (!STATE.rows.length) return setStatus('Nothing to export yet - process some files first.', 'error');
+    exportRows(STATE.rows, 'extracted_data_' + new Date().toISOString().slice(0, 10));
+  }
+
+  function exportRows(rows, stem) {
     const fmt = (document.getElementById('deFormat') || {}).value || 'json';
-    const { heads, body } = asMatrix();
-    const stamp = new Date().toISOString().slice(0, 10);
+    const heads = ['File'].concat(headersList());
+    const body = rows.map(function (r) {
+      return [r.file].concat(headersList().map(function (h) { return r.values[h] || ''; }));
+    });
 
     if (fmt === 'json') {
-      const payload = STATE.rows.map(function (r) { return Object.assign({ File: r.file }, r.values); });
-      download(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), `extracted_data_${stamp}.json`);
+      const payload = rows.map(function (r) { return Object.assign({ File: r.file }, r.values); });
+      download(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), `${stem}.json`);
     } else if (fmt === 'csv') {
       const lines = [heads.map(csvCell).join(',')].concat(body.map(function (row) { return row.map(csvCell).join(','); }));
       // BOM so Excel opens UTF-8 accented/non-Latin text correctly.
-      download(new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), `extracted_data_${stamp}.csv`);
+      download(new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), `${stem}.csv`);
     } else if (fmt === 'excel') {
       if (typeof XLSX === 'undefined') return setStatus('The spreadsheet library failed to load - please refresh.', 'error');
       const ws = XLSX.utils.aoa_to_sheet([heads].concat(body));
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Extracted Data');
       const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-      download(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `extracted_data_${stamp}.xlsx`);
+      download(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `${stem}.xlsx`);
     } else if (fmt === 'word') {
       const table = `<table border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse;font-family:Calibri,Arial,sans-serif;font-size:11pt;">
         <thead><tr>${heads.map(function (h) { return `<th style="background:#eee;text-align:left;">${esc(h)}</th>`; }).join('')}</tr></thead>
@@ -269,7 +311,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
       const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
         <head><meta charset="utf-8"><title>Extracted Data</title></head>
         <body><h2 style="font-family:Calibri,Arial,sans-serif;">Extracted Data</h2>${table}</body></html>`;
-      download(new Blob(['\uFEFF' + html], { type: 'application/msword' }), `extracted_data_${stamp}.doc`);
+      download(new Blob(['\uFEFF' + html], { type: 'application/msword' }), `${stem}.doc`);
     }
     setStatus('Output downloaded.', 'ok');
   }
@@ -418,6 +460,66 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
   function fieldsTable() {
     const fields = loadFields();
     return `
+      <div class="file-table-wrapper">
+        <table class="file-table">
+          <colgroup><col style="width:6%;"><col style="width:6%;"><col style="width:32%;"><col style="width:56%;"></colgroup>
+          <thead><tr>
+            <th><input type="checkbox" id="deFieldAll" ${(fields.length && fields.every(function (f) { return f.checked !== false; })) ? 'checked' : ''}
+                       onchange="DataExtraction.toggleAllFields(this.checked)" title="Select all" /></th>
+            <th>#</th><th>Field Header</th><th>Description (what this field means)</th>
+          </tr></thead>
+        </table>
+        <div class="file-table-scroll" style="max-height:220px;">
+          <table class="file-table">
+            <colgroup><col style="width:6%;"><col style="width:6%;"><col style="width:32%;"><col style="width:56%;"></colgroup>
+            <tbody>
+              ${fields.map(function (f, i) {
+                return `<tr>
+                  <td><input type="checkbox" class="file-select-checkbox" ${f.checked !== false ? 'checked' : ''}
+                             onchange="DataExtraction.toggleField(${i}, this.checked)" /></td>
+                  <td>${i + 1}</td>
+                  <td><input type="text" id="deH_${i}" value="${esc(f.header)}" placeholder="e.g. Invoice No" style="width:100%;" /></td>
+                  <td><input type="text" id="deD_${i}" value="${esc(f.description)}" placeholder="Describe it so the extractor knows what to look for" style="width:100%;" /></td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="process-controls" style="margin-top:12px;">
+        <button class="process-btn start-btn" onclick="DataExtraction.addField()">➕ Add</button>
+        <button class="process-btn clear-btn" onclick="DataExtraction.deleteChecked()">🗑️ Delete</button>
+        <button class="process-btn clear-btn" onclick="DataExtraction.saveFields()">💾 Save</button>
+        <span style="font-size:0.78rem;color:rgba(0,0,0,0.5);align-self:center;margin-left:6px;">${fields.length}/${MAX_FIELDS} fields</span>
+      </div>
+      <div id="deStatus" style="margin-top:8px;font-size:0.86rem;min-height:1.1em;"></div>`;
+  }
+
+  function chargeEstimateHtml() {
+    const b = window.LexoraBilling;
+    if (!b) return '';
+    const sel = STATE.files.filter(function (f) { return f.selected !== false; });
+    if (!sel.length) return '';
+    const rate = b.perPageRate();
+    const total = sel.reduce(function (sum, f) { return sum + rate * Math.max(1, f.pageCount || 1); }, 0);
+    return `💰 Rate: $${rate.toFixed(2)}/page · Est. total: $${total.toFixed(2)} for ${sel.length} selected file(s)`;
+  }
+
+  function toggleAll(checked) {
+    STATE.files.forEach(function (f) { f.selected = !!checked; });
+    rerender();
+  }
+
+  function statusClass(s) {
+    if (s === 'Success') return 'completed';
+    if (s === 'Failed') return 'error';
+    if (s === 'Processing') return 'processing';
+    return 'pending';
+  }
+
+  function fieldsTable() {
+    const fields = loadFields();
+    return `
       <div style="overflow:auto;">
         <table class="admin-json-table" style="width:100%;">
           <thead><tr>
@@ -455,7 +557,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
       const cls = statusClass(f.status);
       const pct = f.progress != null ? f.progress : (f.status === 'Success' ? 100 : 0);
       const action = f.status === 'Success'
-        ? '<span class="file-action-link disabled">Done</span>'
+        ? `<a class="file-action-link" onclick="DataExtraction.downloadFile(${f.uid})">Download</a>`
         : (f.status === 'Failed'
             ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">Error</span>`
             : `<span class="file-action-link disabled">${esc(f.status || 'Pending')}</span>`);
@@ -597,9 +699,6 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
         <div class="file-list-card">
           <div class="file-list-card-header">
             <h3>🧾 Fields to Extract</h3>
-            <span class="file-list-charge-estimate">
-              <button class="process-btn clear-btn" style="padding:4px 10px;" onclick="DataExtraction.exportOutput()">⬇️ Download Output</button>
-            </span>
           </div>
           <div class="card-body">
             ${fieldsTable()}
@@ -638,6 +737,9 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     render: render,
     addField: addField,
     removeField: removeField,
+    toggleField: toggleField,
+    toggleAllFields: toggleAllFields,
+    deleteChecked: deleteChecked,
     saveFields: saveFields,
     resetFields: resetFields,
     onPick: onPick,
@@ -645,6 +747,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     toggleAll: toggleAll,
     clearAll: clearAll,
     start: start,
-    exportOutput: exportOutput
+    exportOutput: exportOutput,
+    downloadFile: downloadFile
   };
 })();
