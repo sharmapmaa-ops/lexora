@@ -8,7 +8,7 @@
   let drawId = 100;
   let _measureCtx = null;
   let _log = function (m) { try { console.log(m); } catch (e) {} };
-  function log(m) { _log(m); }
+  function log(m, level) { _log(m, level || 'info'); }
 
   // Structured events for the Activity Log. The plain `log()` above is
   // free text meant for humans; app.js needs exact per-page numbers
