@@ -63,10 +63,65 @@ PORT = int(os.environ.get("PORT", 8000))
 # (index.html, css/, json/, Pictures/, Users/) - so ROOT_DIR is one level up
 # from this file, not the py/ folder itself.
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-JSON_DIR = os.path.join(ROOT_DIR, "json")
-USERS_DIR = os.path.join(ROOT_DIR, "Users")
+
+# ---------------------------------------------------------------------------
+# PERSISTENT DATA LOCATION
+# ---------------------------------------------------------------------------
+# The container filesystem is REBUILT FROM THE REPO on every deploy, so
+# anything written at runtime inside the image (registered users, wallet
+# transactions, admin edits to json/plans.json, processed files under
+# Users/) disappears the moment you redeploy.
+#
+# Setting LEXORA_DATA_DIR to a mounted persistent disk moves that mutable
+# state out of the image, so deploys only replace CODE and leave DATA alone.
+#   e.g.  LEXORA_DATA_DIR=/var/lexora-data   (disk mounted there)
+#
+# If it isn't set, everything behaves exactly as before (repo-local dirs),
+# so local development and existing setups are unaffected.
+DATA_DIR = (os.environ.get("LEXORA_DATA_DIR") or "").strip()
+if DATA_DIR:
+    JSON_DIR = os.path.join(DATA_DIR, "json")
+    USERS_DIR = os.path.join(DATA_DIR, "Users")
+else:
+    JSON_DIR = os.path.join(ROOT_DIR, "json")
+    USERS_DIR = os.path.join(ROOT_DIR, "Users")
+
 TEMPLATE_DIR = os.path.join(ROOT_DIR, "Template", "LeaseAbstraction")
 DEFAULT_TEMPLATE_PATH = os.path.join(TEMPLATE_DIR, "Default.pdf")
+
+
+def _seed_persistent_data():
+    """First boot on a fresh disk: copy the repo's default json/ and Users/
+    across, then never overwrite them again.
+
+    Without this a newly attached (empty) disk would leave the app with no
+    plans.json / users.json at all. Files are copied ONLY if missing, so a
+    later deploy can add a brand-new JSON file without clobbering the live
+    data in the ones that already exist.
+    """
+    if not DATA_DIR:
+        return
+    for name, target in (("json", JSON_DIR), ("Users", USERS_DIR)):
+        source = os.path.join(ROOT_DIR, name)
+        os.makedirs(target, exist_ok=True)
+        if not os.path.isdir(source):
+            continue
+        for entry in os.listdir(source):
+            src_path = os.path.join(source, entry)
+            dst_path = os.path.join(target, entry)
+            if os.path.exists(dst_path):
+                continue          # live data wins - never overwrite
+            try:
+                if os.path.isdir(src_path):
+                    shutil.copytree(src_path, dst_path)
+                else:
+                    shutil.copy2(src_path, dst_path)
+                print(f"[data] seeded {name}/{entry}")
+            except Exception as exc:                      # noqa: BLE001
+                print(f"[data] could not seed {name}/{entry}: {exc}")
+
+
+_seed_persistent_data()
 
 
 def _load_dotenv(path):
