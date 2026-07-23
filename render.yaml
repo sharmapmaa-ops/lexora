@@ -5,11 +5,14 @@
 # needed for scanned-PDF OCR actually gets installed - Render's native
 # Python build has no apt-get step.
 #
-# NOTE: Render's free tier has an ephemeral filesystem - anything written
-# to Users/ (profile photos, processed leases) is lost on redeploy/restart.
-# For that to persist, add a paid-plan persistent disk mounted at
-# /app/Users (see Render's "Disks" docs) - not included here since it
-# needs a paid plan.
+# PERSISTENCE: the container filesystem is rebuilt from this repo on every
+# deploy, so anything written at runtime (registered users, wallet
+# transactions, admin edits to json/plans.json, processed files) would be
+# lost on each redeploy. The disk below fixes that: LEXORA_DATA_DIR points
+# server.py at the mounted disk, and on first boot it seeds that disk with
+# the repo's default json/ and Users/ contents. After that, deploys replace
+# CODE ONLY - live data on the disk is never overwritten.
+# NOTE: persistent disks require a paid instance type.
 services:
   - type: web
     name: lexora-ai-solutions
@@ -17,7 +20,16 @@ services:
     dockerfilePath: ./Dockerfile
     plan: starter
     healthCheckPath: /
+    disk:
+      name: lexora-data
+      mountPath: /var/lexora-data
+      sizeGB: 1
     envVars:
+      # Points server.py at the persistent disk above. Remove this and the
+      # app falls back to repo-local json/ and Users/ (fine locally, but
+      # data is lost on every deploy in a container environment).
+      - key: LEXORA_DATA_DIR
+        value: /var/lexora-data
       # sync: false = Render prompts for these in its dashboard instead of
       # reading them from this file - .env itself is gitignored and never
       # part of the repo Render builds from, so there's nothing to leak
