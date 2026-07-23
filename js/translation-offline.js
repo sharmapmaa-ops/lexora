@@ -10,6 +10,22 @@
   let _log = function (m) { try { console.log(m); } catch (e) {} };
   function log(m) { _log(m); }
 
+  // Structured events for the Activity Log. The plain `log()` above is
+  // free text meant for humans; app.js needs exact per-page numbers
+  // (API calls made, text blocks found) to build its per-page log rows
+  // and per-page billing, so those are emitted separately as objects.
+  let _event = function () {};
+  function setPipelineEventHandler(fn) { _event = (typeof fn === 'function') ? fn : function () {}; }
+  function emit(ev) { try { _event(ev); } catch (e) {} }
+
+  // API call counters. Incremented inside the single central fetch
+  // wrapper so RETRIES are counted too (a page whose OCR JSON came back
+  // malformed and got retried genuinely cost 2 calls, and the log/billing
+  // should say so rather than assuming 1 per page).
+  let _apiCalls = { json: 0, image: 0 };
+  function resetApiCalls() { _apiCalls = { json: 0, image: 0 }; }
+  function snapshotApiCalls() { return { json: _apiCalls.json, image: _apiCalls.image }; }
+
   // OPTION A: vision calls SERVER PROXY se jaati hain (/api/translation/
   // vision-proxy). Key browser me nahi aati — server .env se lagti hai.
   // Auth token app.js set karta hai (setVisionAuthToken).
@@ -576,6 +592,18 @@
 
       pages.push({ lines: lines, wPt: vp1.width, hPt: vp1.height, jpegBase64: jpegBase64 });
       log('P' + p + ': ' + lines.length + ' text line(s) extracted (no API)' + (withImage ? ' + page image rendered' : ''));
+      // Text-based extraction is fully local, so this page cost 0 API
+      // calls - but it still reports its text count and still gets its
+      // own Activity Log rows and per-page charge.
+      emit({
+        type: 'page',
+        page: p,
+        totalPages: pdf.numPages,
+        jsonCalls: 0,
+        imageCalls: 0,
+        textData: lines.length,
+        ok: true
+      });
     }
     if (totalLines === 0)
       throw new Error('No selectable text found in this PDF — offline mode only processes text-based PDFs');
@@ -610,6 +638,7 @@
       });
 
       if (flatLines.length > 0) {
+        const updBefore = snapshotApiCalls();
         try {
           log('Translating extracted text to ' + targetLang + '...');
           const translationResult = await v14TranslateAllPages(model, flatLines, targetLang);
@@ -639,6 +668,13 @@
         } catch (translateErr) {
           log('Translation failed (' + translateErr.message + ') — keeping the original extracted text', 'warn');
         }
+        const updAfter = snapshotApiCalls();
+        emit({
+          type: 'update',
+          jsonCalls: updAfter.json - updBefore.json,
+          imageCalls: updAfter.image - updBefore.image,
+          textData: flatLines.length
+        });
       }
     }
 
@@ -920,6 +956,12 @@ Return NOTHING except the JSON object.`;
 
   // ---- proxy calls (OpenRouter direct nahi — server key lagata hai) ----
   async function v14ProxyJson(reqBody) {
+    // Count before dispatch: a call that fails still consumed a call.
+    if (reqBody && Array.isArray(reqBody.modalities) && reqBody.modalities.indexOf('image') !== -1) {
+      _apiCalls.image++;
+    } else {
+      _apiCalls.json++;
+    }
     const resp = await _visionFetch(reqBody);
     let data = null;
     try { data = await resp.json(); } catch (e) { /* non-json error body */ }
@@ -1465,10 +1507,15 @@ You will be given the FULL extracted content of a multi-page scanned document, a
 STEP 1 — CLASSIFY THE DOCUMENT
 Before translating, look at the whole document's content and determine:
 - "document_type": what kind of document this is (e.g. certificate, legal document/contract, official government form, personal/business letter, book or literary excerpt, religious text, invoice/receipt, academic paper, resume/CV, or other — pick the closest fit).
+- "domain": the professional field whose terminology conventions apply (e.g. legal, medical, financial, academic, government/administrative, insurance, engineering, real estate, immigration, or general). This decides WHICH profession's standard vocabulary to translate into.
+- "source_region": the country/region and issuing authority the document appears to come from, if inferable from its content (e.g. from the language variant, address format, named authorities, legal references, or date conventions). Use this to understand which legal/administrative system's concepts the source terms refer to. If it isn't inferable, say "unknown".
 - "era_tone": the appropriate register for translation based on how old/period-specific the writing feels (e.g. "modern/contemporary" for anything ordinary or recent, or a period label like "formal classical/historical" or an approximate era if the vocabulary, spelling, honorifics or subject matter clearly suggest an older text). Default to "modern/contemporary" unless there is a real signal it's from another era.
 
 STEP 2 — TRANSLATE INTO ${targetLanguageLabel}
-Translate the ENTIRE document into ${targetLanguageLabel}, using a tone/register appropriate to the document_type and era_tone you determined (e.g. a certificate needs a formal ceremonial register, a legal document needs precise legal register, an old book needs period-appropriate literary tone, a casual letter needs a conversational tone).
+Translate the ENTIRE document into ${targetLanguageLabel}, using a tone/register appropriate to the document_type, domain and era_tone you determined (e.g. a certificate needs a formal ceremonial register, a legal document needs precise legal register, an old book needs period-appropriate literary tone, a casual letter needs a conversational tone).
+
+IMPORTANT — PICK THE RIGHT REGIONAL VARIANT OF ${targetLanguageLabel}:
+Most languages have several standard regional variants that differ in spelling, official terminology, and legal/administrative vocabulary (for example a language may have distinct European vs. North/South American vs. South Asian standards). Decide which variant of ${targetLanguageLabel} best fits this document's domain and likely audience, then apply it CONSISTENTLY throughout: its spelling conventions, its standard professional/official terminology, and the terms that variant's own legal or administrative system actually uses for each concept. Also record which variant you chose as "target_variant". If nothing indicates a specific region, use the most widely-understood neutral standard form of ${targetLanguageLabel} and say so.
 
 IMPORTANT — TERMINOLOGY MUST STAY CONSISTENT ACROSS THE WHOLE DOCUMENT:
 Before translating, mentally note the key recurring terms and concepts in the document — legal, financial, technical, or otherwise (e.g. rent, tenant, landlord, terminate, deposit, premises, party, agreement, or whatever else actually recurs in THIS document). For each such term, pick ONE precise ${targetLanguageLabel} equivalent appropriate to the document_type's register, and use that EXACT SAME word every single time that term/concept appears, on every page. Do not vary it with a different synonym from one occurrence to the next - inconsistent terminology changes the meaning of a document like this (especially a legal or technical one), it isn't a stylistic choice.
@@ -1479,6 +1526,12 @@ Do not produce a literal, word-by-word rendering that mirrors the source languag
 - Official entity names, company/organization titles, authority names, and any term the source document treats as a defined/formal term (capitalized, quoted, or explicitly defined) should be translated to their standard recognized ${targetLanguageLabel} equivalent if one exists, and otherwise kept in a single consistent form - never translated one way in one place and a different way elsewhere.
 - Preserve clause/section numbering and structural markers exactly as given (e.g. "1.", "(a)", "Article 3", "Section II") - translate only the text that follows them, never the numbering/lettering itself, since these are used for cross-references within the document.
 
+IMPORTANT — NEVER ALTER FACTUAL DATA WHILE TRANSLATING:
+The following must come through EXACTLY as in the source, never re-worded, re-formatted, recalculated, converted, or "corrected": dates, personal and organization names, addresses, all numbers, monetary amounts and currency symbols/codes, units of measurement, identifiers (tax/VAT/registration/file/account numbers), and cross-references to laws, articles, or clauses. Translate the words around them, but copy these through verbatim. Do not convert a currency into another currency, do not convert units, and do not change a date's format or calendar. Do not add any information that is not in the source, and do not omit any information that is.
+
+IMPORTANT — DO NOT TRANSLATE NON-TEXT MARKS:
+If a block is a signature, a logo/wordmark, a stamp or seal legend, a barcode/QR label, or a similar mark rather than readable body text, leave its text exactly as-is rather than translating it. Only translate genuine readable language content.
+
 IMPORTANT — TRANSLATE PARAGRAPH-WISE, NOT LINE-BY-LINE:
 Blocks that share the same "paragraph_id", taken in their given order (across pages if needed — a paragraph_id's blocks may span a page boundary, since blocks are given in full-document reading order), together form ONE continuous paragraph. Join them, understand the FULL paragraph's meaning and grammar, and translate it as one coherent unit — never translate an isolated block without its paragraph's context.
 
@@ -1488,12 +1541,14 @@ After translating a paragraph as a whole, split the translated text back across 
 RULES
 - Never add or remove blocks. Every input id must appear exactly once in your output, in the same order.
 - Never translate the "id", "page", "paragraph_id" values themselves — only the text.
-- Keep numbers, dates and proper nouns sensibly handled per normal translation conventions for ${targetLanguageLabel}.
 - Do not add commentary, explanation, or anything outside the JSON.
 
 Return ONLY this JSON shape, nothing else:
 {
   "document_type": "...",
+  "domain": "...",
+  "source_region": "...",
+  "target_variant": "...",
   "era_tone": "...",
   "translations": [
     {"id": "pg1_b0", "translated_text": "..."},
@@ -1877,6 +1932,9 @@ Return ONLY this JSON shape, nothing else:
     for (let i = 0; i < images.length; i++) {
       const img = images[i];
       const pageNum = i + 1;
+      const callsBefore = snapshotApiCalls();
+      let pageTextCount = 0;
+      let pageOk = false;
 
       if (_shouldStop()) { abortVision(); stoppedEarly = true; break; }
 
@@ -1944,6 +2002,8 @@ Return ONLY this JSON shape, nothing else:
         pageBackgrounds[pageNum] = { bgDataUrl: bgDataUrl, bgIsCleaned: bgIsCleaned };
 
         log('P' + pageNum + ': ' + currentJson.length + ' line-boxes' + (bgIsCleaned ? ' (cleaned background)' : (withImage ? ' (with image)' : '')));
+        pageTextCount = currentJson.length;
+        pageOk = true;
       } catch (err) {
         if (_shouldStop()) { abortVision(); stoppedEarly = true; break; }
         // ek page fail se poora run mat girao — record karke aage badho
@@ -1951,6 +2011,17 @@ Return ONLY this JSON shape, nothing else:
         pageErrors.push({ page: pageNum, message: err.message });
         log('P' + pageNum + ' FAILED: ' + err.message + ' — continuing with the next page', 'error');
       }
+
+      const callsAfter = snapshotApiCalls();
+      emit({
+        type: 'page',
+        page: pageNum,
+        totalPages: totalPages,
+        jsonCalls: callsAfter.json - callsBefore.json,
+        imageCalls: callsAfter.image - callsBefore.image,
+        textData: pageTextCount,
+        ok: pageOk
+      });
 
       log('Vision OCR: ' + pageNum + '/' + totalPages + ' pages');
 
@@ -1970,13 +2041,17 @@ Return ONLY this JSON shape, nothing else:
 
     // 3) ═══ CALL 3: TRANSLATION — sirf EK baar, POORE document ke liye ═══
     if (!keepOriginal && !_shouldStop()) {
+      const updBefore = snapshotApiCalls();
       try {
         log('[Final Call] Translating the whole document to ' + targetLang + ' (detecting document type + tone)...');
         const translationResult = await v14TranslateAllPages(model, allPagesJson, targetLang);
         const applied = v14ApplyTranslations(allPagesJson, translationResult.translations);
         allPagesJson = applied.blocks;
         log('Translation: ' + applied.replacedCount + ' line(s) translated');
-        log('Document type: "' + translationResult.document_type + '", Tone/era: "' + translationResult.era_tone + '"');
+        log('Document type: "' + translationResult.document_type + '", Domain: "' + (translationResult.domain || 'n/a') +
+            '", Source region: "' + (translationResult.source_region || 'n/a') +
+            '", Target variant: "' + (translationResult.target_variant || 'n/a') +
+            '", Tone/era: "' + translationResult.era_tone + '"');
       } catch (translateErr) {
         if (_shouldStop()) {
           log('Stop requested — translation cancelled, output uses the ORIGINAL text', 'warn');
@@ -1984,6 +2059,13 @@ Return ONLY this JSON shape, nothing else:
           log('Translation failed (' + translateErr.message + ') — building the document with the ORIGINAL text', 'warn');
         }
       }
+      const updAfter = snapshotApiCalls();
+      emit({
+        type: 'update',
+        jsonCalls: updAfter.json - updBefore.json,
+        imageCalls: updAfter.image - updBefore.image,
+        textData: allPagesJson.length
+      });
     }
 
     // 4) FINAL TEXT (translated ya original) se har page ka HTML + MHT images
@@ -2117,6 +2199,8 @@ ${JSON.stringify(texts)}`;
   window.buildHybridDocxBlob = buildHybridDocxBlob;
   window.setVisionAuthToken = setVisionAuthToken;
   window.setVisionStopCheck = setStopCheck;
+  window.setPipelineEventHandler = setPipelineEventHandler;
+  window.resetPipelineApiCounters = resetApiCalls;
   window.abortVision = abortVision;
 
     window.buildOfflineDocxBlob = buildOfflineDocxBlob;
