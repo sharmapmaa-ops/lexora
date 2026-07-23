@@ -562,6 +562,129 @@
       'converted.' + convertedAs);
   }
 
+
+  // ══════════════════════════════════════════════════════════════════
+  // QR CODE GENERATOR
+  // ══════════════════════════════════════════════════════════════════
+  function renderQr() {
+    setTimeout(runQr, 0);
+    return card('🔳', 'QR Code Generator', `
+      <div class="setup-group">
+        <label>Content (text, URL, phone, wifi, anything)</label>
+        <textarea id="tQrText" rows="3" style="width:100%;" oninput="ToolsDocs.runQr()"
+                  placeholder="https://example.com">https://example.com</textarea>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        ${fld('Size (px)', `<input type="number" id="tQrSize" value="300" min="80" max="1000" step="10" oninput="ToolsDocs.runQr()" style="width:100%;" />`)}
+        ${fld('Error correction', `<select id="tQrEc" onchange="ToolsDocs.runQr()" style="width:100%;">
+            <option value="L">L - smallest</option>
+            <option value="M" selected>M - standard</option>
+            <option value="Q">Q - tolerant</option>
+            <option value="H">H - most tolerant (survives damage/logos)</option>
+          </select>`)}
+      </div>
+      <div id="tQrBox" style="margin-top:14px;display:flex;justify-content:center;"></div>
+      <div class="process-controls" style="margin-top:12px;">
+        <button class="process-btn start-btn" onclick="ToolsDocs.downloadQr()">⬇️ Download PNG</button>
+      </div>
+      <div id="tQrStatus" style="margin-top:8px;font-size:0.86rem;min-height:1.1em;"></div>`);
+  }
+
+  function runQr() {
+    const box = document.getElementById('tQrBox');
+    if (!box) return;
+    if (typeof QRCode === 'undefined') { box.innerHTML = '<span style="color:#b3261e;">QR library failed to load - please refresh.</span>'; return; }
+    const text = val('tQrText');
+    box.innerHTML = '';
+    if (!text.trim()) { say('tQrStatus', 'Enter some content.', 'error'); return; }
+    const size = Math.max(80, Math.min(1000, parseInt(val('tQrSize'), 10) || 300));
+    const ecMap = { L: QRCode.CorrectLevel.L, M: QRCode.CorrectLevel.M, Q: QRCode.CorrectLevel.Q, H: QRCode.CorrectLevel.H };
+    try {
+      new QRCode(box, {
+        text: text, width: size, height: size,
+        correctLevel: ecMap[val('tQrEc')] || QRCode.CorrectLevel.M
+      });
+      say('tQrStatus', '', 'ok');
+    } catch (e) {
+      // The library throws when the content exceeds what the chosen error
+      // correction level can encode - say so instead of showing nothing.
+      say('tQrStatus', 'That content is too long for this error-correction level. Try level L or shorten the text.', 'error');
+    }
+  }
+
+  function downloadQr() {
+    const canvas = document.querySelector('#tQrBox canvas');
+    const img = document.querySelector('#tQrBox img');
+    if (canvas) {
+      canvas.toBlob(function (b) { if (b) download(b, 'qr-code.png'); });
+      return say('tQrStatus', 'Downloaded.', 'ok');
+    }
+    if (img && img.src) {
+      // Some builds render an <img> with a data URL rather than a canvas.
+      fetch(img.src).then(function (r) { return r.blob(); })
+        .then(function (b) { download(b, 'qr-code.png'); say('tQrStatus', 'Downloaded.', 'ok'); })
+        .catch(function () { say('tQrStatus', 'Could not export the image.', 'error'); });
+      return;
+    }
+    say('tQrStatus', 'Generate a QR code first.', 'error');
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // BARCODE GENERATOR
+  // ══════════════════════════════════════════════════════════════════
+  const BARCODE_FORMATS = ['CODE128', 'CODE39', 'EAN13', 'EAN8', 'UPC', 'ITF14', 'MSI', 'pharmacode'];
+
+  function renderBarcode() {
+    setTimeout(runBarcode, 0);
+    return card('▮', 'Barcode Generator', `
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        ${fld('Value', `<input type="text" id="tBcVal" value="LEXORA123" oninput="ToolsDocs.runBarcode()" style="width:100%;" />`, 2)}
+        ${fld('Format', `<select id="tBcFmt" onchange="ToolsDocs.runBarcode()" style="width:100%;">
+            ${BARCODE_FORMATS.map(function (f) { return `<option value="${f}">${f}</option>`; }).join('')}
+          </select>`)}
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        ${fld('Bar width', `<input type="number" id="tBcW" value="2" min="1" max="6" oninput="ToolsDocs.runBarcode()" style="width:100%;" />`)}
+        ${fld('Height', `<input type="number" id="tBcH" value="100" min="30" max="300" step="10" oninput="ToolsDocs.runBarcode()" style="width:100%;" />`)}
+      </div>
+      <div style="margin-top:14px;display:flex;justify-content:center;background:#fff;padding:10px;">
+        <canvas id="tBcCanvas"></canvas>
+      </div>
+      <div class="process-controls" style="margin-top:12px;">
+        <button class="process-btn start-btn" onclick="ToolsDocs.downloadBarcode()">⬇️ Download PNG</button>
+      </div>
+      <div id="tBcStatus" style="margin-top:8px;font-size:0.86rem;min-height:1.1em;"></div>`,
+      'EAN/UPC formats only accept digits of a specific length - the status line will say if the value does not fit the chosen format.');
+  }
+
+  function runBarcode() {
+    if (typeof JsBarcode === 'undefined') return say('tBcStatus', 'Barcode library failed to load - please refresh.', 'error');
+    const canvas = document.getElementById('tBcCanvas');
+    if (!canvas) return;
+    const value = val('tBcVal');
+    if (!value.trim()) return say('tBcStatus', 'Enter a value.', 'error');
+    try {
+      JsBarcode(canvas, value, {
+        format: val('tBcFmt') || 'CODE128',
+        width: Math.max(1, parseInt(val('tBcW'), 10) || 2),
+        height: Math.max(30, parseInt(val('tBcH'), 10) || 100),
+        displayValue: true,
+        valid: function (ok) {
+          if (!ok) say('tBcStatus', `"${value}" is not valid for ${val('tBcFmt')} - check the required length/character set.`, 'error');
+          else say('tBcStatus', '', 'ok');
+        }
+      });
+    } catch (e) {
+      say('tBcStatus', `"${value}" is not valid for ${val('tBcFmt')}.`, 'error');
+    }
+  }
+
+  function downloadBarcode() {
+    const canvas = document.getElementById('tBcCanvas');
+    if (!canvas || !canvas.width) return say('tBcStatus', 'Generate a barcode first.', 'error');
+    canvas.toBlob(function (b) { if (b) { download(b, 'barcode.png'); say('tBcStatus', 'Downloaded.', 'ok'); } });
+  }
+
   // ── card registry ──────────────────────────────────────────────────
   const CARDS = {
     'invoice-generator':   { label: 'Invoice Generator',   icon: '🧾', desc: 'Build an invoice and download it as a PDF.',   render: function () { return renderDoc('invoice-generator'); } },
@@ -571,7 +694,9 @@
     'create-letters':      { label: 'Create Letters',      icon: '✉️', desc: 'Generate letters from a template plus data.',  render: function () { return renderMerge('create-letters'); } },
     'etl':                 { label: 'ETL',                 icon: '🔀', desc: 'Pick, rename and re-export columns.',         render: renderEtl },
     'word-counter':        { label: 'Word Counter',        icon: '🔢', desc: 'Words, characters, sentences, reading time.', render: renderWordCount },
-    'json-csv':            { label: 'JSON ↔ CSV',          icon: '🔄', desc: 'Convert between JSON and CSV.',               render: renderJsonCsv }
+    'json-csv':            { label: 'JSON ↔ CSV',          icon: '🔄', desc: 'Convert between JSON and CSV.',               render: renderJsonCsv },
+    'qr-generator':        { label: 'QR Code Generator',   icon: '🔳', desc: 'Make a QR code from any text or link.',       render: renderQr },
+    'barcode-generator':   { label: 'Barcode Generator',   icon: '▮',  desc: 'CODE128, EAN, UPC and more.',                 render: renderBarcode }
   };
 
   window.ToolsDocs = {
@@ -587,6 +712,10 @@
     runWordCount: runWordCount,
     convert: convert,
     downloadConverted: downloadConverted,
+    runQr: runQr,
+    downloadQr: downloadQr,
+    runBarcode: runBarcode,
+    downloadBarcode: downloadBarcode,
     parseCsv: parseCsv,
     applyTemplate: applyTemplate
   };

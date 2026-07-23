@@ -6582,6 +6582,10 @@
                     if (!data && dataKey === 'data-extraction' && window.DataExtraction) {
                         data = { body: function () { return window.DataExtraction.render(); } };
                     }
+                    // BAI2 (paid) lives in js/bai2.js.
+                    if (!data && dataKey === 'bai2' && window.Bai2) {
+                        data = { body: function () { return window.Bai2.render(); } };
+                    }
                     // "Other Services" (and each free tool inside it) lives in
                     // js/free-services.js and is looked up by id, so adding a
                     // new free tool needs no change in this file.

@@ -544,6 +544,72 @@
     return outRows;
   }
 
+  // ══════════════════════════════════════════════════════════════════
+  // PDF TO WORD  (text extraction -> .doc)
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'pdf-to-word',
+    title: 'PDF to Word',
+    icon: '📃',
+    accept: 'application/pdf',
+    backTo: BACK,
+    description: 'Pull the text out of a PDF into an editable Word document.',
+    setupHtml: function () {
+      return `<div style="padding:8px 10px;border:1px solid #e0a800;background:#fff8e1;border-radius:6px;font-size:0.8rem;color:#7a5c00;">
+        This extracts the <b>text</b>, not the layout - columns, tables and
+        images are not reproduced. For a layout-faithful conversion of a
+        scanned document, use the paid <b>Translation</b> service with
+        "With OCR", which rebuilds the page properly.
+      </div>`;
+    },
+    process: async function (files, ctx, label) {
+      need(typeof pdfjsLib !== 'undefined' ? pdfjsLib : undefined, 'pdf.js');
+      const f = files[0];
+      const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise;
+      if (ctx.pages) ctx.pages(pdf.numPages);
+
+      const escHtml = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const pagesHtml = [];
+      let totalChars = 0;
+
+      for (let p = 1; p <= pdf.numPages; p++) {
+        const tc = await (await pdf.getPage(p)).getTextContent();
+        // Group items into lines by their y position, so the output keeps
+        // line breaks instead of becoming one long paragraph.
+        const lines = [];
+        let lastY = null, buf = [];
+        tc.items.forEach(function (it) {
+          const y = Math.round(it.transform[5]);
+          if (lastY !== null && Math.abs(y - lastY) > 3) { lines.push(buf.join('')); buf = []; }
+          buf.push(it.str);
+          lastY = y;
+        });
+        if (buf.length) lines.push(buf.join(''));
+
+        const body = lines
+          .map(function (l) { return l.replace(/\s+/g, ' ').trim(); })
+          .filter(function (l) { return l; })
+          .map(function (l) { totalChars += l.length; return `<p>${escHtml(l)}</p>`; })
+          .join('');
+        pagesHtml.push(body || '<p></p>');
+        if (ctx.progress) ctx.progress((p / pdf.numPages) * 100);
+      }
+
+      if (!totalChars) throw new Error('No selectable text found - this looks like a scanned PDF. Use Translation with "With OCR" instead.');
+
+      const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+        <head><meta charset="utf-8"><title>${escHtml(stem(f.name))}</title>
+        <style>body{font-family:Calibri,Arial,sans-serif;font-size:11pt;} p{margin:0 0 6pt 0;}
+        .pb{page-break-before:always;}</style></head><body>
+        ${pagesHtml.map(function (h, i) { return `<div${i ? ' class="pb"' : ''}>${h}</div>`; }).join('')}
+        </body></html>`;
+
+      ctx.download(new Blob(['\ufeff' + html], { type: 'application/msword' }), `${stem(f.name)}.doc`);
+      ctx.log(`${label} > Text Data = ${totalChars} character(s) from ${pdf.numPages} page(s)`, 'Info');
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}.doc`, 'Success');
+    }
+  });
+
   window.ToolsFiles = {
     onPreset: onPreset,
     fillForm: fillForm,
