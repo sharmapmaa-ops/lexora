@@ -535,9 +535,12 @@
                           <div style="flex:1;">
                             <label>Output Language</label>
                             <select id="translationLangSelect" style="width:100%;" ${processState.running ? 'disabled' : ''}>
-                                <option value="original">Original (No Translation)</option>
                                 ${TRANSLATION_LANG_OPTIONS}
                             </select>
+                            <div style="font-size:0.76rem;color:rgba(0,0,0,0.5);margin-top:4px;">
+                                Only need the document rebuilt in its own language?
+                                Use the <b>OCR</b> service instead.
+                            </div>
                           </div>
                           <div style="flex:1;">
                             <label>Output Format</label>
@@ -6555,6 +6558,9 @@
                 if (activeSubItemId === 'translation' && subId !== 'translation') {
                     leaveTranslationSection();
                 }
+                if (activeSubItemId === 'ocr' && subId !== 'ocr' && window.OcrService) {
+                    window.OcrService.leave();
+                }
                 resetContentArea();
 
                 setTimeout(() => {
@@ -6583,6 +6589,10 @@
                         data = { body: function () { return window.DataExtraction.render(); } };
                     }
                     // BAI2 (paid) lives in js/bai2.js.
+                    // OCR (paid) lives in js/ocr-service.js.
+                    if (!data && dataKey === 'ocr' && window.OcrService) {
+                        data = { body: function () { return window.OcrService.render(); } };
+                    }
                     if (!data && dataKey === 'bai2' && window.Bai2) {
                         data = { body: function () { return window.Bai2.render(); } };
                     }
