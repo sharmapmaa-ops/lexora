@@ -344,11 +344,23 @@
   // Cards contributed by js/tools.js (pure-JS utilities). Merged in at
   // render time so adding a tool there needs no change in this file.
   function extraCards() {
-    if (!window.Tools || !Tools.cards) return [];
-    return Object.keys(Tools.cards).map(function (id) {
-      const c = Tools.cards[id];
-      return { id: id, label: c.label, icon: c.icon, desc: c.desc };
+    const list = [];
+    [window.Tools, window.ToolsDocs].forEach(function (mod) {
+      if (!mod || !mod.cards) return;
+      Object.keys(mod.cards).forEach(function (id) {
+        const c = mod.cards[id];
+        list.push({ id: id, label: c.label, icon: c.icon, desc: c.desc });
+      });
     });
+    return list;
+  }
+
+  // Card-based tools live in tools.js / tools-docs.js; file-based ones
+  // register themselves with ServiceRunner. Look up whichever has it.
+  function cardModule(id) {
+    if (window.Tools && Tools.cards && Tools.cards[id]) return Tools.cards[id];
+    if (window.ToolsDocs && ToolsDocs.cards && ToolsDocs.cards[id]) return ToolsDocs.cards[id];
+    return null;
   }
 
   const TOOLS = [
@@ -378,7 +390,8 @@
 
   function render(id) {
     if (id === 'other-services') return renderIndex();
-    if (window.Tools && Tools.cards[id]) return backBar() + Tools.cards[id].render();
+    const cm = cardModule(id);
+    if (cm) return backBar() + cm.render();
     if (CALCULATORS[id]) return backBar() + CALCULATORS[id]();
     if (window.ServiceRunner && ServiceRunner.has(id)) return ServiceRunner.render(id);
     return '<div class="content-section"><p>This tool is not available.</p></div>';
@@ -386,7 +399,7 @@
 
   function has(id) {
     return id === 'other-services' || !!CALCULATORS[id] ||
-      (!!window.Tools && !!Tools.cards[id]) ||
+      !!cardModule(id) ||
       (!!window.ServiceRunner && ServiceRunner.has(id));
   }
 
