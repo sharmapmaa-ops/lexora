@@ -18,6 +18,10 @@
                     "label": "Translation"
                 },
                 {
+                    "id": "ocr",
+                    "label": "OCR"
+                },
+                {
                     "id": "data-extraction",
                     "label": "Data Extraction"
                 },
