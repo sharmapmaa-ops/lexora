@@ -16,40 +16,14 @@
                 {
                     "id": "translation",
                     "label": "Translation"
-                }
-            ]
-        },
-        {
-            "id": "free-services",
-            "label": "🎁 Free Services",
-            "subItems": [
-                {
-                    "id": "pdf-split",
-                    "label": "PDF Split"
                 },
                 {
-                    "id": "pdf-merge",
-                    "label": "PDF Merge"
+                    "id": "data-extraction",
+                    "label": "Data Extraction"
                 },
                 {
-                    "id": "pdf-unprotect",
-                    "label": "PDF Unprotect"
-                },
-                {
-                    "id": "image-to-pdf",
-                    "label": "Image to PDF"
-                },
-                {
-                    "id": "pdf-to-image",
-                    "label": "PDF to Image"
-                },
-                {
-                    "id": "emi-calculator",
-                    "label": "EMI Calculator"
-                },
-                {
-                    "id": "gratuity-calculator",
-                    "label": "Gratuity Calculator"
+                    "id": "other-services",
+                    "label": "Other Services"
                 }
             ]
         },
