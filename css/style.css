@@ -28,7 +28,8 @@
 
         /* ===== TOP MENU BAR ===== */
         .top-menu-bar {
-            background: linear-gradient(135deg, #0a0f2c 0%, #131b3f 55%, #1a2352 100%);
+            background: linear-gradient(135deg, #0a0f2c 0%, #38bdf8 50%, #7dd3fc 100%);
+            /* background: linear-gradient(135deg, #0a0f2c 0%, #131b3f 55%, #1a2352 100%); */
             padding: 6px 30px;
             display: flex;
             align-items: center;
