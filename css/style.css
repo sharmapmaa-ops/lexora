@@ -406,25 +406,33 @@
             min-width: 0;   /* lets wide tables scroll instead of stretching the column */
         }
 
-        /* Both columns run the full height of the grid row... */
-        .service-page-grid { align-items: stretch; }
-
-        /* ...and each column's two cards split that height evenly, so the
-           left and right sides always end level. Without this each card kept
-           its own fixed height and the columns finished at different points. */
-        .service-col > * { flex: 1 1 0; min-height: 0; }
-
-        /* Inside the grid the per-card fixed heights and margins are replaced
-           by the flex sizing above. */
+        /* EVERY card in a service column gets the SAME fixed height, so the
+           left and right columns always line up row-for-row.
+           A flexible "split the column height evenly" approach does NOT work
+           here: the column's height comes from its children, so asking the
+           children to size themselves from the column is circular and the
+           cards collapse to nothing. One definite height per card is what
+           makes the grid predictable. */
+        .service-col > .service-card,
         .service-col > .file-list-card,
-        .service-col > .activity-log-section,
-        .service-col > .service-card { margin-top: 0; height: auto; }
+        .service-col > .activity-log-section {
+            height: 300px;
+            margin-top: 0;
+            flex: none;      /* never let the flex column resize them */
+        }
 
-        .service-col > .activity-log-section > .activity-log-card,
-        .service-col > .file-list-card { height: 100%; }
+        .service-col > .activity-log-section > .activity-log-card {
+            height: 100%;
+            margin-top: 0;
+        }
 
-        .service-col > .activity-log-section { display: flex; }
-        .service-col > .activity-log-section > .activity-log-card { flex: 1; }
+        /* Content taller than the card scrolls inside it rather than
+           overflowing and breaking the alignment. */
+        .service-col > .service-card > .card-body,
+        .service-col > .file-list-card > .card-body {
+            overflow-y: auto;
+            min-height: 0;
+        }
 
         @media (max-width: 1100px) {
             .service-page-grid { grid-template-columns: 1fr; }
@@ -661,19 +669,18 @@
             font-weight: 600;
             color: rgba(0,0,0,0.7);
             border-bottom: 2px solid rgba(0,0,139,0.1);
-            font-size: 0.66rem;
+            font-size: 0.62rem;
             text-transform: uppercase;
             letter-spacing: 0;
             padding-left: 6px;
             padding-right: 6px;
+            white-space: nowrap;   /* one line - the smaller size makes them fit */
             overflow: visible;
-            white-space: normal;   /* wrap rather than clip to "PAG…" */
             line-height: 1.2;
-            word-break: normal;
         }
 
         .file-table tbody td {
-            padding: 8px 10px;
+            padding: 8px 6px;
             border-bottom: 1px solid rgba(0,0,139,0.05);
             color: black;
             vertical-align: middle;
