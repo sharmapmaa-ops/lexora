@@ -35,16 +35,6 @@ services:
       # part of the repo Render builds from, so there's nothing to leak
       # here. Set the real values under your Render service's
       # Environment tab after the first deploy.
-      # Razorpay: real "Add Balance" payment gateway. sync: false = set the
-      # real values under the Render service's Environment tab (test-mode
-      # keys first, switch to live-mode only when ready to accept real
-      # payments).
-      - key: RAZORPAY_KEY_ID
-        sync: false
-      - key: RAZORPAY_KEY_SECRET
-        sync: false
-      - key: RAZORPAY_CURRENCY
-        value: INR
       - key: LLM_PROVIDER
         value: openai
       - key: OPENAI_API_KEY
