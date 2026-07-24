@@ -7343,103 +7343,167 @@
                 });
             }
 
+            function buildAuthHeader() {
+                // logo.png is the transparent square icon mark; logo.jpeg is a
+                // flattened horizontal lockup with a baked-in white background,
+                // which would show as a visible box on this light-blue page -
+                // so the header always uses the icon file plus a real text
+                // wordmark, never the jpeg, regardless of what COMPANY_INFO.logo
+                // points at.
+                const name = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora';
+                return `
+                    <div class="auth-header">
+                        <img class="auth-header-logo" src="Pictures/logo.png" alt="${escapeHtml(name)} logo" />
+                        <span class="auth-header-name">${escapeHtml(name.toUpperCase())}</span>
+                    </div>
+                `;
+            }
+
+            function buildAuthHeroIllustration() {
+                // Original, self-contained SVG mockup (not a cropped/edited
+                // photo) echoing the reference screenshot's laptop + floating
+                // document-type chips + cloud-upload motif.
+                return `
+                <div class="auth-illustration" aria-hidden="true">
+                    <div class="auth-illustration-chip chip-pdf">📕<span>PDF</span></div>
+                    <div class="auth-illustration-chip chip-xlsx">📗<span>XLSX</span></div>
+                    <div class="auth-illustration-chip chip-docx">📘<span>DOCX</span></div>
+                    <div class="auth-illustration-card card-translate">
+                        <div class="ic-row">🌐 Translate</div>
+                        <div class="ic-row">🧾 Extract</div>
+                        <div class="ic-row">🔁 Convert</div>
+                        <div class="ic-row">🔒 Secure</div>
+                    </div>
+                    <div class="auth-laptop">
+                        <div class="auth-laptop-screen">
+                            <div class="auth-laptop-doc">
+                                <div class="doc-line w70"></div>
+                                <div class="doc-line w40"></div>
+                                <div class="doc-line w55"></div>
+                            </div>
+                        </div>
+                        <div class="auth-laptop-base"></div>
+                    </div>
+                    <div class="auth-illustration-cloud">☁️<span class="cloud-arrow">⬆️</span></div>
+                </div>`;
+            }
+
             function buildAuthLeftPanel() {
-                const name = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora AI Solutions';
-                const logoPath = (COMPANY_INFO && COMPANY_INFO.logo) || 'Pictures/logo.png';
-
-                // Showcases what the platform actually does today. The old panel
-                // described only Lease Abstraction, which is now hidden from
-                // most users - so signing in gave a misleading first impression.
-                const services = [
-                    { icon: '🌐', title: 'Translation',     desc: '60+ languages, layout preserved exactly as the original' },
-                    { icon: '🔍', title: 'OCR',             desc: 'Scanned or photographed pages rebuilt into editable Word' },
-                    { icon: '🧾', title: 'Data Extraction', desc: 'Define your own fields, get a clean table from every file' },
-                    { icon: '🏦', title: 'BAI2',            desc: 'Bank statements converted to BAI2, CSV or JSON' },
-                    { icon: '📄', title: 'Lease Abstraction', desc: 'Structured lease fields with source citations' },
-                    { icon: '🎁', title: 'Free Tools',      desc: '29 PDF, image, data and calculator utilities' }
+                const stats = [
+                    { icon: '🌐', num: '60+',  label: 'Languages<br>Supported' },
+                    { icon: '🛡️', num: '99%',  label: 'Accuracy<br>Guaranteed' },
+                    { icon: '🔒', num: 'Secure', label: 'Enterprise<br>Grade Security' }
                 ];
 
-                const steps = [
-                    { n: '1', label: 'Upload', desc: 'Drop in your PDFs or images' },
-                    { n: '2', label: 'Process', desc: 'Choose your options and start' },
-                    { n: '3', label: 'Download', desc: 'Get Word, Excel, CSV, JSON or PDF' }
+                const checklist = [
+                    'Preserve original layout &amp; formatting',
+                    'Extract data with high accuracy',
+                    'Convert to Word, Excel, CSV, JSON or PDF',
+                    'Process files securely in your browser',
+                    'Smart OCR &amp; data extraction',
+                    'Fast, reliable &amp; privacy focused'
                 ];
-
-                const social = buildSocialLinksHtml({ size: 20, gap: 16, color: 'rgba(255,255,255,0.75)' });
 
                 return `
-                    <div class="auth-brand-icon"><img src="${logoPath}" alt="${escapeHtml(name)} logo" onerror="this.onerror=null;this.src='Pictures/logo.png';" /></div>
-                    <h1 class="auth-brand-title">${escapeHtml(name)}</h1>
-                    <p class="auth-brand-tagline">Document Intelligence Platform</p>
-                    <p class="auth-brand-sub">
+                    <h1 class="auth-hero-title">Lexora</h1>
+                    <p class="auth-hero-tagline">Document Intelligence Platform</p>
+                    <p class="auth-hero-desc">
                         Translate, read, and extract data from any document —
                         keeping the original layout intact.
                     </p>
 
-                    <div class="auth-steps">
-                        ${steps.map(function (s, i) {
-                            return `<div class="auth-step">
-                                <div class="auth-step-num">${s.n}</div>
-                                <div>
-                                    <div class="auth-step-label">${s.label}</div>
-                                    <div class="auth-step-desc">${s.desc}</div>
-                                </div>
-                            </div>${i < steps.length - 1 ? '<div class="auth-step-arrow">→</div>' : ''}`;
-                        }).join('')}
-                    </div>
-
-                    <div class="auth-feature-grid">
-                        ${services.map(function (s) {
-                            return `<div class="auth-feature-card">
-                                <div class="auth-feature-title">${s.icon} ${escapeHtml(s.title)}</div>
-                                <div class="auth-feature-desc">${escapeHtml(s.desc)}</div>
-                            </div>`;
-                        }).join('')}
-                    </div>
-
                     <div class="auth-stats-row">
-                        <div>
-                            <div class="auth-stat-num">60+</div>
-                            <div class="auth-stat-label">Languages supported</div>
-                        </div>
-                        <div>
-                            <div class="auth-stat-num">29</div>
-                            <div class="auth-stat-label">Free tools included</div>
-                        </div>
-                        <div>
-                            <div class="auth-stat-num">5</div>
-                            <div class="auth-stat-label">Output formats</div>
-                        </div>
+                        ${stats.map(s => `
+                            <div class="auth-stat">
+                                <div class="auth-stat-icon">${s.icon}</div>
+                                <div>
+                                    <div class="auth-stat-num">${s.num}</div>
+                                    <div class="auth-stat-label">${s.label}</div>
+                                </div>
+                            </div>`).join('')}
                     </div>
 
-                    <div class="auth-trust-row">
-                        <div class="auth-trust"><b>Secure</b><span>Files processed in your browser</span></div>
-                        <div class="auth-trust"><b>Pay per page</b><span>Only for what you actually process</span></div>
-                        <div class="auth-trust"><b>No lock-in</b><span>Export to Word, Excel, CSV or JSON</span></div>
+                    <div class="auth-checklist">
+                        ${checklist.map(c => `<div class="auth-check-item"><span class="auth-check-tick">✓</span>${c}</div>`).join('')}
                     </div>
 
-                    ${social ? `<div class="auth-social">${social}</div>` : ''}
+                    ${buildAuthHeroIllustration()}
+                `;
+            }
+
+            function buildAuthFeatureStrip() {
+                // Showcases what the platform actually does today. The old panel
+                // described only Lease Abstraction, which is now hidden from
+                // most users - so signing in gave a misleading first impression.
+                const services = [
+                    { icon: '☁️', title: 'Upload',          desc: 'Drop in your PDFs or images' },
+                    { icon: '🎯', title: 'Process',         desc: 'Choose your options and start' },
+                    { icon: '⬇️', title: 'Download',        desc: 'Get Word, Excel, CSV, JSON or PDF' },
+                    { icon: '🌐', title: 'Translation',     desc: '60+ languages, layout preserved exactly' },
+                    { icon: '🔍', title: 'OCR',             desc: 'Scanned or photographed pages rebuilt into editable Word' },
+                    { icon: '🧾', title: 'Data Extraction', desc: 'Define your own fields, get a clean table from every file' },
+                    { icon: '🏦', title: 'BAI2',            desc: 'Bank statements converted to BAI2, CSV or JSON' },
+                    { icon: '📄', title: 'Lease Abstraction', desc: 'Structured lease fields with source citations' },
+                    { icon: '🎁', title: 'Free Tools',      desc: '29 PDF, image, data and calculator utilities' },
+                    { icon: '🛡️', title: 'Secure',          desc: 'Files processed in your browser. We don\u2019t store your documents' }
+                ];
+
+                const trust = [
+                    { icon: '🛡️', title: 'Secure in Browser', desc: 'Files never leave your device' },
+                    { icon: '💳', title: 'Pay per Page',       desc: 'Only for what you process' },
+                    { icon: '🔓', title: 'No Lock-in',         desc: 'Export anytime' },
+                    { icon: '🧰', title: '29+ Free Tools',     desc: 'Built-in utilities to save time' }
+                ];
+
+                return `
+                    <div class="auth-feature-grid">
+                        ${services.map(s => `
+                            <div class="auth-feature-card">
+                                <div class="auth-feature-icon">${s.icon}</div>
+                                <div class="auth-feature-title">${escapeHtml(s.title)}</div>
+                                <div class="auth-feature-desc">${escapeHtml(s.desc)}</div>
+                            </div>`).join('')}
+                    </div>
+                    <div class="auth-trust-strip">
+                        ${trust.map(t => `
+                            <div class="auth-trust-item">
+                                <div class="auth-trust-icon">${t.icon}</div>
+                                <div>
+                                    <div class="auth-trust-title">${escapeHtml(t.title)}</div>
+                                    <div class="auth-trust-desc">${escapeHtml(t.desc)}</div>
+                                </div>
+                            </div>`).join('')}
+                    </div>
                 `;
             }
 
             function buildLoginCard() {
                 return `
                     <h2 class="auth-card-title">Welcome Back</h2>
-                    <div class="auth-form-group">
-                        <input type="email" id="loginEmail" class="auth-input" placeholder="Email Address" />
+                    <p class="auth-card-note">Sign in to continue to your account</p>
+                    <div class="auth-form-group auth-input-icon-group">
+                        <span class="auth-input-icon">✉️</span>
+                        <input type="email" id="loginEmail" class="auth-input auth-input-icon" placeholder="Email Address" />
                     </div>
-                    <div class="auth-form-group auth-password-group">
-                        <input type="password" id="loginPassword" class="auth-input" placeholder="Password" />
+                    <div class="auth-form-group auth-password-group auth-input-icon-group">
+                        <span class="auth-input-icon">🔒</span>
+                        <input type="password" id="loginPassword" class="auth-input auth-input-icon" placeholder="Password" />
                         <span class="auth-eye" onclick="authTogglePassword('loginPassword', this)">👁️</span>
                     </div>
+                    <div class="auth-remember-row">
+                        <label class="auth-remember-label">
+                            <input type="checkbox" id="loginRemember" />
+                            Remember me
+                        </label>
+                        <a onclick="authGoTo('forgot')">Forgot Password?</a>
+                    </div>
                     <div id="authErrorBox" class="auth-error-box" style="display:none;"></div>
-                    <div class="auth-btn-row">
-                        <button class="auth-btn-primary" onclick="handleAuthLogin()">Login</button>
+                    <div class="auth-btn-col">
+                        <button class="auth-btn-primary" onclick="handleAuthLogin()">→ Login</button>
                         <button class="auth-btn-secondary" onclick="authResetForm(['loginEmail','loginPassword'])">Reset</button>
                     </div>
-                    <div class="auth-links">
-                        <a onclick="authGoTo('forgot')">Forgot Password?</a>
-                        <a onclick="authGoTo('register')">Create Account</a>
+                    <div class="auth-links auth-links-center">
+                        Don't have an account? <a onclick="authGoTo('register')">Create Account</a>
                     </div>
                 `;
             }
@@ -7575,10 +7639,12 @@
                 const root = document.getElementById('authScreen');
                 if (!root) return;
                 root.innerHTML = `
+                    ${buildAuthHeader()}
                     <div class="auth-wrapper">
                         <div class="auth-left">${buildAuthLeftPanel()}</div>
                         <div class="auth-right"><div class="auth-card">${buildAuthCard()}</div></div>
                     </div>
+                    ${authState.step === 'login' ? buildAuthFeatureStrip() : ''}
                 `;
                 if (authState.step === 'verify') {
                     wireOtpBoxes();
