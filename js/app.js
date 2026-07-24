@@ -6516,9 +6516,65 @@
             // ============================================================
             // 33. UPDATE CONTENT
             // ============================================================
+            // Har page ke upar title + subtitle (left) aur breadcrumb pill
+            // (right) - mockups wala header. Dashboard aur Services pages
+            // apna khud ka intro/layout rakhte hain, isliye unpar header
+            // nahi lagta (warna do heading dikhengi).
+            const PAGE_SUBTITLES = {
+                'Payment History':   'View all your transactions and account activity.',
+                'Balance':           'Add funds and keep track of your wallet balance.',
+                'Payment Mode':      'Manage the cards and UPI IDs saved to your account.',
+                'Plans & Offers':    'Upgrade, downgrade or choose the plan that fits your needs.',
+                'Plans':             'Upgrade, downgrade or choose the plan that fits your needs.',
+                'Notifications':     'Stay updated with important alerts and activities.',
+                'Profile':           'Manage your personal information and account preferences.',
+                'API Documentation': 'Generate your API key and explore our API reference to integrate Lexora services.',
+                'Support':           'Raise a ticket and track your previous requests.',
+                'Contact Us':        "We'd love to hear from you.",
+                'Help Center':       'Guides and answers to the most common questions.'
+            };
+
+            const HOME_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+                + 'stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/>'
+                + '<path d="M5.5 9.5V20h13V9.5"/></svg>';
+
+            function buildPageHeader(breadcrumb) {
+                const raw = String(breadcrumb || '').trim();
+                if (!raw) return '';
+
+                // "\u{1F4B3} Payment / Payment History" -> ['Payment', 'Payment History']
+                const parts = raw.split('/')
+                    .map(p => p.replace(/^[^A-Za-z0-9]+/, '').trim())
+                    .filter(Boolean);
+                if (!parts.length) return '';
+
+                const title = parts[parts.length - 1];
+                if (title === 'Dashboard' || parts[0] === 'Services') return '';
+
+                const sub = PAGE_SUBTITLES[title] || '';
+                const mid = parts.length > 1
+                    ? parts.slice(0, -1).map(p =>
+                        `<span class="sep">\u203a</span><span>${escapeHtml(p)}</span>`).join('')
+                    : '';
+
+                return `
+                    <div class="page-head">
+                        <div>
+                            <h1 class="page-head-title">${escapeHtml(title)}</h1>
+                            ${sub ? `<p class="page-head-sub">${escapeHtml(sub)}</p>` : ''}
+                        </div>
+                        <div class="page-crumb">
+                            ${HOME_ICON}<a onclick="lexoraNavigate('dashboard')">Dashboard</a>
+                            ${mid}
+                            <span class="sep">\u203a</span><span class="cur">${escapeHtml(title)}</span>
+                        </div>
+                    </div>
+                `;
+            }
+
             function updateContent(data, breadcrumb) {
                 const bodyContent = typeof data.body === 'function' ? data.body() : data.body;
-                contentBody.innerHTML = bodyContent || '';
+                contentBody.innerHTML = buildPageHeader(breadcrumb) + (bodyContent || '');
                 currentMenuDisplay.textContent = breadcrumb || 'Dashboard';
 
                 if (breadcrumb && breadcrumb.includes('Payment Mode')) {
@@ -6729,6 +6785,12 @@
             // ============================================================
             // 36. LOAD CONTENT
             // ============================================================
+            // Breadcrumb ke "Dashboard" link ke liye - inline onclick global
+            // scope me chalta hai, aur loadContent() is IIFE ke andar hai.
+            window.lexoraNavigate = function(parentId, subId) {
+                loadContent(parentId, subId || null);
+            };
+
             function loadContent(parentId, subId) {
                 // If we're navigating AWAY from an in-progress/active
                 // translation view to anywhere else, tear it down first.
@@ -7556,7 +7618,7 @@
                 return `
                     <div class="auth-hero">
                         <div class="auth-hero-art">
-                            <img src="Pictures/auth-hero.png" alt=""
+                            <img src="Pictures/auth-hero.svg" alt=""
                                  onerror="this.style.display='none';" />
                         </div>
                         <div class="auth-hero-copy">
@@ -7808,7 +7870,7 @@
                             <div class="auth-main-right">
                                 <div class="auth-card">${buildAuthCard()}</div>
                                 <div class="auth-side-art">
-                                    <img src="Pictures/auth-side.png" alt=""
+                                    <img src="Pictures/auth-side.svg" alt=""
                                          onerror="this.style.display='none';" />
                                 </div>
                             </div>
