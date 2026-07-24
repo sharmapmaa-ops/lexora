@@ -529,7 +529,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
       const cls = statusClass(f.status);
       const pct = f.progress != null ? f.progress : (f.status === 'Success' ? 100 : 0);
       const action = f.status === 'Success'
-        ? `<a class="file-action-link" onclick="DataExtraction.downloadFile(${f.uid})">Download</a>`
+        ? `<a class="file-action-link" onclick="DataExtraction.downloadFile(${f.uid})" title="Download"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`
         : (f.status === 'Failed'
             ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">Error</span>`
             : `<span class="file-action-link disabled">${esc(f.status || 'Pending')}</span>`);
@@ -540,10 +540,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
         <td>${f.pageCount || '-'}</td>
         <td><span class="scan-result-text ${cls}">${esc(f.status || 'Pending')}</span></td>
         <td>
-          <div class="progress-bar-container">
-            <div class="progress-bar-track"><div class="progress-bar-fill ${cls}" style="width:${pct}%;"></div></div>
-            <span class="progress-label">${pct}%</span>
-          </div>
+          <span class="progress-label">${pct}%</span>
         </td>
         <td>${action}</td>
       </tr>`;
@@ -590,7 +587,8 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     const countText = STATE.files.length ? `${STATE.files.length} file(s) uploaded` : 'No files uploaded yet';
     return `
       <div>
-        <div class="service-upload-layout">
+        <div class="service-page-grid">
+          <div class="service-col">
           <div class="service-card">
             <h3>📤 Upload File(s)</h3>
             <div class="card-body">
@@ -639,8 +637,9 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
               </div>
             </div>
           </div>
-        </div>
+          </div>
 
+          <div class="service-col">
         <div class="file-list-card">
           <div class="file-list-card-header">
             <h3>📁 Uploaded Files</h3>
@@ -649,7 +648,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
           <div class="card-body">
             <div class="file-table-wrapper">
               <table class="file-table file-table-files">
-                <colgroup><col style="width:5%;"><col style="width:33%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;"></colgroup>
+                <colgroup><col style="width:4%;"><col style="width:56%;"><col style="width:9%;"><col style="width:14%;"><col style="width:9%;"><col style="width:8%;"></colgroup>
                 <thead><tr>
                   <th><input type="checkbox" ${(STATE.files.length > 0 && STATE.files.every(function (f) { return f.selected !== false; })) ? 'checked' : ''}
                              ${STATE.running ? 'disabled' : ''} onchange="DataExtraction.toggleAll(this.checked)" title="Select all" /></th>
@@ -658,7 +657,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
               </table>
               <div class="file-table-scroll">
                 <table class="file-table file-table-files">
-                  <colgroup><col style="width:5%;"><col style="width:33%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;"></colgroup>
+                  <colgroup><col style="width:4%;"><col style="width:56%;"><col style="width:9%;"><col style="width:14%;"><col style="width:9%;"><col style="width:8%;"></colgroup>
                   <tbody>${fileRows()}</tbody>
                 </table>
               </div>
@@ -696,7 +695,8 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
             </div>
           </div>
         </div>
-      </div>`;
+          </div>
+        </div>`;
   }
 
   function rerender() {

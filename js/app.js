@@ -395,29 +395,21 @@
                     const isSessionDl = file.sessionDownload && translationBlobStore[file.id];
                     const actionLink = file.status === 'completed' ?
                         (isSessionDl
-                          ? `<a class="file-action-link" onclick="downloadSessionBlob('${file.id}')">Download</a>`
-                          : `<a class="file-action-link" onclick="downloadFile('${dlFile}', '${docFolder.replace(/'/g, "\\'")}', '${downloadKind}')">Download</a>`) :
+                          ? `<a class="file-action-link" onclick="downloadSessionBlob('${file.id}')" title="Download"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`
+                          : `<a class="file-action-link" onclick="downloadFile('${dlFile}', '${docFolder.replace(/'/g, "\\'")}', '${downloadKind}')" title="Download"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`) :
                         file.status === 'needs_review' ?
                         `<a class="file-action-link review-link" onclick="openLeaseReviewModal('${file.id}')">🔍 Review</a>` :
                         file.status === 'error' ?
                         `<a class="file-action-link error-link" onclick="retryFile('${file.id}')">${actionLabel}</a>` :
                         `<span class="file-action-link disabled">${file.status === 'processing' ? 'Processing' : 'Pending'}</span>`;
 
-                    const scanCell = scanIsNumeric ? `
-                        <div class="progress-bar-container">
-                            <div class="progress-bar-track">
-                                <div class="progress-bar-fill ${statusClass}" style="width:${scanProgress}%;"></div>
-                            </div>
-                            <span class="progress-label">${scanProgress}%</span>
-                        </div>` : `<span class="scan-result-text ${statusClass}">${file.scanResult}</span>`;
+                    const scanCell = scanIsNumeric
+                        ? `<span class="progress-label">${scanProgress}%</span>`
+                        : `<span class="scan-result-text ${statusClass}">${file.scanResult}</span>`;
 
-                    const progressCell = progressIsNumeric ? `
-                        <div class="progress-bar-container">
-                            <div class="progress-bar-track">
-                                <div class="progress-bar-fill ${statusClass}" style="width:${processProgress}%;"></div>
-                            </div>
-                            <span class="progress-label">${processProgress}%</span>
-                        </div>` : `<span class="scan-result-text ${statusClass}">${file.progress || '-'}</span>`;
+                    const progressCell = progressIsNumeric
+                        ? `<span class="progress-label">${processProgress}%</span>`
+                        : `<span class="scan-result-text ${statusClass}">${file.progress || '-'}</span>`;
 
                     return `
                         <tr>
@@ -608,7 +600,8 @@
 
                 return `
                     <div>
-                        <div class="service-upload-layout">
+                        <div class="service-page-grid">
+                        <div class="service-col">
                             <!-- Left: Upload Card -->
                             <div class="service-card">
                                 <h3>📤 Upload File(s)</h3>
@@ -662,6 +655,7 @@
                             </div>
                         </div>
 
+                        <div class="service-col">
                         <!-- File List Card (Separate) -->
                         <div class="file-list-card">
                             <div class="file-list-card-header">
@@ -672,7 +666,7 @@
                                 <div class="file-table-wrapper">
                                     <table class="file-table file-table-files">
                                         <colgroup>
-                                            <col style="width:5%;"><col style="width:33%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;">
+                                            <col style="width:4%;"><col style="width:56%;"><col style="width:9%;"><col style="width:14%;"><col style="width:9%;"><col style="width:8%;">
                                         </colgroup>
                                         <thead>
                                             <tr>
@@ -688,7 +682,7 @@
                                     <div class="file-table-scroll">
                                         <table class="file-table file-table-files">
                                             <colgroup>
-                                                <col style="width:5%;"><col style="width:33%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;">
+                                                <col style="width:4%;"><col style="width:56%;"><col style="width:9%;"><col style="width:14%;"><col style="width:9%;"><col style="width:8%;">
                                             </colgroup>
                                             <tbody id="fileTableBody">
                                                 ${fileRows || '<tr><td colspan="5" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No files uploaded yet.</td></tr>'}
@@ -738,6 +732,7 @@
                                     </div>
                                 </div>
                             </div>
+                        </div>
                         </div>
                     </div>
 

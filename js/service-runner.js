@@ -77,12 +77,7 @@
       const cls = statusClass(f.status);
       const pct = f.progress != null ? f.progress : (f.status === 'Success' ? 100 : 0);
       const progressCell = `
-        <div class="progress-bar-container">
-          <div class="progress-bar-track">
-            <div class="progress-bar-fill ${cls}" style="width:${pct}%;"></div>
-          </div>
-          <span class="progress-label">${pct}%</span>
-        </div>`;
+        <span class="progress-label">${pct}%</span>`;
       const action = f.status === 'Success'
         ? '<span class="file-action-link disabled">Done</span>'
         : (f.status === 'Failed'
@@ -132,7 +127,8 @@
     return `
       <div>
         ${backBar}
-        <div class="service-upload-layout">
+        <div class="service-page-grid">
+          <div class="service-col">
           <div class="service-card">
             <h3>📤 Upload File(s)</h3>
             <div class="card-body">
@@ -162,8 +158,9 @@
               </div>
             </div>
           </div>
-        </div>
+          </div>
 
+          <div class="service-col">
         <div class="file-list-card">
           <div class="file-list-card-header">
             <h3>📁 Uploaded Files</h3>
@@ -172,7 +169,7 @@
           <div class="card-body">
             <div class="file-table-wrapper">
               <table class="file-table file-table-files">
-                <colgroup><col style="width:5%;"><col style="width:33%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;"></colgroup>
+                <colgroup><col style="width:4%;"><col style="width:56%;"><col style="width:9%;"><col style="width:14%;"><col style="width:9%;"><col style="width:8%;"></colgroup>
                 <thead><tr>
                   <th><input type="checkbox" ${(st.files.length > 0 && st.files.every(function (f) { return f.selected !== false; })) ? 'checked' : ''}
                              ${st.running ? 'disabled' : ''} onchange="ServiceRunner.toggleAll('${id}', this.checked)" title="Select all" /></th>
@@ -181,7 +178,7 @@
               </table>
               <div class="file-table-scroll">
                 <table class="file-table file-table-files">
-                  <colgroup><col style="width:5%;"><col style="width:33%;"><col style="width:10%;"><col style="width:16%;"><col style="width:16%;"><col style="width:20%;"></colgroup>
+                  <colgroup><col style="width:4%;"><col style="width:56%;"><col style="width:9%;"><col style="width:14%;"><col style="width:9%;"><col style="width:8%;"></colgroup>
                   <tbody>${fileRows(id)}</tbody>
                 </table>
               </div>
@@ -210,7 +207,8 @@
             </div>
           </div>
         </div>
-      </div>`;
+          </div>
+        </div>`;
   }
 
   function refresh(id) {
