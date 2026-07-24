@@ -28,8 +28,7 @@
 
         /* ===== TOP MENU BAR ===== */
         .top-menu-bar {
-            background: linear-gradient(135deg, #0a0f2c 0%, #38bdf8 50%, #7dd3fc 100%);
-            /* background: linear-gradient(135deg, #0a0f2c 0%, #131b3f 55%, #1a2352 100%); */
+            background: linear-gradient(135deg, #075985 0%, #0369a1 55%, #0284c7 100%);
             padding: 6px 30px;
             display: flex;
             align-items: center;
@@ -2306,7 +2305,7 @@
         }
 
         .footer {
-            background: linear-gradient(135deg, #0a0f2c 0%, #131b3f 55%, #1a2352 100%);
+            background: linear-gradient(135deg, #075985 0%, #0369a1 55%, #0284c7 100%);
             text-align: center;
             padding: 8px 20px;
             font-size: 0.75rem;
@@ -2957,6 +2956,55 @@
             pointer-events: none;
             user-select: none;
         }
+
+        /* Other Services tool grid - 5 across, unlike .plans-grid which is
+           3 across for the three pricing plans. */
+        .tools-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 14px;
+            margin: 10px 0 0;
+            align-items: stretch;
+        }
+
+        .tool-card {
+            border: 1px solid rgba(0,0,139,0.15);
+            border-radius: 8px;
+            padding: 14px 12px;
+            background: #fff;
+            cursor: pointer;
+            transition: box-shadow .15s, transform .15s, border-color .15s;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .tool-card:hover {
+            border-color: #0284c7;
+            box-shadow: 0 4px 14px rgba(2,132,199,0.15);
+            transform: translateY(-2px);
+        }
+
+        .tool-card-icon { font-size: 1.6rem; line-height: 1; }
+        .tool-card-name { font-weight: 600; color: #12305c; font-size: 0.92rem; }
+        .tool-card-desc { font-size: 0.76rem; color: rgba(0,0,0,0.55); line-height: 1.35; }
+
+        .tool-group-title {
+            font-size: 1rem;
+            font-weight: 700;
+            color: #12305c;
+            margin: 22px 0 2px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tool-group-title:first-of-type { margin-top: 6px; }
+
+        @media (max-width: 1400px) { .tools-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+        @media (max-width: 1100px) { .tools-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+        @media (max-width: 800px)  { .tools-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        @media (max-width: 520px)  { .tools-grid { grid-template-columns: 1fr; } }
 
         .plans-grid {
             display: grid;
@@ -3728,7 +3776,10 @@
 .auth-screen {
     position: fixed;
     inset: 0;
-    background: linear-gradient(135deg, #0a0f2c 0%, #131b3f 55%, #1a2352 100%);
+    background:
+        radial-gradient(circle at 12% 18%, rgba(56,189,248,0.28) 0%, transparent 42%),
+        radial-gradient(circle at 88% 78%, rgba(14,165,233,0.22) 0%, transparent 45%),
+        linear-gradient(135deg, #06304a 0%, #075985 50%, #0369a1 100%);
     overflow-y: auto;
     z-index: 500;
 }
@@ -4661,4 +4712,59 @@
 #notificationTableHeader th:nth-child(3),
 #notificationTable td:nth-child(3) {
     width: auto;
+}
+
+
+/* ===== LOGIN PANEL EXTRAS ===== */
+.auth-steps {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 18px 0 20px;
+}
+
+.auth-step { display: flex; align-items: center; gap: 9px; }
+
+.auth-step-num {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.16);
+    border: 1px solid rgba(255,255,255,0.28);
+    color: #fff;
+    font-size: 0.78rem;
+    font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+.auth-step-label { color: #fff; font-weight: 600; font-size: 0.86rem; line-height: 1.2; }
+.auth-step-desc  { color: rgba(255,255,255,0.6); font-size: 0.72rem; line-height: 1.25; }
+.auth-step-arrow { color: rgba(255,255,255,0.35); font-size: 1rem; }
+
+.auth-trust-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(255,255,255,0.14);
+}
+
+.auth-trust {
+    flex: 1;
+    min-width: 130px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.auth-trust b    { color: #7dd3fc; font-size: 0.84rem; }
+.auth-trust span { color: rgba(255,255,255,0.6); font-size: 0.72rem; line-height: 1.3; }
+
+.auth-social { margin-top: 18px; }
+
+@media (max-width: 900px) {
+    .auth-steps { gap: 8px; }
+    .auth-step-arrow { display: none; }
 }
