@@ -36,6 +36,7 @@ import mimetypes
 import os
 import re
 import hashlib
+import hmac
 import secrets
 import shutil
 import tempfile
@@ -288,6 +289,55 @@ def _destroy_session(token):
     with _sessions_lock:
         _sessions.pop(token, None)
         _persist_sessions_locked()
+
+
+# ============================================================
+# Razorpay - server-side verified balance top-ups.
+#
+# The existing generic PUT /api/data/payment-history route lets ANY
+# logged-in user overwrite the whole payment-history.json array with
+# whatever they like - fine for the old "manual entry, pending Admin
+# approval" flow (an Admin still has to approve it before it counts
+# toward the balance), but real money can't be trusted to a client PUT.
+# These two routes are the only place a "Razorpay" transaction is ever
+# written, and they only run after Razorpay's own HMAC signature has
+# been verified server-side - the browser never gets to assert an
+# amount that becomes real balance on its own.
+#
+# _payment_history_lock is separate from the generic PUT path (which
+# stays un-locked, matching its existing behaviour) so a Razorpay
+# verify can never race with itself or silently lose an entry.
+# ============================================================
+_payment_history_lock = threading.Lock()
+
+
+def _append_payment_history_entry(entry):
+    path = os.path.join(JSON_DIR, "payment-history.json")
+    with _payment_history_lock:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                rows = json.load(f)
+            if not isinstance(rows, list):
+                rows = []
+        except (OSError, json.JSONDecodeError):
+            rows = []
+        rows.append(entry)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(rows, f, indent=4, ensure_ascii=False)
+            f.write("\n")
+    return entry
+
+
+def _razorpay_auth_header():
+    key_id = os.environ.get("RAZORPAY_KEY_ID", "").strip()
+    key_secret = os.environ.get("RAZORPAY_KEY_SECRET", "").strip()
+    if not key_id or not key_secret:
+        raise ValueError(
+            "Payment gateway is not configured on the server "
+            "(RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET missing from .env)."
+        )
+    token = base64.b64encode(f"{key_id}:{key_secret}".encode("utf-8")).decode("ascii")
+    return key_id, key_secret, f"Basic {token}"
 
 
 # Only these json/ files can be read/written through the /api/data/<name>
@@ -1378,6 +1428,8 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/auth/resend-code": self._handle_auth_resend_code,
             "/api/profile/update": self._handle_profile_update,
             "/api/auth/logout": self._handle_auth_logout,
+            "/api/payment/create-order": self._handle_payment_create_order,
+            "/api/payment/verify-payment": self._handle_payment_verify,
         }
 
         handler = routes.get(path)
@@ -1402,6 +1454,133 @@ class Handler(SimpleHTTPRequestHandler):
             status, payload = 500, {"error": "Internal server error"}
 
         self._send_json(status, payload)
+
+    # ---- Razorpay: create-order (step 1) ----
+    def _handle_payment_create_order(self, body):
+        """Browser 'Add Balance' amount bhejta hai; hum Razorpay Orders API
+        par ek order banate hain aur order_id + public key_id wapas bhejte
+        hain. Koi balance yaha credit NAHI hota - ye sirf checkout widget
+        kholne ke liye order banata hai. Asli credit sirf verify-payment
+        mein, signature check ke baad hota hai."""
+        user_id = _safe_id(self._resolve_user_id(body))
+
+        try:
+            amount = float(body.get("amount"))
+        except (TypeError, ValueError):
+            raise ValueError("A valid amount is required.")
+        if amount <= 0 or amount > 1_000_000:
+            raise ValueError("Amount must be between 0 and 1,000,000.")
+
+        key_id, key_secret, auth_header = _razorpay_auth_header()
+        currency = (os.environ.get("RAZORPAY_CURRENCY") or "INR").strip() or "INR"
+        # Razorpay amounts are always in the smallest currency unit
+        # (paise for INR, cents for USD, etc.) - hence *100.
+        amount_subunits = int(round(amount * 100))
+        receipt = f"lexora_{user_id}_{int(time.time())}"[:40]
+
+        payload = {
+            "amount": amount_subunits,
+            "currency": currency,
+            "receipt": receipt,
+            "payment_capture": 1,
+            "notes": {"userId": user_id},
+        }
+        req = urllib.request.Request(
+            "https://api.razorpay.com/v1/orders",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": auth_header},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                order = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8")[:300]
+            except Exception:
+                pass
+            return e.code, {"error": f"Razorpay order create failed: {detail}"}
+        except Exception as e:
+            return 502, {"error": f"Could not reach Razorpay: {e}"}
+
+        return 200, {
+            "orderId": order.get("id"),
+            "amount": amount_subunits,
+            "currency": currency,
+            "keyId": key_id,
+        }
+
+    # ---- Razorpay: verify-payment (step 2) ----
+    def _handle_payment_verify(self, body):
+        """Checkout widget ke handler() se aata hai (razorpay_order_id,
+        razorpay_payment_id, razorpay_signature). HMAC-SHA256 signature
+        yaha server-side verify hoti hai using key_secret - browser kabhi
+        bhi khud se ek 'approved' Razorpay transaction likh nahi sakta,
+        sirf Razorpay khud jo signature de sakta hai wahi accept hoti hai.
+        Signature valid hone ke baad bhi amount client se copy nahi karte -
+        order ko dobara Razorpay se fetch karke wahi authoritative amount
+        credit hota hai."""
+        user_id = _safe_id(self._resolve_user_id(body))
+        order_id = (body.get("razorpayOrderId") or "").strip()
+        payment_id = (body.get("razorpayPaymentId") or "").strip()
+        signature = (body.get("razorpaySignature") or "").strip()
+        description = (body.get("description") or "Razorpay balance top-up").strip()[:200]
+
+        if not (order_id and payment_id and signature):
+            raise ValueError("Missing Razorpay payment fields.")
+
+        key_id, key_secret, auth_header = _razorpay_auth_header()
+
+        expected_signature = hmac.new(
+            key_secret.encode("utf-8"),
+            f"{order_id}|{payment_id}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(expected_signature, signature):
+            raise ValueError("Payment verification failed - signature mismatch.")
+
+        # Signature checks out, so Razorpay genuinely signed this - now
+        # pull the order back from Razorpay's API to get the real amount
+        # actually paid (never trust an amount the browser reports).
+        req = urllib.request.Request(
+            f"https://api.razorpay.com/v1/orders/{order_id}",
+            headers={"Authorization": auth_header},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                order = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            raise ValueError(f"Could not confirm order with Razorpay: {e}")
+
+        if (order.get("notes") or {}).get("userId") != user_id:
+            raise ValueError("This order does not belong to the logged-in user.")
+        if order.get("status") != "paid":
+            raise ValueError(f"Order is not marked paid by Razorpay (status: {order.get('status')}).")
+
+        amount_subunits = order.get("amount_paid") or order.get("amount") or 0
+        real_amount = round(amount_subunits / 100, 2)
+        if real_amount <= 0:
+            raise ValueError("Order amount could not be confirmed.")
+
+        now = datetime.datetime.now()
+        entry = {
+            "id": "TXN-RZP-" + payment_id[-10:],
+            "date": now.strftime("%Y-%m-%d"),
+            "time": now.strftime("%I:%M %p"),
+            "userId": user_id,
+            "paymentType": "Razorpay",
+            "paymentMode": f"Razorpay ({order.get('currency', 'INR')})",
+            "description": description,
+            "credit": real_amount,
+            "debit": 0,
+            "status": "approved",
+            "razorpayOrderId": order_id,
+            "razorpayPaymentId": payment_id,
+        }
+        _append_payment_history_entry(entry)
+        return 200, {"ok": True, "transaction": entry}
 
     # ---- Section 2: profile photo storage ----
     def _handle_upload_photo(self, body):
