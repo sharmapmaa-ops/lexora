@@ -386,6 +386,34 @@
         }
 
         /* ===== SERVICE UPLOAD LAYOUT ===== */
+        /* Service pages: Upload + Setup stacked on the left, Uploaded Files +
+           Activity Log stacked on the right, so the whole workspace is visible
+           without scrolling. Explicit column wrappers rather than nth-child
+           placement, because some services add extra cards and positional
+           rules would silently shift them. */
+        .service-page-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            align-items: start;
+            margin-top: 10px;
+        }
+
+        .service-col {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            min-width: 0;   /* lets wide tables scroll instead of stretching the column */
+        }
+
+        /* Inside the grid these cards are already spaced by the column gap. */
+        .service-col > .file-list-card,
+        .service-col > .activity-log-section { margin-top: 0; }
+
+        @media (max-width: 1100px) {
+            .service-page-grid { grid-template-columns: 1fr; }
+        }
+
         .service-upload-layout {
             display: grid;
             grid-template-columns: 1fr 1fr;
