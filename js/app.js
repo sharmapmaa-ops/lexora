@@ -142,7 +142,7 @@
                     unitLabel = (myPlan.billingUnit || 'document') === 'page' ? 'page' : 'document';
                 }
                 const total = selectedFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
-                return `💰 Rate: $${perUnit.toFixed(2)}/${unitLabel} · Est. total: $${total.toFixed(2)} for ${selectedFiles.length} selected file(s)`;
+                return `💰 Rate: ₹${perUnit.toFixed(2)}/${unitLabel} · Est. total: ₹${total.toFixed(2)} for ${selectedFiles.length} selected file(s)`;
             }
 
             // Keeps the Est. charge line in sync the moment file selection
@@ -281,14 +281,14 @@
             // processing fee is debited, so the table always reflects a
             // real, already-completed charge.
             function notifyProcessCompletion(serviceName, fileName, charge, txnId) {
-                addNotification(`${serviceName} completed for "${fileName}" - $${charge.toFixed(2)} was deducted from your wallet (${txnId}).`);
+                addNotification(`${serviceName} completed for "${fileName}" - ₹${charge.toFixed(2)} was deducted from your wallet (${txnId}).`);
                 if (!profileData || !profileData.email) return;
                 sendGenericNotificationEmail(
                     profileData.email,
                     `${profileData.firstName} ${profileData.lastName}`,
-                    `${serviceName} completed - $${charge.toFixed(2)} deducted`,
+                    `${serviceName} completed - ₹${charge.toFixed(2)} deducted`,
                     `Your ${serviceName.toLowerCase()} request has finished processing. The table below shows what was charged to your wallet.`,
-                    [[serviceName, fileName, `$${charge.toFixed(2)}`, `Completed (${txnId})`]],
+                    [[serviceName, fileName, `₹${charge.toFixed(2)}`, `Completed (${txnId})`]],
                     ['Service', 'File', 'Charge', 'Action/Status']
                 );
             }
@@ -1208,7 +1208,7 @@
                 // Must match exactly what the processing loop will run:
                 // selection. (This previously excluded completed files, but
                 // re-running a selected completed file IS supported - so the
-                // check announced "$0.00 for 0 file(s)" and then still billed
+                // check announced "₹0.00 for 0 file(s)" and then still billed
                 // per page for it.)
                 const billable = files.filter(f => f.selected !== false);
                 const myPlan = getMyPlan();
@@ -1223,20 +1223,20 @@
                 const totalNeeded = billable.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
                 const estimateNote = isPerPage ? ' (estimate - final charge depends on each file\'s actual page count)' : '';
                 const rateLabel = serviceId === 'translation'
-                    ? `${myPlan.name} plan: Translation $${(myPlan.pricePerTranslation != null ? myPlan.pricePerTranslation : 0)}/Per Page`
+                    ? `${myPlan.name} plan: Translation ₹${(myPlan.pricePerTranslation != null ? myPlan.pricePerTranslation : 0)}/Per Page`
                     : `${myPlan.name} plan`;
                 const balanceCheckId = addActivity(serviceId,
-                    `System > Checking Wallet Balance > $${totalNeeded.toFixed(2)} required for ${billable.length} file(s) (${rateLabel})`, 'Processing');
+                    `System > Checking Wallet Balance > ₹${totalNeeded.toFixed(2)} required for ${billable.length} file(s) (${rateLabel})`, 'Processing');
                 refreshServicePage(serviceId);
 
                 if (totalNeeded > 0 && getCurrentBalance() < totalNeeded) {
                     updateActivity(serviceId, balanceCheckId, 'Failed');
                     addActivity(serviceId,
-                        `System > Process Aborted > Insufficient balance - you have $${getCurrentBalance().toFixed(2)}, but $${totalNeeded.toFixed(2)} is required for ${billable.length} file(s)`,
+                        `System > Process Aborted > Insufficient balance - you have ₹${getCurrentBalance().toFixed(2)}, but ₹${totalNeeded.toFixed(2)} is required for ${billable.length} file(s)`,
                         'Failed');
                     refreshServicePage(serviceId);
                     persistServiceFiles(serviceId);
-                    showWarning(`Insufficient balance. Processing ${billable.length} file(s) requires $${totalNeeded.toFixed(2)}${estimateNote} on your ${myPlan.name} plan, but your wallet only has $${getCurrentBalance().toFixed(2)}. Please add balance and click Start again.`);
+                    showWarning(`Insufficient balance. Processing ${billable.length} file(s) requires ₹${totalNeeded.toFixed(2)}${estimateNote} on your ${myPlan.name} plan, but your wallet only has ₹${getCurrentBalance().toFixed(2)}. Please add balance and click Start again.`);
                     return;
                 }
                 updateActivity(serviceId, balanceCheckId, 'Info');
@@ -1533,7 +1533,7 @@
                             debit: chargeAmount
                         });
                         persistPaymentHistory();
-                        addActivity('lease-abstraction', `${fl}System > Process Charged > $${chargeAmount.toFixed(2)} deducted (${txnId})`, 'Success');
+                        addActivity('lease-abstraction', `${fl}System > Process Charged > ₹${chargeAmount.toFixed(2)} deducted (${txnId})`, 'Success');
                         file.chargeTxnId = txnId;
                         file.chargeAmount = chargeAmount;
 
@@ -1937,7 +1937,7 @@
                                             totalCharged += perPageRate;
                                             pagesCharged++;
                                             addActivity('translation',
-                                                `${fl}${lbl} > Amount Deducted from Wallet=$${perPageRate.toFixed(2)}`, 'Info');
+                                                `${fl}${lbl} > Amount Deducted from Wallet=₹${perPageRate.toFixed(2)}`, 'Info');
                                         }
                                         addActivity('translation', `${fl}${lbl} > Text Data = ${ev.textData}`, 'Info');
 
@@ -1997,7 +1997,7 @@
                                     addActivity('translation',
                                         `${fl}Page(All) > API Call(s) > JSON=${totalJsonCalls}, IMAGE=${totalImageCalls}`, 'Info');
                                     addActivity('translation',
-                                        `${fl}Page(All) > Amount Deducted from Wallet=$${totalCharged.toFixed(2)} (${pagesCharged} completed page(s))`, 'Info');
+                                        `${fl}Page(All) > Amount Deducted from Wallet=₹${totalCharged.toFixed(2)} (${pagesCharged} completed page(s))`, 'Info');
                                 }
                                 file.status = 'error';
                                 file.errorLabel = 'Error';
@@ -2028,7 +2028,7 @@
                             addActivity('translation',
                                 `${fl}Page(All) > API Call(s) > JSON=${totalJsonCalls}, IMAGE=${totalImageCalls}`, 'Info');
                             addActivity('translation',
-                                `${fl}Page(All) > Amount Deducted from Wallet=$${totalCharged.toFixed(2)}`, 'Info');
+                                `${fl}Page(All) > Amount Deducted from Wallet=₹${totalCharged.toFixed(2)}`, 'Info');
 
                             file.docName = docName;
                             file.outputFormat = 'docx';
@@ -2130,7 +2130,7 @@
                             debit: chargeAmount
                         });
                         persistPaymentHistory();
-                        addActivity('translation', `${fl}System > Process Charged > $${chargeAmount.toFixed(2)} deducted (${txnId})`, 'Success');
+                        addActivity('translation', `${fl}System > Process Charged > ₹${chargeAmount.toFixed(2)} deducted (${txnId})`, 'Success');
 
                         addActivity('translation', `${fl}Agents > ${agentName(processAgents, 0)} > Source text extracted`, 'Success');
                         addActivity('translation', `${fl}Agents > ${agentName(processAgents, 1)} > Translation complete`, 'Success');
@@ -2981,7 +2981,7 @@
                 // explicit Confirm before charging anything, instead of
                 // switching immediately on click.
                 const confirmMsg = plan.monthlyPrice > 0 ?
-                    `Switching to the ${plan.name} plan will deduct $${plan.monthlyPrice.toFixed(2)} from your wallet balance right now. Do you want to continue?` :
+                    `Switching to the ${plan.name} plan will deduct ₹${plan.monthlyPrice.toFixed(2)} from your wallet balance right now. Do you want to continue?` :
                     `Switch to the ${plan.name} plan? This plan has no monthly charge.`;
                 showConfirm('Confirm Plan Change', confirmMsg, (confirmed) => {
                     if (confirmed) _doSwitchPlan(plan);
@@ -3023,14 +3023,14 @@
                             profileData.email, `${profileData.firstName} ${profileData.lastName}`,
                             `You're now on the ${plan.name} plan`,
                             `Your plan is now ${plan.name}. It's valid from ${profileData.planStartDate} to ${profileData.planEndDate}. ` +
-                            `Translation is billed at $${plan.pricePerTranslation}/page.`
+                            `Translation is billed at ₹${plan.pricePerTranslation}/page.`
                         );
                     }
                 };
 
                 if (plan.monthlyPrice > 0) {
                     if (getCurrentBalance() < plan.monthlyPrice) {
-                        showWarning(`Upgrading to ${plan.name} costs $${plan.monthlyPrice}/month, but your wallet only has $${getCurrentBalance().toFixed(2)}. Please add at least $${(plan.monthlyPrice - getCurrentBalance()).toFixed(2)} to your wallet balance and try again.`);
+                        showWarning(`Upgrading to ${plan.name} costs ₹${plan.monthlyPrice}/month, but your wallet only has ₹${getCurrentBalance().toFixed(2)}. Please add at least ₹${(plan.monthlyPrice - getCurrentBalance()).toFixed(2)} to your wallet balance and try again.`);
                         return;
                     }
                     const now = new Date();
@@ -3048,7 +3048,7 @@
                     });
                     persistPaymentHistory();
                     updateBalanceDisplay();
-                    addNotification(`$${plan.monthlyPrice.toFixed(2)} was deducted for your ${plan.name} plan subscription (${txnId}).`);
+                    addNotification(`₹${plan.monthlyPrice.toFixed(2)} was deducted for your ${plan.name} plan subscription (${txnId}).`);
                 }
                 finalizeSwitch();
                 showMessage('✅ Plan Updated', `You're now on the ${plan.name} plan.`, ['OK']);
@@ -3093,7 +3093,7 @@
                 renderPaymentHistory();
                 updateBalanceDisplay();
                 persistPaymentHistory();
-                showMessage('💸 Expense Recorded', `$${amount.toFixed(2)} has been recorded as a business expense.`, ['OK']);
+                showMessage('💸 Expense Recorded', `₹${amount.toFixed(2)} has been recorded as a business expense.`, ['OK']);
             };
 
             // Real, gateway-verified balance top-up. Unlike the manual/
@@ -3101,25 +3101,9 @@
             // itself - the server only accepts one after it has verified
             // Razorpay's own signature (see /api/payment/verify-payment),
             // so nothing here can invent balance on its own.
-            // Maps the payment method the user selected in our form to the
-            // matching Razorpay checkout tab. Anything we can't map returns
-            // undefined, which just lets Razorpay show its normal options.
-            function rzpMethodFor(methodId) {
-                const m = paymentMethods.find(x => x.id === methodId);
-                if (!m) return undefined;
-                const t = String(m.type || m.name || '').toLowerCase();
-                if (t.indexOf('upi') !== -1) return 'upi';
-                if (t.indexOf('netbank') !== -1 || t.indexOf('net bank') !== -1) return 'netbanking';
-                if (t.indexOf('wallet') !== -1) return 'wallet';
-                if (t.indexOf('card') !== -1) return 'card';
-                return undefined;
-            }
-
             window.payWithRazorpay = function() {
                 const amountInput = document.getElementById('balanceAmount');
                 const descInput = document.getElementById('balanceDescription');
-                const methodSelect = document.getElementById('balancePaymentMethod');
-                const methodId = methodSelect ? parseInt(methodSelect.value) : 0;
 
                 const amount = parseFloat(amountInput.value);
                 const description = descInput.value.trim() || 'Balance top-up';
@@ -3142,19 +3126,27 @@
                             prefill: {
                                 name: profileData ? `${profileData.firstName} ${profileData.lastName}` : undefined,
                                 email: profileData ? profileData.email : undefined,
-                                contact: profileData ? (profileData.phone || undefined) : undefined,
-                                // Opens straight on the method the user picked
-                                // in our own form, instead of Razorpay's
-                                // default landing tab.
-                                method: rzpMethodFor(methodId)
+                                // Phone comes from the signed-in profile, so
+                                // the user doesn't have to type it again.
+                                contact: profileData ? (profileData.phone || profileData.mobile || profileData.whatsapp || undefined) : undefined
                             },
-                            // EMI is deliberately not offered: these are small
-                            // wallet top-ups, and EMI carries extra charges and
-                            // eligibility rules that make no sense here.
+                            // Only UPI and cards are offered. Netbanking,
+                            // wallets, EMI and Pay Later all add their own
+                            // charges, failure modes and settlement delays
+                            // that aren't worth it for small wallet top-ups.
                             config: {
                                 display: {
-                                    hide: [{ method: 'emi' }],
-                                    preferences: { show_default_blocks: true }
+                                    blocks: {
+                                        core: {
+                                            name: 'Pay using',
+                                            instruments: [
+                                                { method: 'upi' },
+                                                { method: 'card' }
+                                            ]
+                                        }
+                                    },
+                                    sequence: ['block.core'],
+                                    preferences: { show_default_blocks: false }
                                 }
                             },
                             theme: { color: '#0369a1' },
@@ -3180,14 +3172,14 @@
                                         sendGenericNotificationEmail(
                                             profileData.email,
                                             `${profileData.firstName} ${profileData.lastName}`,
-                                            `$${txn.credit.toFixed(2)} added to your balance`,
+                                            `₹${txn.credit.toFixed(2)} added to your balance`,
                                             `Your payment was received and added to your wallet balance.`,
-                                            [[txn.paymentMode, description, `$${txn.credit.toFixed(2)}`, `Completed (${txn.id})`]],
+                                            [[txn.paymentMode, description, `₹${txn.credit.toFixed(2)}`, `Completed (${txn.id})`]],
                                             ['Payment Method', 'Description', 'Amount', 'Status']
                                         );
                                     }
-                                    addNotification(`$${txn.credit.toFixed(2)} was added to your balance (Transaction ID: ${txn.id}).`);
-                                    showMessage('✅ Success', `$${txn.credit.toFixed(2)} added successfully! Transaction ID: ${txn.id}`, ['OK']);
+                                    addNotification(`₹${txn.credit.toFixed(2)} was added to your balance (Transaction ID: ${txn.id}).`);
+                                    showMessage('✅ Success', `₹${txn.credit.toFixed(2)} added successfully! Transaction ID: ${txn.id}`, ['OK']);
                                 }).catch(err => {
                                     showWarning('Payment could not be verified: ' + err.message +
                                         '. If any amount was deducted, Razorpay will auto-refund it within a few days - contact support with your payment ID if it is not.');
@@ -3216,100 +3208,22 @@
             // Razorpay's checkout - a client-side ledger entry would credit
             // balance without any money actually moving. The old manual entry
             // is kept only as the fallback for when the gateway can't load.
+            // Topping up means the user PAYS US, so it always goes through
+            // Razorpay's checkout - there is no client-side path that can
+            // credit balance without money actually moving.
             window.addBalance = function() {
-                const methodSelect = document.getElementById('balancePaymentMethod');
                 const amountInput = document.getElementById('balanceAmount');
                 const descInput = document.getElementById('balanceDescription');
-
-                const methodId = parseInt(methodSelect.value);
                 const amount = parseFloat(amountInput.value);
                 const description = descInput.value.trim();
 
-                if (!methodId) { showWarning('Please select a payment method.'); return; }
                 if (!amount || amount <= 0) { showWarning('Please enter a valid amount.'); return; }
                 if (!description) { showWarning('Please enter a description.'); return; }
-
-                if (typeof Razorpay !== 'undefined') {
-                    payWithRazorpay();
+                if (typeof Razorpay === 'undefined') {
+                    showWarning('The payment gateway could not be loaded. Please check your connection and try again.');
                     return;
                 }
-                showWarning('Payment gateway could not be loaded, so this has been recorded as a manual payment for an Admin to approve.');
-
-                const method = paymentMethods.find(m => m.id === methodId);
-                if (!method) { showWarning('Selected payment method not found.'); return; }
-
-                const now = new Date();
-                const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
-                // Item 2: a balance-add always starts as pending_approval and
-                // isn't counted in the user's real balance (see
-                // getCurrentBalance/updateSummary/updateBalanceDisplay) until
-                // an Admin/Developer approves it - UNLESS the person adding
-                // it already IS an Admin/Developer, in which case requiring
-                // them to approve their own request would be circular, so
-                // it's auto-approved immediately.
-                const selfApprove = isAdminOrDeveloper();
-                const newTransaction = {
-                    id: txnId,
-                    date: localDateStr(now),
-                    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
-                    userId: CURRENT_USER_ID,
-                    paymentType: method.type === 'upi' ? 'UPI' : method.type === 'credit-card' ? 'Credit Card' :
-                        'Bank Transfer',
-                    paymentMode: method.name + ' ' + method.details,
-                    description: description,
-                    credit: amount,
-                    debit: 0,
-                    status: selfApprove ? 'approved' : 'pending_approval'
-                };
-
-                paymentHistory.push(newTransaction);
-                if (selfApprove) {
-                    _creditDeveloperRevenueRecord(newTransaction, description);
-                }
-
-                amountInput.value = '';
-                descInput.value = '';
-
-                renderPaymentHistory();
-                updateBalanceDisplay();
-                persistPaymentHistory();
-
-                if (selfApprove) {
-                    addNotification(`$${amount.toFixed(2)} was added to your balance (Transaction ID: ${txnId}).`);
-                    if (profileData && profileData.email) {
-                        sendGenericNotificationEmail(
-                            profileData.email,
-                            `${profileData.firstName} ${profileData.lastName}`,
-                            `$${amount.toFixed(2)} added to your balance`,
-                            `Your payment was received and added to your wallet balance.`,
-                            [[newTransaction.paymentMode, description, `$${amount.toFixed(2)}`, `Completed (${txnId})`]],
-                            ['Payment Method', 'Description', 'Amount', 'Status']
-                        );
-                    }
-                    showMessage('✅ Success', `$${amount.toFixed(2)} added successfully! Transaction ID: ${txnId}`, ['OK']);
-                    return;
-                }
-
-                // Not an Admin/Developer - notify every Admin/Developer with
-                // an actionable request (see notification table's Approve/
-                // Cancel buttons, rendered for notifications tagged
-                // balance_approval - approveBalanceRequest/cancelBalanceRequest
-                // below).
-                const requesterName = profileData ? `${profileData.firstName} ${profileData.lastName}` : CURRENT_USER_ID;
-                getAdminAndDeveloperIds().forEach(adminId => {
-                    addNotificationFor(adminId, `💰 ${requesterName} requested $${amount.toFixed(2)} added to their balance (${txnId}) - awaiting your approval.`,
-                        { type: 'balance_approval', transactionId: txnId });
-                    const adminEntry = getUserDirectoryEntry(adminId);
-                    if (adminEntry && adminEntry.email) {
-                        sendGenericNotificationEmail(
-                            adminEntry.email, `${adminEntry.firstName} ${adminEntry.lastName}`,
-                            'Balance request awaiting your approval',
-                            `${requesterName} requested $${amount.toFixed(2)} be added to their wallet balance (Transaction ${txnId}). ` +
-                            `Please review and approve or cancel it from the Notifications page.`
-                        );
-                    }
-                });
-                showMessage('⏳ Submitted for Approval', `Your request to add $${amount.toFixed(2)} has been submitted. An Admin or Developer needs to approve it before it's added to your balance.`, ['OK']);
+                payWithRazorpay();
             };
 
             function _creditDeveloperRevenueRecord(newTransaction, description) {
@@ -3349,16 +3263,16 @@
                 persistPaymentHistory();
                 markNotificationHandled(notificationId, 'Approved');
 
-                addNotificationFor(txn.userId, `✅ Your balance request for $${txn.credit.toFixed(2)} (${txnId}) was approved and added to your wallet.`);
+                addNotificationFor(txn.userId, `✅ Your balance request for ₹${txn.credit.toFixed(2)} (${txnId}) was approved and added to your wallet.`);
                 const dirEntry = getUserDirectoryEntry(txn.userId);
                 if (dirEntry && dirEntry.email) {
                     sendGenericNotificationEmail(dirEntry.email, `${dirEntry.firstName} ${dirEntry.lastName}`,
                         'Your balance request was approved',
-                        `Your request to add $${txn.credit.toFixed(2)} to your wallet (Transaction ${txnId}) has been approved and is now reflected in your balance.`);
+                        `Your request to add ₹${txn.credit.toFixed(2)} to your wallet (Transaction ${txnId}) has been approved and is now reflected in your balance.`);
                 }
                 if (txn.userId === CURRENT_USER_ID) updateBalanceDisplay();
                 renderNotificationTable();
-                showMessage('✅ Approved', `$${txn.credit.toFixed(2)} has been added to the user's balance.`, ['OK']);
+                showMessage('✅ Approved', `₹${txn.credit.toFixed(2)} has been added to the user's balance.`, ['OK']);
             };
 
             window.cancelBalanceRequest = function(txnId, notificationId) {
@@ -3368,12 +3282,12 @@
                 persistPaymentHistory();
                 markNotificationHandled(notificationId, 'Cancelled');
 
-                addNotificationFor(txn.userId, `❌ Your balance request for $${txn.credit.toFixed(2)} (${txnId}) was cancelled by an Admin/Developer.`);
+                addNotificationFor(txn.userId, `❌ Your balance request for ₹${txn.credit.toFixed(2)} (${txnId}) was cancelled by an Admin/Developer.`);
                 const dirEntry = getUserDirectoryEntry(txn.userId);
                 if (dirEntry && dirEntry.email) {
                     sendGenericNotificationEmail(dirEntry.email, `${dirEntry.firstName} ${dirEntry.lastName}`,
                         'Your balance request was cancelled',
-                        `Your request to add $${txn.credit.toFixed(2)} to your wallet (Transaction ${txnId}) was cancelled. Please contact Support if you believe this is a mistake.`);
+                        `Your request to add ₹${txn.credit.toFixed(2)} to your wallet (Transaction ${txnId}) was cancelled. Please contact Support if you believe this is a mistake.`);
                 }
                 renderNotificationTable();
                 showMessage('❌ Cancelled', `The balance request has been cancelled.`, ['OK']);
@@ -6788,7 +6702,7 @@
                             </div>
                             <div class="dash-card">
                                 <div class="dash-card-icon">💰</div>
-                                <div class="dash-card-value" id="dashBalance">$0.00</div>
+                                <div class="dash-card-value" id="dashBalance">₹0.00</div>
                                 <div class="dash-card-label">Balance</div>
                             </div>
                         </div>
@@ -6854,9 +6768,9 @@
                                 <div class="plan-card ${plan.featured ? 'featured' : ''}">
                                     ${plan.featured ? '<div class="plan-badge">⭐ Most Popular</div>' : ''}
                                     <div class="plan-name">${plan.icon || ''} ${escapeHtml(plan.name)}</div>
-                                    <div class="plan-price">$${plan.monthlyPrice}<span>/month</span></div>
+                                    <div class="plan-price">₹${plan.monthlyPrice}<span>/month</span></div>
                                     <ul class="plan-features">
-                                        <li>✅ $${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / page (Translation)</li>
+                                        <li>✅ ₹${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / page (Translation)</li>
                                         ${(plan.features || []).map(f => `<li>✅ ${escapeHtml(f)}</li>`).join('')}
                                     </ul>
                                     <button class="plan-cta-btn" ${plan.name === myPlanName ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
@@ -6884,8 +6798,8 @@
                                                 <td>${escapeHtml(h.startDate)}</td>
                                                 <td>${escapeHtml(h.endDate)}</td>
                                                 <td>${escapeHtml(h.frequency)}</td>
-                                                <td>$${Number(h.amount).toFixed(2)}</td>
-                                                <td>$${Number(h.pricePerTranslation).toFixed(2)}</td>
+                                                <td>₹${Number(h.amount).toFixed(2)}</td>
+                                                <td>₹${Number(h.pricePerTranslation).toFixed(2)}</td>
                                             </tr>
                                         `).join('')}
                                     </tbody>
@@ -6900,17 +6814,13 @@
                         // "Add Balance" is for every user (this was never
                         // meant to be Admin/Developer-only - that
                         // restriction was a misread of the original ask).
-                        const addBalanceCardHtml = `
+                        const topUpHtml = `
                         <div class="balance-add-card">
                             <h3>➕ Add Balance</h3>
                             <div class="form-row">
                                 <div class="form-group">
-                                    <label>Payment Method</label>
-                                    <select id="balancePaymentMethod"></select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Amount</label>
-                                    <input type="number" id="balanceAmount" placeholder="Enter amount" min="0.01" step="0.01" />
+                                    <label>Amount (₹)</label>
+                                    <input type="number" id="balanceAmount" placeholder="Enter amount" min="1" step="1" />
                                 </div>
                                 <div class="form-group">
                                     <label>Description</label>
@@ -6918,110 +6828,27 @@
                                 </div>
                                 <button class="add-btn" onclick="addBalance()">+ Add Balance</button>
                             </div>
+                            <p class="balance-approval-note">Pay securely by UPI or card. Your balance is credited as soon as the payment is confirmed.</p>
                         </div>
                         `;
-                        // Item 1 - a genuinely separate card, Admin/Developer
-                        // only: recording a business EXPENSE (API costs,
-                        // domain renewal, etc.) - not a user's wallet top-up.
-                        // Always posts as a debit against the Developer's own
-                        // account, so it shows up as a real cost in that
-                        // account's own Payment History.
-                        const expenseCardHtml = isAdminOrDeveloper() ? `
-                        <div class="balance-add-card expense-card">
-                            <h3>💸 Record Expense</h3>
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Payment Method</label>
-                                    <select id="expensePaymentMethod"></select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Amount</label>
-                                    <input type="number" id="expenseAmount" placeholder="Enter amount" min="0.01" step="0.01" />
-                                </div>
-                                <div class="form-group">
-                                    <label>Description</label>
-                                    <input type="text" id="expenseDescription" placeholder="e.g. OpenAI API charges - June" />
-                                </div>
-                                <button class="add-btn" onclick="recordExpense()">💸 Record Expense</button>
-                            </div>
-                        </div>
-                        ` : '';
                         return `
                         <div class="balance-grid" id="balanceGrid">
                             <div class="balance-card">
-                                <div class="balance-number credit" id="totalCreditBalance">$0.00</div>
+                                <div class="balance-number credit" id="totalCreditBalance">₹0.00</div>
                                 <div class="balance-label">Total Credit</div>
                             </div>
                             <div class="balance-card">
-                                <div class="balance-number debit" id="totalDebitBalance">$0.00</div>
+                                <div class="balance-number debit" id="totalDebitBalance">₹0.00</div>
                                 <div class="balance-label">Total Debit</div>
                             </div>
                             <div class="balance-card">
-                                <div class="balance-number" id="currentBalanceDisplay">$0.00</div>
+                                <div class="balance-number" id="currentBalanceDisplay">₹0.00</div>
                                 <div class="balance-label">Current Balance</div>
                             </div>
                         </div>
-                        ${addBalanceCardHtml}
-                        ${expenseCardHtml}
+                        ${topUpHtml}
                     `;
                     }
-                },
-                'payment-mode': {
-                    body: `
-                        <div class="payment-layout">
-                            <div class="payment-left">
-                                <div class="payment-card">
-                                    <h3>💳 Your Payment Methods</h3>
-                                    <div class="card-body">
-                                        <ul class="payment-list" id="paymentList"></ul>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="payment-right">
-                                <div class="payment-card">
-                                    <h3>➕ Add New Payment Method</h3>
-                                    <div class="card-body">
-                                        <div class="payment-form" id="paymentForm">
-                                            <div class="form-group">
-                                                <label>Payment Type</label>
-                                                <select id="paymentType" onchange="togglePaymentForm()">
-                                                    <option value="credit-card">💳 Credit Card</option>
-                                                    <option value="upi">📱 UPI</option>
-                                                </select>
-                                            </div>
-                                            <div id="creditCardFields">
-                                                <div class="form-group">
-                                                    <label>Card Number</label>
-                                                    <input type="text" id="cardNumber" placeholder="1234 5678 9012 3456" />
-                                                </div>
-                                                <div class="form-group">
-                                                    <label>Name on Card</label>
-                                                    <input type="text" id="cardName" placeholder="John Doe" />
-                                                </div>
-                                                <div class="form-row">
-                                                    <div class="form-group">
-                                                        <label>Expiry Date</label>
-                                                        <input type="text" id="expiryDate" placeholder="MM/YYYY" />
-                                                    </div>
-                                                    <div class="form-group">
-                                                        <label>CVV</label>
-                                                        <input type="text" id="cvv" placeholder="***" />
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            <div id="upiFields" style="display:none;">
-                                                <div class="form-group">
-                                                    <label>UPI ID</label>
-                                                    <input type="text" id="upiId" placeholder="john.doe@upi" />
-                                                </div>
-                                            </div>
-                                            <button class="submit-btn" onclick="addPaymentMethod()">+ Add Payment Method</button>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    `
                 },
                 'payment-history': {
                     body: function() {
@@ -7071,15 +6898,15 @@
                                 <div class="history-summary" id="historySummary">
                                     <div class="summary-item">
                                         <span class="summary-label">Total Credit</span>
-                                        <span class="summary-value credit-value" id="totalCredit">$0.00</span>
+                                        <span class="summary-value credit-value" id="totalCredit">₹0.00</span>
                                     </div>
                                     <div class="summary-item">
                                         <span class="summary-label">Total Debit</span>
-                                        <span class="summary-value debit-value" id="totalDebit">$0.00</span>
+                                        <span class="summary-value debit-value" id="totalDebit">₹0.00</span>
                                     </div>
                                     <div class="summary-item">
                                         <span class="summary-label">Current Balance</span>
-                                        <span class="summary-value" id="currentBalance">$0.00</span>
+                                        <span class="summary-value" id="currentBalance">₹0.00</span>
                                     </div>
                                 </div>
                             </div>

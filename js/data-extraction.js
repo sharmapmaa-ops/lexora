@@ -365,11 +365,11 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     const perPageRate = billing.perPageRate();
     const minNeeded = perPageRate * selected.length;
     const balance = billing.balance();
-    log(`System > Checking Wallet Balance > $${minNeeded.toFixed(2)} required for ${selected.length} file(s) (${billing.planName()} plan: Data Extraction $${perPageRate}/Per Page)`, 'Info');
+    log(`System > Checking Wallet Balance > ₹${minNeeded.toFixed(2)} required for ${selected.length} file(s) (${billing.planName()} plan: Data Extraction ₹${perPageRate}/Per Page)`, 'Info');
     if (minNeeded > 0 && balance < minNeeded) {
-      log(`System > Process Aborted > Insufficient balance - you have $${balance.toFixed(2)}, but $${minNeeded.toFixed(2)} is required`, 'Failed');
+      log(`System > Process Aborted > Insufficient balance - you have ₹${balance.toFixed(2)}, but ₹${minNeeded.toFixed(2)} is required`, 'Failed');
       rerender();
-      return setStatus(`Insufficient balance. You have $${balance.toFixed(2)} but at least $${minNeeded.toFixed(2)} is needed.`, 'error');
+      return setStatus(`Insufficient balance. You have ₹${balance.toFixed(2)} but at least ₹${minNeeded.toFixed(2)} is needed.`, 'error');
     }
 
     STATE.running = true;
@@ -399,7 +399,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
           );
           fileCharged += perPageRate;
           log(`${label} > Page(${pageNo}/${total}) > API Call(s) > JSON=${jsonCalls}, IMAGE=0`, 'Success');
-          log(`${label} > Page(${pageNo}/${total}) > Amount Deducted from Wallet=$${perPageRate.toFixed(2)}`, 'Info');
+          log(`${label} > Page(${pageNo}/${total}) > Amount Deducted from Wallet=₹${perPageRate.toFixed(2)}`, 'Info');
           entry.pageCount = total;
           entry.progress = Math.round((pageNo / total) * 80);
           rerender();
@@ -429,7 +429,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
       }
 
       log(`${label} > Page(All) > API Call(s) > JSON=${fileJson}, IMAGE=${fileImage}`, 'Info');
-      log(`${label} > Page(All) > Amount Deducted from Wallet=$${fileCharged.toFixed(2)}`, 'Info');
+      log(`${label} > Page(All) > Amount Deducted from Wallet=₹${fileCharged.toFixed(2)}`, 'Info');
       rerender();
     }
 
@@ -506,7 +506,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     if (!sel.length) return '';
     const rate = b.perPageRate();
     const total = sel.reduce(function (sum, f) { return sum + rate * Math.max(1, f.pageCount || 1); }, 0);
-    return `💰 Rate: $${rate.toFixed(2)}/page · Est. total: $${total.toFixed(2)} for ${sel.length} selected file(s)`;
+    return `💰 Rate: ₹${rate.toFixed(2)}/page · Est. total: ₹${total.toFixed(2)} for ${sel.length} selected file(s)`;
   }
 
   function toggleAll(checked) {
