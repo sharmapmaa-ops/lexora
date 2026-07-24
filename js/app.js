@@ -666,7 +666,7 @@
                                 <div class="file-table-wrapper">
                                     <table class="file-table file-table-files">
                                         <colgroup>
-                                            <col style="width:4%;"><col style="width:56%;"><col style="width:9%;"><col style="width:14%;"><col style="width:9%;"><col style="width:8%;">
+                                            <col style="width:4%;"><col style="width:50%;"><col style="width:10%;"><col style="width:16%;"><col style="width:11%;"><col style="width:9%;">
                                         </colgroup>
                                         <thead>
                                             <tr>
@@ -682,7 +682,7 @@
                                     <div class="file-table-scroll">
                                         <table class="file-table file-table-files">
                                             <colgroup>
-                                                <col style="width:4%;"><col style="width:56%;"><col style="width:9%;"><col style="width:14%;"><col style="width:9%;"><col style="width:8%;">
+                                                <col style="width:4%;"><col style="width:50%;"><col style="width:10%;"><col style="width:16%;"><col style="width:11%;"><col style="width:9%;">
                                             </colgroup>
                                             <tbody id="fileTableBody">
                                                 ${fileRows || '<tr><td colspan="5" style="text-align:center;padding:15px;color:rgba(0,0,0,0.3);">No files uploaded yet.</td></tr>'}

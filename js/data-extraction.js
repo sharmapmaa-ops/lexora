@@ -648,7 +648,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
           <div class="card-body">
             <div class="file-table-wrapper">
               <table class="file-table file-table-files">
-                <colgroup><col style="width:4%;"><col style="width:56%;"><col style="width:9%;"><col style="width:14%;"><col style="width:9%;"><col style="width:8%;"></colgroup>
+                <colgroup><col style="width:4%;"><col style="width:50%;"><col style="width:10%;"><col style="width:16%;"><col style="width:11%;"><col style="width:9%;"></colgroup>
                 <thead><tr>
                   <th><input type="checkbox" ${(STATE.files.length > 0 && STATE.files.every(function (f) { return f.selected !== false; })) ? 'checked' : ''}
                              ${STATE.running ? 'disabled' : ''} onchange="DataExtraction.toggleAll(this.checked)" title="Select all" /></th>
@@ -657,7 +657,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
               </table>
               <div class="file-table-scroll">
                 <table class="file-table file-table-files">
-                  <colgroup><col style="width:4%;"><col style="width:56%;"><col style="width:9%;"><col style="width:14%;"><col style="width:9%;"><col style="width:8%;"></colgroup>
+                  <colgroup><col style="width:4%;"><col style="width:50%;"><col style="width:10%;"><col style="width:16%;"><col style="width:11%;"><col style="width:9%;"></colgroup>
                   <tbody>${fileRows()}</tbody>
                 </table>
               </div>

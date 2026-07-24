@@ -169,7 +169,7 @@
           <div class="card-body">
             <div class="file-table-wrapper">
               <table class="file-table file-table-files">
-                <colgroup><col style="width:4%;"><col style="width:56%;"><col style="width:9%;"><col style="width:14%;"><col style="width:9%;"><col style="width:8%;"></colgroup>
+                <colgroup><col style="width:4%;"><col style="width:50%;"><col style="width:10%;"><col style="width:16%;"><col style="width:11%;"><col style="width:9%;"></colgroup>
                 <thead><tr>
                   <th><input type="checkbox" ${(st.files.length > 0 && st.files.every(function (f) { return f.selected !== false; })) ? 'checked' : ''}
                              ${st.running ? 'disabled' : ''} onchange="ServiceRunner.toggleAll('${id}', this.checked)" title="Select all" /></th>
@@ -178,7 +178,7 @@
               </table>
               <div class="file-table-scroll">
                 <table class="file-table file-table-files">
-                  <colgroup><col style="width:4%;"><col style="width:56%;"><col style="width:9%;"><col style="width:14%;"><col style="width:9%;"><col style="width:8%;"></colgroup>
+                  <colgroup><col style="width:4%;"><col style="width:50%;"><col style="width:10%;"><col style="width:16%;"><col style="width:11%;"><col style="width:9%;"></colgroup>
                   <tbody>${fileRows(id)}</tbody>
                 </table>
               </div>
