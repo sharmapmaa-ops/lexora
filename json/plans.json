@@ -4,41 +4,44 @@
     "name": "Free",
     "icon": "🆓",
     "monthlyPrice": 0,
-    "pricePerTranslation": 5,
-    "pricePerLeaseAbstraction": 10,
+    "pricePerTranslation": 400,
+    "pricePerLeaseAbstraction": 800,
     "billingUnit": "document",
     "featured": false,
     "features": [
       "Email Support",
       "Advanced Dashboard Access"
-    ]
+    ],
+    "currency": "INR"
   },
   {
     "id": "standard",
     "name": "Standard",
     "icon": "⭐",
-    "monthlyPrice": 30,
-    "pricePerTranslation": 2,
-    "pricePerLeaseAbstraction": 8,
+    "monthlyPrice": 2500,
+    "pricePerTranslation": 175,
+    "pricePerLeaseAbstraction": 650,
     "billingUnit": "document",
     "featured": false,
     "features": [
       "Email Support",
       "Advanced Dashboard Access"
-    ]
+    ],
+    "currency": "INR"
   },
   {
     "id": "professional",
     "name": "Professional",
     "icon": "🚀",
-    "monthlyPrice": 80,
-    "pricePerTranslation": 1,
-    "pricePerLeaseAbstraction": 5,
+    "monthlyPrice": 6500,
+    "pricePerTranslation": 85,
+    "pricePerLeaseAbstraction": 400,
     "billingUnit": "document",
     "featured": true,
     "features": [
       "Email Support",
       "Advanced Dashboard Access"
-    ]
+    ],
+    "currency": "INR"
   }
 ]

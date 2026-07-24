@@ -49,10 +49,6 @@
                     "label": "Balance"
                 },
                 {
-                    "id": "payment-mode",
-                    "label": "Payment Mode"
-                },
-                {
                     "id": "payment-history",
                     "label": "Payment History"
                 }
