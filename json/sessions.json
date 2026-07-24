@@ -1,1 +1,9 @@
-[]
+[
+  {
+    "sessionId": "de2dc8e8e0516e4a",
+    "userId": "U0000001",
+    "createdAt": "2026-07-24T23:18:55",
+    "lastActiveAt": "2026-07-24T23:18:55",
+    "expiresAt": "2026-07-31T23:18:55"
+  }
+]

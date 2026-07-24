@@ -6876,7 +6876,7 @@
 
             document.addEventListener('click', function(e) {
                 const toggle = document.querySelector('.menu-toggle');
-                if (window.innerWidth <= 768) {
+                if (window.innerWidth <= 1500) {
                     if (!menuWrapper.contains(e.target) && !toggle.contains(e.target)) {
                         menuWrapper.classList.remove('open');
                     }
