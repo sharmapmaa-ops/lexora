@@ -1,0 +1,499 @@
+/* =====================================================================
+   LEXORA DESIGN SYSTEM  (loaded last, so it re-skins everything above)
+
+   Ye file poore app ka look mockups ke hisab se set karti hai. Purana
+   look har card par "border: 2px solid blue" + transparent background
+   tha; ab sab kuch white cards + soft shadow + ek hi blue palette par
+   hai. Markup ko haath nahi lagaya - sirf styling override hai, isliye
+   koi bhi page ka behaviour nahi badalta.
+
+   Sab tokens neeche :root me hain. Brand colour badalna ho to sirf
+   --ds-blue badlo, poora app follow karega.
+   ===================================================================== */
+:root {
+    --ds-navy:        #0b1533;
+    --ds-blue:        #1257f5;
+    --ds-blue-dark:   #0b3fd4;
+    --ds-blue-deep:   #0a3aa8;
+    --ds-blue-soft:   #e9f0fe;
+    --ds-ink:         #33425c;
+    --ds-muted:       #64748b;
+    --ds-line:        #e5ecf7;
+    --ds-page:        #f4f7fd;
+    --ds-card:        #ffffff;
+    --ds-green:       #17915c;
+    --ds-red:         #dc2f38;
+    --ds-amber:       #e08a00;
+    --ds-radius:      14px;
+    --ds-radius-sm:   9px;
+    --ds-shadow:      0 1px 3px rgba(11,21,51,.06), 0 8px 24px rgba(11,21,51,.05);
+    --ds-shadow-sm:   0 1px 2px rgba(11,21,51,.06);
+    --ds-nav:         linear-gradient(100deg, #0a3aa8 0%, #1049c9 48%, #1257f5 100%);
+}
+
+body {
+    background: var(--ds-page);
+    color: var(--ds-ink);
+    font-family: 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', sans-serif;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* ============================ TOP NAV ============================ */
+.top-menu-bar {
+    background: var(--ds-nav);
+    padding: 0 26px;
+    min-height: 62px;
+    gap: 18px;
+    box-shadow: 0 2px 14px rgba(10, 58, 168, .22);
+    border-bottom: none;
+    flex-wrap: nowrap;
+}
+
+.company-logo {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,.55);
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(0,0,0,.16);
+}
+
+.company-logo img { object-fit: contain; padding: 2px; }
+
+.company-name {
+    font-size: 1.22rem;
+    font-weight: 800;
+    letter-spacing: 1.3px;
+    text-transform: uppercase;
+}
+
+.company-name .separator { color: rgba(255,255,255,.32); margin: 0 10px; font-weight: 400; }
+.current-menu-name       { font-size: .82rem; color: rgba(255,255,255,.62); }
+.current-menu-name span  { color: #fff; font-weight: 600; }
+
+/* Nav sits in the middle, the user chip is pinned right - matches the
+   mockups, and works without touching the existing markup. */
+.menu-wrapper { flex: 1; display: flex; align-items: center; justify-content: flex-start; }
+.menu         { margin: 0 auto; gap: 4px; flex-wrap: nowrap; }
+
+.menu-item > a {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 9px 15px;
+    border-radius: 9px;
+    font-size: .92rem;
+    font-weight: 600;
+    color: rgba(255,255,255,.9);
+    white-space: nowrap;
+}
+
+.menu-item > a:hover        { background: rgba(255,255,255,.13); color: #fff; }
+.menu-item.active > a,
+.menu-item > a.active       { background: rgba(255,255,255,.18); color: #fff; box-shadow: inset 0 0 0 1px rgba(255,255,255,.22); }
+
+.user-profile {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 10px 5px 6px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background .15s;
+}
+
+.user-profile:hover { background: rgba(255,255,255,.12); }
+.user-name          { color: #fff; font-weight: 600; font-size: .92rem; }
+
+.user-avatar {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: linear-gradient(140deg, #4a90f7, #0b48e0);
+    border: 2px solid rgba(255,255,255,.6);
+    color: #fff;
+    font-weight: 700;
+    font-size: .84rem;
+    display: flex; align-items: center; justify-content: center;
+}
+
+.user-dropdown-arrow { color: rgba(255,255,255,.75); font-size: .6rem; }
+
+.notification-badge {
+    background: #e8433f;
+    border: 2px solid #1049c9;
+    color: #fff;
+    font-weight: 700;
+    font-size: .62rem;
+    min-width: 18px; height: 18px;
+    border-radius: 999px;
+    display: flex; align-items: center; justify-content: center;
+}
+
+/* ========================== PAGE CANVAS ========================== */
+.center-content { padding: 0 30px 24px; background: var(--ds-page); }
+.content-area   { padding: 0 0 10px; }
+
+/* Page header + breadcrumb, injected by updateContent() in app.js. */
+.page-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    flex-wrap: wrap;
+    padding: 22px 0 18px;
+}
+
+.page-head-title {
+    font-size: 1.72rem;
+    font-weight: 800;
+    color: var(--ds-navy);
+    letter-spacing: -.4px;
+    margin: 0;
+}
+
+.page-head-sub {
+    font-size: .88rem;
+    color: var(--ds-muted);
+    margin: 5px 0 0;
+}
+
+.page-crumb {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 10px;
+    padding: 9px 15px;
+    font-size: .83rem;
+    color: var(--ds-muted);
+    box-shadow: var(--ds-shadow-sm);
+    white-space: nowrap;
+}
+
+.page-crumb a       { color: var(--ds-blue); text-decoration: none; cursor: pointer; font-weight: 500; }
+.page-crumb a:hover { text-decoration: underline; }
+.page-crumb .sep    { color: #b9c4d6; }
+.page-crumb .cur    { color: var(--ds-navy); font-weight: 700; }
+.page-crumb svg     { width: 14px; height: 14px; color: var(--ds-muted); }
+
+/* ============================= CARDS ============================= */
+.service-card,
+.file-list-card,
+.activity-log-card,
+.payment-card,
+.history-card,
+.dash-card,
+.plan-card,
+.balance-card,
+.balance-add-card,
+.balance-pay-panel,
+.plan-history-card,
+.api-key-card,
+.content-section,
+.admin-files-card,
+.support-log-card,
+.support-contact-card,
+.company-details-card,
+.company-map-card,
+.stat-card,
+.tool-card {
+    background: var(--ds-card);
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+}
+
+.service-card,
+.file-list-card,
+.activity-log-card,
+.payment-card,
+.history-card,
+.plan-history-card,
+.api-key-card,
+.admin-files-card,
+.content-section { padding: 20px 22px; }
+
+/* Card titles get the blue glyph tile from the mockups. The tile is drawn
+   from the emoji the markup already has, so no markup change is needed. */
+.service-card > h3,
+.file-list-card h3,
+.activity-log-card .log-header h3,
+.payment-card > h3,
+.history-card > h3,
+.plan-history-card > h3,
+.api-key-card > h3,
+.admin-files-header h3,
+.support-log-header-row h3 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1.06rem;
+    font-weight: 700;
+    color: var(--ds-navy);
+    margin-bottom: 16px;
+}
+
+.service-card > h3::first-letter,
+.file-list-card h3::first-letter,
+.activity-log-card .log-header h3::first-letter,
+.payment-card > h3::first-letter,
+.history-card > h3::first-letter,
+.plan-history-card > h3::first-letter,
+.api-key-card > h3::first-letter,
+.admin-files-header h3::first-letter,
+.support-log-header-row h3::first-letter {
+    font-size: 1rem;
+    background: var(--ds-blue-soft);
+    border-radius: var(--ds-radius-sm);
+    padding: 8px 9px;
+    margin-right: 4px;
+    line-height: 1;
+}
+
+/* ---- dashboard tiles ---- */
+.dashboard-grid { gap: 16px; }
+
+.dash-card {
+    padding: 20px;
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.dash-card-icon {
+    width: 44px; height: 44px;
+    border-radius: 11px;
+    background: var(--ds-blue-soft);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.25rem;
+    margin-bottom: 8px;
+}
+
+.dash-card-value { font-size: 1.5rem; font-weight: 800; color: var(--ds-navy); }
+.dash-card-label { font-size: .8rem; color: var(--ds-muted); text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+/* ---- balance tiles ---- */
+.balance-card { padding: 20px 22px; text-align: left; }
+.balance-card .balance-number { font-size: 1.6rem; font-weight: 800; color: var(--ds-navy); }
+.balance-card .balance-number.credit { color: var(--ds-green); }
+.balance-card .balance-number.debit  { color: var(--ds-red); }
+.balance-card .balance-label { font-size: .8rem; color: var(--ds-muted); text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+/* ---- plan cards ---- */
+.plan-card { padding: 24px 22px; }
+.plan-card.featured { border-color: var(--ds-blue); box-shadow: 0 10px 30px rgba(18,87,245,.16); }
+.plan-name  { font-size: 1.12rem; font-weight: 700; color: var(--ds-navy); }
+.plan-price { font-size: 2.1rem; font-weight: 800; color: var(--ds-navy); }
+.plan-price span { font-size: .84rem; font-weight: 500; color: var(--ds-muted); }
+.plan-features li { color: var(--ds-ink); font-size: .88rem; }
+
+.plan-badge {
+    background: var(--ds-blue);
+    color: #fff;
+    border-radius: 999px;
+    font-size: .72rem;
+    font-weight: 700;
+    padding: 5px 14px;
+}
+
+/* ============================ TABLES ============================ */
+.history-table,
+.file-table,
+.admin-json-table,
+.support-log-table,
+.admin-table { border-collapse: separate; border-spacing: 0; }
+
+.history-table thead th,
+.file-table thead th,
+.admin-json-table thead th,
+.support-log-table thead th,
+.admin-table thead th {
+    background: #f7f9fd;
+    color: var(--ds-muted);
+    font-size: .78rem;
+    font-weight: 700;
+    letter-spacing: .2px;
+    text-align: left;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--ds-line);
+    border-top: 1px solid var(--ds-line);
+}
+
+.history-table tbody td,
+.file-table tbody td,
+.admin-json-table tbody td,
+.support-log-table tbody td,
+.admin-table tbody td {
+    padding: 13px 14px;
+    font-size: .86rem;
+    color: var(--ds-ink);
+    border-bottom: 1px solid var(--ds-line);
+}
+
+.history-table tbody tr:hover,
+.file-table tbody tr:hover,
+.support-log-table tbody tr:hover { background: #f9fbff; }
+
+.history-table .credit { color: var(--ds-green); font-weight: 700; }
+.history-table .debit  { color: var(--ds-red);   font-weight: 700; }
+
+/* ---- summary strip under Payment History ---- */
+.history-summary {
+    display: flex;
+    gap: 0;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+    padding: 20px 10px;
+    margin-top: 18px;
+}
+
+.history-summary .summary-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 0 24px;
+    border-right: 1px solid var(--ds-line);
+}
+
+.history-summary .summary-item:last-child { border-right: none; }
+.history-summary .summary-label { font-size: .82rem; color: var(--ds-muted); }
+.history-summary .summary-value { font-size: 1.45rem; font-weight: 800; color: var(--ds-blue); }
+.history-summary .credit-value  { color: var(--ds-green); }
+.history-summary .debit-value   { color: var(--ds-red); }
+
+/* ============================ CONTROLS =========================== */
+input[type="text"], input[type="email"], input[type="password"],
+input[type="number"], input[type="date"], select, textarea {
+    font-family: inherit;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    background: #fff;
+    color: var(--ds-navy);
+    font-size: .88rem;
+    padding: 10px 13px;
+    transition: border-color .15s, box-shadow .15s;
+}
+
+input:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: var(--ds-blue);
+    box-shadow: 0 0 0 3px rgba(18,87,245,.12);
+}
+
+label { color: var(--ds-muted); font-size: .82rem; font-weight: 500; }
+
+.add-btn, .submit-btn, .plan-cta-btn, .filter-btn, .process-btn,
+.api-action-btn, .admin-btn, .default-btn, .remove-btn,
+.admin-modal-save, .admin-modal-cancel, .select-btn {
+    font-family: inherit;
+    font-weight: 600;
+    font-size: .86rem;
+    border-radius: var(--ds-radius-sm);
+    padding: 10px 16px;
+    cursor: pointer;
+    transition: .15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.add-btn, .submit-btn, .plan-cta-btn, .admin-modal-save {
+    background: linear-gradient(135deg, #2f7bf6 0%, #0b48e0 100%);
+    color: #fff;
+    border: none;
+    box-shadow: 0 4px 12px rgba(18,87,245,.26);
+}
+
+.add-btn:hover, .submit-btn:hover, .plan-cta-btn:hover, .admin-modal-save:hover { filter: brightness(1.07); }
+.plan-cta-btn:disabled { filter: none; opacity: .95; cursor: default; }
+
+.filter-btn, .api-action-btn, .admin-btn, .default-btn, .admin-modal-cancel, .select-btn {
+    background: #fff;
+    color: var(--ds-blue);
+    border: 1px solid rgba(18,87,245,.32);
+}
+
+.filter-btn:hover, .api-action-btn:hover, .admin-btn:hover,
+.default-btn:hover, .select-btn:hover { background: rgba(18,87,245,.06); }
+
+.filter-btn.download-btn, .api-action-btn.save-btn {
+    color: var(--ds-green);
+    border-color: rgba(23,145,92,.35);
+}
+
+.filter-btn.delete-btn, .api-action-btn.revoke-btn, .remove-btn {
+    background: #fff;
+    color: var(--ds-red);
+    border: 1px solid rgba(220,47,56,.32);
+}
+
+.filter-btn.reset-btn { color: var(--ds-muted); border-color: var(--ds-line); }
+
+.process-btn.start-btn { background: #fff; color: var(--ds-green); border: 1px solid rgba(23,145,92,.4); }
+.process-btn.stop-btn,
+.process-btn.clear-btn { background: #fff; color: var(--ds-red); border: 1px solid rgba(220,47,56,.32); }
+
+/* ---- drop zone ---- */
+.drop-zone {
+    border: 2px dashed rgba(18,87,245,.3);
+    border-radius: 12px;
+    background: #fbfcff;
+    padding: 30px 20px;
+}
+
+.drop-zone:hover { border-color: var(--ds-blue); background: #f6f9ff; }
+.drop-text { font-weight: 700; color: var(--ds-navy); font-size: 1rem; }
+.drop-sub  { color: var(--ds-muted); font-size: .82rem; }
+
+/* ---- empty states ---- */
+.file-table tbody tr td[colspan],
+.admin-json-table tbody tr td[colspan] {
+    color: var(--ds-muted);
+    font-size: .88rem;
+    padding: 34px 14px;
+    text-align: center;
+}
+
+/* ============================= FOOTER ============================ */
+.footer {
+    background: var(--ds-nav);
+    color: rgba(255,255,255,.8);
+    font-size: .8rem;
+    padding: 14px 20px;
+    border-top: none;
+}
+
+.footer span { color: rgba(255,255,255,.9); }
+
+#footerSocial a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px; height: 30px;
+    border-radius: 8px;
+    background: rgba(255,255,255,.14);
+    color: #fff;
+    transition: background .15s, transform .15s;
+}
+
+#footerSocial a:hover { background: rgba(255,255,255,.26); transform: translateY(-2px); }
+
+/* =========================== RESPONSIVE ========================== */
+@media (max-width: 1150px) {
+    .top-menu-bar { flex-wrap: wrap; padding: 8px 16px; }
+    .menu { margin: 0; }
+    .center-content { padding: 0 16px 20px; }
+    .page-head-title { font-size: 1.45rem; }
+}
+
+@media (max-width: 760px) {
+    .history-summary { flex-direction: column; gap: 14px; }
+    .history-summary .summary-item { border-right: none; padding: 0 18px; }
+    .page-head { padding: 16px 0 14px; }
+}
