@@ -108,9 +108,9 @@
         }
     ],
     "user": {
-        "name": "John Doe",
-        "email": "john.doe@techcorp.com",
-        "initials": "JD",
+        "name": "",
+        "email": "",
+        "initials": "",
         "avatar": null
     }
 }

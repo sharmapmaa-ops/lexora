@@ -11,7 +11,7 @@
         "post": {
             "endpoint": "POST /api/v1/lease-abstraction",
             "description": "Upload a new lease document for abstraction.",
-            "example": "{\n  \"fileName\": \"Retail_Space_Agreement.pdf\",\n  \"fileUrl\": \"https://files.techcorp.com/uploads/retail.pdf\",\n  \"priority\": \"normal\"\n}"
+            "example": "{\n  \"fileName\": \"Retail_Space_Agreement.pdf\",\n  \"fileUrl\": \"https://files.lexora.support/uploads/retail.pdf\",\n  \"priority\": \"normal\"\n}"
         }
     },
     "translation": {
@@ -21,12 +21,57 @@
         "get": {
             "endpoint": "GET /api/v1/translation/{id}",
             "description": "Retrieve the status and result of a translation job.",
-            "example": "{\n  \"id\": \"TR-2089\",\n  \"sourceLanguage\": \"en\",\n  \"targetLanguage\": \"es\",\n  \"status\": \"completed\",\n  \"translatedFileUrl\": \"https://files.techcorp.com/translated/doc_es.pdf\"\n}"
+            "example": "{\n  \"id\": \"TR-2089\",\n  \"sourceLanguage\": \"en\",\n  \"targetLanguage\": \"es\",\n  \"status\": \"completed\",\n  \"translatedFileUrl\": \"https://files.lexora.support/translated/doc_es.pdf\"\n}"
         },
         "post": {
             "endpoint": "POST /api/v1/translation",
             "description": "Submit a new document for translation.",
-            "example": "{\n  \"fileUrl\": \"https://files.techcorp.com/uploads/contract.pdf\",\n  \"sourceLanguage\": \"en\",\n  \"targetLanguage\": \"fr\"\n}"
+            "example": "{\n  \"fileUrl\": \"https://files.lexora.support/uploads/contract.pdf\",\n  \"sourceLanguage\": \"en\",\n  \"targetLanguage\": \"fr\"\n}"
+        }
+    },
+    "ocr": {
+        "label": "OCR",
+        "icon": "🔍",
+        "base": "/api/v1/ocr",
+        "get": {
+            "endpoint": "GET /api/v1/ocr/{id}",
+            "description": "Retrieve the result of an OCR job, including the rebuilt document link.",
+            "example": "{\n  \"id\": \"OCR-3311\",\n  \"fileName\": \"scanned_contract.pdf\",\n  \"status\": \"completed\",\n  \"pages\": 12,\n  \"outputUrl\": \"https://files.lexora.support/ocr/scanned_contract.doc\"\n}"
+        },
+        "post": {
+            "endpoint": "POST /api/v1/ocr",
+            "description": "Submit a PDF or image for OCR. The layout is preserved and an editable Word file is returned.",
+            "example": "{\n  \"fileUrl\": \"https://files.lexora.support/uploads/scanned_contract.pdf\",\n  \"withOcr\": true\n}"
+        }
+    },
+    "data-extraction": {
+        "label": "Data Extraction",
+        "icon": "🧾",
+        "base": "/api/v1/data-extraction",
+        "get": {
+            "endpoint": "GET /api/v1/data-extraction/{id}",
+            "description": "Retrieve the extracted field values for a submitted document.",
+            "example": "{\n  \"id\": \"DX-778\",\n  \"fileName\": \"invoice_0421.pdf\",\n  \"status\": \"completed\",\n  \"fields\": {\n    \"Invoice No\": \"INV-0421\",\n    \"Invoice Date\": \"2026-06-14\",\n    \"Total Amount\": \"18,320.75\"\n  }\n}"
+        },
+        "post": {
+            "endpoint": "POST /api/v1/data-extraction",
+            "description": "Submit a document along with the field definitions to extract (maximum 30 fields).",
+            "example": "{\n  \"fileUrl\": \"https://files.lexora.support/uploads/invoice_0421.pdf\",\n  \"withOcr\": false,\n  \"fields\": [\n    {\n      \"header\": \"Invoice No\",\n      \"description\": \"The invoice reference number\"\n    },\n    {\n      \"header\": \"Total Amount\",\n      \"description\": \"Final total payable including tax\"\n    }\n  ]\n}"
+        }
+    },
+    "bai2": {
+        "label": "BAI2",
+        "icon": "🏦",
+        "base": "/api/v1/bai2",
+        "get": {
+            "endpoint": "GET /api/v1/bai2/{id}",
+            "description": "Retrieve a converted bank statement in BAI2, CSV or JSON form.",
+            "example": "{\n  \"id\": \"BAI-204\",\n  \"fileName\": \"statement_june.pdf\",\n  \"status\": \"completed\",\n  \"account\": \"50100123456\",\n  \"currency\": \"INR\",\n  \"transactions\": 3,\n  \"outputUrl\": \"https://files.lexora.support/bai2/statement_june.bai\"\n}"
+        },
+        "post": {
+            "endpoint": "POST /api/v1/bai2",
+            "description": "Submit a bank statement (PDF or image) for conversion to BAI2 format.",
+            "example": "{\n  \"fileUrl\": \"https://files.lexora.support/uploads/statement_june.pdf\",\n  \"withOcr\": true,\n  \"outputFormat\": \"bai2\"\n}"
         }
     }
 }
