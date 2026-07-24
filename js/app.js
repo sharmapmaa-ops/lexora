@@ -2612,24 +2612,6 @@
             };
 
             // ============================================================
-            // 19b. CURRENCY - single source of truth
-            //
-            // Purana bug: index.html / template HTML me "₹0.00" tha, lekin
-            // jaise hi JS render karta tha wo "$0.00" ban jata tha, kyunki
-            // har jagah alag-alag '$' hardcode tha. Ab har money value
-            // sirf formatMoney() se banti hai - currency badalni ho to
-            // sirf CURRENCY_SYMBOL badalna hai, aur kahin nahi.
-            // ============================================================
-            const CURRENCY_SYMBOL = '₹';
-            window.CURRENCY_SYMBOL = CURRENCY_SYMBOL;
-
-            function formatMoney(value) {
-                const n = Number(value);
-                return CURRENCY_SYMBOL + (isFinite(n) ? n : 0).toFixed(2);
-            }
-            window.formatMoney = formatMoney;
-
-            // ============================================================
             // 20. PAYMENT METHODS FUNCTIONS
             // ============================================================
             function renderPaymentMethods() {
@@ -2857,8 +2839,8 @@
                         <td>${transaction.paymentType}</td>
                         <td>${transaction.paymentMode}</td>
                         <td>${descriptionText}</td>
-                        <td class="credit">${transaction.credit > 0 ? formatMoney(transaction.credit) : '-'}</td>
-                        <td class="debit">${transaction.debit > 0 ? formatMoney(transaction.debit) : '-'}</td>
+                        <td class="credit">${transaction.credit > 0 ? '$' + transaction.credit.toFixed(2) : '-'}</td>
+                        <td class="debit">${transaction.debit > 0 ? '$' + transaction.debit.toFixed(2) : '-'}</td>
                     `;
                     tbody.appendChild(tr);
                 });
@@ -2923,7 +2905,7 @@
                 }
                 const sorted = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
                 const headers = ['Date & Time', 'T. ID', 'Payment Type', 'Payment Mode',
-                    'Description', 'Credit (' + CURRENCY_SYMBOL + ')', 'Debit (' + CURRENCY_SYMBOL + ')'
+                    'Description', 'Credit', 'Debit'
                 ];
                 let table = '<table border="1"><tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
                 sorted.forEach(t => {
@@ -2959,9 +2941,9 @@
                 });
                 const balance = totalCredit - totalDebit;
 
-                document.getElementById('totalCredit').textContent = formatMoney(totalCredit);
-                document.getElementById('totalDebit').textContent = formatMoney(totalDebit);
-                document.getElementById('currentBalance').textContent = formatMoney(balance);
+                document.getElementById('totalCredit').textContent = '$' + totalCredit.toFixed(2);
+                document.getElementById('totalDebit').textContent = '$' + totalDebit.toFixed(2);
+                document.getElementById('currentBalance').textContent = '$' + balance.toFixed(2);
             }
 
             // ============================================================
@@ -2981,9 +2963,9 @@
                 const debitEl = document.getElementById('totalDebitBalance');
                 const balanceEl = document.getElementById('currentBalanceDisplay');
 
-                if (creditEl) creditEl.textContent = formatMoney(totalCredit);
-                if (debitEl) debitEl.textContent = formatMoney(totalDebit);
-                if (balanceEl) balanceEl.textContent = formatMoney(balance);
+                if (creditEl) creditEl.textContent = '$' + totalCredit.toFixed(2);
+                if (debitEl) debitEl.textContent = '$' + totalDebit.toFixed(2);
+                if (balanceEl) balanceEl.textContent = '$' + balance.toFixed(2);
             }
 
             function getAdminAndDeveloperIds() {
@@ -3119,108 +3101,6 @@
             // itself - the server only accepts one after it has verified
             // Razorpay's own signature (see /api/payment/verify-payment),
             // so nothing here can invent balance on its own.
-            // ============================================================
-            // Inline checkout panel (right half of the Add Balance card)
-            //
-            // #rzpInlineMount is the container Razorpay's iframe goes into.
-            // Everything else we draw inside it lives in a single
-            // .pay-panel-state node, so swapping our own messages never
-            // wipes out Razorpay's iframe (an innerHTML reset would).
-            // ============================================================
-            const PAY_PANEL_IDLE_HTML = `
-                <div class="pay-panel-idle-icon">▣</div>
-                <div class="pay-panel-idle-title">Payment opens here</div>
-                <div class="pay-panel-idle-text">
-                    Enter an amount on the left and click <b>+ Add Balance</b>.
-                    The secure payment form loads right here, inside this page.
-                </div>
-                <div class="pay-panel-badges">
-                    <span>UPI</span><span>Visa</span><span>Mastercard</span><span>RuPay</span>
-                </div>`;
-
-            function payPanelSetState(html) {
-                const mount = document.getElementById('rzpInlineMount');
-                if (!mount) return;
-                const existing = mount.querySelector('.pay-panel-state');
-                if (existing) existing.remove();
-                if (html) mount.insertAdjacentHTML('afterbegin', '<div class="pay-panel-state">' + html + '</div>');
-            }
-
-            window.resetPayPanel = function() {
-                const panel = document.getElementById('balancePayPanel');
-                const mount = document.getElementById('rzpInlineMount');
-                if (!mount) return;
-                Array.prototype.slice.call(mount.querySelectorAll('iframe')).forEach(f => f.remove());
-                if (panel) panel.classList.remove('is-busy', 'is-inline');
-                payPanelSetState(PAY_PANEL_IDLE_HTML);
-                syncPayPanelAmount();
-            };
-
-            window.syncPayPanelAmount = function() {
-                const amountEl = document.getElementById('payPanelAmount');
-                const input = document.getElementById('balanceAmount');
-                if (!amountEl) return;
-                amountEl.textContent = formatMoney(input ? parseFloat(input.value) || 0 : 0);
-            };
-
-            window.setBalanceAmount = function(value) {
-                const input = document.getElementById('balanceAmount');
-                if (!input) return;
-                input.value = value;
-                syncPayPanelAmount();
-            };
-
-            // Razorpay's checkout.js takes a `parent` option that renders the
-            // form inline instead of as a modal, but it is NOT in Razorpay's
-            // official docs - so we ask for it and then verify rather than
-            // assume. If an iframe actually lands in our container we style
-            // the panel as inline; if it doesn't, checkout has already opened
-            // as its usual modal and the panel just says so. Either way it is
-            // the same single rzp.open() call, so there is no double-charge
-            // path and nothing breaks if Razorpay drops the option later.
-            function openRazorpayCheckout(options) {
-                const panel = document.getElementById('balancePayPanel');
-                const mount = document.getElementById('rzpInlineMount');
-                const wantInline = !!mount;
-
-                if (wantInline) {
-                    if (panel) panel.classList.add('is-busy');
-                    payPanelSetState('<div class="pay-panel-spinner"></div><div class="pay-panel-idle-text">Loading secure payment form\u2026</div>');
-                    options.parent = '#rzpInlineMount';
-                }
-
-                const rzp = new Razorpay(options);
-                rzp.on('payment.failed', function(response) {
-                    resetPayPanel();
-                    showWarning('Payment failed: ' + ((response.error && response.error.description) || 'please try again.'));
-                });
-                rzp.open();
-
-                if (wantInline) {
-                    let tries = 0;
-                    const poll = setInterval(function() {
-                        tries++;
-                        if (mount.querySelector('iframe')) {
-                            clearInterval(poll);
-                            if (panel) { panel.classList.remove('is-busy'); panel.classList.add('is-inline'); }
-                            payPanelSetState('');
-                        } else if (tries >= 30) {
-                            // ~3s and nothing mounted: `parent` was ignored,
-                            // so the normal modal is what the user is seeing.
-                            clearInterval(poll);
-                            if (panel) panel.classList.remove('is-busy');
-                            payPanelSetState(
-                                '<div class="pay-panel-idle-icon">▣</div>' +
-                                '<div class="pay-panel-idle-title">Payment window is open</div>' +
-                                '<div class="pay-panel-idle-text">Complete your payment in the secure window. ' +
-                                'Please don\'t close or refresh this tab until it finishes.</div>'
-                            );
-                        }
-                    }, 100);
-                }
-                return rzp;
-            }
-
             window.payWithRazorpay = function() {
                 const amountInput = document.getElementById('balanceAmount');
                 const descInput = document.getElementById('balanceDescription');
@@ -3236,14 +3116,13 @@
 
                 authPost('/api/payment/create-order', { userId: CURRENT_USER_ID, amount: amount })
                     .then(order => {
-                        const options = {
+                        const rzp = new Razorpay({
                             key: order.keyId,
                             amount: order.amount,
                             currency: order.currency,
                             order_id: order.orderId,
                             name: (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora',
                             description: description,
-                            image: (COMPANY_INFO && COMPANY_INFO.logo) || 'Pictures/logo.png',
                             prefill: {
                                 name: profileData ? `${profileData.firstName} ${profileData.lastName}` : undefined,
                                 email: profileData ? profileData.email : undefined,
@@ -3270,7 +3149,7 @@
                                     preferences: { show_default_blocks: false }
                                 }
                             },
-                            theme: { color: '#1257f5', backdrop_color: 'rgba(11,21,51,0.55)' },
+                            theme: { color: '#0369a1' },
                             handler: function(response) {
                                 authPost('/api/payment/verify-payment', {
                                     userId: CURRENT_USER_ID,
@@ -3288,7 +3167,6 @@
 
                                     renderPaymentHistory();
                                     updateBalanceDisplay();
-                                    resetPayPanel();
 
                                     if (profileData && profileData.email) {
                                         sendGenericNotificationEmail(
@@ -3303,34 +3181,20 @@
                                     addNotification(`₹${txn.credit.toFixed(2)} was added to your balance (Transaction ID: ${txn.id}).`);
                                     showMessage('✅ Success', `₹${txn.credit.toFixed(2)} added successfully! Transaction ID: ${txn.id}`, ['OK']);
                                 }).catch(err => {
-                                    resetPayPanel();
                                     showWarning('Payment could not be verified: ' + err.message +
                                         '. If any amount was deducted, Razorpay will auto-refund it within a few days - contact support with your payment ID if it is not.');
                                 });
                             },
                             modal: {
-                                ondismiss: function() {
-                                    // User closed the widget - nothing was
-                                    // charged, just put the panel back.
-                                    resetPayPanel();
-                                }
+                                ondismiss: function() { /* user closed the widget - nothing was charged */ }
                             }
-                        };
-
-                        // THE saved-cards fix. Razorpay only ever stores a
-                        // card token AGAINST A CUSTOMER. Without customer_id
-                        // the "Save this card as per RBI guidelines" tick has
-                        // nothing to attach the token to, so next time there
-                        // is nothing to fetch back and the card fields come up
-                        // blank - which is exactly the bug that was reported.
-                        // The id itself is created/reused server-side in
-                        // /api/payment/create-order.
-                        if (order.customerId) options.customer_id = order.customerId;
-
-                        openRazorpayCheckout(options);
+                        });
+                        rzp.on('payment.failed', function(response) {
+                            showWarning('Payment failed: ' + ((response.error && response.error.description) || 'please try again.'));
+                        });
+                        rzp.open();
                     })
                     .catch(err => {
-                        resetPayPanel();
                         showWarning('Could not start payment: ' + err.message);
                     });
             };
@@ -4239,7 +4103,7 @@
                 myHistory.forEach(t => { totalCredit += Number(t.credit) || 0;
                     totalDebit += Number(t.debit) || 0; });
                 const balanceEl = document.getElementById('dashBalance');
-                if (balanceEl) balanceEl.textContent = formatMoney(totalCredit - totalDebit);
+                if (balanceEl) balanceEl.textContent = '$' + (totalCredit - totalDebit).toFixed(2);
                 // Bug 10: dashboard Current Plan hardcoded tha — actual plan
                 // se update karo (plan switch ke baad stale na dikhe).
                 const planEl = document.getElementById('dashCurrentPlan');
@@ -5574,19 +5438,19 @@
                         <div style="flex:1;min-width:220px;border:1px solid rgba(0,0,139,0.15);border-radius:8px;padding:14px;">
                             <h4 style="margin:0 0 10px 0;">${plan.icon || ''} ${escapeHtml(plan.name)}</h4>
                             <div style="margin-bottom:8px;">
-                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Monthly Price (₹)</label>
+                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Monthly Price ($)</label>
                                 <input type="number" step="0.01" min="0" class="admin-price-input"
                                        data-plan-idx="${pIdx}" data-field="monthlyPrice"
                                        value="${Number(plan.monthlyPrice || 0)}" style="width:100%;" />
                             </div>
                             <div style="margin-bottom:8px;">
-                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Translation (₹ / page)</label>
+                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Translation ($ / page)</label>
                                 <input type="number" step="0.01" min="0" class="admin-price-input"
                                        data-plan-idx="${pIdx}" data-field="pricePerTranslation"
                                        value="${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)}" style="width:100%;" />
                             </div>
                             <div style="margin-bottom:8px;">
-                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Lease Abstraction (₹ / document)</label>
+                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Lease Abstraction ($ / document)</label>
                                 <input type="number" step="0.01" min="0" class="admin-price-input"
                                        data-plan-idx="${pIdx}" data-field="pricePerLeaseAbstraction"
                                        value="${Number(plan.pricePerLeaseAbstraction || 0)}" style="width:100%;" />
@@ -6516,65 +6380,9 @@
             // ============================================================
             // 33. UPDATE CONTENT
             // ============================================================
-            // Har page ke upar title + subtitle (left) aur breadcrumb pill
-            // (right) - mockups wala header. Dashboard aur Services pages
-            // apna khud ka intro/layout rakhte hain, isliye unpar header
-            // nahi lagta (warna do heading dikhengi).
-            const PAGE_SUBTITLES = {
-                'Payment History':   'View all your transactions and account activity.',
-                'Balance':           'Add funds and keep track of your wallet balance.',
-                'Payment Mode':      'Manage the cards and UPI IDs saved to your account.',
-                'Plans & Offers':    'Upgrade, downgrade or choose the plan that fits your needs.',
-                'Plans':             'Upgrade, downgrade or choose the plan that fits your needs.',
-                'Notifications':     'Stay updated with important alerts and activities.',
-                'Profile':           'Manage your personal information and account preferences.',
-                'API Documentation': 'Generate your API key and explore our API reference to integrate Lexora services.',
-                'Support':           'Raise a ticket and track your previous requests.',
-                'Contact Us':        "We'd love to hear from you.",
-                'Help Center':       'Guides and answers to the most common questions.'
-            };
-
-            const HOME_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
-                + 'stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/>'
-                + '<path d="M5.5 9.5V20h13V9.5"/></svg>';
-
-            function buildPageHeader(breadcrumb) {
-                const raw = String(breadcrumb || '').trim();
-                if (!raw) return '';
-
-                // "\u{1F4B3} Payment / Payment History" -> ['Payment', 'Payment History']
-                const parts = raw.split('/')
-                    .map(p => p.replace(/^[^A-Za-z0-9]+/, '').trim())
-                    .filter(Boolean);
-                if (!parts.length) return '';
-
-                const title = parts[parts.length - 1];
-                if (title === 'Dashboard' || parts[0] === 'Services') return '';
-
-                const sub = PAGE_SUBTITLES[title] || '';
-                const mid = parts.length > 1
-                    ? parts.slice(0, -1).map(p =>
-                        `<span class="sep">\u203a</span><span>${escapeHtml(p)}</span>`).join('')
-                    : '';
-
-                return `
-                    <div class="page-head">
-                        <div>
-                            <h1 class="page-head-title">${escapeHtml(title)}</h1>
-                            ${sub ? `<p class="page-head-sub">${escapeHtml(sub)}</p>` : ''}
-                        </div>
-                        <div class="page-crumb">
-                            ${HOME_ICON}<a onclick="lexoraNavigate('dashboard')">Dashboard</a>
-                            ${mid}
-                            <span class="sep">\u203a</span><span class="cur">${escapeHtml(title)}</span>
-                        </div>
-                    </div>
-                `;
-            }
-
             function updateContent(data, breadcrumb) {
                 const bodyContent = typeof data.body === 'function' ? data.body() : data.body;
-                contentBody.innerHTML = buildPageHeader(breadcrumb) + (bodyContent || '');
+                contentBody.innerHTML = bodyContent || '';
                 currentMenuDisplay.textContent = breadcrumb || 'Dashboard';
 
                 if (breadcrumb && breadcrumb.includes('Payment Mode')) {
@@ -6593,9 +6401,6 @@
                     setTimeout(() => {
                         populateBalancePaymentMethods();
                         updateBalanceDisplay();
-                        // Draw the idle state into the checkout panel so the
-                        // right half of the Add Balance card is never blank.
-                        resetPayPanel();
                     }, 50);
                 }
 
@@ -6785,12 +6590,6 @@
             // ============================================================
             // 36. LOAD CONTENT
             // ============================================================
-            // Breadcrumb ke "Dashboard" link ke liye - inline onclick global
-            // scope me chalta hai, aur loadContent() is IIFE ke andar hai.
-            window.lexoraNavigate = function(parentId, subId) {
-                loadContent(parentId, subId || null);
-            };
-
             function loadContent(parentId, subId) {
                 // If we're navigating AWAY from an in-progress/active
                 // translation view to anywhere else, tear it down first.
@@ -6876,7 +6675,7 @@
 
             document.addEventListener('click', function(e) {
                 const toggle = document.querySelector('.menu-toggle');
-                if (window.innerWidth <= 1500) {
+                if (window.innerWidth <= 768) {
                     if (!menuWrapper.contains(e.target) && !toggle.contains(e.target)) {
                         menuWrapper.classList.remove('open');
                     }
@@ -7015,44 +6814,21 @@
                         // "Add Balance" is for every user (this was never
                         // meant to be Admin/Developer-only - that
                         // restriction was a misread of the original ask).
-                        // Add Balance form (left) aur secure checkout
-                        // (right) ek hi card ke andar side-by-side rehte
-                        // hain, taaki payment isi website ka hissa lage -
-                        // koi alag popup nahi. Checkout ka actual mount
-                        // point #rzpInlineMount hai (see payWithRazorpay).
                         const topUpHtml = `
-                        <div class="balance-topup-layout">
-                            <div class="balance-add-card">
-                                <h3>➕ Add Balance</h3>
+                        <div class="balance-add-card">
+                            <h3>➕ Add Balance</h3>
+                            <div class="form-row">
                                 <div class="form-group">
                                     <label>Amount (₹)</label>
-                                    <input type="number" id="balanceAmount" placeholder="Enter amount" min="1" step="1" oninput="syncPayPanelAmount()" />
-                                </div>
-                                <div class="balance-quick-row">
-                                    ${[500, 1000, 2000, 5000].map(v => `<button type="button" class="balance-quick-chip" onclick="setBalanceAmount(${v})">₹${v}</button>`).join('')}
+                                    <input type="number" id="balanceAmount" placeholder="Enter amount" min="1" step="1" />
                                 </div>
                                 <div class="form-group">
                                     <label>Description</label>
                                     <input type="text" id="balanceDescription" placeholder="Enter description" />
                                 </div>
                                 <button class="add-btn" onclick="addBalance()">+ Add Balance</button>
-                                <p class="balance-approval-note">Pay securely by UPI or card. Your balance is credited as soon as the payment is confirmed.</p>
                             </div>
-
-                            <div class="balance-pay-panel" id="balancePayPanel">
-                                <div class="pay-panel-head">
-                                    <div>
-                                        <div class="pay-panel-title">Secure Checkout</div>
-                                        <div class="pay-panel-sub">UPI &amp; Cards · powered by Razorpay</div>
-                                    </div>
-                                    <div class="pay-panel-amount" id="payPanelAmount">₹0.00</div>
-                                </div>
-                                <div class="pay-panel-body" id="rzpInlineMount"></div>
-                                <div class="pay-panel-foot">
-                                    <span>256-bit encrypted</span>
-                                    <span>PCI-DSS compliant</span>
-                                </div>
-                            </div>
+                            <p class="balance-approval-note">Pay securely by UPI or card. Your balance is credited as soon as the payment is confirmed.</p>
                         </div>
                         `;
                         return `
@@ -7567,156 +7343,103 @@
                 });
             }
 
-            // Auth screen ka layout ab light "Document Intelligence
-            // Platform" design follow karta hai:
-            //   [ hero art | brand copy ]   [ login card  ]
-            //   [ feature cards        ]   [ side art     ]
-            //   [ trust strip          ]
-            // Left column yahan banta hai, right column renderAuthScreen()
-            // me. Illustrations Pictures/auth-hero.png aur auth-side.png
-            // se aati hain - agar file missing ho to onerror unhe hide kar
-            // deta hai aur layout waise hi kaam karta rehta hai.
-            const AUTH_HIGHLIGHTS = [
-                { num: '60+',    label: 'Languages',  sub: 'Supported' },
-                { num: '99%',    label: 'Accuracy',   sub: 'Guaranteed' },
-                { num: 'Secure', label: 'Enterprise', sub: 'Grade Security' }
-            ];
-
-            const AUTH_CHECKS = [
-                'Preserve original layout & formatting',
-                'Process files securely in your browser',
-                'Extract data with high accuracy',
-                'Smart OCR & data extraction',
-                'Convert to Word, Excel, CSV, JSON or PDF',
-                'Fast, reliable & privacy focused'
-            ];
-
-            const AUTH_FEATURES = [
-                { icon: '\u2b06', title: 'Upload',            desc: 'Drop in your PDFs or images' },
-                { icon: '\u2699', title: 'Process',           desc: 'Choose your options and start' },
-                { icon: '\u2b07', title: 'Download',          desc: 'Get Word, Excel, CSV, JSON or PDF' },
-                { icon: '\u2295', title: 'Translation',       desc: '60+ languages, layout preserved exactly' },
-                { icon: '\u25a3', title: 'OCR',               desc: 'Scanned or photographed pages rebuilt into editable Word' },
-                { icon: '\u2261', title: 'Data Extraction',   desc: 'Define your own fields, get a clean table from every file' },
-                { icon: '\u25a4', title: 'BAI2',              desc: 'Bank statements converted to BAI2, CSV or JSON' },
-                { icon: '\u25a5', title: 'Lease Abstraction', desc: 'Structured lease fields with source citations' },
-                { icon: '\u2726', title: 'Free Tools',        desc: '29 PDF, image, data and calculator utilities' },
-                { icon: '\u2713', title: 'Secure',            desc: "Files processed in your browser. We don't store your documents" }
-            ];
-
-            const AUTH_TRUST = [
-                { title: 'Secure in Browser', desc: 'Files never leave your device' },
-                { title: 'Pay per Page',      desc: 'Only for what you process' },
-                { title: 'No Lock-in',        desc: 'Export anytime' },
-                { title: '29+ Free Tools',    desc: 'Built-in utilities to save time' }
-            ];
-
             function buildAuthLeftPanel() {
-                const name = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora';
-                const shortName = String(name).split(/\s+/)[0] || 'Lexora';
+                const name = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora AI Solutions';
+                const logoPath = (COMPANY_INFO && COMPANY_INFO.logo) || 'Pictures/logo.png';
+
+                // Showcases what the platform actually does today. The old panel
+                // described only Lease Abstraction, which is now hidden from
+                // most users - so signing in gave a misleading first impression.
+                const services = [
+                    { icon: '🌐', title: 'Translation',     desc: '60+ languages, layout preserved exactly as the original' },
+                    { icon: '🔍', title: 'OCR',             desc: 'Scanned or photographed pages rebuilt into editable Word' },
+                    { icon: '🧾', title: 'Data Extraction', desc: 'Define your own fields, get a clean table from every file' },
+                    { icon: '🏦', title: 'BAI2',            desc: 'Bank statements converted to BAI2, CSV or JSON' },
+                    { icon: '📄', title: 'Lease Abstraction', desc: 'Structured lease fields with source citations' },
+                    { icon: '🎁', title: 'Free Tools',      desc: '29 PDF, image, data and calculator utilities' }
+                ];
+
+                const steps = [
+                    { n: '1', label: 'Upload', desc: 'Drop in your PDFs or images' },
+                    { n: '2', label: 'Process', desc: 'Choose your options and start' },
+                    { n: '3', label: 'Download', desc: 'Get Word, Excel, CSV, JSON or PDF' }
+                ];
+
+                const social = buildSocialLinksHtml({ size: 20, gap: 16, color: 'rgba(255,255,255,0.75)' });
 
                 return `
-                    <div class="auth-hero">
-                        <div class="auth-hero-art">
-                            <img src="Pictures/auth-hero.svg" alt=""
-                                 onerror="this.style.display='none';" />
-                        </div>
-                        <div class="auth-hero-copy">
-                            <h1 class="auth-brand-title">${escapeHtml(shortName)}</h1>
-                            <p class="auth-brand-tagline">Document Intelligence Platform</p>
-                            <p class="auth-brand-sub">
-                                Translate, read, and extract data from any document \u2014
-                                keeping the original layout intact.
-                            </p>
+                    <div class="auth-brand-icon"><img src="${logoPath}" alt="${escapeHtml(name)} logo" onerror="this.onerror=null;this.src='Pictures/logo.png';" /></div>
+                    <h1 class="auth-brand-title">${escapeHtml(name)}</h1>
+                    <p class="auth-brand-tagline">Document Intelligence Platform</p>
+                    <p class="auth-brand-sub">
+                        Translate, read, and extract data from any document —
+                        keeping the original layout intact.
+                    </p>
 
-                            <div class="auth-stats-row">
-                                ${AUTH_HIGHLIGHTS.map(function (h) {
-                                    return `<div class="auth-stat">
-                                        <span class="auth-stat-dot"></span>
-                                        <div>
-                                            <div class="auth-stat-num">${escapeHtml(h.num)}</div>
-                                            <div class="auth-stat-label">${escapeHtml(h.label)}<br/>${escapeHtml(h.sub)}</div>
-                                        </div>
-                                    </div>`;
-                                }).join('')}
-                            </div>
-
-                            <div class="auth-check-grid">
-                                ${AUTH_CHECKS.map(function (c) {
-                                    return `<div class="auth-check"><span class="auth-check-mark">\u2713</span>${escapeHtml(c)}</div>`;
-                                }).join('')}
-                            </div>
-                        </div>
+                    <div class="auth-steps">
+                        ${steps.map(function (s, i) {
+                            return `<div class="auth-step">
+                                <div class="auth-step-num">${s.n}</div>
+                                <div>
+                                    <div class="auth-step-label">${s.label}</div>
+                                    <div class="auth-step-desc">${s.desc}</div>
+                                </div>
+                            </div>${i < steps.length - 1 ? '<div class="auth-step-arrow">→</div>' : ''}`;
+                        }).join('')}
                     </div>
 
                     <div class="auth-feature-grid">
-                        ${AUTH_FEATURES.map(function (f) {
+                        ${services.map(function (s) {
                             return `<div class="auth-feature-card">
-                                <div class="auth-feature-icon">${f.icon}</div>
-                                <div>
-                                    <div class="auth-feature-title">${escapeHtml(f.title)}</div>
-                                    <div class="auth-feature-desc">${escapeHtml(f.desc)}</div>
-                                </div>
+                                <div class="auth-feature-title">${s.icon} ${escapeHtml(s.title)}</div>
+                                <div class="auth-feature-desc">${escapeHtml(s.desc)}</div>
                             </div>`;
                         }).join('')}
+                    </div>
+
+                    <div class="auth-stats-row">
+                        <div>
+                            <div class="auth-stat-num">60+</div>
+                            <div class="auth-stat-label">Languages supported</div>
+                        </div>
+                        <div>
+                            <div class="auth-stat-num">29</div>
+                            <div class="auth-stat-label">Free tools included</div>
+                        </div>
+                        <div>
+                            <div class="auth-stat-num">5</div>
+                            <div class="auth-stat-label">Output formats</div>
+                        </div>
                     </div>
 
                     <div class="auth-trust-row">
-                        ${AUTH_TRUST.map(function (t) {
-                            return `<div class="auth-trust">
-                                <b>${escapeHtml(t.title)}</b>
-                                <span>${escapeHtml(t.desc)}</span>
-                            </div>`;
-                        }).join('')}
+                        <div class="auth-trust"><b>Secure</b><span>Files processed in your browser</span></div>
+                        <div class="auth-trust"><b>Pay per page</b><span>Only for what you actually process</span></div>
+                        <div class="auth-trust"><b>No lock-in</b><span>Export to Word, Excel, CSV or JSON</span></div>
                     </div>
+
+                    ${social ? `<div class="auth-social">${social}</div>` : ''}
                 `;
             }
 
-            // "Remember me" sirf email yaad rakhta hai (password kabhi
-            // nahi - wo browser ke password manager ka kaam hai). Session
-            // token alag key me hai, isse chhedte nahi.
-            const AUTH_REMEMBER_KEY = 'lexora_remember_email';
-
-            function getRememberedEmail() {
-                try { return localStorage.getItem(AUTH_REMEMBER_KEY) || ''; }
-                catch (e) { return ''; }
-            }
-
-            function saveRememberedEmail(email, remember) {
-                try {
-                    if (remember && email) localStorage.setItem(AUTH_REMEMBER_KEY, email);
-                    else localStorage.removeItem(AUTH_REMEMBER_KEY);
-                } catch (e) { /* private mode - not worth failing a login over */ }
-            }
-
             function buildLoginCard() {
-                const remembered = getRememberedEmail();
                 return `
                     <h2 class="auth-card-title">Welcome Back</h2>
-                    <p class="auth-card-note">Sign in to continue to your account</p>
-                    <div class="auth-form-group auth-input-icon-group">
-                        <span class="auth-input-icon"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M3 6.5l9 6.5 9-6.5"/></svg></span>
-                        <input type="email" id="loginEmail" class="auth-input" placeholder="Email Address"
-                               value="${escapeHtml(remembered)}" onkeydown="if(event.key==='Enter')handleAuthLogin()" />
+                    <div class="auth-form-group">
+                        <input type="email" id="loginEmail" class="auth-input" placeholder="Email Address" />
                     </div>
-                    <div class="auth-form-group auth-input-icon-group auth-password-group">
-                        <span class="auth-input-icon"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10.5" width="16" height="10.5" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg></span>
-                        <input type="password" id="loginPassword" class="auth-input" placeholder="Password"
-                               onkeydown="if(event.key==='Enter')handleAuthLogin()" />
-                        <span class="auth-eye" onclick="authTogglePassword('loginPassword', this)">\ud83d\udc41\ufe0f</span>
-                    </div>
-                    <div class="auth-remember-row">
-                        <label class="auth-remember">
-                            <input type="checkbox" id="loginRemember" ${remembered ? 'checked' : ''} />
-                            <span>Remember me</span>
-                        </label>
-                        <a onclick="authGoTo('forgot')">Forgot Password?</a>
+                    <div class="auth-form-group auth-password-group">
+                        <input type="password" id="loginPassword" class="auth-input" placeholder="Password" />
+                        <span class="auth-eye" onclick="authTogglePassword('loginPassword', this)">👁️</span>
                     </div>
                     <div id="authErrorBox" class="auth-error-box" style="display:none;"></div>
-                    <button class="auth-btn-primary auth-btn-block" onclick="handleAuthLogin()">Login</button>
-                    <button class="auth-btn-secondary auth-btn-block" onclick="authResetForm(['loginEmail','loginPassword'])">Reset</button>
-                    <div class="auth-card-footer">
-                        Don't have an account? <a onclick="authGoTo('register')">Create Account</a>
+                    <div class="auth-btn-row">
+                        <button class="auth-btn-primary" onclick="handleAuthLogin()">Login</button>
+                        <button class="auth-btn-secondary" onclick="authResetForm(['loginEmail','loginPassword'])">Reset</button>
+                    </div>
+                    <div class="auth-links">
+                        <a onclick="authGoTo('forgot')">Forgot Password?</a>
+                        <a onclick="authGoTo('register')">Create Account</a>
                     </div>
                 `;
             }
@@ -7851,32 +7574,10 @@
             function renderAuthScreen() {
                 const root = document.getElementById('authScreen');
                 if (!root) return;
-
-                const name = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora';
-                const shortName = String(name).split(/\s+/)[0] || 'Lexora';
-                const logoPath = (COMPANY_INFO && COMPANY_INFO.logo) || 'Pictures/logo.png';
-                const social = buildSocialLinksHtml({ size: 18, gap: 14, color: 'rgba(11,21,51,0.45)' });
-
                 root.innerHTML = `
-                    <div class="auth-page">
-                        <div class="auth-topbar">
-                            <img class="auth-topbar-logo" src="${logoPath}" alt=""
-                                 onerror="this.onerror=null;this.src='Pictures/logo.png';" />
-                            <span class="auth-topbar-name">${escapeHtml(shortName).toUpperCase()}</span>
-                        </div>
-
-                        <div class="auth-main">
-                            <div class="auth-main-left">${buildAuthLeftPanel()}</div>
-                            <div class="auth-main-right">
-                                <div class="auth-card">${buildAuthCard()}</div>
-                                <div class="auth-side-art">
-                                    <img src="Pictures/auth-side.svg" alt=""
-                                         onerror="this.style.display='none';" />
-                                </div>
-                            </div>
-                        </div>
-
-                        ${social ? `<div class="auth-social">${social}</div>` : ''}
+                    <div class="auth-wrapper">
+                        <div class="auth-left">${buildAuthLeftPanel()}</div>
+                        <div class="auth-right"><div class="auth-card">${buildAuthCard()}</div></div>
                     </div>
                 `;
                 if (authState.step === 'verify') {
@@ -8005,12 +7706,7 @@
                 hideAuthError();
                 const email = document.getElementById('loginEmail').value.trim();
                 const password = document.getElementById('loginPassword').value;
-                const rememberEl = document.getElementById('loginRemember');
                 if (!email || !password) { showAuthError('Please enter both email and password.'); return; }
-
-                // Remember the email before the request goes out, so a 2FA
-                // detour (which re-renders the card) doesn't lose the tick.
-                saveRememberedEmail(email, !!(rememberEl && rememberEl.checked));
 
                 try {
                     const res = await authPost('/api/auth/login', { email, password });
