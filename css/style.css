@@ -418,7 +418,7 @@
            by the flex sizing above. */
         .service-col > .file-list-card,
         .service-col > .activity-log-section,
-        .service-col > .service-card { margin-top: 0; height: auto; }
+        .service-col > .service-card { height: 100%; }
 
         .service-col > .activity-log-section > .activity-log-card,
         .service-col > .file-list-card { height: 100%; }
