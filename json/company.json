@@ -1,11 +1,17 @@
 {
-    "name": "Lexora",
+    "name": "Lexora AI Solutions",
     "address": "123 Tech Park, Silicon Valley, CA 94025",
     "workingHours": "Mon–Fri: 9:00 AM – 6:00 PM (PST)",
     "workingDays": "Monday – Friday (Weekends Closed)",
     "location": "San Francisco Bay Area, California",
-    "email": "support@lexora.support",
+    "email": "support@lexora.ai",
     "phone": "+1 (800) 555-LEXO",
     "whatsapp": "+919904143278",
-    "logo": "Pictures/logo.jpeg"
+    "logo": "Pictures/logo.png",
+    "social": {
+        "facebook": "https://www.facebook.com/lexoraai",
+        "instagram": "https://www.instagram.com/lexoraai",
+        "linkedin": "https://www.linkedin.com/company/lexoraai",
+        "youtube": "https://www.youtube.com/@lexoraai"
+    }
 }
