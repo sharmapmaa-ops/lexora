@@ -380,7 +380,7 @@
 
         .content-area {
             background: transparent;
-            padding: 15px 0 20px 0;
+            padding: 6px 0 16px 0;
             border-radius: 8px;
             min-height: 200px;
         }
@@ -394,21 +394,37 @@
         .service-page-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 16px;
+            gap: 14px;
             align-items: start;
-            margin-top: 10px;
+            margin-top: 0;
         }
 
         .service-col {
             display: flex;
             flex-direction: column;
-            gap: 16px;
+            gap: 14px;
             min-width: 0;   /* lets wide tables scroll instead of stretching the column */
         }
 
-        /* Inside the grid these cards are already spaced by the column gap. */
+        /* Both columns run the full height of the grid row... */
+        .service-page-grid { align-items: stretch; }
+
+        /* ...and each column's two cards split that height evenly, so the
+           left and right sides always end level. Without this each card kept
+           its own fixed height and the columns finished at different points. */
+        .service-col > * { flex: 1 1 0; min-height: 0; }
+
+        /* Inside the grid the per-card fixed heights and margins are replaced
+           by the flex sizing above. */
         .service-col > .file-list-card,
-        .service-col > .activity-log-section { margin-top: 0; }
+        .service-col > .activity-log-section,
+        .service-col > .service-card { margin-top: 0; height: auto; }
+
+        .service-col > .activity-log-section > .activity-log-card,
+        .service-col > .file-list-card { height: 100%; }
+
+        .service-col > .activity-log-section { display: flex; }
+        .service-col > .activity-log-section > .activity-log-card { flex: 1; }
 
         @media (max-width: 1100px) {
             .service-page-grid { grid-template-columns: 1fr; }
@@ -645,12 +661,15 @@
             font-weight: 600;
             color: rgba(0,0,0,0.7);
             border-bottom: 2px solid rgba(0,0,139,0.1);
-            font-size: 0.7rem;
+            font-size: 0.66rem;
             text-transform: uppercase;
-            letter-spacing: 0.3px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            letter-spacing: 0;
+            padding-left: 6px;
+            padding-right: 6px;
+            overflow: visible;
+            white-space: normal;   /* wrap rather than clip to "PAG…" */
+            line-height: 1.2;
+            word-break: normal;
         }
 
         .file-table tbody td {
