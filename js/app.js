@@ -3185,6 +3185,10 @@
             // client-side record and always needs an Admin/Developer to
             // approve it before it counts toward the balance (unless the
             // person submitting it already IS an Admin/Developer).
+            // Adding balance means the user PAYS US, so it must go through
+            // Razorpay's checkout - a client-side ledger entry would credit
+            // balance without any money actually moving. The old manual entry
+            // is kept only as the fallback for when the gateway can't load.
             window.addBalance = function() {
                 const methodSelect = document.getElementById('balancePaymentMethod');
                 const amountInput = document.getElementById('balanceAmount');
@@ -3197,6 +3201,12 @@
                 if (!methodId) { showWarning('Please select a payment method.'); return; }
                 if (!amount || amount <= 0) { showWarning('Please enter a valid amount.'); return; }
                 if (!description) { showWarning('Please enter a description.'); return; }
+
+                if (typeof Razorpay !== 'undefined') {
+                    payWithRazorpay();
+                    return;
+                }
+                showWarning('Payment gateway could not be loaded, so this has been recorded as a manual payment for an Admin to approve.');
 
                 const method = paymentMethods.find(m => m.id === methodId);
                 if (!method) { showWarning('Selected payment method not found.'); return; }
@@ -6868,6 +6878,10 @@
                             <h3>➕ Add Balance</h3>
                             <div class="form-row">
                                 <div class="form-group">
+                                    <label>Payment Method</label>
+                                    <select id="balancePaymentMethod"></select>
+                                </div>
+                                <div class="form-group">
                                     <label>Amount</label>
                                     <input type="number" id="balanceAmount" placeholder="Enter amount" min="0.01" step="0.01" />
                                 </div>
@@ -6875,20 +6889,8 @@
                                     <label>Description</label>
                                     <input type="text" id="balanceDescription" placeholder="Enter description" />
                                 </div>
-                                <button class="add-btn" onclick="payWithRazorpay()">💳 Pay with Razorpay</button>
+                                <button class="add-btn" onclick="addBalance()">+ Add Balance</button>
                             </div>
-                            <p class="balance-approval-note">Card, UPI, netbanking &amp; more via Razorpay's secure checkout - credited instantly once payment is confirmed.</p>
-                            <details class="balance-manual-fallback">
-                                <summary>Paying by bank transfer instead?</summary>
-                                <div class="form-row">
-                                    <div class="form-group">
-                                        <label>Payment Method</label>
-                                        <select id="balancePaymentMethod"></select>
-                                    </div>
-                                    <button class="add-btn" onclick="addBalance()">📝 Record Manual Payment</button>
-                                </div>
-                                ${!isAdminOrDeveloper() ? '<p class="balance-approval-note">⏳ Manual payments are credited once an Admin or Developer approves them.</p>' : ''}
-                            </details>
                         </div>
                         `;
                         // Item 1 - a genuinely separate card, Admin/Developer
