@@ -340,6 +340,111 @@ def _razorpay_auth_header():
     return key_id, key_secret, f"Basic {token}"
 
 
+# ============================================================
+# Razorpay Customers - required for "save this card".
+#
+# Razorpay never stores a card token on its own; a token is always
+# stored AGAINST A CUSTOMER (cust_xxx). If checkout is opened without
+# customer_id, ticking "Save this card as per RBI guidelines" has
+# nothing to attach the token to, so the next checkout has nothing to
+# fetch back and the customer has to type the card again - which is
+# exactly the bug this fixes.
+#
+# The cust_xxx id is created once per user and cached on the user
+# record in users.json (razorpayCustomerId). fail_existing=0 means a
+# repeat call for an email/contact Razorpay already knows returns the
+# EXISTING customer instead of erroring, so this is safe to retry and
+# safe across a users.json restore.
+#
+# Everything here degrades quietly: if customer creation fails for any
+# reason we return None and the payment still goes through as a normal
+# guest checkout. A saved-card convenience feature must never be able
+# to block someone from paying.
+# ============================================================
+_razorpay_customer_lock = threading.Lock()
+
+
+def _razorpay_get_or_create_customer(user_id, auth_header):
+    try:
+        users = auth_store.load_users()
+    except (OSError, json.JSONDecodeError) as err:
+        print(f"Razorpay customer: could not read users.json ({err})")
+        return None
+
+    user = auth_store.find_user_by_id(users, user_id)
+    if not user:
+        return None
+
+    cached = (user.get("razorpayCustomerId") or "").strip()
+    if cached:
+        return cached
+
+    name = " ".join(
+        part for part in [
+            (user.get("firstName") or "").strip(),
+            (user.get("lastName") or "").strip(),
+        ] if part
+    )
+    email = (user.get("email") or "").strip()
+    # Razorpay wants +<country code><number> and rejects spaces/dashes.
+    contact = re.sub(r"[^\d+]", "", str(user.get("mobile") or ""))
+
+    payload = {"fail_existing": "0"}
+    if 3 <= len(name) <= 50:
+        payload["name"] = name
+    if email:
+        payload["email"] = email[:64]
+    if len(contact) >= 8:
+        payload["contact"] = contact[:15]
+
+    # A customer with neither email nor contact is useless for saved
+    # cards - Razorpay has no way to recognise the person next time.
+    if "email" not in payload and "contact" not in payload:
+        return None
+
+    req = urllib.request.Request(
+        "https://api.razorpay.com/v1/customers",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": auth_header},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            customer = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as err:
+        detail = ""
+        try:
+            detail = err.read().decode("utf-8")[:300]
+        except Exception:
+            pass
+        print(f"Razorpay customer create failed for {user_id}: {err.code} {detail}")
+        return None
+    except Exception as err:  # noqa: BLE001 - never block the payment
+        print(f"Razorpay customer create failed for {user_id}: {err}")
+        return None
+
+    customer_id = (customer.get("id") or "").strip()
+    if not customer_id:
+        return None
+
+    # Re-read under the lock before writing: users.json is touched by
+    # several routes and we only want to add one field, not clobber a
+    # profile edit that landed in between.
+    with _razorpay_customer_lock:
+        try:
+            users = auth_store.load_users()
+            fresh = auth_store.find_user_by_id(users, user_id)
+            if fresh is not None:
+                fresh["razorpayCustomerId"] = customer_id
+                auth_store.save_users(users)
+        except (OSError, json.JSONDecodeError) as err:
+            # Not fatal - the id just won't be cached, so the next
+            # top-up creates/fetches it again (fail_existing=0).
+            print(f"Razorpay customer: could not cache id for {user_id} ({err})")
+
+    return customer_id
+
+
 # Only these json/ files can be read/written through the /api/data/<name>
 # API - this is a hard allowlist so that route can never be used to read or
 # overwrite anything else on disk (app.js, server.py, users.json,
@@ -1504,11 +1609,18 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception as e:
             return 502, {"error": f"Could not reach Razorpay: {e}"}
 
+        # customer_id ke bina "Save this card" kaam nahi karta - checkout
+        # ko ye id chahiye taaki token kisi customer ke against store ho
+        # sake aur agli baar wapas fetch ho sake. Fail ho jaye to None
+        # jata hai aur payment normally chalta rehta hai.
+        customer_id = _razorpay_get_or_create_customer(user_id, auth_header)
+
         return 200, {
             "orderId": order.get("id"),
             "amount": amount_subunits,
             "currency": currency,
             "keyId": key_id,
+            "customerId": customer_id,
         }
 
     # ---- Razorpay: verify-payment (step 2) ----
