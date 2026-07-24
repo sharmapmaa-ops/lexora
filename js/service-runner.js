@@ -120,17 +120,16 @@
     const accept = svc.accept || '';
     const browseHint = svc.browseHint || (accept.indexOf('image') !== -1 ? 'or click to browse (JPG / PNG)' : 'or click to browse (PDF only)');
 
-    const backBar = svc.backTo ? `<div style="margin-bottom:14px;">
-          <button class="process-btn clear-btn" onclick="${svc.backTo}">← Back to Other Services</button>
-        </div>` : '';
+    const backBtn = svc.backTo
+      ? `<button class="process-btn clear-btn card-back-btn" onclick="${svc.backTo}">← Back to Other Services</button>`
+      : '';
 
     return `
       <div>
-        ${backBar}
         <div class="service-page-grid">
           <div class="service-col">
           <div class="service-card">
-            <h3>📤 Upload File(s)</h3>
+            <h3 class="card-head-row"><span>📤 Upload File(s)</span>${backBtn}</h3>
             <div class="card-body">
               <div class="drop-zone" onclick="${st.running ? 'void(0)' : `document.getElementById('srIn_${id}').click()`}"
                    style="${st.running ? 'opacity:0.5;pointer-events:none;' : ''}">

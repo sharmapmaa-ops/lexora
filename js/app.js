@@ -558,10 +558,7 @@
                             <select id="translationLangSelect" style="width:100%;" ${processState.running ? 'disabled' : ''}>
                                 ${TRANSLATION_LANG_OPTIONS}
                             </select>
-                            <div style="font-size:0.76rem;color:rgba(0,0,0,0.5);margin-top:4px;">
-                                Only need the document rebuilt in its own language?
-                                Use the <b>OCR</b> service instead.
-                            </div>
+
                           </div>
                           <div style="flex:1;">
                             <label>Output Format</label>
@@ -2907,7 +2904,7 @@
                     return;
                 }
                 const sorted = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
-                const headers = ['Transaction Date & Time', 'Transaction ID', 'Payment Type', 'Payment Mode',
+                const headers = ['Date & Time', 'T. ID', 'Payment Type', 'Payment Mode',
                     'Description', 'Credit', 'Debit'
                 ];
                 let table = '<table border="1"><tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
@@ -3104,9 +3101,25 @@
             // itself - the server only accepts one after it has verified
             // Razorpay's own signature (see /api/payment/verify-payment),
             // so nothing here can invent balance on its own.
+            // Maps the payment method the user selected in our form to the
+            // matching Razorpay checkout tab. Anything we can't map returns
+            // undefined, which just lets Razorpay show its normal options.
+            function rzpMethodFor(methodId) {
+                const m = paymentMethods.find(x => x.id === methodId);
+                if (!m) return undefined;
+                const t = String(m.type || m.name || '').toLowerCase();
+                if (t.indexOf('upi') !== -1) return 'upi';
+                if (t.indexOf('netbank') !== -1 || t.indexOf('net bank') !== -1) return 'netbanking';
+                if (t.indexOf('wallet') !== -1) return 'wallet';
+                if (t.indexOf('card') !== -1) return 'card';
+                return undefined;
+            }
+
             window.payWithRazorpay = function() {
                 const amountInput = document.getElementById('balanceAmount');
                 const descInput = document.getElementById('balanceDescription');
+                const methodSelect = document.getElementById('balancePaymentMethod');
+                const methodId = methodSelect ? parseInt(methodSelect.value) : 0;
 
                 const amount = parseFloat(amountInput.value);
                 const description = descInput.value.trim() || 'Balance top-up';
@@ -3128,9 +3141,23 @@
                             description: description,
                             prefill: {
                                 name: profileData ? `${profileData.firstName} ${profileData.lastName}` : undefined,
-                                email: profileData ? profileData.email : undefined
+                                email: profileData ? profileData.email : undefined,
+                                contact: profileData ? (profileData.phone || undefined) : undefined,
+                                // Opens straight on the method the user picked
+                                // in our own form, instead of Razorpay's
+                                // default landing tab.
+                                method: rzpMethodFor(methodId)
                             },
-                            theme: { color: '#0a0f2c' },
+                            // EMI is deliberately not offered: these are small
+                            // wallet top-ups, and EMI carries extra charges and
+                            // eligibility rules that make no sense here.
+                            config: {
+                                display: {
+                                    hide: [{ method: 'emi' }],
+                                    preferences: { show_default_blocks: true }
+                                }
+                            },
+                            theme: { color: '#0369a1' },
                             handler: function(response) {
                                 authPost('/api/payment/verify-payment', {
                                     userId: CURRENT_USER_ID,
@@ -6771,8 +6798,8 @@
                                 <table class="history-table today-table" id="todayTableHeader">
                                     <thead>
                                         <tr>
-                                            <th>Transaction Date & Time</th>
-                                            <th>Transaction ID</th>
+                                            <th>Date &amp; Time</th>
+                                            <th>T. ID</th>
                                             <th>User ID</th>
                                             <th>Payment Type</th>
                                             <th>Payment Mode</th>
@@ -7025,8 +7052,8 @@
                                     <thead>
                                         <tr>
                                             <th style="width:36px;"><input type="checkbox" id="historySelectAll" onchange="toggleSelectAllTransactions(this.checked)" /></th>
-                                            <th>Transaction Date & Time</th>
-                                            <th>Transaction ID</th>
+                                            <th>Date &amp; Time</th>
+                                            <th>T. ID</th>
                                             <th>User ID</th>
                                             <th>Payment Type</th>
                                             <th>Payment Mode</th>
@@ -7541,6 +7568,21 @@
                                 <div class="auth-feature-desc">${escapeHtml(s.desc)}</div>
                             </div>`;
                         }).join('')}
+                    </div>
+
+                    <div class="auth-stats-row">
+                        <div>
+                            <div class="auth-stat-num">60+</div>
+                            <div class="auth-stat-label">Languages supported</div>
+                        </div>
+                        <div>
+                            <div class="auth-stat-num">29</div>
+                            <div class="auth-stat-label">Free tools included</div>
+                        </div>
+                        <div>
+                            <div class="auth-stat-num">5</div>
+                            <div class="auth-stat-label">Output formats</div>
+                        </div>
                     </div>
 
                     <div class="auth-trust-row">

@@ -209,10 +209,11 @@
   // ══════════════════════════════════════════════════════════════════
 
   // Every tool page gets a way back to the Other Services list.
-  function backBar() {
-    return `<div style="margin-bottom:14px;">
-      <button class="process-btn clear-btn" onclick="FreeServices.open('other-services')">← Back to Other Services</button>
-    </div>`;
+  // Injected into a card's own <h3> so the button sits inside the first
+  // card (right-aligned) rather than floating above the page.
+  function withBackButton(html) {
+    const btn = '<button class="process-btn clear-btn card-back-btn" onclick="FreeServices.open(\'other-services\')">← Back to Other Services</button>';
+    return html.replace(/<h3>([\s\S]*?)<\/h3>/, '<h3 class="card-head-row"><span>$1</span>' + btn + '</h3>');
   }
 
   // ── calculators ────────────────────────────────────────────────────
@@ -437,8 +438,8 @@
   function render(id) {
     if (id === 'other-services') return renderIndex();
     const cm = cardModule(id);
-    if (cm) return backBar() + cm.render();
-    if (CALCULATORS[id]) return backBar() + CALCULATORS[id]();
+    if (cm) return withBackButton(cm.render());
+    if (CALCULATORS[id]) return withBackButton(CALCULATORS[id]());
     if (window.ServiceRunner && ServiceRunner.has(id)) return ServiceRunner.render(id);
     return '<div class="content-section"><p>This tool is not available.</p></div>';
   }
