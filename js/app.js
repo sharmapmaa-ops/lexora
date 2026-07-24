@@ -99,6 +99,36 @@
             // exactly the selected files (not "all not-yet-completed" like
             // before - selection is now what actually governs what Start
             // will process, see processTranslationFileAt/processLeaseFileAt).
+            // Social links come from json/company.json so they can be changed
+            // without touching code. Rendered as inline SVG rather than an icon
+            // font so there's no extra network dependency and they stay crisp.
+            const SOCIAL_ICONS = {
+                facebook: '<path d="M22 12a10 10 0 1 0-11.56 9.88v-6.99H7.9V12h2.54V9.8c0-2.5 1.49-3.89 3.77-3.89 1.09 0 2.24.2 2.24.2v2.46h-1.26c-1.24 0-1.63.77-1.63 1.56V12h2.78l-.45 2.89h-2.33v6.99A10 10 0 0 0 22 12z"/>',
+                instagram: '<path d="M12 2.16c3.2 0 3.58.01 4.85.07 1.17.05 1.8.25 2.23.41.56.22.96.48 1.38.9.42.42.68.82.9 1.38.16.42.36 1.06.41 2.23.06 1.27.07 1.65.07 4.85s-.01 3.58-.07 4.85c-.05 1.17-.25 1.8-.41 2.23-.22.56-.48.96-.9 1.38-.42.42-.82.68-1.38.9-.42.16-1.06.36-2.23.41-1.27.06-1.65.07-4.85.07s-3.58-.01-4.85-.07c-1.17-.05-1.8-.25-2.23-.41a3.8 3.8 0 0 1-1.38-.9 3.8 3.8 0 0 1-.9-1.38c-.16-.42-.36-1.06-.41-2.23C2.17 15.58 2.16 15.2 2.16 12s.01-3.58.07-4.85c.05-1.17.25-1.8.41-2.23.22-.56.48-.96.9-1.38.42-.42.82-.68 1.38-.9.42-.16 1.06-.36 2.23-.41C8.42 2.17 8.8 2.16 12 2.16zm0 3.68a6.16 6.16 0 1 0 0 12.32 6.16 6.16 0 0 0 0-12.32zm0 10.16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm7.85-10.4a1.44 1.44 0 1 1-2.88 0 1.44 1.44 0 0 1 2.88 0z"/>',
+                linkedin: '<path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.35V9h3.41v1.56h.05a3.74 3.74 0 0 1 3.37-1.85c3.6 0 4.27 2.37 4.27 5.46zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.55V9h3.57zM22.22 0H1.77C.79 0 0 .77 0 1.72v20.56C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.72V1.72C24 .77 23.2 0 22.22 0z"/>',
+                youtube: '<path d="M23.5 6.19a3.02 3.02 0 0 0-2.12-2.14C19.5 3.55 12 3.55 12 3.55s-7.5 0-9.38.5A3.02 3.02 0 0 0 .5 6.19C0 8.08 0 12 0 12s0 3.92.5 5.81a3.02 3.02 0 0 0 2.12 2.14c1.88.5 9.38.5 9.38.5s7.5 0 9.38-.5a3.02 3.02 0 0 0 2.12-2.14C24 15.92 24 12 24 12s0-3.92-.5-5.81zM9.55 15.57V8.43L15.82 12z"/>'
+            };
+
+            function buildSocialLinksHtml(opts) {
+                const o = opts || {};
+                const social = (COMPANY_INFO && COMPANY_INFO.social) || {};
+                const order = ['facebook', 'instagram', 'linkedin', 'youtube'];
+                const links = order.filter(function (k) { return social[k]; });
+                if (!links.length) return '';
+                const size = o.size || 18;
+                const color = o.color || 'currentColor';
+                return `<div style="display:flex;gap:${o.gap || 12}px;align-items:center;${o.justify ? 'justify-content:' + o.justify + ';' : ''}">
+                    ${links.map(function (k) {
+                        return `<a href="${escapeHtml(social[k])}" target="_blank" rel="noopener noreferrer"
+                                   title="${k.charAt(0).toUpperCase() + k.slice(1)}"
+                                   style="display:inline-flex;color:${color};opacity:0.85;transition:opacity .15s;"
+                                   onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.85">
+                            <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${SOCIAL_ICONS[k]}</svg>
+                        </a>`;
+                    }).join('')}
+                </div>`;
+            }
+
             function buildChargeEstimateHtml(serviceId, files) {
                 const selectedFiles = files.filter(f => f.selected !== false);
                 if (selectedFiles.length === 0) return '';
@@ -4055,27 +4085,6 @@
             // Real counts (previously hardcoded placeholder numbers) - Lease
             // Abstraction count comes from how many lease folders actually
             // exist on disk for this user (Users/<id>/LeaseAbstraction/*),
-            // Translation count from completed entries in translationFiles
-            // (translation is still a simulated pipeline, no real output
-            // folder to count on disk).
-            async function renderDashboardCounts() {
-                const leaseEl = document.getElementById('dashLeaseCount');
-                const translationEl = document.getElementById('dashTranslationCount');
-
-                if (translationEl) {
-                    translationEl.textContent = getMyTranslationFiles().filter(f => f.status === 'completed').length;
-                }
-
-                if (leaseEl) {
-                    try {
-                        const res = await authFetch('/api/lease/list?userId=' + encodeURIComponent(CURRENT_USER_ID));
-                        const data = await res.json();
-                        leaseEl.textContent = (data.leases || []).length;
-                    } catch (e) {
-                        leaseEl.textContent = '0';
-                    }
-                }
-            }
 
             async function renderMyLeasesList() {
                 const list = document.getElementById('myLeasesList');
@@ -6205,6 +6214,8 @@
 
                 const logoEl = document.getElementById('companyLogo');
                 const nameEl = document.getElementById('companyName');
+                const socialFooter = document.getElementById('footerSocial');
+                if (socialFooter) socialFooter.innerHTML = buildSocialLinksHtml({ size: 16, gap: 14, color: 'rgba(255,255,255,0.85)' });
                 const footerEl = document.getElementById('footerCompany');
 
                 if (logoEl) {
@@ -6367,7 +6378,6 @@
 
                 if (breadcrumb === '📊 Dashboard') {
                     setTimeout(renderTodayTransactions, 50);
-                    setTimeout(renderDashboardCounts, 50);
                 }
 
                 if (breadcrumb && breadcrumb.includes('API Documentation')) {
@@ -6666,16 +6676,6 @@
                                 <div class="dash-card-icon">💰</div>
                                 <div class="dash-card-value" id="dashBalance">$0.00</div>
                                 <div class="dash-card-label">Balance</div>
-                            </div>
-                            <div class="dash-card">
-                                <div class="dash-card-icon">📄</div>
-                                <div class="dash-card-value" id="dashLeaseCount">—</div>
-                                <div class="dash-card-label">Total Lease Abstraction</div>
-                            </div>
-                            <div class="dash-card">
-                                <div class="dash-card-icon">🌐</div>
-                                <div class="dash-card-value" id="dashTranslationCount">—</div>
-                                <div class="dash-card-label">Total Translation</div>
                             </div>
                         </div>
                         <div class="history-card" style="height:280px;margin-top:20px;">
@@ -7097,6 +7097,13 @@
                                 </div>
                                 <div class="card-body">
                                     ${pairs.map(pair => `<div class="contact-field-row">${pair.map(fieldHtml).join('')}</div>`).join('')}
+                                    ${(function () {
+                                        const links = buildSocialLinksHtml({ size: 22, gap: 16, color: '#0369a1' });
+                                        return links ? `<div style="margin-top:14px;padding-top:14px;border-top:1px solid rgba(0,0,0,0.08);">
+                                            <div style="font-size:0.8rem;color:rgba(0,0,0,0.55);margin-bottom:8px;">Follow us</div>
+                                            ${links}
+                                        </div>` : '';
+                                    })()}
                                 </div>
                             </div>
                             <div class="payment-card company-map-card">
@@ -7399,29 +7406,64 @@
             function buildAuthLeftPanel() {
                 const name = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora AI Solutions';
                 const logoPath = (COMPANY_INFO && COMPANY_INFO.logo) || 'Pictures/logo.png';
+
+                // Showcases what the platform actually does today. The old panel
+                // described only Lease Abstraction, which is now hidden from
+                // most users - so signing in gave a misleading first impression.
+                const services = [
+                    { icon: '🌐', title: 'Translation',     desc: '60+ languages, layout preserved exactly as the original' },
+                    { icon: '🔍', title: 'OCR',             desc: 'Scanned or photographed pages rebuilt into editable Word' },
+                    { icon: '🧾', title: 'Data Extraction', desc: 'Define your own fields, get a clean table from every file' },
+                    { icon: '🏦', title: 'BAI2',            desc: 'Bank statements converted to BAI2, CSV or JSON' },
+                    { icon: '📄', title: 'Lease Abstraction', desc: 'Structured lease fields with source citations' },
+                    { icon: '🎁', title: 'Free Tools',      desc: '29 PDF, image, data and calculator utilities' }
+                ];
+
+                const steps = [
+                    { n: '1', label: 'Upload', desc: 'Drop in your PDFs or images' },
+                    { n: '2', label: 'Process', desc: 'Choose your options and start' },
+                    { n: '3', label: 'Download', desc: 'Get Word, Excel, CSV, JSON or PDF' }
+                ];
+
+                const social = buildSocialLinksHtml({ size: 20, gap: 16, color: 'rgba(255,255,255,0.75)' });
+
                 return `
                     <div class="auth-brand-icon"><img src="${logoPath}" alt="${escapeHtml(name)} logo" onerror="this.onerror=null;this.src='Pictures/logo.png';" /></div>
-                    <h1 class="auth-brand-title">${name}</h1>
-                    <p class="auth-brand-tagline">Lease Abstraction AI Tool</p>
-                    <p class="auth-brand-sub">RAG · Structured Extraction · Review UI.<br/>RAG-grounded Claude extraction with source citations.</p>
-                    <div class="auth-feature-grid">
-                        <div class="auth-feature-card">
-                            <div class="auth-feature-title">📄 Structured Fields</div>
-                            <div class="auth-feature-desc">Insurance, CAM, Options, Late Fee</div>
-                        </div>
-                        <div class="auth-feature-card">
-                            <div class="auth-feature-title">🔍 Rent Roll Audit</div>
-                            <div class="auth-feature-desc">53% rent roll error audit — escalation &amp; CAM caps</div>
-                        </div>
-                        <div class="auth-feature-card">
-                            <div class="auth-feature-title">✏️ Human Review UI</div>
-                            <div class="auth-feature-desc">Verify or Edit every extracted field</div>
-                        </div>
-                        <div class="auth-feature-card">
-                            <div class="auth-feature-title">🗂️ Lease Repository</div>
-                            <div class="auth-feature-desc">All abstracted lease history stored</div>
-                        </div>
+                    <h1 class="auth-brand-title">${escapeHtml(name)}</h1>
+                    <p class="auth-brand-tagline">Document Intelligence Platform</p>
+                    <p class="auth-brand-sub">
+                        Translate, read, and extract data from any document —
+                        keeping the original layout intact.
+                    </p>
+
+                    <div class="auth-steps">
+                        ${steps.map(function (s, i) {
+                            return `<div class="auth-step">
+                                <div class="auth-step-num">${s.n}</div>
+                                <div>
+                                    <div class="auth-step-label">${s.label}</div>
+                                    <div class="auth-step-desc">${s.desc}</div>
+                                </div>
+                            </div>${i < steps.length - 1 ? '<div class="auth-step-arrow">→</div>' : ''}`;
+                        }).join('')}
                     </div>
+
+                    <div class="auth-feature-grid">
+                        ${services.map(function (s) {
+                            return `<div class="auth-feature-card">
+                                <div class="auth-feature-title">${s.icon} ${escapeHtml(s.title)}</div>
+                                <div class="auth-feature-desc">${escapeHtml(s.desc)}</div>
+                            </div>`;
+                        }).join('')}
+                    </div>
+
+                    <div class="auth-trust-row">
+                        <div class="auth-trust"><b>Secure</b><span>Files processed in your browser</span></div>
+                        <div class="auth-trust"><b>Pay per page</b><span>Only for what you actually process</span></div>
+                        <div class="auth-trust"><b>No lock-in</b><span>Export to Word, Excel, CSV or JSON</span></div>
+                    </div>
+
+                    ${social ? `<div class="auth-social">${social}</div>` : ''}
                 `;
             }
 

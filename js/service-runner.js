@@ -340,8 +340,18 @@
     SERVICES[def.id] = def;
   }
 
+  // Lets the Other Services landing page list every registered tool without
+  // each module also having to declare itself in a second place.
+  function list() {
+    return Object.keys(SERVICES).map(function (id) {
+      const s = SERVICES[id];
+      return { id: id, label: s.title, icon: s.icon, desc: s.description || '' };
+    });
+  }
+
   window.ServiceRunner = {
     register: register,
+    list: list,
     render: render,
     refresh: refresh,
     has: function (id) { return Object.prototype.hasOwnProperty.call(SERVICES, id); },

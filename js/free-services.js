@@ -219,8 +219,10 @@
   // Slider + typed-value pairs that recalculate live (no Calculate button),
   // matching the reference design. Both controls write the same underlying
   // value, so dragging updates the box and typing moves the slider.
-  const INR = function (v) {
-    return '\u20b9' + Math.round(v).toLocaleString('en-IN');
+  // Deliberately currency-less: these calculators work the same in any
+  // currency, and showing one symbol would misrepresent the others.
+  const AMT = function (v) {
+    return Math.round(v).toLocaleString('en-IN');
   };
 
   function sliderRow(label, id, value, min, max, step, suffix, prefix) {
@@ -271,7 +273,7 @@
       <div class="service-card">
         <h3>🏦 EMI Calculator</h3>
         <div class="card-body">
-          ${sliderRow('Loan amount', 'fsEmiAmount', 1000000, 10000, 20000000, 10000, '', '\u20b9')}
+          ${sliderRow('Loan amount', 'fsEmiAmount', 1000000, 10000, 20000000, 10000, '', '')}
           ${sliderRow('Rate of interest (p.a)', 'fsEmiRate', 6.5, 1, 30, 0.1, '%', '')}
           ${sliderRow('Loan tenure', 'fsEmiMonths', 5, 1, 30, 1, 'Yr', '')}
           <div id="fsEmiResult" style="margin-top:8px;"></div>
@@ -299,10 +301,10 @@
     const emi = r === 0 ? (P / n) : (P * r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
     const total = emi * n;
     res.innerHTML =
-      resultRow('Monthly EMI', INR(emi), true) +
-      resultRow('Principal amount', INR(P)) +
-      resultRow('Total interest', INR(total - P)) +
-      resultRow('Total amount', INR(total));
+      resultRow('Monthly EMI', AMT(emi), true) +
+      resultRow('Principal amount', AMT(P)) +
+      resultRow('Total interest', AMT(total - P)) +
+      resultRow('Total amount', AMT(total));
   }
 
   function renderGratuity() {
@@ -311,7 +313,7 @@
       <div class="service-card">
         <h3>💼 Gratuity Calculator</h3>
         <div class="card-body">
-          ${sliderRow('Monthly salary (Basic + DA)', 'fsGraSalary', 60000, 5000, 1000000, 1000, '', '\u20b9')}
+          ${sliderRow('Monthly salary (Basic + DA)', 'fsGraSalary', 60000, 5000, 1000000, 1000, '', '')}
           ${sliderRow('Years of service', 'fsGraYears', 20, 1, 50, 1, '', '')}
           <div id="fsGraResult" style="margin-top:18px;"></div>
           <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:16px;">
@@ -336,7 +338,7 @@
     res.innerHTML = `
       <div style="text-align:center;padding:10px 0;">
         <div style="color:#6b7280;font-size:0.9rem;">Total Gratuity payable</div>
-        <div style="font-size:2rem;font-weight:700;color:#3d4a5c;margin-top:6px;">${INR(amount)}</div>
+        <div style="font-size:2rem;font-weight:700;color:#3d4a5c;margin-top:6px;">${AMT(amount)}</div>
       </div>`;
   }
 
@@ -372,18 +374,62 @@
     { id: 'gratuity-calculator', label: 'Gratuity Calculator', icon: '💼', desc: 'Estimate a gratuity payout.' }
   ];
 
-  function renderIndex() {
+  // Tools grouped by what they operate on, so the landing page reads as a
+  // small catalogue rather than one long undifferentiated grid. Anything
+  // registered but not listed here still shows up under "More".
+  const GROUPS = [
+    { title: 'PDF Tools', icon: '📄', ids: ['pdf-split', 'pdf-merge', 'pdf-compress', 'pdf-to-image', 'pdf-to-word', 'pdf-form-filler', 'create-pdf'] },
+    { title: 'Image Tools', icon: '🖼️', ids: ['size-photo', 'image-compressor', 'image-cropper', 'image-to-pdf'] },
+    { title: 'Calculators', icon: '🧮', ids: ['emi-calculator', 'gratuity-calculator', 'age-calculator', 'unit-converter', 'currency-converter'] },
+    { title: 'Data Tools', icon: '📊', ids: ['data-comparison', 'etl', 'json-csv', 'word-counter'] },
+    { title: 'Document Builders', icon: '📝', ids: ['invoice-generator', 'quotation-generator', 'receipt-generator', 'email-template', 'create-letters'] },
+    { title: 'Utilities', icon: '🔧', ids: ['timezone', 'password-generator', 'qr-generator', 'barcode-generator'] }
+  ];
+
+  // Everything that can be opened, whichever module registered it:
+  // ServiceRunner file-tools, plus the card-based registries.
+  function allTools() {
+    const seen = {};
+    const list = [];
+    const push = (t) => { if (t && t.id && !seen[t.id]) { seen[t.id] = true; list.push(t); } };
+    if (window.ServiceRunner && ServiceRunner.list) ServiceRunner.list().forEach(push);
+    TOOLS.forEach(push);
+    extraCards().forEach(push);
+    return list;
+  }
+
+  function toolCard(t) {
     return `
-      <div class="plans-grid">
-        ${TOOLS.concat(extraCards()).map(function (t) {
-          return `
-            <div class="plan-card" style="cursor:pointer;" onclick="FreeServices.open('${t.id}')">
-              <div class="plan-name">${t.icon} ${esc(t.label)}</div>
-              <p style="color:#555;font-size:0.86rem;margin-top:6px;">${esc(t.desc)}</p>
-              <button class="plan-cta-btn" onclick="event.stopPropagation();FreeServices.open('${t.id}')">Open</button>
-            </div>`;
-        }).join('')}
+      <div class="tool-card" onclick="FreeServices.open('${t.id}')">
+        <div class="tool-card-icon">${t.icon || '🔧'}</div>
+        <div class="tool-card-name">${esc(t.label)}</div>
+        <div class="tool-card-desc">${esc(t.desc || '')}</div>
       </div>`;
+  }
+
+  function renderIndex() {
+    const all = allTools();
+    const byId = {};
+    all.forEach(function (t) { byId[t.id] = t; });
+
+    const used = {};
+    const sections = GROUPS.map(function (g) {
+      const items = g.ids.map(function (id) { used[id] = true; return byId[id]; })
+        .filter(Boolean);
+      if (!items.length) return '';
+      return `<div class="tool-group-title">${g.icon} ${esc(g.title)}</div>
+        <div class="tools-grid">${items.map(toolCard).join('')}</div>`;
+    }).join('');
+
+    // Safety net: a tool registered without being added to GROUPS still
+    // needs somewhere to appear, otherwise it would silently vanish.
+    const leftovers = all.filter(function (t) { return !used[t.id]; });
+    const extra = leftovers.length
+      ? `<div class="tool-group-title">🔩 More</div>
+         <div class="tools-grid">${leftovers.map(toolCard).join('')}</div>`
+      : '';
+
+    return sections + extra;
   }
 
   const CALCULATORS = { 'emi-calculator': renderEmi, 'gratuity-calculator': renderGratuity };
