@@ -142,8 +142,7 @@
                     unitLabel = (myPlan.billingUnit || 'document') === 'page' ? 'page' : 'document';
                 }
                 const total = selectedFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
-                const estimateNote = unitLabel === 'page' ? ' (estimate - final charge depends on each file\'s actual page count)' : '';
-                return `💰 Rate: $${perUnit.toFixed(2)}/${unitLabel} · Est. total: $${total.toFixed(2)} for ${selectedFiles.length} selected file(s)${estimateNote}`;
+                return `💰 Rate: $${perUnit.toFixed(2)}/${unitLabel} · Est. total: $${total.toFixed(2)} for ${selectedFiles.length} selected file(s)`;
             }
 
             // Keeps the Est. charge line in sync the moment file selection
@@ -401,7 +400,7 @@
                         `<a class="file-action-link review-link" onclick="openLeaseReviewModal('${file.id}')">🔍 Review</a>` :
                         file.status === 'error' ?
                         `<a class="file-action-link error-link" onclick="retryFile('${file.id}')">${actionLabel}</a>` :
-                        `<span class="file-action-link disabled">${file.status === 'processing' ? 'Processing' : 'Pending'}</span>`;
+                        `<span class="file-action-link disabled" title="${file.status === 'processing' ? 'Processing' : 'Pending'}">${file.status === 'processing' ? '\u23f3' : '\u2022'}</span>`;
 
                     const scanCell = scanIsNumeric
                         ? `<span class="progress-label">${scanProgress}%</span>`
@@ -696,9 +695,6 @@
                         <!-- Activity Log below (with active agent strip on top) -->
                         <div class="activity-log-section">
                             <div class="activity-log-card">
-                                <div class="agents-top-row" id="agentsTopRow">
-                                    ${agentPills}
-                                </div>
                                 <div class="log-header">
                                     <h3>📋 Activity Log</h3>
                                     <div class="log-actions">
@@ -3103,6 +3099,92 @@
                 showMessage('💸 Expense Recorded', `$${amount.toFixed(2)} has been recorded as a business expense.`, ['OK']);
             };
 
+            // Real, gateway-verified balance top-up. Unlike the manual/
+            // bank-transfer path below, this never writes a transaction
+            // itself - the server only accepts one after it has verified
+            // Razorpay's own signature (see /api/payment/verify-payment),
+            // so nothing here can invent balance on its own.
+            window.payWithRazorpay = function() {
+                const amountInput = document.getElementById('balanceAmount');
+                const descInput = document.getElementById('balanceDescription');
+
+                const amount = parseFloat(amountInput.value);
+                const description = descInput.value.trim() || 'Balance top-up';
+
+                if (!amount || amount <= 0) { showWarning('Please enter a valid amount.'); return; }
+                if (typeof Razorpay === 'undefined') {
+                    showWarning('Payment gateway failed to load. Please check your connection and try again.');
+                    return;
+                }
+
+                authPost('/api/payment/create-order', { userId: CURRENT_USER_ID, amount: amount })
+                    .then(order => {
+                        const rzp = new Razorpay({
+                            key: order.keyId,
+                            amount: order.amount,
+                            currency: order.currency,
+                            order_id: order.orderId,
+                            name: (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora',
+                            description: description,
+                            prefill: {
+                                name: profileData ? `${profileData.firstName} ${profileData.lastName}` : undefined,
+                                email: profileData ? profileData.email : undefined
+                            },
+                            theme: { color: '#0a0f2c' },
+                            handler: function(response) {
+                                authPost('/api/payment/verify-payment', {
+                                    userId: CURRENT_USER_ID,
+                                    razorpayOrderId: response.razorpay_order_id,
+                                    razorpayPaymentId: response.razorpay_payment_id,
+                                    razorpaySignature: response.razorpay_signature,
+                                    description: description
+                                }).then(result => {
+                                    const txn = result.transaction;
+                                    paymentHistory.push(txn);
+                                    _creditDeveloperRevenueRecord(txn, description);
+
+                                    amountInput.value = '';
+                                    descInput.value = '';
+
+                                    renderPaymentHistory();
+                                    updateBalanceDisplay();
+
+                                    if (profileData && profileData.email) {
+                                        sendGenericNotificationEmail(
+                                            profileData.email,
+                                            `${profileData.firstName} ${profileData.lastName}`,
+                                            `$${txn.credit.toFixed(2)} added to your balance`,
+                                            `Your payment was received and added to your wallet balance.`,
+                                            [[txn.paymentMode, description, `$${txn.credit.toFixed(2)}`, `Completed (${txn.id})`]],
+                                            ['Payment Method', 'Description', 'Amount', 'Status']
+                                        );
+                                    }
+                                    addNotification(`$${txn.credit.toFixed(2)} was added to your balance (Transaction ID: ${txn.id}).`);
+                                    showMessage('✅ Success', `$${txn.credit.toFixed(2)} added successfully! Transaction ID: ${txn.id}`, ['OK']);
+                                }).catch(err => {
+                                    showWarning('Payment could not be verified: ' + err.message +
+                                        '. If any amount was deducted, Razorpay will auto-refund it within a few days - contact support with your payment ID if it is not.');
+                                });
+                            },
+                            modal: {
+                                ondismiss: function() { /* user closed the widget - nothing was charged */ }
+                            }
+                        });
+                        rzp.on('payment.failed', function(response) {
+                            showWarning('Payment failed: ' + ((response.error && response.error.description) || 'please try again.'));
+                        });
+                        rzp.open();
+                    })
+                    .catch(err => {
+                        showWarning('Could not start payment: ' + err.message);
+                    });
+            };
+
+            // Manual / bank-transfer fallback for people paying outside
+            // Razorpay - unlike payWithRazorpay() above, this is a plain
+            // client-side record and always needs an Admin/Developer to
+            // approve it before it counts toward the balance (unless the
+            // person submitting it already IS an Admin/Developer).
             window.addBalance = function() {
                 const methodSelect = document.getElementById('balancePaymentMethod');
                 const amountInput = document.getElementById('balanceAmount');
@@ -6786,10 +6868,6 @@
                             <h3>➕ Add Balance</h3>
                             <div class="form-row">
                                 <div class="form-group">
-                                    <label>Payment Method</label>
-                                    <select id="balancePaymentMethod"></select>
-                                </div>
-                                <div class="form-group">
                                     <label>Amount</label>
                                     <input type="number" id="balanceAmount" placeholder="Enter amount" min="0.01" step="0.01" />
                                 </div>
@@ -6797,9 +6875,20 @@
                                     <label>Description</label>
                                     <input type="text" id="balanceDescription" placeholder="Enter description" />
                                 </div>
-                                <button class="add-btn" onclick="addBalance()">+ Add Balance</button>
+                                <button class="add-btn" onclick="payWithRazorpay()">💳 Pay with Razorpay</button>
                             </div>
-                            ${!isAdminOrDeveloper() ? '<p class="balance-approval-note">⏳ Balance requests are credited once an Admin or Developer approves them.</p>' : ''}
+                            <p class="balance-approval-note">Card, UPI, netbanking &amp; more via Razorpay's secure checkout - credited instantly once payment is confirmed.</p>
+                            <details class="balance-manual-fallback">
+                                <summary>Paying by bank transfer instead?</summary>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label>Payment Method</label>
+                                        <select id="balancePaymentMethod"></select>
+                                    </div>
+                                    <button class="add-btn" onclick="addBalance()">📝 Record Manual Payment</button>
+                                </div>
+                                ${!isAdminOrDeveloper() ? '<p class="balance-approval-note">⏳ Manual payments are credited once an Admin or Developer approves them.</p>' : ''}
+                            </details>
                         </div>
                         `;
                         // Item 1 - a genuinely separate card, Admin/Developer

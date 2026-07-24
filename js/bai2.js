@@ -412,8 +412,8 @@ Return ONLY this JSON, nothing else:
       const action = f.status === 'Success'
         ? `<a class="file-action-link" onclick="Bai2.downloadOne(${f.uid})" title="Download"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`
         : (f.status === 'Failed'
-            ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">Error</span>`
-            : `<span class="file-action-link disabled">${esc(f.status)}</span>`);
+            ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">⚠</span>`
+            : `<span class="file-action-link disabled" title="${esc(f.status)}">${f.status === 'Processing' ? '\u23f3' : '\u2022'}</span>`);
       return `<tr>
         <td><input type="checkbox" class="file-select-checkbox" ${f.selected !== false ? 'checked' : ''}
                    ${STATE.running ? 'disabled' : ''} onchange="Bai2.toggleSelect(${f.uid}, this.checked)" /></td>

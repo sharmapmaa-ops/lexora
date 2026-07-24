@@ -531,8 +531,8 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
       const action = f.status === 'Success'
         ? `<a class="file-action-link" onclick="DataExtraction.downloadFile(${f.uid})" title="Download"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`
         : (f.status === 'Failed'
-            ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">Error</span>`
-            : `<span class="file-action-link disabled">${esc(f.status || 'Pending')}</span>`);
+            ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">⚠</span>`
+            : `<span class="file-action-link disabled" title="${esc(f.status || 'Pending')}">${f.status === 'Processing' ? '\u23f3' : '\u2022'}</span>`);
       return `<tr>
         <td><input type="checkbox" class="file-select-checkbox" ${f.selected !== false ? 'checked' : ''}
                    ${STATE.running ? 'disabled' : ''} onchange="DataExtraction.toggleSelect(${f.uid}, this.checked)" /></td>
@@ -637,6 +637,15 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
               </div>
             </div>
           </div>
+
+          <div class="file-list-card" style="height:auto;">
+            <div class="file-list-card-header">
+              <h3>🧾 Fields to Extract</h3>
+            </div>
+            <div class="card-body">
+              ${fieldsTable()}
+            </div>
+          </div>
           </div>
 
           <div class="service-col">
@@ -665,14 +674,6 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
           </div>
         </div>
 
-        <div class="file-list-card" style="height:auto;">
-          <div class="file-list-card-header">
-            <h3>🧾 Fields to Extract</h3>
-          </div>
-          <div class="card-body">
-          </div>
-        </div>
-
         <div class="activity-log-section">
           <div class="activity-log-card">
             <div class="log-header"><h3>📋 Activity Log</h3></div>
@@ -697,7 +698,6 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
 
         ${resultsTable()}
 
-        ${fieldsTable()}
 `;
   }
 

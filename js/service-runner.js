@@ -81,8 +81,8 @@
       const action = f.status === 'Success'
         ? '<span class="file-action-link disabled">Done</span>'
         : (f.status === 'Failed'
-            ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">Error</span>`
-            : `<span class="file-action-link disabled">${esc(f.status || 'Pending')}</span>`);
+            ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">⚠</span>`
+            : `<span class="file-action-link disabled" title="${esc(f.status || 'Pending')}">${f.status === 'Processing' ? '\u23f3' : '\u2022'}</span>`);
       return `
         <tr>
           <td><input type="checkbox" class="file-select-checkbox" ${f.selected !== false ? 'checked' : ''}
