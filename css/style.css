@@ -2229,11 +2229,27 @@
             color: rgba(0,0,0,0.5);
         }
 
+        /* Fields stack vertically now (Payment Method -> Amount ->
+           Description -> button) and the card takes half the width, so the
+           two payment cards read as a compact form rather than a wide strip. */
+        .balance-add-card {
+            max-width: 50%;
+        }
+
         .balance-add-card .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr auto;
-            gap: 15px;
-            align-items: end;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            align-items: stretch;
+        }
+
+        .balance-add-card .form-row .add-btn {
+            align-self: flex-start;
+            margin-top: 4px;
+        }
+
+        @media (max-width: 900px) {
+            .balance-add-card { max-width: 100%; }
         }
 
         .balance-add-card .form-group {
@@ -3849,15 +3865,17 @@
 }
 
 .auth-left {
-    max-width: 440px;
+    max-width: 560px;
     color: white;
 }
 
 .auth-brand-icon {
-    width: 64px;
-    height: 64px;
+    width: 104px;
+    height: 104px;
     background: white;
-    border-radius: 14px;
+    border-radius: 22px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.28);
+    animation: authLogoIn .7s cubic-bezier(.2,.8,.25,1) both;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -3875,7 +3893,8 @@
 }
 
 .auth-brand-title {
-    font-size: 1.9rem;
+    font-size: 2.5rem;
+    letter-spacing: -0.5px;
     font-weight: 700;
     margin: 0 0 4px 0;
     color: white;
@@ -4821,4 +4840,139 @@
 @media (max-width: 900px) {
     .auth-steps { gap: 8px; }
     .auth-step-arrow { display: none; }
+}
+
+
+/* ===== BACK BUTTON INSIDE A CARD HEADER ===== */
+/* Title on the left, back button pushed to the right edge of the same row. */
+.card-head-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.card-back-btn {
+    font-size: 0.76rem;
+    padding: 4px 10px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+
+/* ===== LOGIN PAGE POLISH ===== */
+/* Entrance animations are staggered so the panel assembles itself instead
+   of appearing all at once. prefers-reduced-motion is respected below. */
+@keyframes authLogoIn {
+    from { opacity: 0; transform: translateY(-14px) scale(.9); }
+    to   { opacity: 1; transform: none; }
+}
+
+@keyframes authRise {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: none; }
+}
+
+@keyframes authFloat {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-7px); }
+}
+
+@keyframes authGlow {
+    0%, 100% { opacity: .35; }
+    50%      { opacity: .7; }
+}
+
+.auth-left > *          { animation: authRise .6s ease-out both; }
+.auth-brand-title       { animation-delay: .05s; }
+.auth-brand-tagline     { animation-delay: .10s; }
+.auth-brand-sub         { animation-delay: .15s; }
+.auth-steps             { animation-delay: .20s; }
+.auth-feature-grid      { animation-delay: .26s; }
+.auth-trust-row         { animation-delay: .32s; }
+.auth-social            { animation-delay: .38s; }
+.auth-card              { animation: authRise .6s ease-out .12s both; }
+
+/* Soft moving glow behind the panel so the background isn't static. */
+.auth-screen::before {
+    content: '';
+    position: absolute;
+    width: 620px; height: 620px;
+    left: -180px; top: -160px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(125,211,252,0.30) 0%, transparent 62%);
+    animation: authGlow 7s ease-in-out infinite;
+    pointer-events: none;
+}
+
+.auth-screen::after {
+    content: '';
+    position: absolute;
+    width: 520px; height: 520px;
+    right: -140px; bottom: -180px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(56,189,248,0.24) 0%, transparent 62%);
+    animation: authGlow 9s ease-in-out 1.5s infinite;
+    pointer-events: none;
+}
+
+.auth-brand-icon { animation: authLogoIn .7s cubic-bezier(.2,.8,.25,1) both, authFloat 6s ease-in-out 1s infinite; }
+
+.auth-brand-tagline {
+    font-size: 1.02rem;
+    font-weight: 600;
+    letter-spacing: 2.4px;
+    text-transform: uppercase;
+    color: #7dd3fc;
+}
+
+.auth-feature-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.auth-feature-card {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 10px;
+    padding: 11px 13px;
+    backdrop-filter: blur(6px);
+    transition: transform .18s ease, background .18s ease, border-color .18s ease;
+}
+
+.auth-feature-card:hover {
+    transform: translateY(-3px);
+    background: rgba(255,255,255,0.14);
+    border-color: rgba(125,211,252,0.55);
+}
+
+.auth-feature-title { color: #fff; font-weight: 600; font-size: 0.9rem; }
+.auth-feature-desc  { color: rgba(255,255,255,0.66); font-size: 0.75rem; line-height: 1.35; margin-top: 3px; }
+
+.auth-stats-row {
+    display: flex;
+    gap: 26px;
+    margin: 18px 0 4px;
+    flex-wrap: wrap;
+}
+
+.auth-stat-num   { color: #7dd3fc; font-size: 1.5rem; font-weight: 700; line-height: 1; }
+.auth-stat-label { color: rgba(255,255,255,0.6); font-size: 0.72rem; margin-top: 3px; }
+
+/* Some people get motion sickness from movement like this, and the OS-level
+   setting is how they say so - honour it rather than animating regardless. */
+@media (prefers-reduced-motion: reduce) {
+    .auth-left > *, .auth-card, .auth-brand-icon,
+    .auth-screen::before, .auth-screen::after {
+        animation: none !important;
+    }
+    .auth-feature-card { transition: none; }
+}
+
+@media (max-width: 900px) {
+    .auth-feature-grid { grid-template-columns: 1fr; }
+    .auth-brand-icon { width: 76px; height: 76px; }
+    .auth-brand-title { font-size: 1.9rem; }
 }
