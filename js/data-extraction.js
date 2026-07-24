@@ -665,14 +665,11 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
           </div>
         </div>
 
-        ${resultsTable()}
-
         <div class="file-list-card" style="height:auto;">
           <div class="file-list-card-header">
             <h3>🧾 Fields to Extract</h3>
           </div>
           <div class="card-body">
-            ${fieldsTable()}
           </div>
         </div>
 
@@ -696,7 +693,12 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
           </div>
         </div>
           </div>
-        </div>`;
+        </div>
+
+        ${resultsTable()}
+
+        ${fieldsTable()}
+`;
   }
 
   function rerender() {

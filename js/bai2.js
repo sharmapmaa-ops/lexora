@@ -540,8 +540,6 @@ Return ONLY this JSON, nothing else:
           </div>
         </div>
 
-        ${resultsTable()}
-
         <div class="activity-log-section">
           <div class="activity-log-card">
             <div class="log-header"><h3>📋 Activity Log</h3></div>
@@ -562,7 +560,10 @@ Return ONLY this JSON, nothing else:
           </div>
         </div>
           </div>
-        </div>`;
+        </div>
+
+        ${resultsTable()}
+`;
   }
 
   function rerender() {
