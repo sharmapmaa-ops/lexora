@@ -2820,8 +2820,20 @@
 
             let selectedTransactionIds = new Set();
 
+            // Status pill: transaction.status set na ho to wo purana
+            // completed record hai, isliye default "Success".
+            function txnStatusPill(status) {
+                const map = {
+                    pending_approval: ['pending', 'Pending'],
+                    cancelled:        ['cancelled', 'Cancelled'],
+                    failed:           ['failed', 'Failed']
+                };
+                const hit = map[status] || ['success', 'Success'];
+                return `<span class="txn-status-pill ${hit[0]}">${hit[1]}</span>`;
+            }
+
             function renderHistoryRows(tbody, list, includeCheckbox) {
-                const colCount = includeCheckbox ? 9 : 8;
+                const colCount = includeCheckbox ? 10 : 9;
                 if (list.length === 0) {
                     tbody.innerHTML =
                         `<tr><td colspan="${colCount}" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions found.</td></tr>`;
@@ -2859,6 +2871,7 @@
                         <td>${descriptionText}</td>
                         <td class="credit">${transaction.credit > 0 ? formatMoney(transaction.credit) : '-'}</td>
                         <td class="debit">${transaction.debit > 0 ? formatMoney(transaction.debit) : '-'}</td>
+                        <td>${txnStatusPill(transaction.status)}</td>
                     `;
                     tbody.appendChild(tr);
                 });
@@ -2878,6 +2891,12 @@
                 });
             };
 
+            // Pagination state. Summary hamesha POORE filtered set par
+            // banta hai, sirf table ka slice page ke hisab se badalta hai -
+            // warna "Total Credit" page badalne par badal jata.
+            let historyPage = 1;
+            let historyPerPage = 5;
+
             function renderPaymentHistory() {
                 const tbody = document.getElementById('historyTableBody');
                 if (!tbody) return;
@@ -2885,11 +2904,72 @@
                 // Dates start blank by default - getFilteredHistory() already
                 // returns every transaction for this user when no range is set.
                 const filtered = getFilteredHistory();
-                renderHistoryRows(tbody, filtered, true);
+                const total = filtered.length;
+                const pages = Math.max(1, Math.ceil(total / historyPerPage));
+                if (historyPage > pages) historyPage = pages;
+
+                const start = (historyPage - 1) * historyPerPage;
+                renderHistoryRows(tbody, filtered.slice(start, start + historyPerPage), true);
                 updateSummary(filtered);
+                renderHistoryPager(total, pages, start);
             }
 
+            function renderHistoryPager(total, pages, start) {
+                const pager = document.getElementById('historyPager');
+                if (!pager) return;
+
+                const shownFrom = total === 0 ? 0 : start + 1;
+                const shownTo = Math.min(start + historyPerPage, total);
+
+                // Bade page counts par "1 2 3 ... 9" - saare numbers dikhane se
+                // bar toot jata hai.
+                const nums = [];
+                if (pages <= 5) {
+                    for (let i = 1; i <= pages; i++) nums.push(i);
+                } else if (historyPage <= 3) {
+                    nums.push(1, 2, 3, '\u2026', pages);
+                } else if (historyPage >= pages - 2) {
+                    nums.push(1, '\u2026', pages - 2, pages - 1, pages);
+                } else {
+                    nums.push(1, '\u2026', historyPage, '\u2026', pages);
+                }
+
+                const btn = (label, page, extra) =>
+                    page === null
+                        ? `<span class="pager-gap">${label}</span>`
+                        : `<button class="pager-btn ${extra || ''}" ${page ? `onclick="goHistoryPage(${page})"` : 'disabled'}>${label}</button>`;
+
+                pager.innerHTML = `
+                    <span class="pager-count">Showing ${shownFrom} to ${shownTo} of ${total} entries</span>
+                    <div class="pager-controls">
+                        <select class="pager-select" onchange="setHistoryPerPage(this.value)">
+                            ${[5, 10, 25, 50].map(n =>
+                                `<option value="${n}" ${n === historyPerPage ? 'selected' : ''}>${n} per page</option>`).join('')}
+                        </select>
+                        ${btn('\u00ab', historyPage > 1 ? 1 : 0)}
+                        ${btn('\u2039', historyPage > 1 ? historyPage - 1 : 0)}
+                        ${nums.map(n => n === '\u2026'
+                            ? btn('\u2026', null)
+                            : btn(n, n, n === historyPage ? 'is-current' : '')).join('')}
+                        ${btn('\u203a', historyPage < pages ? historyPage + 1 : 0)}
+                        ${btn('\u00bb', historyPage < pages ? pages : 0)}
+                    </div>
+                `;
+            }
+
+            window.goHistoryPage = function(page) {
+                historyPage = page;
+                renderPaymentHistory();
+            };
+
+            window.setHistoryPerPage = function(value) {
+                historyPerPage = Number(value) || 5;
+                historyPage = 1;
+                renderPaymentHistory();
+            };
+
             window.applyHistoryFilter = function() {
+                historyPage = 1;
                 const fromInput = document.getElementById('historyFromDate');
                 const toInput = document.getElementById('historyToDate');
                 if (!fromInput.value || !toInput.value) {
@@ -7069,35 +7149,67 @@
                         const isAdminOrDev = isAdminOrDeveloper();
                         const historyRows = (isAdminOrDev ? planHistory : planHistory.filter(h => h.userId === CURRENT_USER_ID))
                             .slice().reverse();
+                        const cols = isAdminOrDev ? 8 : 7;
+                        const tick = '<svg class="plan-tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>';
                         return `
+                        <div class="plans-head">
+                            <h2>Choose the perfect plan for you</h2>
+                            <p>Upgrade, downgrade or choose the plan that fits your needs.</p>
+                        </div>
                         <div class="plans-grid">
-                            ${PLANS_DATA.map(plan => `
-                                <div class="plan-card ${plan.featured ? 'featured' : ''}">
-                                    ${plan.featured ? '<div class="plan-badge">⭐ Most Popular</div>' : ''}
-                                    <div class="plan-name">${plan.icon || ''} ${escapeHtml(plan.name)}</div>
-                                    <div class="plan-price">₹${plan.monthlyPrice}<span>/month</span></div>
+                            ${PLANS_DATA.map(plan => {
+                                // Tier tay karta hai colour aur button style:
+                                // free = teal, paid = amber, featured = blue.
+                                const tier = plan.featured ? 'is-pro' : (plan.monthlyPrice > 0 ? 'is-standard' : 'is-free');
+                                const isMine = plan.name === myPlanName;
+                                return `
+                                <div class="plan-card ${tier} ${plan.featured ? 'featured' : ''}">
+                                    ${plan.featured ? '<div class="plan-badge">\u2605 Most Popular</div>' : ''}
+                                    ${tier === 'is-free' ? '<div class="plan-free-tag">FREE</div>' : ''}
+                                    <div class="plan-icon">${plan.icon || ''}</div>
+                                    <div class="plan-name">${escapeHtml(plan.name)}</div>
+                                    <div class="plan-price">\u20b9${plan.monthlyPrice}<span>/month</span></div>
                                     <ul class="plan-features">
-                                        <li>✅ ₹${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / page (Translation)</li>
-                                        ${(plan.features || []).map(f => `<li>✅ ${escapeHtml(f)}</li>`).join('')}
+                                        <li>${tick}\u20b9${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / page (Translation)</li>
+                                        ${(plan.features || []).map(f => `<li>${tick}${escapeHtml(f)}</li>`).join('')}
                                     </ul>
-                                    <button class="plan-cta-btn" ${plan.name === myPlanName ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
-                                        ${plan.name === myPlanName ? '✓ Current Plan' : (plan.monthlyPrice > 0 ? 'Upgrade Now' : 'Get Started')}
+                                    <button class="plan-cta-btn ${isMine ? 'is-current' : ''}" ${isMine ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
+                                        ${isMine ? '\u2713 Current Plan' : (plan.monthlyPrice > 0 ? 'Upgrade Now' : 'Get Started')}
                                     </button>
-                                </div>
-                            `).join('')}
+                                </div>`;
+                            }).join('')}
                         </div>
 
                         <div class="plan-history-card">
-                            <h3>📜 ${isAdminOrDev ? 'All Users\' Plan History' : 'Your Plan History'}</h3>
-                            <div class="admin-json-table-wrapper" style="max-height:320px;">
-                                <table class="admin-json-table">
+                            <div class="plan-history-head">
+                                <span class="ds-card-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4M8.5 12h7M8.5 16h4"/>
+                                    </svg>
+                                </span>
+                                <h3>${isAdminOrDev ? 'All Users\' Plan History' : 'Your Plan History'}</h3>
+                                <button class="plan-history-btn" onclick="lexoraNavigate('payment','payment-history')">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.8-6.5 10-6.5S22 12 22 12s-3.8 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
+                                    View All History
+                                </button>
+                            </div>
+                            <div class="admin-json-table-wrapper plan-history-table-wrap">
+                                <table class="admin-json-table plan-history-table">
                                     <thead><tr>
                                         ${isAdminOrDev ? '<th>User</th>' : ''}
                                         <th>Plan Name</th><th>Start Date</th><th>End Date</th>
-                                        <th>Frequency</th><th>Amount</th><th>Price/Translation (per page)</th>
+                                        <th>Frequency</th><th>Amount</th><th>Price/Translation (per page)</th><th>Status</th>
                                     </tr></thead>
                                     <tbody>
-                                        ${historyRows.length === 0 ? `<tr><td colspan="${isAdminOrDev ? 6 : 5}" style="text-align:center;">No plan changes yet.</td></tr>` :
+                                        ${historyRows.length === 0 ? `<tr><td colspan="${cols}" class="plan-empty-cell">
+                                            <svg class="plan-empty-art" viewBox="0 0 48 56" fill="none">
+                                                <path d="M10 4h20l10 10v38H10z" fill="#dbe8fe"/>
+                                                <path d="M30 4v10h10" fill="#bcd6fb"/>
+                                                <path d="M17 26h14M17 34h14M17 42h9" stroke="#8fb6f6" stroke-width="2.6" stroke-linecap="round"/>
+                                            </svg>
+                                            <span class="plan-empty-title">No plan changes yet.</span>
+                                            <span class="plan-empty-sub">Your plan history will appear here once any changes are made.</span>
+                                        </td></tr>` :
                                         historyRows.map(h => `
                                             <tr>
                                                 ${isAdminOrDev ? `<td>${escapeHtml(h.userId)}</td>` : ''}
@@ -7105,8 +7217,9 @@
                                                 <td>${escapeHtml(h.startDate)}</td>
                                                 <td>${escapeHtml(h.endDate)}</td>
                                                 <td>${escapeHtml(h.frequency)}</td>
-                                                <td>₹${Number(h.amount).toFixed(2)}</td>
-                                                <td>₹${Number(h.pricePerTranslation).toFixed(2)}</td>
+                                                <td>\u20b9${Number(h.amount).toFixed(2)}</td>
+                                                <td>\u20b9${Number(h.pricePerTranslation).toFixed(2)}</td>
+                                                <td><span class="txn-status-pill success">Active</span></td>
                                             </tr>
                                         `).join('')}
                                     </tbody>
@@ -7215,27 +7328,43 @@
                 },
                 'payment-history': {
                     body: function() {
+                    // Mockup order: filter bar -> table -> pagination footer
+                    // -> alag summary card. Filter/Clear filled+plain, aur
+                    // Download/Raise Issue right side me outlined.
                     return `
                         <div class="history-card">
                             <div class="history-filter-bar">
                                 <div class="filter-group">
-                                    <label>From</label>
+                                    <label>From Date</label>
                                     <input type="date" id="historyFromDate" />
                                 </div>
                                 <div class="filter-group">
-                                    <label>To</label>
+                                    <label>To Date</label>
                                     <input type="date" id="historyToDate" />
                                 </div>
-                                <button class="filter-btn" onclick="applyHistoryFilter()">🔍 Filter</button>
-                                <button class="filter-btn reset-btn" onclick="clearHistoryFilter()">✖ Clear</button>
                                 ${isAdminOrDeveloper() ? `
-                                    <div class="filter-group">
+                                    <div class="filter-group filter-group-search">
                                         <label>User</label>
                                         <input type="text" id="historyUserFilter" placeholder="User ID or email" oninput="applyHistoryFilter()" />
                                     </div>
                                 ` : ''}
-                                <button class="filter-btn download-btn" onclick="downloadHistoryExcel()">⬇️ Download Excel</button>
-                                <button class="filter-btn raise-issue-btn" onclick="openRaiseIssueModal()">🚩 Raise Issue</button>
+                                <button class="filter-btn is-primary" onclick="applyHistoryFilter()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
+                                    Filter
+                                </button>
+                                <button class="filter-btn reset-btn" onclick="clearHistoryFilter()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+                                    Clear
+                                </button>
+                                <div class="filter-bar-spacer"></div>
+                                <button class="filter-btn download-btn" onclick="downloadHistoryExcel()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
+                                    Download Excel
+                                </button>
+                                <button class="filter-btn raise-issue-btn" onclick="openRaiseIssueModal()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg>
+                                    Raise Issue
+                                </button>
                             </div>
                             <div class="card-body payment-history-scroll-outer">
                                 <table class="history-table payment-history-table" id="historyTableHeader">
@@ -7250,6 +7379,7 @@
                                             <th>Description</th>
                                             <th>Credit</th>
                                             <th>Debit</th>
+                                            <th>Status</th>
                                         </tr>
                                     </thead>
                                 </table>
@@ -7258,20 +7388,25 @@
                                         <tbody id="historyTableBody"></tbody>
                                     </table>
                                 </div>
-                                <div class="history-summary" id="historySummary">
-                                    <div class="summary-item">
-                                        <span class="summary-label">Total Credit</span>
-                                        <span class="summary-value credit-value" id="totalCredit">₹0.00</span>
-                                    </div>
-                                    <div class="summary-item">
-                                        <span class="summary-label">Total Debit</span>
-                                        <span class="summary-value debit-value" id="totalDebit">₹0.00</span>
-                                    </div>
-                                    <div class="summary-item">
-                                        <span class="summary-label">Current Balance</span>
-                                        <span class="summary-value" id="currentBalance">₹0.00</span>
-                                    </div>
-                                </div>
+                            </div>
+                            <div class="history-pager" id="historyPager"></div>
+                        </div>
+
+                        <div class="history-summary" id="historySummary">
+                            <div class="summary-item">
+                                <span class="summary-icon summary-icon-credit"></span>
+                                <span class="summary-label">Total Credit</span>
+                                <span class="summary-value credit-value" id="totalCredit">\u20b90.00</span>
+                            </div>
+                            <div class="summary-item">
+                                <span class="summary-icon summary-icon-debit"></span>
+                                <span class="summary-label">Total Debit</span>
+                                <span class="summary-value debit-value" id="totalDebit">\u20b90.00</span>
+                            </div>
+                            <div class="summary-item">
+                                <span class="summary-icon summary-icon-balance"></span>
+                                <span class="summary-label">Current Balance</span>
+                                <span class="summary-value" id="currentBalance">\u20b90.00</span>
                             </div>
                         </div>
                     `;
@@ -7852,8 +7987,10 @@
                         <a onclick="authGoTo('forgot')">Forgot Password?</a>
                     </div>
                     <div id="authErrorBox" class="auth-error-box" style="display:none;"></div>
-                    <button class="auth-btn-primary auth-btn-block" onclick="handleAuthLogin()">Login</button>
-                    <button class="auth-btn-secondary auth-btn-block" onclick="authResetForm(['loginEmail','loginPassword'])">Reset</button>
+                    <div class="auth-btn-row">
+                        <button class="auth-btn-primary" onclick="handleAuthLogin()">Login</button>
+                        <button class="auth-btn-secondary" onclick="authResetForm(['loginEmail','loginPassword'])">Reset</button>
+                    </div>
                     <div class="auth-card-footer">
                         Don't have an account? <a onclick="authGoTo('register')">Create Account</a>
                     </div>

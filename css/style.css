@@ -4275,15 +4275,23 @@
 
 .auth-btn-secondary:hover { background: rgba(18, 87, 245, 0.05); }
 
-/* The other cards (register / forgot / verify) still use a two-up row. */
+/* Login/Reset aur register/forgot/verify - dono buttons ek row me.
+   Grid isliye (flex nahi): 1fr 1fr har haal me barabar columns deta hai,
+   chahe ek button par border ho aur doosre par na ho. */
 .auth-btn-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 0.7em;
     margin-bottom: 1em;
 }
 
 .auth-btn-row .auth-btn-primary,
-.auth-btn-row .auth-btn-secondary { flex: 1; }
+.auth-btn-row .auth-btn-secondary {
+    /* flex-basis 0 - warna dono buttons apne text ki width le lete the
+       aur "Login" / "Reset" alag-alag chaude dikhte the. */
+    flex: 1 1 0;
+    min-width: 0;
+}
 
 .auth-card-footer {
     text-align: center;

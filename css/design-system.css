@@ -1011,3 +1011,307 @@ body, input, select, textarea, button {
    center-content ka padding; min-height hai isliye content zyada ho to
    card khud badh jata hai. */
 .dash-page { min-height: calc(100vh - 160px); }
+
+/* =====================================================================
+   PLANS & OFFERS  (mockup ke hisab se)
+   ===================================================================== */
+.plans-head { margin-bottom: 16px; }
+.plans-head h2 { font-size: 1.12rem; font-weight: 800; color: var(--ds-navy); margin: 0; }
+.plans-head p  { font-size: .78rem; color: var(--ds-muted); margin: 3px 0 0; }
+
+.plans-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 18px;
+    align-items: stretch;
+}
+
+.plan-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    padding: 24px 22px 22px;
+    overflow: visible;
+}
+
+/* Tier colours - ek jagah se poore card ka accent chalta hai. */
+.plan-card.is-free     { --tier: #0d9488; --tier-soft: #d8f1ec; }
+.plan-card.is-standard { --tier: #ea8c00; --tier-soft: #fdefd2; }
+.plan-card.is-pro      { --tier: #1d4ed8; --tier-soft: #dbe8fe; }
+
+.plan-card.featured {
+    /* Border ki jagah inset ring: 2px border teeno cards ki height 1px
+       shift kar deta tha, jisse buttons ek line me nahi rehte the. */
+    border-color: var(--tier);
+    box-shadow: inset 0 0 0 1px var(--tier), 0 10px 30px rgba(29, 78, 216, .14);
+}
+
+.plan-badge {
+    position: absolute;
+    top: -13px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--tier);
+    color: #fff;
+    border-radius: 999px;
+    font-size: .7rem;
+    font-weight: 700;
+    padding: 5px 15px;
+    white-space: nowrap;
+    box-shadow: 0 4px 12px rgba(29, 78, 216, .3);
+}
+
+.plan-free-tag {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    background: var(--tier);
+    color: #fff;
+    border-radius: 6px;
+    font-size: .62rem;
+    font-weight: 800;
+    letter-spacing: .6px;
+    padding: 3px 8px;
+}
+
+.plan-icon {
+    width: 42px; height: 42px;
+    border-radius: 11px;
+    background: var(--tier-soft);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.15rem;
+    margin-bottom: 10px;
+}
+
+.plan-name  { font-size: 1.08rem; font-weight: 700; color: var(--tier); }
+.plan-price { font-size: 2rem; font-weight: 800; color: var(--ds-navy); margin: 4px 0 16px; }
+.plan-price span { font-size: .78rem; font-weight: 500; color: var(--ds-muted); margin-left: 3px; }
+
+.plan-features {
+    list-style: none;
+    padding: 16px 0 0;
+    margin: 0 0 18px;
+    border-top: 1px solid var(--ds-line);
+    flex: 1;
+}
+
+.plan-features li {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    font-size: .84rem;
+    color: var(--ds-ink);
+    padding: 5px 0;
+}
+
+.plan-tick { width: 16px; height: 16px; color: #16a34a; flex-shrink: 0; margin-top: 2px; }
+
+.plan-cta-btn {
+    width: 100%;
+    justify-content: center;
+    padding: 12px;
+    font-size: .88rem;
+    background: #fff;
+    color: var(--tier);
+    border: 1px solid var(--tier);
+    box-shadow: none;
+}
+
+.plan-cta-btn:hover { background: var(--tier-soft); filter: none; }
+
+/* Jo plan chal raha hai wo filled dikhta hai. */
+.plan-cta-btn.is-current,
+.plan-cta-btn:disabled {
+    background: var(--tier);
+    border-color: var(--tier);
+    color: #fff;
+    opacity: 1;
+    cursor: default;
+}
+
+/* ---- plan history ---- */
+.plan-history-card { margin-top: 20px; }
+.plan-history-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.plan-history-head .ds-card-icon { width: 36px; height: 36px; }
+.plan-history-head .ds-card-icon svg { width: 18px; height: 18px; }
+.plan-history-head h3 { flex: 1; margin: 0; font-size: 1rem; font-weight: 700; color: var(--ds-navy); }
+
+.plan-history-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 8px;
+    color: var(--ds-blue);
+    font-family: inherit;
+    font-size: .76rem;
+    font-weight: 600;
+    padding: 8px 13px;
+    cursor: pointer;
+}
+
+.plan-history-btn svg { width: 15px; height: 15px; }
+.plan-history-btn:hover { background: rgba(18,87,245,.05); }
+
+.plan-history-table-wrap { border: 1px solid var(--ds-line); border-radius: 10px; overflow: hidden; }
+
+/* Mockup me is table ka header dark navy hai, baaki tables ka light. */
+.plan-history-table thead th {
+    background: #1e3a8a;
+    color: #fff;
+    border-top: none;
+    border-bottom: none;
+    font-size: .75rem;
+}
+
+.plan-empty-cell  { text-align: center; padding: 22px 10px; }
+.plan-empty-art   { width: 40px; height: 46px; display: block; margin: 0 auto 8px; }
+.plan-empty-title { display: block; font-weight: 700; color: var(--ds-navy); font-size: .85rem; }
+.plan-empty-sub   { display: block; font-size: .74rem; color: var(--ds-muted); margin-top: 2px; }
+
+/* =====================================================================
+   PAYMENT HISTORY
+   ===================================================================== */
+.history-filter-bar { align-items: flex-end; gap: 12px; margin-bottom: 16px; }
+.history-filter-bar .filter-group { display: flex; flex-direction: column; gap: 5px; }
+.history-filter-bar .filter-group label { font-size: .76rem; color: var(--ds-muted); font-weight: 500; }
+.history-filter-bar .filter-group input { padding: 9px 12px; font-size: .83rem; }
+.filter-group-search input { min-width: 210px; }
+.filter-bar-spacer { flex: 1; }
+
+.filter-btn svg, .plan-cta-btn svg { width: 15px; height: 15px; }
+.filter-btn { padding: 10px 15px; }
+
+.filter-btn.is-primary {
+    background: linear-gradient(135deg, #2f7bf6 0%, #0b48e0 100%);
+    color: #fff;
+    border: none;
+    box-shadow: 0 4px 12px rgba(18,87,245,.26);
+}
+
+.filter-btn.is-primary:hover { filter: brightness(1.07); background: linear-gradient(135deg, #2f7bf6 0%, #0b48e0 100%); }
+.filter-btn.reset-btn { color: var(--ds-ink); border-color: var(--ds-line); }
+.filter-btn.raise-issue-btn { color: var(--ds-blue); border-color: rgba(18,87,245,.32); }
+
+.payment-history-table thead th { background: #eef2fa; color: #46557a; }
+.payment-history-table { table-layout: fixed; width: 100%; }
+
+/* status pills */
+.txn-status-pill {
+    display: inline-block;
+    border-radius: 999px;
+    font-size: .7rem;
+    font-weight: 600;
+    padding: 3px 11px;
+    white-space: nowrap;
+}
+
+.txn-status-pill.success   { background: #dcf5e6; color: #15803d; }
+.txn-status-pill.pending   { background: #fdf0d5; color: #a76b00; }
+.txn-status-pill.cancelled { background: #eceff5; color: #5b6a86; }
+.txn-status-pill.failed    { background: #fbdede; color: #b91c1c; }
+
+/* ---- pagination footer ---- */
+.history-pager {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding-top: 14px;
+    margin-top: 12px;
+    border-top: 1px solid var(--ds-line);
+}
+
+.pager-count    { font-size: .78rem; color: var(--ds-muted); }
+.pager-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+.pager-select {
+    padding: 7px 10px;
+    font-size: .78rem;
+    border-radius: 8px;
+    margin-right: 8px;
+}
+
+.pager-btn {
+    min-width: 32px;
+    height: 32px;
+    padding: 0 8px;
+    border-radius: 8px;
+    border: 1px solid var(--ds-line);
+    background: #fff;
+    color: var(--ds-ink);
+    font-family: inherit;
+    font-size: .8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: .15s;
+}
+
+.pager-btn:hover:not(:disabled) { border-color: var(--ds-blue); color: var(--ds-blue); }
+.pager-btn:disabled { opacity: .4; cursor: default; }
+
+.pager-btn.is-current {
+    background: var(--ds-blue);
+    border-color: var(--ds-blue);
+    color: #fff;
+}
+
+.pager-gap { padding: 0 4px; color: var(--ds-muted); font-size: .8rem; }
+
+/* ---- summary card (alag card, table ke neeche) ---- */
+.history-summary { margin-top: 18px; padding: 22px 10px; }
+
+.history-summary .summary-item {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-areas: "icon label" "icon value";
+    column-gap: 16px;
+    align-items: center;
+}
+
+.summary-icon {
+    grid-area: icon;
+    width: 52px; height: 52px;
+    border-radius: 13px;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 24px 24px;
+}
+
+.history-summary .summary-label { grid-area: label; font-size: .8rem; color: var(--ds-muted); }
+.history-summary .summary-value { grid-area: value; font-size: 1.5rem; }
+
+.summary-icon-credit {
+    background-color: #dcf3e7;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2317915c' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7.5A2.5 2.5 0 0 1 5.5 5H18a2 2 0 0 1 2 2v1'/%3E%3Crect x='3' y='7.5' width='18' height='12' rx='2.5'/%3E%3Ccircle cx='16.5' cy='13.5' r='1.2'/%3E%3C/svg%3E");
+}
+
+.summary-icon-debit {
+    background-color: #fbdede;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23dc2f38' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8'/%3E%3Cpath d='m17 8 4 4-4 4M21 12h-9'/%3E%3C/svg%3E");
+}
+
+.summary-icon-balance {
+    background-color: #dbe8fe;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231257f5' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.5' y='5' width='19' height='14' rx='2.5'/%3E%3Cpath d='M2.5 10h19'/%3E%3C/svg%3E");
+}
+
+/* =====================================================================
+   BALANCE - stat card ka text center (mockup jaisa) + left accent
+   ===================================================================== */
+.balance-grid .balance-card {
+    grid-template-areas: "icon num trend" "icon label trend";
+    text-align: center;
+    border-left-width: 4px;
+}
+
+.balance-grid .balance-card:nth-child(1) { border-left-color: #17915c; }
+.balance-grid .balance-card:nth-child(2) { border-left-color: #dc2f38; }
+.balance-grid .balance-card:nth-child(3) { border-left-color: #1257f5; }
+
+@media (max-width: 1150px) {
+    .plans-grid { grid-template-columns: 1fr; }
+    .history-summary { flex-direction: column; gap: 18px; }
+}
