@@ -594,6 +594,22 @@
                     <option value="${config}" ${config === currentSystemConfig ? 'selected' : ''}>${config}</option>
                 `).join('');
 
+                // Mockup me har service page ke neeche ye strip hai.
+                const SERVICE_PERKS = [
+                    ['<path d="M12 3l7.5 3v5.5c0 4.4-3 8.2-7.5 9.5-4.5-1.3-7.5-5.1-7.5-9.5V6z"/>', 'Secure &amp; Private', 'Your files are encrypted and secure'],
+                    ['<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.5"/><path d="m14.5 9.5 5-5"/>', 'High Accuracy', 'Advanced AI ensures best quality output'],
+                    ['<path d="M13 2 4.5 13H11l-1 9 8.5-11H12z"/>', 'Fast Processing', 'Quick turnaround for your documents'],
+                    ['<path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4"/>', 'Multiple Formats', 'Export to Word, Excel, CSV, JSON and more'],
+                    ['<path d="M6.5 19a4.5 4.5 0 0 1 .5-9 6.5 6.5 0 0 1 12.4-1.3A4.2 4.2 0 0 1 18.5 19z"/>', 'Cloud Based', 'Access your files anytime, anywhere']
+                ];
+                const servicePerksHtml = `
+                    <div class="service-perks">
+                        ${SERVICE_PERKS.map(p => `<div class="service-perk">
+                            <span class="service-perk-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p[0]}</svg></span>
+                            <div><b>${p[1]}</b><span>${p[2]}</span></div>
+                        </div>`).join('')}
+                    </div>`;
+
                 return `
                     <div>
                         <div class="service-page-grid">
@@ -603,11 +619,25 @@
                                 <h3>📤 Upload File(s)</h3>
                                 <div class="card-body">
                                     <div class="drop-zone" id="dropZone" onclick="${processState.running ? 'void(0)' : "document.getElementById('fileInput').click()"}" style="${processState.running ? 'opacity:0.5;pointer-events:none;' : ''}">
-                                        <div class="drop-icon">📤</div>
-                                        <div class="drop-text">Drag & drop files here</div>
+                                        <svg class="drop-art" viewBox="0 0 120 78" fill="none" aria-hidden="true">
+                                            <rect x="14" y="10" width="22" height="27" rx="4" fill="#e8433f" transform="rotate(-12 25 23)"/>
+                                            <text x="25" y="28" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="8" font-weight="700" fill="#fff" transform="rotate(-12 25 23)">PDF</text>
+                                            <rect x="48" y="4" width="22" height="27" rx="4" fill="#1257f5"/>
+                                            <text x="59" y="22" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" font-weight="700" fill="#fff">W</text>
+                                            <rect x="82" y="10" width="22" height="27" rx="4" fill="#1e9d63" transform="rotate(12 93 23)"/>
+                                            <text x="93" y="28" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" font-weight="700" fill="#fff" transform="rotate(12 93 23)">X</text>
+                                            <path d="M44 74a12 12 0 0 1 1-23 16 16 0 0 1 30-3 11 11 0 0 1-2 26z" fill="#2f7bf6"/>
+                                            <path d="M60 68V52M52 58l8-8 8 8" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+                                        </svg>
+                                        <div class="drop-text">Drag &amp; drop files here</div>
                                         <div class="drop-sub">or click to browse (PDF only)</div>
+                                        <button type="button" class="drop-browse-btn">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2 2 0 0 1 5 5.5h4l2 2.5h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                                            Browse Files
+                                        </button>
                                         <div class="file-count-text" id="fileCountText">${fileCountText}</div>
                                     </div>
+                                    <div class="drop-meta">Maximum file size: <b>50MB</b> &nbsp;\u2022&nbsp; Supported: <b>PDF</b></div>
                                     <input type="file" id="fileInput" multiple style="display:none;" accept=".pdf" onchange="handleFileUpload(event, '${serviceId}')" />
                                 </div>
                             </div>
@@ -739,6 +769,8 @@
                         </div>
                     </div>
                     `}
+
+                    ${servicePerksHtml}
                 `;
             }
 
@@ -4744,6 +4776,18 @@
                                 </div>
                             </div>
                         </div>
+
+                        <div class="service-perks profile-perks">
+                            ${[
+                                ['<path d="M12 3l7.5 3v5.5c0 4.4-3 8.2-7.5 9.5-4.5-1.3-7.5-5.1-7.5-9.5V6z"/><path d="m9 12 2.2 2.2L15.5 10"/>', 'Secure Account', 'Your data is encrypted and protected'],
+                                ['<rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>', 'Privacy Control', 'We never share your personal information'],
+                                ['<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 19.5a2.2 2.2 0 0 0 4 0"/>', 'Instant Updates', 'Get notified about important account activities'],
+                                ['<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3 4v4.5h4.5M12 7.5V12l3 2"/>', 'Account History', 'View your login and activity history anytime']
+                            ].map(p => `<div class="service-perk">
+                                <span class="service-perk-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p[0]}</svg></span>
+                                <div><b>${p[1]}</b><span>${p[2]}</span></div>
+                            </div>`).join('')}
+                        </div>
                     </div>
                 `;
             }
@@ -4998,61 +5042,168 @@
 
             let selectedNotificationIds = new Set();
 
+            // Tabs sirf view filter hain - data ek hi list se aata hai.
+            let notificationFilter = 'all';
+
             function buildNotificationBody() {
+                const mine = getMyNotifications();
+                const unread = mine.filter(n => !n.read).length;
+                const counts = { all: mine.length, unread: unread, read: mine.length - unread };
+                const tab = (id, label) =>
+                    `<button class="notif-tab ${notificationFilter === id ? 'is-active' : ''}" onclick="setNotificationFilter('${id}')">${label} (${counts[id]})</button>`;
+
                 return `
-                    <div class="history-card">
-                        <h3>🔔 Notifications</h3>
+                    <div class="history-card notif-card">
+                        <div class="notif-head">
+                            <h3>🔔 Notifications</h3>
+                            <span class="notif-count">${mine.length}</span>
+                            <button class="notif-mark-all" onclick="bulkMarkNotifications(true, true)">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M3 6.5l9 6.5 9-6.5"/></svg>
+                                Mark all as read
+                            </button>
+                        </div>
+                        <div class="notif-tabs">${tab('all', 'All')}${tab('unread', 'Unread')}${tab('read', 'Read')}</div>
                         <div class="card-body">
-                            <table class="history-table" id="notificationTableHeader">
+                            <table class="history-table notif-table" id="notificationTableHeader">
                                 <thead>
                                     <tr>
-                                        <th style="width:32px;"><input type="checkbox" onchange="toggleNotificationSelectAll(this)" /></th>
-                                        <th>Date &amp; Time</th>
-                                        <th>Description</th>
+                                        <th style="width:38px;"><input type="checkbox" onchange="toggleNotificationSelectAll(this)" /></th>
+                                        <th>Notification</th>
+                                        <th style="width:230px;">Date &amp; Time</th>
+                                        <th style="width:46px;"></th>
                                     </tr>
                                 </thead>
                             </table>
                             <div class="history-table-wrapper" id="notificationTableWrapper">
-                                <table class="history-table" id="notificationTable">
+                                <table class="history-table notif-table" id="notificationTable">
                                     <tbody id="notificationTableBody"></tbody>
                                 </table>
                             </div>
-                            <div class="support-log-footer-row">
-                                <button class="filter-btn" onclick="bulkMarkNotifications(true)">✅ Mark Read</button>
-                                <button class="filter-btn reset-btn" onclick="bulkMarkNotifications(false)">📩 Mark Unread</button>
-                                <button class="filter-btn delete-btn" onclick="bulkRemoveNotifications()">🗑️ Remove</button>
+                        </div>
+                        <div class="notif-footer">
+                            <div class="notif-footer-actions">
+                                <button class="filter-btn notif-btn-read" onclick="bulkMarkNotifications(true)">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7"/></svg>
+                                    Mark as Read
+                                </button>
+                                <button class="filter-btn notif-btn-unread" onclick="bulkMarkNotifications(false)">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M3 6.5l9 6.5 9-6.5"/></svg>
+                                    Mark as Unread
+                                </button>
+                                <button class="filter-btn delete-btn" onclick="bulkRemoveNotifications()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h16M9.5 6.5V4.5h5v2M7 6.5l1 13h8l1-13"/></svg>
+                                    Remove
+                                </button>
                             </div>
+                            <div class="notif-footer-pager" id="notificationPager"></div>
                         </div>
                     </div>
                 `;
             }
 
+            window.setNotificationFilter = function(id) {
+                notificationFilter = id;
+                const body = document.getElementById('contentBody');
+                if (!body) return;
+                body.innerHTML = buildNotificationBody();
+                upgradeCardHeaders(body);
+                renderNotificationTable();
+            };
+
+            // "2 minutes ago" jaisa relative time - mockup me date ke neeche.
+            function notificationAgo(dateStr, timeStr) {
+                const when = new Date(dateStr + ' ' + (timeStr || ''));
+                if (isNaN(when)) return '';
+                const mins = Math.floor((Date.now() - when.getTime()) / 60000);
+                if (mins < 1) return 'just now';
+                if (mins < 60) return mins + (mins === 1 ? ' minute ago' : ' minutes ago');
+                const hrs = Math.floor(mins / 60);
+                if (hrs < 24) return hrs + (hrs === 1 ? ' hour ago' : ' hours ago');
+                const days = Math.floor(hrs / 24);
+                return days + (days === 1 ? ' day ago' : ' days ago');
+            }
+
+            // Notification ka type decide karta hai row ka round icon.
+            function notificationIcon(n) {
+                const text = String(n.description || '');
+                if (/api key/i.test(text)) {
+                    return ['key', '<circle cx="8" cy="14" r="4.5"/><path d="m11.4 11 8.1-8.1M17 5.5l2.5 2.5M14.5 8l2.5 2.5"/>'];
+                }
+                if (/balance|payment|credit|\u20b9/i.test(text)) {
+                    return ['money', '<path d="M8 6h8M8 10h8M15 6c0 3-2.5 4-5 4l6 8"/>'];
+                }
+                return ['doc', '<path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4M8.5 12h7M8.5 16h4"/>'];
+            }
+
             function renderNotificationTable() {
                 const tbody = document.getElementById('notificationTableBody');
                 if (!tbody) return;
-                const mine = [...getMyNotifications()].sort((a, b) => new Date(b.date + ' ' + b.time) - new Date(a.date + ' ' + a.time));
+                const all = [...getMyNotifications()].sort((a, b) => new Date(b.date + ' ' + b.time) - new Date(a.date + ' ' + a.time));
+                const mine = notificationFilter === 'unread' ? all.filter(n => !n.read)
+                           : notificationFilter === 'read'   ? all.filter(n => n.read)
+                           : all;
+
+                const pager = document.getElementById('notificationPager');
+                if (pager) {
+                    pager.innerHTML = mine.length === 0 ? '' : `
+                        <span class="pager-count">Showing 1 to ${mine.length} of ${mine.length}</span>
+                        <div class="pager-controls">
+                            <button class="pager-btn" disabled>\u00ab</button>
+                            <button class="pager-btn is-current">1</button>
+                            <button class="pager-btn" disabled>\u00bb</button>
+                        </div>`;
+                }
 
                 if (mine.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No notifications yet.</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="4" class="dash-empty-cell">'
+                        + '<svg class="dash-empty-art" viewBox="0 0 72 56" fill="none">'
+                        + '<path d="M8 26h14l4 7h20l4-7h14v20a4 4 0 0 1-4 4H12a4 4 0 0 1-4-4z" fill="#dbe8fe"/>'
+                        + '<path d="M8 26 18 8h36l10 18" stroke="#bcd6fb" stroke-width="3" stroke-linejoin="round" fill="none"/></svg>'
+                        + '<span class="dash-empty-title">No notifications yet.</span>'
+                        + '<span class="dash-empty-sub">New alerts about your account will show up here.</span>'
+                        + '</td></tr>';
                     updateNotificationBadge();
                     return;
                 }
 
                 tbody.innerHTML = mine.map(n => {
                     const needsAction = n.type === 'balance_approval' && !n.handledResult;
-                    const actionsHtml = needsAction ?
-                        `<span class="notification-action-hint">⏳ Action required - click to Approve/Cancel</span>` :
-                        (n.handledResult ? `<span class="notification-handled-tag">${escapeHtml(n.handledResult)}</span>` : '');
+                    const actionsHtml = needsAction
+                        ? '<span class="notification-action-hint">\u23f3 Action required - click to Approve/Cancel</span>'
+                        : (n.handledResult ? `<span class="notification-handled-tag">${escapeHtml(n.handledResult)}</span>` : '');
+                    const icon = notificationIcon(n);
+                    // Pehli line title, baaki detail - mockup me dono alag
+                    // weight/colour me hain.
+                    const parts = String(n.description || '').split(/[.:]\s+/);
+                    const title = parts[0] + (parts.length > 1 && n.description.includes('.') ? '.' : '');
+                    const detail = n.description.slice(title.length).replace(/^[\s:]+/, '');
+
                     return `
                     <tr class="${n.read ? '' : 'notification-unread'}">
                         <td onclick="event.stopPropagation();"><input type="checkbox" class="notification-row-check" data-id="${n.id}" ${selectedNotificationIds.has(n.id) ? 'checked' : ''} onchange="toggleNotificationRowCheck('${n.id}', this)" /></td>
-                        <td>${n.date} ${n.time}</td>
                         <td>
-                            <a class="notification-desc-link" onclick="openNotificationPopup('${n.id}')">${escapeHtml(n.description)}</a>
-                            ${actionsHtml}
+                            <div class="notif-row">
+                                <span class="notif-row-icon is-${icon[0]}">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${icon[1]}</svg>
+                                </span>
+                                <div class="notif-row-text">
+                                    <a class="notification-desc-link" onclick="openNotificationPopup('${n.id}')">${escapeHtml(title)}</a>
+                                    ${detail ? `<span class="notif-row-detail">${escapeHtml(detail)}</span>` : ''}
+                                    ${actionsHtml}
+                                </div>
+                            </div>
                         </td>
-                    </tr>
-                `;
+                        <td>
+                            <div class="notif-when">
+                                <span class="notif-dot ${n.read ? 'is-read' : ''}"></span>
+                                <div>
+                                    <span class="notif-date">${escapeHtml(n.date)} ${escapeHtml(n.time || '')}</span>
+                                    <span class="notif-ago">${notificationAgo(n.date, n.time)}</span>
+                                </div>
+                            </div>
+                        </td>
+                        <td class="notif-menu-cell"><button class="notif-menu-btn" onclick="openNotificationPopup('${n.id}')" aria-label="Open notification">\u22ee</button></td>
+                    </tr>`;
                 }).join('');
                 updateNotificationBadge();
             }
@@ -5070,7 +5221,10 @@
                 });
             };
 
-            window.bulkMarkNotifications = function(readValue) {
+            window.bulkMarkNotifications = function(readValue, applyToAll) {
+                if (applyToAll) {
+                    getMyNotifications().forEach(n => { n.id && selectedNotificationIds.add(n.id); });
+                }
                 if (selectedNotificationIds.size === 0) {
                     showWarning('Select at least one notification first.');
                     return;
@@ -6636,9 +6790,51 @@
             // ============================================================
             // 33. UPDATE CONTENT
             // ============================================================
+            const CARD_ICON_PATHS = {
+                '\u{1F4E4}': '<path d="M12 16V4M7.5 8.5 12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
+                '\u2699':   '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4 5.3 5.3"/>',
+                '\u{1F4C1}': '<path d="M3 7.5A2 2 0 0 1 5 5.5h4l2 2.5h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+                '\u{1F4CB}': '<rect x="5" y="4" width="14" height="17" rx="2"/><rect x="9" y="2.5" width="6" height="3.5" rx="1.2"/><path d="M9 11h6M9 15h4"/>',
+                '\u{1F5BC}': '<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><circle cx="8.5" cy="10" r="1.8"/><path d="m4.5 17 5-5 4 4 2.5-2 3.5 3.5"/>',
+                '\u{1F464}': '<circle cx="12" cy="8" r="3.8"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>',
+                '\u{1F511}': '<circle cx="8" cy="14" r="4.5"/><path d="m11.4 11 8.1-8.1M17 5.5l2.5 2.5M14.5 8l2.5 2.5"/>',
+                '\u{1F4DC}': '<path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4M8.5 12h7M8.5 16h4"/>',
+                '\u{1F4C5}': '<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+                '\u{1F514}': '<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 19.5a2.2 2.2 0 0 0 4 0"/>',
+                '\u{1F4B3}': '<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19"/>',
+                '\u{1F4CA}': '<path d="M6 20V11M12 20V4M18 20v-6"/>',
+                '\u{1F4C4}': '<path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4"/>',
+                '\u{1F310}': '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 3 2.6 15 0 18M12 3c-2.6 3-2.6 15 0 18"/>',
+                '\u{1F6E0}': '<path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 1 5.4-5.4l-2.6 2.6"/>'
+            };
+
+            // Emoji ke saath aksar variation selector (U+FE0F) aata hai;
+            // match karne se pehle usse hata dete hain.
+            function upgradeCardHeaders(root) {
+                if (!root) return;
+                root.querySelectorAll('h3').forEach(h3 => {
+                    if (h3.dataset.iconified || h3.querySelector('.ds-card-icon')) return;
+                    const node = h3.firstChild;
+                    if (!node || node.nodeType !== 3) return;
+
+                    const text = node.nodeValue.replace(/\uFE0F/g, '').replace(/^\s+/, '');
+                    const key = Object.keys(CARD_ICON_PATHS).find(k => text.startsWith(k));
+                    if (!key) return;
+
+                    node.nodeValue = text.slice(key.length).replace(/^\s+/, '');
+                    h3.insertAdjacentHTML('afterbegin',
+                        '<span class="ds-card-icon is-filled"><svg viewBox="0 0 24 24" fill="none" '
+                        + 'stroke="currentColor" stroke-width="1.9" stroke-linecap="round" '
+                        + 'stroke-linejoin="round">' + CARD_ICON_PATHS[key] + '</svg></span>');
+                    h3.dataset.iconified = '1';
+                });
+            }
+            window.upgradeCardHeaders = upgradeCardHeaders;
+
             function updateContent(data, breadcrumb) {
                 const bodyContent = typeof data.body === 'function' ? data.body() : data.body;
                 contentBody.innerHTML = bodyContent || '';
+                upgradeCardHeaders(contentBody);
                 currentMenuDisplay.textContent = breadcrumb || 'Dashboard';
 
                 if (breadcrumb && breadcrumb.includes('Payment Mode')) {

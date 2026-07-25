@@ -1315,3 +1315,279 @@ body, input, select, textarea, button {
     .plans-grid { grid-template-columns: 1fr; }
     .history-summary { flex-direction: column; gap: 18px; }
 }
+
+/* =====================================================================
+   CARD HEADER ICON TILE (global) - emoji ki jagah filled blue SVG.
+   upgradeCardHeaders() app.js me har page render par lagta hai.
+   ===================================================================== */
+.ds-card-icon.is-filled { background: var(--ds-blue); color: #fff; }
+
+h3 .ds-card-icon { width: 34px; height: 34px; border-radius: 9px; margin-right: 10px; }
+h3 .ds-card-icon svg { width: 17px; height: 17px; }
+
+.service-card > h3, .file-list-card h3, .activity-log-card .log-header h3,
+.payment-card > h3, .history-card > h3, .api-key-card > h3 {
+    display: flex;
+    align-items: center;
+}
+
+/* Purana ::first-letter tile ab zaroorat nahi - icon asli element hai. */
+.service-card > h3::first-letter, .file-list-card h3::first-letter,
+.activity-log-card .log-header h3::first-letter, .payment-card > h3::first-letter,
+.history-card > h3::first-letter, .plan-history-card > h3::first-letter,
+.api-key-card > h3::first-letter, .admin-files-header h3::first-letter,
+.support-log-header-row h3::first-letter {
+    background: none; padding: 0; margin-right: 0; font-size: inherit;
+}
+
+/* ===================== NOTIFICATIONS ===================== */
+.notif-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.notif-head h3 { margin: 0; font-size: 1.06rem; font-weight: 700; color: var(--ds-navy); }
+
+.notif-count {
+    background: var(--ds-blue);
+    color: #fff;
+    border-radius: 999px;
+    font-size: .7rem;
+    font-weight: 700;
+    min-width: 22px;
+    padding: 3px 8px;
+    text-align: center;
+}
+
+.notif-mark-all {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: #fff;
+    border: 1px solid rgba(18,87,245,.32);
+    border-radius: 9px;
+    color: var(--ds-blue);
+    font-family: inherit;
+    font-size: .8rem;
+    font-weight: 600;
+    padding: 9px 14px;
+    cursor: pointer;
+}
+
+.notif-mark-all svg { width: 16px; height: 16px; }
+.notif-mark-all:hover { background: rgba(18,87,245,.05); }
+
+.notif-tabs {
+    display: flex;
+    gap: 26px;
+    border-bottom: 1px solid var(--ds-line);
+    margin-bottom: 14px;
+}
+
+.notif-tab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--ds-muted);
+    font-family: inherit;
+    font-size: .87rem;
+    font-weight: 600;
+    padding: 9px 2px;
+    margin-bottom: -1px;
+    cursor: pointer;
+}
+
+.notif-tab.is-active { color: var(--ds-blue); border-bottom-color: var(--ds-blue); }
+.notif-tab:hover     { color: var(--ds-blue); }
+
+.notif-table { table-layout: fixed; width: 100%; }
+.notif-table td { vertical-align: middle; }
+
+.notif-row { display: flex; align-items: flex-start; gap: 13px; }
+
+.notif-row-icon {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+.notif-row-icon svg { width: 18px; height: 18px; }
+.notif-row-icon.is-key   { background: #dbe8fe; color: #1257f5; }
+.notif-row-icon.is-money { background: #dcf3e7; color: #17915c; }
+.notif-row-icon.is-doc   { background: #e7edfb; color: #3b5fa8; }
+
+.notif-row-text { min-width: 0; }
+
+.notif-row-text .notification-desc-link {
+    display: block;
+    font-size: .88rem;
+    font-weight: 700;
+    color: var(--ds-navy);
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.notif-row-text .notification-desc-link:hover { color: var(--ds-blue); }
+.notif-row-detail { display: block; font-size: .78rem; color: var(--ds-muted); margin-top: 2px; line-height: 1.4; }
+
+.notif-when { display: flex; align-items: flex-start; gap: 9px; }
+
+.notif-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--ds-blue);
+    margin-top: 5px;
+    flex-shrink: 0;
+}
+
+.notif-dot.is-read { background: #c6d0e0; }
+.notif-date { display: block; font-size: .82rem; font-weight: 600; color: var(--ds-navy); }
+.notif-ago  { display: block; font-size: .74rem; color: var(--ds-muted); margin-top: 2px; }
+
+.notif-menu-cell { text-align: right; }
+
+.notif-menu-btn {
+    background: none;
+    border: none;
+    color: var(--ds-muted);
+    font-size: 1.15rem;
+    line-height: 1;
+    padding: 4px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.notif-menu-btn:hover { background: #f1f5fb; color: var(--ds-navy); }
+
+.notif-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding-top: 16px;
+    margin-top: 4px;
+}
+
+.notif-footer-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.notif-footer-pager   { display: flex; align-items: center; gap: 14px; }
+.notif-btn-read   { color: var(--ds-green); border-color: rgba(23,145,92,.35); }
+.notif-btn-unread { color: var(--ds-blue);  border-color: rgba(18,87,245,.32); }
+
+/* ===================== SERVICE PAGES ===================== */
+.drop-zone {
+    border: 2px dashed rgba(18,87,245,.35);
+    background: #fbfcff;
+    padding: 22px 20px 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+}
+
+.drop-art  { width: 118px; height: 76px; }
+.drop-text { font-size: 1rem; font-weight: 700; color: var(--ds-navy); }
+.drop-sub  { font-size: .8rem; color: var(--ds-muted); }
+
+.drop-browse-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 10px 18px;
+    border: none;
+    border-radius: 9px;
+    background: linear-gradient(135deg, #2f7bf6 0%, #0b48e0 100%);
+    color: #fff;
+    font-family: inherit;
+    font-size: .86rem;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(18,87,245,.26);
+}
+
+.drop-browse-btn svg { width: 16px; height: 16px; }
+.file-count-text { font-size: .75rem; color: var(--ds-blue); font-weight: 600; margin-top: 6px; }
+
+.drop-meta { text-align: center; font-size: .76rem; color: var(--ds-muted); margin-top: 10px; }
+.drop-meta b { color: var(--ds-blue); }
+
+/* Setup labels mockup me uppercase hain. */
+.setup-group > label,
+.setup-group label:not([style]) {
+    display: block;
+    font-size: .72rem;
+    font-weight: 600;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    color: var(--ds-muted);
+    margin-bottom: 6px;
+}
+
+.file-table thead th { text-transform: uppercase; letter-spacing: .4px; color: var(--ds-muted); }
+
+.process-btn.start-btn, .process-btn.stop-btn, .process-btn.clear-btn { padding: 10px 16px; border-radius: 9px; }
+
+/* ---- shared bottom feature strip (services + profile) ---- */
+.service-perks {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+    padding: 18px 8px;
+    margin-top: 18px;
+}
+
+.profile-perks { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+.service-perk {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 0 20px;
+    border-right: 1px solid var(--ds-line);
+}
+
+.service-perk:last-child { border-right: none; }
+
+.service-perk-icon {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: var(--ds-blue-soft);
+    color: var(--ds-blue);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+.service-perk-icon svg { width: 19px; height: 19px; }
+.service-perk b    { display: block; font-size: .84rem; color: var(--ds-navy); }
+.service-perk span { display: block; font-size: .73rem; color: var(--ds-muted); line-height: 1.35; margin-top: 2px; }
+
+/* ===================== PROFILE ===================== */
+.profile-photo-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-size: 3.4rem;
+    color: #9dc0f5;
+    min-height: 210px;
+}
+
+.profile-photo-placeholder div { font-size: .84rem; color: var(--ds-muted); }
+.submit-btn { padding: 11px 20px; }
+
+/* ===================== API DOCUMENTATION ===================== */
+.api-key-card + .api-key-card,
+.api-key-card ~ .content-section { margin-top: 18px; }
+
+.api-action-btn { padding: 10px 16px; }
+.api-action-btn.save-btn   { color: var(--ds-green); border-color: rgba(23,145,92,.35); }
+.api-action-btn.revoke-btn { color: var(--ds-red);   border-color: rgba(220,47,56,.32); }
+
+@media (max-width: 1150px) {
+    .service-perks, .profile-perks { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 18px; }
+    .service-perk { border-right: none; }
+    .notif-footer { flex-direction: column; align-items: flex-start; }
+}
