@@ -163,7 +163,6 @@
         <div class="file-list-card">
           <div class="file-list-card-header">
             <h3>📁 Uploaded Files</h3>
-            <span class="file-list-charge-estimate">${svc.freeNote === false ? '' : '🎁 Free - runs in your browser'}</span>
           </div>
           <div class="card-body">
             <div class="file-table-wrapper">

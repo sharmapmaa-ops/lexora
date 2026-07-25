@@ -2969,3 +2969,45 @@ body, .center-content { background: #fff; }
     .balance-grid .balance-card { border-right: none !important; padding: 0 16px; }
     .auth-free-grid { grid-template-columns: 1fr; }
 }
+
+/* =====================================================================
+   ROUND 11 - Upload File(s) | Setup side by side, neeche tab strip
+   ===================================================================== */
+.service-page-grid.is-tabbed { display: flex; flex-direction: column; gap: 14px; }
+
+.svc-top-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 14px;
+    align-items: stretch;
+}
+
+/* Dono top cards apne poore card ki tarah dikhte hain (tab strip nahi). */
+.svc-top-card {
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+    padding: 14px 16px;
+    height: auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.svc-top-card > .card-body { flex: 1; min-height: 0; overflow: visible; }
+
+/* Back button wala heading row: title left, button right. */
+.svc-top-card > h3.card-head-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.svc-top-card > h3.card-head-row > span:not(.ds-card-icon) { flex: 1; }
+.card-back-btn { font-size: .76rem; padding: 6px 11px; }
+
+@media (max-width: 900px) {
+    .svc-top-row { grid-template-columns: 1fr; }
+}

@@ -7099,6 +7099,13 @@
             // [Uploaded Files | Activity Log]. Dono full width. Isse chaaro
             // cards ki height apne aap barabar rehti hai aur koi card viewport
             // se bahar nahi jata.
+            // Upload File(s) aur Setup alag-alag cards hain, side by side
+            // (top row). Uploaded Files aur Activity Log ek tab strip me
+            // aate hain, uske neeche, full width.
+            //
+            // Ye transform DOM par chalta hai, isliye har service par lagta
+            // hai - Translation/Lease (app.js) aur Other Services ke saare
+            // tools (service-runner.js) - kyunki sabka markup ek jaisa hai.
             function buildServiceTabStrips(root) {
                 const grid = root.querySelector('.service-page-grid');
                 if (!grid || grid.dataset.tabbed) return;
@@ -7110,18 +7117,20 @@
                     .map(el => el.classList.contains('activity-log-section') ? el.firstElementChild : el)
                     .filter(Boolean);
 
-                const groups = [cardsOf(cols[0]), cardsOf(cols[1])].filter(g => g.length);
-                if (!groups.length) return;
+                const topCards = cardsOf(cols[0]);
+                const stripCards = cardsOf(cols[1]);
+                if (!topCards.length && !stripCards.length) return;
 
                 const titleOf = card => {
                     const h = card.querySelector('h3');
-                    return h ? h.textContent.trim() : 'Panel';
+                    if (!h) return 'Panel';
+                    const span = h.querySelector('span:not(.ds-card-icon)');
+                    return (span ? span.textContent : h.textContent).trim();
                 };
 
-                const strips = groups.map((cards, gi) => {
+                const makeStrip = cards => {
                     const strip = document.createElement('div');
                     strip.className = 'svc-strip';
-
                     const tabs = document.createElement('div');
                     tabs.className = 'svc-tabs';
                     const panes = document.createElement('div');
@@ -7129,15 +7138,15 @@
 
                     cards.forEach((card, ci) => {
                         const btn = document.createElement('button');
-                        btn.className = 'svc-tab' + (ci === 0 ? ' is-active' : '');
                         btn.type = 'button';
+                        btn.className = 'svc-tab' + (ci === 0 ? ' is-active' : '');
                         const head = card.querySelector('h3');
                         const icon = head && head.querySelector('.ds-card-icon');
                         if (icon) btn.appendChild(icon.cloneNode(true));
                         btn.appendChild(document.createTextNode(titleOf(card)));
                         btn.onclick = () => {
-                            strip.querySelectorAll('.svc-tab').forEach((b, i) => b.classList.toggle('is-active', i === ci));
-                            strip.querySelectorAll('.svc-pane').forEach((p, i) => p.classList.toggle('is-active', i === ci));
+                            strip.querySelectorAll('.svc-tab').forEach((x, i) => x.classList.toggle('is-active', i === ci));
+                            strip.querySelectorAll('.svc-pane').forEach((x, i) => x.classList.toggle('is-active', i === ci));
                         };
                         tabs.appendChild(btn);
 
@@ -7152,12 +7161,17 @@
                     strip.appendChild(tabs);
                     strip.appendChild(panes);
                     return strip;
-                });
+                };
+
+                const topRow = document.createElement('div');
+                topRow.className = 'svc-top-row';
+                topCards.forEach(card => { card.classList.add('svc-top-card'); topRow.appendChild(card); });
 
                 grid.dataset.tabbed = '1';
                 grid.classList.add('is-tabbed');
                 grid.innerHTML = '';
-                strips.forEach(s => grid.appendChild(s));
+                if (topCards.length) grid.appendChild(topRow);
+                if (stripCards.length) grid.appendChild(makeStrip(stripCards));
             }
 
             // ============================================================
