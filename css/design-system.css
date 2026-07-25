@@ -497,3 +497,292 @@ label { color: var(--ds-muted); font-size: .82rem; font-weight: 500; }
     .history-summary .summary-item { border-right: none; padding: 0 18px; }
     .page-head { padding: 16px 0 14px; }
 }
+
+/* =====================================================================
+   ROUND 2 FIXES - screenshots se mile issues
+   (top margin, andar ke scrollbars, logo, alignment, symbols, balance page)
+   ===================================================================== */
+
+/* ---- typography: mockups Inter jaisi geometric sans use karte hain ---- */
+body, input, select, textarea, button {
+    font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', sans-serif;
+}
+
+/* ---- card top margin: content nav se chipka hua tha ---- */
+.center-content { padding-top: 20px; }
+.content-area   { padding-top: 0; }
+
+/* ---- nav: logo, icons, user chip order ---- */
+.company-logo {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    background: #fff;
+    box-shadow: 0 2px 10px rgba(0,0,0,.2);
+}
+
+.company-logo img { padding: 3px; object-fit: contain; }
+
+.menu-icon { width: 17px; height: 17px; flex-shrink: 0; }
+.menu-item > a .arrow { font-size: .55rem; opacity: .8; margin-left: 2px; }
+
+/* Mockup me avatar pehle aata hai, phir naam - markup badle bina order se. */
+.user-profile          { padding: 4px 12px 4px 5px; }
+.user-profile .user-avatar        { order: 1; }
+.user-profile .user-name          { order: 2; }
+.user-profile .user-dropdown-arrow{ order: 3; }
+.user-avatar { position: relative; }
+.notification-badge { position: absolute; top: -5px; right: -5px; }
+
+/* Active item mockup me amber hai, taaki blue nav par alag dikhe. */
+.menu-item.active > a,
+.menu-item > a.active {
+    background: rgba(255,255,255,.16);
+    color: #ffd66b;
+    box-shadow: inset 0 0 0 1px rgba(255,214,107,.45);
+}
+
+/* ---- INNER SCROLLBARS ----
+   .file-list-card aur .activity-log-card par fixed height (280/320px) thi.
+   Design system ne padding badha di to content bahar chala gaya aur har
+   card ke andar apna scrollbar aa gaya. Ab cards content ke hisab se
+   grow karte hain; sirf lambi tables ke andar scroll rehta hai. */
+.service-col > .service-card,
+.service-col > .file-list-card,
+.service-col > .activity-log-section > .activity-log-card,
+.file-list-card,
+.activity-log-card,
+.history-card,
+.payment-card { height: auto; }
+
+.service-col > .service-card > .card-body,
+.service-col > .file-list-card > .card-body,
+.service-card > .card-body,
+.file-list-card > .card-body,
+.activity-log-card > .card-body { overflow: visible; min-height: 0; }
+
+.file-list-card, .activity-log-card { min-height: 250px; }
+.file-table-scroll { max-height: 260px; }
+.activity-list { height: auto; max-height: 240px; }
+
+/* ---- tables ko card ke andar hi rakho ----
+   "PROGRESSACTION" isliye jud gaya tha ki columns card se chaude the. */
+.file-table-wrapper { overflow-x: auto; }
+
+.file-table { table-layout: fixed; width: 100%; }
+
+.file-table th,
+.file-table td {
+    padding: 10px 8px;
+    font-size: .78rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.history-table { table-layout: auto; width: 100%; }
+.history-table th, .history-table td { padding: 11px 10px; font-size: .82rem; }
+
+/* ---- shared card header (icon tile + title + subtitle) ---- */
+.ds-card-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 18px;
+}
+
+.ds-card-icon {
+    width: 40px; height: 40px;
+    border-radius: 11px;
+    background: var(--ds-blue-soft);
+    color: var(--ds-blue);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+.ds-card-icon svg { width: 20px; height: 20px; }
+.ds-card-head h3  { font-size: 1.08rem; font-weight: 700; color: var(--ds-navy); margin: 0; }
+.ds-card-sub      { font-size: .82rem; color: var(--ds-muted); margin: 3px 0 0; }
+
+/* ===================== ADD BALANCE (new mockup) ===================== */
+.balance-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.balance-grid .balance-card {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas: "icon num trend" "icon label trend";
+    column-gap: 16px;
+    align-items: center;
+    padding: 18px 22px;
+}
+
+.balance-grid .balance-card::before,
+.balance-grid .balance-card::after {
+    content: '';
+    background-repeat: no-repeat;
+    background-position: center;
+}
+
+.balance-grid .balance-card::before {
+    grid-area: icon;
+    width: 52px; height: 52px;
+    border-radius: 50%;
+    background-size: 24px 24px;
+}
+
+.balance-grid .balance-card::after {
+    grid-area: trend;
+    width: 26px; height: 26px;
+    background-size: 22px 22px;
+    opacity: .85;
+}
+
+.balance-grid .balance-card .balance-number { grid-area: num; font-size: 1.55rem; font-weight: 800; }
+.balance-grid .balance-card .balance-label {
+    grid-area: label;
+    font-size: .72rem;
+    font-weight: 600;
+    letter-spacing: .7px;
+    text-transform: uppercase;
+    color: var(--ds-muted);
+}
+
+/* credit */
+.balance-grid .balance-card:nth-child(1) { background: #f3fbf7; border-color: #c4e7d5; }
+.balance-grid .balance-card:nth-child(1)::before {
+    background-color: #dcf3e7;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2317915c' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7.5A2.5 2.5 0 0 1 5.5 5H18a2 2 0 0 1 2 2v1'/%3E%3Crect x='3' y='7.5' width='18' height='12' rx='2.5'/%3E%3Ccircle cx='16.5' cy='13.5' r='1.2'/%3E%3C/svg%3E");
+}
+.balance-grid .balance-card:nth-child(1)::after {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2317915c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 17 10 10l4 4 7-7'/%3E%3Cpath d='M16 6h5v5'/%3E%3C/svg%3E");
+}
+
+/* debit */
+.balance-grid .balance-card:nth-child(2) { background: #fef5f5; border-color: #f3d0d0; }
+.balance-grid .balance-card:nth-child(2)::before {
+    background-color: #fbdede;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23dc2f38' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7.5A2.5 2.5 0 0 1 5.5 5H18a2 2 0 0 1 2 2v1'/%3E%3Crect x='3' y='7.5' width='18' height='12' rx='2.5'/%3E%3Ccircle cx='16.5' cy='13.5' r='1.2'/%3E%3C/svg%3E");
+}
+.balance-grid .balance-card:nth-child(2)::after {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23dc2f38' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7l7 7 4-4 7 7'/%3E%3Cpath d='M16 18h5v-5'/%3E%3C/svg%3E");
+}
+
+/* balance */
+.balance-grid .balance-card:nth-child(3) { background: #f4f8ff; border-color: #c9dcfa; }
+.balance-grid .balance-card:nth-child(3)::before {
+    background-color: #dbe8fe;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231257f5' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 9.5 12 4l9 5.5'/%3E%3Cpath d='M5 10.5v8M9.5 10.5v8M14.5 10.5v8M19 10.5v8M3 20h18'/%3E%3C/svg%3E");
+}
+.balance-grid .balance-card:nth-child(3)::after {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231257f5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3.5 13.9 9l5.6 1.9-5.6 2L12 18.5 10.1 13l-5.6-2L10.1 9z'/%3E%3C/svg%3E");
+}
+
+.balance-grid .balance-card:nth-child(1) .balance-number { color: var(--ds-green); }
+.balance-grid .balance-card:nth-child(2) .balance-number { color: var(--ds-red); }
+.balance-grid .balance-card:nth-child(3) .balance-number { color: var(--ds-blue); }
+
+/* ---- the two-up top-up row ---- */
+.balance-topup-layout { margin-top: 18px; gap: 20px; }
+.balance-add-card, .balance-pay-panel { padding: 22px 24px; }
+.balance-add-card .form-group label { display: block; margin-bottom: 6px; font-weight: 600; color: var(--ds-ink); }
+.balance-add-card .form-group input { width: 100%; padding: 12px 14px; font-size: .92rem; }
+
+.balance-quick-row { gap: 10px; margin: 0 0 16px; }
+
+.balance-quick-chip {
+    padding: 9px 18px;
+    border-radius: 999px;
+    border: 1px solid rgba(18,87,245,.25);
+    background: #f5f8ff;
+    color: var(--ds-blue);
+    font-size: .84rem;
+    font-weight: 600;
+}
+
+.balance-quick-chip.is-active {
+    background: var(--ds-blue);
+    border-color: var(--ds-blue);
+    color: #fff;
+    box-shadow: 0 4px 12px rgba(18,87,245,.3);
+}
+
+.balance-add-submit {
+    width: 100%;
+    justify-content: center;
+    padding: 14px;
+    font-size: .98rem;
+    margin-top: 4px;
+}
+
+.balance-approval-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 16px 0 0;
+    padding: 13px 15px;
+    border-radius: var(--ds-radius-sm);
+    background: #eef4ff;
+    border: 1px solid #d6e4fd;
+    color: var(--ds-blue);
+    font-size: .83rem;
+    line-height: 1.45;
+}
+
+.balance-approval-note svg { width: 17px; height: 17px; flex-shrink: 0; margin-top: 1px; }
+
+.balance-perks {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 18px;
+    padding-top: 18px;
+    border-top: 1px solid var(--ds-line);
+}
+
+.balance-perk {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 3px;
+}
+
+.balance-perk-icon {
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    background: var(--ds-blue-soft);
+    color: var(--ds-blue);
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 4px;
+}
+
+.balance-perk-icon svg { width: 18px; height: 18px; }
+.balance-perk b    { font-size: .82rem; color: var(--ds-navy); }
+.balance-perk span { font-size: .72rem; color: var(--ds-muted); line-height: 1.3; }
+
+/* ---- checkout panel header ---- */
+.balance-pay-panel { border: 1px solid rgba(18,87,245,.28); }
+
+.pay-panel-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 0 16px;
+    border-bottom: 1px solid var(--ds-line);
+}
+
+.pay-panel-headings { flex: 1; min-width: 0; }
+.pay-panel-title { font-size: 1.08rem; font-weight: 700; color: var(--ds-navy); }
+.pay-panel-sub   { font-size: .8rem; color: var(--ds-muted); margin-top: 2px; }
+.pay-panel-amount { font-size: 1.45rem; font-weight: 800; color: var(--ds-blue); }
+
+.pay-panel-body { border-radius: var(--ds-radius-sm); overflow: hidden; margin-top: 14px; }
+
+@media (max-width: 1150px) {
+    .balance-grid   { grid-template-columns: 1fr; }
+    .balance-perks  { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 16px; }
+}
