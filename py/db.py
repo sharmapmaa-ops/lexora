@@ -137,6 +137,7 @@ def init_schema():
             with conn.cursor() as cur:
                 cur.execute(SCHEMA_SQL)
                 cur.execute(NOTIFICATIONS_SCHEMA_SQL)
+                cur.execute(DOCUMENTS_SCHEMA_SQL)
             conn.commit()
         _schema_ready = True
     return True
@@ -383,12 +384,115 @@ def replace_notifications(rows):
 
 
 # ============================================================
+# GENERIC DOCUMENT TABLE - chhoti list-type resources ke liye
+#
+# transactions ke liye maine asli columns banaye - wahan paise hain,
+# NUMERIC chahiye, CHECK constraints chahiye, aur SUM() query karni hai.
+#
+# Ye chaar (plan-history, api-keys, payment-methods, contact-submissions)
+# alag maamla hain:
+#   * chhoti aur kam-likhi jaane wali hain
+#   * do to abhi bilkul khaali hain - unka schema maine guess karna padta
+#   * inpar koi column-wise query nahi chalti, poori list load hoti hai
+# Inhe JSONB me rakhna imaandari hai: jo faayda chahiye (ek source of
+# truth + atomic write) wo poora milta hai, aur galat guess kiya hua
+# schema baad me badalna nahi padta.
+#
+# TRADE-OFF (jaan-bujh kar): column-level CHECK constraints nahi milte
+# aur SQL me `WHERE data->>'status' = 'active'` likhna padta hai. Kabhi
+# kisi resource par asli query zaroorat bane, tab uske liye transactions
+# jaisa proper table bana lena - registry ki wajah se wo change chhota hai.
+# ============================================================
+DOCUMENTS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS app_documents (
+    resource   TEXT        NOT NULL,
+    doc_id     TEXT        NOT NULL,
+    position   INTEGER     NOT NULL DEFAULT 0,
+    user_id    TEXT,
+    data       JSONB       NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (resource, doc_id)
+);
+
+CREATE INDEX IF NOT EXISTS app_documents_resource_idx
+    ON app_documents (resource, position);
+"""
+
+DOC_SELECT_SQL = """
+SELECT data FROM app_documents
+ WHERE resource = %(resource)s
+ ORDER BY position, doc_id
+"""
+
+DOC_INSERT_SQL = """
+INSERT INTO app_documents (resource, doc_id, position, user_id, data)
+VALUES (%(resource)s, %(doc_id)s, %(position)s, %(user_id)s, %(data)s::jsonb)
+ON CONFLICT (resource, doc_id) DO UPDATE SET
+    position   = EXCLUDED.position,
+    user_id    = EXCLUDED.user_id,
+    data       = EXCLUDED.data,
+    updated_at = now()
+"""
+
+
+def _doc_id(entry, index):
+    """id / key / _id me se jo mile. Kuch na mile to position se bana do -
+    warna bina id wali rows chup-chaap gum ho jaengi."""
+    for field in ("id", "key", "_id"):
+        value = entry.get(field)
+        if value not in (None, ""):
+            return str(value)
+    return f"row-{index + 1:05d}"
+
+
+def list_documents(resource):
+    init_schema()
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(DOC_SELECT_SQL, {"resource": resource})
+            rows = cur.fetchall()
+    return [r["data"] for r in rows]
+
+
+def replace_documents(resource, rows):
+    """Poori list ek transaction me. JSON array ka order `position` se
+    bacha rehta hai - warna list har reload par phir se shuffle ho jati."""
+    init_schema()
+    clean = [r for r in rows if isinstance(r, dict)]
+    with connect() as conn:
+        with conn.cursor() as cur:
+            ids = [_doc_id(r, i) for i, r in enumerate(clean)]
+            if ids:
+                cur.execute(
+                    "DELETE FROM app_documents"
+                    " WHERE resource = %(resource)s AND doc_id <> ALL(%(ids)s)",
+                    {"resource": resource, "ids": ids},
+                )
+            else:
+                cur.execute("DELETE FROM app_documents WHERE resource = %(resource)s",
+                            {"resource": resource})
+            for i, entry in enumerate(clean):
+                cur.execute(DOC_INSERT_SQL, {
+                    "resource": resource,
+                    "doc_id": ids[i],
+                    "position": i,
+                    "user_id": entry.get("userId") or None,
+                    "data": json.dumps(entry),
+                })
+        conn.commit()
+    return len(clean)
+
+
+# ============================================================
 # Resource registry
 #
 # server.py sirf ye do function call karta hai. Nayi JSON file DB par
 # laani ho to yahan ek line add karni hai, server.py chhedna nahi padta.
 # ============================================================
-DB_BACKED_RESOURCES = ("payment-history", "notifications")
+# JSONB document table par chalne wali resources.
+DOCUMENT_RESOURCES = ("plan-history", "api-keys", "payment-methods", "contact-submissions")
+
+DB_BACKED_RESOURCES = ("payment-history", "notifications") + DOCUMENT_RESOURCES
 
 
 def list_resource(name):
@@ -396,6 +500,8 @@ def list_resource(name):
         return list_transactions()
     if name == "notifications":
         return list_notifications()
+    if name in DOCUMENT_RESOURCES:
+        return list_documents(name)
     raise KeyError(name)
 
 
@@ -411,6 +517,8 @@ def save_resource(name, rows):
         return saved
     if name == "notifications":
         return replace_notifications(rows)
+    if name in DOCUMENT_RESOURCES:
+        return replace_documents(name, rows)
     raise KeyError(name)
 
 
@@ -455,6 +563,17 @@ def status():
                     if cur.fetchone()["present"]:
                         cur.execute("SELECT COUNT(*) AS n FROM notifications")
                         info["notificationCount"] = int(cur.fetchone()["n"] or 0)
+
+                    cur.execute("SELECT to_regclass('public.app_documents') IS NOT NULL AS present")
+                    if cur.fetchone()["present"]:
+                        cur.execute(
+                            "SELECT resource, COUNT(*) AS n FROM app_documents"
+                            " GROUP BY resource ORDER BY resource"
+                        )
+                        info["documentCounts"] = [
+                            {"resource": r["resource"], "count": int(r["n"])}
+                            for r in cur.fetchall()
+                        ]
                     cur.execute(
                         "SELECT user_id,"
                         "       COALESCE(SUM(credit), 0) - COALESCE(SUM(debit), 0) AS balance"

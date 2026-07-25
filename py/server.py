@@ -1338,6 +1338,10 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/lease/review-data": self._handle_lease_review_get,
             "/api/data/payment-history": self._handle_payment_history_get,
             "/api/data/notifications": self._handle_notifications_get,
+            "/api/data/plan-history": self._handle_plan_history_get,
+            "/api/data/api-keys": self._handle_api_keys_get,
+            "/api/data/payment-methods": self._handle_payment_methods_get,
+            "/api/data/contact-submissions": self._handle_contact_submissions_get,
             "/api/admin/db-status": self._handle_admin_db_status,
             "/api/admin/db-transactions": self._handle_admin_db_transactions,
             "/api/integrations/status": self._handle_integrations_status,
@@ -1488,6 +1492,20 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _handle_notifications_get(self, query):
         return self._serve_resource("notifications")
+
+    # Ye chaaro ek hi generic reader par jaate hain - naya resource aaye to
+    # db.DB_BACKED_RESOURCES me naam + yahan ek line, bas.
+    def _handle_plan_history_get(self, query):
+        return self._serve_resource("plan-history")
+
+    def _handle_api_keys_get(self, query):
+        return self._serve_resource("api-keys")
+
+    def _handle_payment_methods_get(self, query):
+        return self._serve_resource("payment-methods")
+
+    def _handle_contact_submissions_get(self, query):
+        return self._serve_resource("contact-submissions")
 
     def _serve_resource(self, name):
         """DB-backed resource ko padhne ka ek hi rasta (GET /api/data/<n>).

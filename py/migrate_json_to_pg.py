@@ -54,6 +54,39 @@ def load_rows():
     return rows
 
 
+def other_json(name):
+    path = os.path.join(os.path.dirname(JSON_PATH), f"{name}.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            rows = json.load(f)
+        return rows if isinstance(rows, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def migrate_other_resources():
+    """payment-history ke alawa baaki DB-backed resources.
+
+    Inki list db.py me hai (DB_BACKED_RESOURCES), isliye nayi resource
+    add karne par ye script apne aap use bhi migrate karne lagegi.
+    """
+    others = [n for n in db.DB_BACKED_RESOURCES if n != "payment-history"]
+    if not others:
+        return
+
+    print("\nBaaki resources:")
+    for name in others:
+        rows = other_json(name)
+        if not rows:
+            print(f"  {name:<22} json khaali hai - kuch nahi karna")
+            continue
+        try:
+            saved = db.save_resource(name, rows)
+            print(f"  {name:<22} {saved} row(s) migrate hui")
+        except Exception as err:  # noqa: BLE001
+            print(f"  {name:<22} ! fail: {err}")
+
+
 def main():
     dry_run = "--dry-run" in sys.argv
 
@@ -85,7 +118,12 @@ def main():
         rows = [r for r in rows if r.get("userId")]
 
     if dry_run:
-        print(f"\n[dry-run] {len(rows)} row(s) insert hoti. Kuch likha nahi gaya.")
+        print(f"\n[dry-run] transactions: {len(rows)} row(s) insert hoti.")
+        for name in db.DB_BACKED_RESOURCES:
+            if name == "payment-history":
+                continue
+            print(f"[dry-run] {name}: {len(other_json(name))} row(s) insert hoti.")
+        print("Kuch likha nahi gaya.")
         return 0
 
     created = db.init_schema()
@@ -106,6 +144,8 @@ def main():
 
     total = len(db.list_transactions())
     print(f"transactions table me ab {total} row(s) hain.")
+
+    migrate_other_resources()
 
     users = {r.get("userId") for r in rows}
     print("\nPer-user balance (Postgres se):")

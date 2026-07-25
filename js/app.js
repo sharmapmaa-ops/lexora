@@ -6035,6 +6035,9 @@
                         if (d.notificationCount != null) {
                             rows.push(['notifications rows', `<b>${d.notificationCount}</b>`]);
                         }
+                        (d.documentCounts || []).forEach(dc => {
+                            rows.push([`${escapeHtml(dc.resource)} rows`, `<b>${dc.count}</b>`]);
+                        });
                     }
                     rows.push(['Rows in payment-history.json', `<b>${d.jsonCount}</b>`]);
                     if (d.error) rows.push(['Error', `<span class="db-note is-bad">${escapeHtml(d.error)}</span>`]);
@@ -8764,25 +8767,25 @@
                     planHistoryData
                 ] = await Promise.all([
                     fetchJSON('json/menu-config.json'),
-                    fetchJSON('json/payment-methods.json'),
+                    fetchJSON('/api/data/payment-methods'),
                     // Postgres chalu ho to ye route DB se deta hai,
                     // warna wahi JSON file - dono case me ek hi shape.
                     fetchJSON('/api/data/payment-history'),
                     fetchJSON('json/services-api.json'),
                     fetchJSON('json/card-layout.json'),
-                    fetchJSON('json/contact-submissions.json'),
+                    fetchJSON('/api/data/contact-submissions'),
                     fetchJSON('/api/auth/me?userId=' + encodeURIComponent(CURRENT_USER_ID)),
                     fetchJSON('json/messages.json'),
                     fetchJSON('json/agents.json'),
                     fetchJSON('json/company.json'),
-                    fetchJSON('json/api-keys.json'),
+                    fetchJSON('/api/data/api-keys'),
                     fetchJSON('json/lease-files.json'),
                     fetchJSON('json/translation-files.json'),
                     fetchJSON('json/lease-activity-log.json'),
                     fetchJSON('json/translation-activity-log.json'),
                     fetchJSON('/api/data/notifications'),
                     fetchJSON('json/plans.json'),
-                    fetchJSON('json/plan-history.json')
+                    fetchJSON('/api/data/plan-history')
                 ]);
                 PLANS_DATA = plansData || [];
                 planHistory = planHistoryData || [];
