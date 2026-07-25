@@ -56,7 +56,15 @@ import html as html_module
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lease_engine  # noqa: E402  (needs the sys.path tweak above)
-import auth_store  # noqa: E402
+import auth_store
+
+# Optional Postgres layer. DATABASE_URL na ho (ya psycopg install na ho) to
+# db.is_enabled() False rehta hai aur app pehle jaisa JSON par chalta hai.
+try:
+    import db
+except Exception as _db_err:  # noqa: BLE001
+    db = None
+    print(f"[db] Postgres layer unavailable, using JSON files ({_db_err})")  # noqa: E402
 
 PORT = int(os.environ.get("PORT", 8000))
 
@@ -312,6 +320,18 @@ _payment_history_lock = threading.Lock()
 
 
 def _append_payment_history_entry(entry):
+    # Postgres configured ho to wahan likho - INSERT khud atomic hai,
+    # isliye read-modify-write wali race condition hi nahi hoti. Ye
+    # branch tabhi chalti hai jab DATABASE_URL set ho, warna neeche wala
+    # purana JSON path jaise ka waisa chalta rehta hai.
+    if db is not None and db.is_enabled():
+        try:
+            return db.append_transaction(entry)
+        except Exception as err:  # noqa: BLE001
+            # DB down ho to payment gum nahi hona chahiye - JSON par gir
+            # jao aur log kar do taaki baad me reconcile ho sake.
+            print(f"[db] transaction insert failed, falling back to JSON: {err}")
+
     path = os.path.join(JSON_DIR, "payment-history.json")
     with _payment_history_lock:
         try:
