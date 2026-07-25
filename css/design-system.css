@@ -1597,7 +1597,10 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
    ===================================================================== */
 
 /* ---- 4. logo ke peeche kahin background nahi ---- */
-.company-logo, .auth-brand-logo, .auth-topbar-logo,
+/* Logo image ke peeche kabhi colour nahi. Nav ka white rounded box
+   alag cheez hai - deep blue par logo ka navy wordmark warna gayab ho
+   jata hai (aapke Contact Us / Support mockups me bhi white box hai). */
+.auth-brand-logo, .auth-topbar-logo,
 .company-logo img, .profile-photo-preview.is-logo {
     background: transparent !important;
     box-shadow: none;
@@ -1937,4 +1940,178 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
 @media (max-width: 1150px) {
     .api-top-row, .api-key-grid, .api-ref-layout { grid-template-columns: 1fr; }
     .api-try-btn { margin-left: 0; }
+}
+
+/* =====================================================================
+   ROUND 5
+   ===================================================================== */
+
+/* ---- 1 + 5. sirf top/bottom gradient; center wapas neutral ----
+   Light nav par logo aur text dono halke pad rahe the. Ab nav/footer par
+   deep blue gradient (words guaranteed readable, white par 12:1 se zyada
+   contrast) aur center content wapas apne halke background par. */
+:root {
+    --ds-nav: linear-gradient(120deg, #0b2a72 0%, #123f9e 45%, #1552c8 100%);
+    --ds-page: #f4f7fd;
+}
+
+.top-menu-bar {
+    border-bottom: none;
+    box-shadow: 0 2px 14px rgba(10, 58, 168, .22);
+}
+
+.company-name, .user-name { color: #fff; }
+.company-name .separator  { color: rgba(255,255,255,.3); }
+.current-menu-name        { color: rgba(255,255,255,.7); }
+.current-menu-name span   { color: #fff; }
+
+.menu-item > a { color: rgba(255,255,255,.92); }
+.menu-item > a:hover { background: rgba(255,255,255,.14); color: #fff; }
+
+.menu-item.active > a,
+.menu-item > a.active {
+    background: rgba(255,255,255,.16);
+    color: #ffd66b;
+    box-shadow: inset 0 0 0 1px rgba(255,214,107,.5);
+}
+
+.user-profile:hover { background: rgba(255,255,255,.13); }
+.user-dropdown-arrow { color: rgba(255,255,255,.78); }
+.notification-badge { border-color: #123f9e; }
+
+/* Logo ko safed rounded box, taaki deep blue par gayab na ho. */
+.company-logo {
+    background: #fff;
+    border-radius: 10px;
+    padding: 4px 8px;
+    height: 44px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.18);
+}
+
+.footer { color: rgba(255,255,255,.82); border-top: none; }
+.footer span { color: #fff; }
+#footerSocial a { background: rgba(255,255,255,.15); color: #fff; }
+#footerSocial a:hover { background: rgba(255,255,255,.28); }
+
+/* ---- 11. copyright left, social right corner ---- */
+.footer-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    flex-wrap: wrap;
+    max-width: 1560px;
+    margin: 0 auto;
+}
+
+#footerSocial { display: inline-flex; gap: 10px; }
+
+/* ---- 7. login ka apna bottom bar, menu jaisa ---- */
+.auth-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.2em;
+    flex-wrap: wrap;
+    margin-top: 1.2em;
+    padding: 0.9em 1.2em;
+    border-radius: 0.9em;
+    background: linear-gradient(120deg, #0b2a72 0%, #123f9e 45%, #1552c8 100%);
+    color: rgba(255,255,255,.85);
+    font-size: 0.92em;
+}
+
+.auth-footer-social { display: inline-flex; gap: 0.7em; align-items: center; }
+
+.auth-footer-social a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.1em; height: 2.1em;
+    border-radius: 0.5em;
+    background: rgba(255,255,255,.16);
+    color: #fff;
+}
+
+.auth-footer-social a:hover { background: rgba(255,255,255,.3); }
+
+/* ---- 2. chaaro service cards ki height hamesha ek jaisi ---- */
+.service-page-grid { align-items: stretch; }
+
+.service-col {
+    display: grid;
+    grid-template-rows: 1fr 1fr;
+    gap: 14px;
+    align-content: stretch;
+}
+
+.service-col > .service-card,
+.service-col > .file-list-card,
+.service-col > .activity-log-section,
+.service-col > .activity-log-section > .activity-log-card {
+    height: 100%;
+    margin-top: 0;
+    min-height: 300px;
+}
+
+.service-col > .service-card > .card-body,
+.service-col > .file-list-card > .card-body,
+.service-col > .activity-log-section > .activity-log-card > .card-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+}
+
+/* ---- 9. payment history: summary upar ---- */
+.history-summary { margin-top: 0; margin-bottom: 18px; }
+
+/* ---- 10. API card ---- */
+.api-key-grid { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+.api-key-row-inline { display: flex; gap: 10px; align-items: stretch; }
+.api-key-row-inline .api-key-box { flex: 1; }
+.api-key-text  { font-family: 'SFMono-Regular', Consolas, monospace; letter-spacing: 1px; }
+.api-key-saved { font-size: .7rem; color: #17915c; font-weight: 600; margin-left: 8px; }
+
+.api-eye-btn {
+    width: 46px;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    background: #fff;
+    color: var(--ds-muted);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+}
+
+.api-eye-btn svg { width: 18px; height: 18px; }
+.api-eye-btn:hover, .api-eye-btn.is-on { color: var(--ds-blue); border-color: var(--ds-blue); }
+
+/* Reference card ki height fix - lambi JSON andar scroll hoti hai. */
+.api-ref-layout { height: 420px; }
+.api-ref-nav    { height: 100%; overflow-y: auto; }
+.api-ref-panel  { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.api-code       { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.api-code-body  { flex: 1; min-height: 0; overflow: auto; }
+
+.api-ref-nav-item.is-empty span { color: var(--ds-muted); }
+.api-ref-nav-item.is-empty.is-active span { color: #fff; }
+
+.api-ref-empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    text-align: center;
+}
+
+.api-ref-empty svg   { width: 42px; height: 48px; }
+.api-ref-empty b     { color: var(--ds-navy); font-size: .92rem; }
+.api-ref-empty span  { color: var(--ds-muted); font-size: .8rem; }
+
+@media (max-width: 1150px) {
+    .api-key-grid  { grid-template-columns: 1fr; align-items: stretch; }
+    .api-ref-layout { height: auto; }
+    .api-ref-nav, .api-ref-panel { height: auto; }
+    .service-col { grid-template-rows: auto auto; }
 }

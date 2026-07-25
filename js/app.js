@@ -3383,7 +3383,8 @@
                                             name: 'Pay using',
                                             instruments: [
                                                 { method: 'upi' },
-                                                { method: 'card' }
+                                                { method: 'card' },
+                                                { method: 'emi' }
                                             ]
                                         }
                                     },
@@ -3753,9 +3754,13 @@
                 if (!activeKey) {
                     display.textContent = 'No active API key. Click "Generate New API Key" to create one.';
                 } else {
-                    display.innerHTML = `<span style="font-family:monospace;">${activeKey.key}</span>` +
+                    // Key default me masked rehti hai - eye button se dikhti
+                    // hai. Asli value data attribute me, taaki Copy kaam kare.
+                    activeApiKeyValue = activeKey.key;
+                    display.dataset.key = activeKey.key;
+                    display.innerHTML = `<span class="api-key-text">${apiKeyVisible ? escapeHtml(activeKey.key) : '\u2022'.repeat(Math.min(44, activeKey.key.length))}</span>` +
                         (activeKey.saved ?
-                            ' <span style="font-size:0.7rem;color:#27ae60;font-weight:600;">(Saved)</span>' : '');
+                            ' <span class="api-key-saved">(Saved)</span>' : '');
                 }
 
                 if (actionsEl) {
@@ -3801,7 +3806,11 @@
             function apiRefServices() {
                 const menu = MENU_CONFIG.mainMenu.find(m => m.id === 'services');
                 if (!menu || !SERVICES_API_DATA) return [];
-                return menu.subItems.filter(s => SERVICES_API_DATA[s.id]);
+                // Pehle sirf wahi services aati thi jinka SERVICES_API_DATA
+                // me entry thi - baaki chup-chaap gayab ho jati thi. Ab sab
+                // dikhti hain; jiska data nahi hai uska panel saaf bata deta
+                // hai ki docs abhi nahi hain.
+                return menu.subItems;
             }
 
             // Chhota JSON highlighter - keys, strings aur numbers alag rang.
@@ -3841,6 +3850,16 @@
             window.setApiRefService = function(id) { apiRefActive = id; apiRefTab = 'request'; renderServicesApiList(); };
             window.setApiRefTab = function(tab) { apiRefTab = tab; renderServicesApiList(); };
 
+            let apiKeyVisible = false;
+            let activeApiKeyValue = '';
+
+            window.toggleApiKeyVisible = function() {
+                apiKeyVisible = !apiKeyVisible;
+                const btn = document.getElementById('apiKeyEye');
+                if (btn) btn.classList.toggle('is-on', apiKeyVisible);
+                renderApiKeyCard();
+            };
+
             function renderServicesApiList() {
                 const nav = document.getElementById('apiRefNav');
                 const panel = document.getElementById('apiRefPanel');
@@ -3851,13 +3870,23 @@
                 if (!apiRefActive || !services.some(s => s.id === apiRefActive)) apiRefActive = services[0].id;
 
                 nav.innerHTML = services.map(s => `
-                    <button class="api-ref-nav-item ${s.id === apiRefActive ? 'is-active' : ''}" onclick="setApiRefService('${s.id}')">
+                    <button class="api-ref-nav-item ${s.id === apiRefActive ? 'is-active' : ''} ${SERVICES_API_DATA[s.id] ? '' : 'is-empty'}" onclick="setApiRefService('${s.id}')">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4"/></svg>
-                        <span>${escapeHtml(SERVICES_API_DATA[s.id].label || s.label)}</span>
+                        <span>${escapeHtml((SERVICES_API_DATA[s.id] || {}).label || s.label)}</span>
                         <em>\u203a</em>
                     </button>`).join('');
 
                 const d = SERVICES_API_DATA[apiRefActive];
+                if (!d || !d.get) {
+                    const label = (services.find(s => s.id === apiRefActive) || {}).label || apiRefActive;
+                    panel.innerHTML = `
+                        <div class="api-ref-empty">
+                            <svg viewBox="0 0 48 56" fill="none"><path d="M10 4h20l10 10v38H10z" fill="#dbe8fe"/><path d="M30 4v10h10" fill="#bcd6fb"/></svg>
+                            <b>${escapeHtml(label)}</b>
+                            <span>API documentation for this service isn't published yet.</span>
+                        </div>`;
+                    return;
+                }
                 const post = d.post || {};
                 const samples = {
                     request: post.example || `{\n    "id": "<record id>"\n}`,
@@ -6957,7 +6986,9 @@
                 });
 
                 // Perks strip sirf service pages par, aur sirf ek baar.
-                const isServicePage = root.querySelector('.service-page-grid, .drop-zone');
+                // Other Services ke tools .service-page-grid use nahi karte,
+                // sirf .service-card - isliye wo bhi count hote hain.
+                const isServicePage = root.querySelector('.service-page-grid, .drop-zone, .service-card');
                 if (isServicePage && !root.querySelector('.service-perks')) {
                     root.insertAdjacentHTML('beforeend', servicePerksHtml());
                 }
@@ -7506,52 +7537,6 @@
                             }).join('')}
                         </div>
 
-                        <div class="plan-history-card">
-                            <div class="plan-history-head">
-                                <span class="ds-card-icon">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                                        <path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4M8.5 12h7M8.5 16h4"/>
-                                    </svg>
-                                </span>
-                                <h3>${isAdminOrDev ? 'All Users\' Plan History' : 'Your Plan History'}</h3>
-                                <button class="plan-history-btn" onclick="lexoraNavigate('payment','payment-history')">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.8-6.5 10-6.5S22 12 22 12s-3.8 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
-                                    View All History
-                                </button>
-                            </div>
-                            <div class="admin-json-table-wrapper plan-history-table-wrap">
-                                <table class="admin-json-table plan-history-table">
-                                    <thead><tr>
-                                        ${isAdminOrDev ? '<th>User</th>' : ''}
-                                        <th>Plan Name</th><th>Start Date</th><th>End Date</th>
-                                        <th>Frequency</th><th>Amount</th><th>Price/Translation (per page)</th><th>Status</th>
-                                    </tr></thead>
-                                    <tbody>
-                                        ${historyRows.length === 0 ? `<tr><td colspan="${cols}" class="plan-empty-cell">
-                                            <svg class="plan-empty-art" viewBox="0 0 48 56" fill="none">
-                                                <path d="M10 4h20l10 10v38H10z" fill="#dbe8fe"/>
-                                                <path d="M30 4v10h10" fill="#bcd6fb"/>
-                                                <path d="M17 26h14M17 34h14M17 42h9" stroke="#8fb6f6" stroke-width="2.6" stroke-linecap="round"/>
-                                            </svg>
-                                            <span class="plan-empty-title">No plan changes yet.</span>
-                                            <span class="plan-empty-sub">Your plan history will appear here once any changes are made.</span>
-                                        </td></tr>` :
-                                        historyRows.map(h => `
-                                            <tr>
-                                                ${isAdminOrDev ? `<td>${escapeHtml(h.userId)}</td>` : ''}
-                                                <td>${escapeHtml(h.planName)}</td>
-                                                <td>${escapeHtml(h.startDate)}</td>
-                                                <td>${escapeHtml(h.endDate)}</td>
-                                                <td>${escapeHtml(h.frequency)}</td>
-                                                <td>\u20b9${Number(h.amount).toFixed(2)}</td>
-                                                <td>\u20b9${Number(h.pricePerTranslation).toFixed(2)}</td>
-                                                <td><span class="txn-status-pill success">Active</span></td>
-                                            </tr>
-                                        `).join('')}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
                     `;
                     }
                 },
@@ -7658,7 +7643,26 @@
                     // -> alag summary card. Filter/Clear filled+plain, aur
                     // Download/Raise Issue right side me outlined.
                     return `
+                        <div class="history-summary" id="historySummary">
+                            <div class="summary-item">
+                                <span class="summary-icon summary-icon-credit"></span>
+                                <span class="summary-label">Total Credit</span>
+                                <span class="summary-value credit-value" id="totalCredit">\u20b90.00</span>
+                            </div>
+                            <div class="summary-item">
+                                <span class="summary-icon summary-icon-debit"></span>
+                                <span class="summary-label">Total Debit</span>
+                                <span class="summary-value debit-value" id="totalDebit">\u20b90.00</span>
+                            </div>
+                            <div class="summary-item">
+                                <span class="summary-icon summary-icon-balance"></span>
+                                <span class="summary-label">Current Balance</span>
+                                <span class="summary-value" id="currentBalance">\u20b90.00</span>
+                            </div>
+                        </div>
+
                         <div class="history-card">
+                            <h3>💳 Payment History</h3>
                             <div class="history-filter-bar">
                                 <div class="filter-group">
                                     <label>From Date</label>
@@ -7717,23 +7721,6 @@
                             </div>
                             <div class="history-pager" id="historyPager"></div>
                         </div>
-
-                        <div class="history-summary" id="historySummary">
-                            <div class="summary-item">
-                                <span class="summary-icon summary-icon-credit"></span>
-                                <span class="summary-label">Total Credit</span>
-                                <span class="summary-value credit-value" id="totalCredit">\u20b90.00</span>
-                            </div>
-                            <div class="summary-item">
-                                <span class="summary-icon summary-icon-debit"></span>
-                                <span class="summary-label">Total Debit</span>
-                                <span class="summary-value debit-value" id="totalDebit">\u20b90.00</span>
-                            </div>
-                            <div class="summary-item">
-                                <span class="summary-icon summary-icon-balance"></span>
-                                <span class="summary-label">Current Balance</span>
-                                <span class="summary-value" id="currentBalance">\u20b90.00</span>
-                            </div>
                         </div>
                     `;
                     }
@@ -7761,16 +7748,14 @@
                                 </div>
                             </div>
 
-                            <div class="api-top-row">
-                                <div class="api-notice">
-                                    <span class="api-notice-icon">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                                            <path d="M12 3l7.5 3v5.5c0 4.4-3 8.2-7.5 9.5-4.5-1.3-7.5-5.1-7.5-9.5V6z"/><path d="m9 12 2.2 2.2L15.5 10"/>
-                                        </svg>
-                                    </span>
-                                    <div>
-                                        <b>Keep your API key secure and never share it publicly.</b>
-                                        <span>If you suspect your key has been compromised, generate a new one immediately.</span>
+                            <div class="api-key-grid">
+                                <div>
+                                    <div class="api-label">Your API Key</div>
+                                    <div class="api-key-row-inline">
+                                        <div class="api-key-box" id="apiKeyDisplay">No API key generated yet.</div>
+                                        <button class="api-eye-btn" id="apiKeyEye" onclick="toggleApiKeyVisible()" aria-label="Show or hide API key">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.8-6.5 10-6.5S22 12 22 12s-3.8 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
+                                        </button>
                                     </div>
                                 </div>
                                 <div class="api-key-actions" id="apiKeyActions">
@@ -7792,23 +7777,6 @@
                                     </button>
                                 </div>
                             </div>
-
-                            <div class="api-key-grid">
-                                <div>
-                                    <div class="api-label">Your API Key</div>
-                                    <div class="api-key-box" id="apiKeyDisplay">No API key generated yet.</div>
-                                </div>
-                                <div>
-                                    <div class="api-label">Key Details</div>
-                                    <div class="api-details" id="apiKeyDetails">
-                                        <div class="api-detail-row"><span>Created On</span><b id="apiKeyCreatedOn">\u2014</b></div>
-                                        <div class="api-detail-row"><span>Status</span><span class="txn-status-pill success" id="apiKeyStatus">Active</span></div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="api-label api-label-spaced">Previous Keys</div>
-                            <div id="apiKeyHistory"></div>
                         </div>
 
                         <div class="api-key-card api-ref-card">
@@ -8544,10 +8512,9 @@
                             </div>
                         </div>
 
-                        ${social ? `<div class="auth-social">${social}</div>` : ''}
-
-                        <div class="auth-copyright">
-                            &copy; ${new Date().getFullYear()} ${escapeHtml(name)}. All rights reserved. | Version 1.0.0
+                        <div class="auth-footer">
+                            <span>&copy; ${new Date().getFullYear()} ${escapeHtml(name)}. All rights reserved. | Version 1.0.0</span>
+                            ${social ? `<span class="auth-footer-social">${social}</span>` : ''}
                         </div>
                     </div>
                 `;
