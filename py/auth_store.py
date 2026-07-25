@@ -66,15 +66,67 @@ def is_hashed(stored):
     return bool(stored) and stored.startswith("pbkdf2_sha256$")
 
 
+# Postgres optional hai. DATABASE_URL na ho to sab kuch pehle jaisa
+# users.json par chalta hai.
+try:
+    import db as _db
+except Exception:  # noqa: BLE001
+    _db = None
+
+
+def _db_on():
+    return _db is not None and _db.is_enabled()
+
+
 def load_users():
+    """Users padho - Postgres se agar configured hai, warna users.json se.
+
+    server.py me load_users()/save_users() ke 27 call sites hain. Un sab ko
+    badalne ki jagah sirf ye do functions badle gaye - isliye koi call site
+    chhootne ka sawaal hi nahi, aur aadhi migration wala bug (write DB me,
+    read file se) yahan ho hi nahi sakta.
+    """
+    if _db_on():
+        try:
+            return _db.list_users()
+        except Exception as err:  # noqa: BLE001
+            print(f"[db] users read failed, falling back to users.json: {err}")
     with open(USERS_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def save_users(users):
+    if _db_on():
+        try:
+            _db.replace_users(users)
+            return
+        except Exception as err:  # noqa: BLE001
+            print(f"[db] users save failed, falling back to users.json: {err}")
     with open(USERS_PATH, "w", encoding="utf-8") as f:
         json.dump(users, f, indent=4, ensure_ascii=False)
         f.write("\n")
+
+
+def update_user_fields(user_id, fields):
+    """Sirf kuch fields badlo, poori list nahi.
+
+    DB par ye ek UPDATE hai - do requests ek saath aayein to dono apni
+    field likhti hain aur koi doosre ka change nahi udata. JSON par wahi
+    purana load-all/save-all hi hota hai (usme ye guarantee mumkin nahi).
+    """
+    if _db_on():
+        try:
+            return _db.update_user(user_id, fields)
+        except Exception as err:  # noqa: BLE001
+            print(f"[db] user update failed, falling back to file: {err}")
+
+    users = load_users()
+    user = find_user_by_id(users, user_id)
+    if not user:
+        return False
+    user.update(fields)
+    save_users(users)
+    return True
 
 
 def find_user_by_email(users, email):

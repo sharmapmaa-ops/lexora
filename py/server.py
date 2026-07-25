@@ -447,16 +447,13 @@ def _razorpay_get_or_create_customer(user_id, auth_header):
     if not customer_id:
         return None
 
-    # Re-read under the lock before writing: users.json is touched by
-    # several routes and we only want to add one field, not clobber a
-    # profile edit that landed in between.
+    # Sirf ek field likhni hai. update_user_fields() DB par ek UPDATE
+    # chalata hai, isliye beech me aayi koi profile edit nahi udti.
+    # (Pehle yahan poori users list load-modify-save hoti thi - lock
+    # ek process me bachata tha, do workers par nahi.)
     with _razorpay_customer_lock:
         try:
-            users = auth_store.load_users()
-            fresh = auth_store.find_user_by_id(users, user_id)
-            if fresh is not None:
-                fresh["razorpayCustomerId"] = customer_id
-                auth_store.save_users(users)
+            auth_store.update_user_fields(user_id, {"razorpayCustomerId": customer_id})
         except (OSError, json.JSONDecodeError) as err:
             # Not fatal - the id just won't be cached, so the next
             # top-up creates/fetches it again (fail_existing=0).
@@ -1342,6 +1339,10 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/data/api-keys": self._handle_api_keys_get,
             "/api/data/payment-methods": self._handle_payment_methods_get,
             "/api/data/contact-submissions": self._handle_contact_submissions_get,
+            "/api/data/lease-files": self._handle_lease_files_get,
+            "/api/data/translation-files": self._handle_translation_files_get,
+            "/api/data/lease-activity-log": self._handle_lease_activity_get,
+            "/api/data/translation-activity-log": self._handle_translation_activity_get,
             "/api/admin/db-status": self._handle_admin_db_status,
             "/api/admin/db-transactions": self._handle_admin_db_transactions,
             "/api/integrations/status": self._handle_integrations_status,
@@ -1351,6 +1352,10 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/lease/download": self._handle_lease_download,
             "/api/translation/download": self._handle_translation_download,
         }
+        if not Handler._routes_checked:
+            Handler._routes_checked = True
+            Handler.check_resource_routes(get_routes)
+
         get_handler = get_routes.get(path)
         if get_handler:
             try:
@@ -1490,6 +1495,27 @@ class Handler(SimpleHTTPRequestHandler):
     def _read_payment_history_file(self):
         return self._read_json_list("payment-history")
 
+    _routes_checked = False
+
+    @staticmethod
+    def check_resource_routes(get_routes):
+        """Har DB-backed resource ka GET route hona chahiye.
+
+        Aadhi migration hi sabse bada khatra hai: write Postgres me jaye
+        par read purani JSON file se aaye - tab naya data screen par aakar
+        agle refresh me gayab ho jata hai. Ye galti do baar ho chuki hai,
+        isliye ab startup par code khud check kar leta hai.
+        """
+        if db is None:
+            return []
+        missing = [n for n in db.DB_BACKED_RESOURCES
+                   if f"/api/data/{n}" not in get_routes]
+        for name in missing:
+            print(f"[db] WARNING: '{name}' Postgres par hai par uska GET route "
+                  f"registered nahi hai - browser purani json/{name}.json "
+                  f"padhta rahega aur naya data gayab dikhega.")
+        return missing
+
     def _handle_notifications_get(self, query):
         return self._serve_resource("notifications")
 
@@ -1506,6 +1532,18 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _handle_contact_submissions_get(self, query):
         return self._serve_resource("contact-submissions")
+
+    def _handle_lease_files_get(self, query):
+        return self._serve_resource("lease-files")
+
+    def _handle_translation_files_get(self, query):
+        return self._serve_resource("translation-files")
+
+    def _handle_lease_activity_get(self, query):
+        return self._serve_resource("lease-activity-log")
+
+    def _handle_translation_activity_get(self, query):
+        return self._serve_resource("translation-activity-log")
 
     def _serve_resource(self, name):
         """DB-backed resource ko padhne ka ek hi rasta (GET /api/data/<n>).

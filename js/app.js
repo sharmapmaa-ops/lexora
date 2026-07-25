@@ -6032,6 +6032,9 @@
                         rows.push(['transactions table', d.tableExists
                             ? dbChip(true, 'exists') : dbChip(false, 'not created yet')]);
                         rows.push(['transactions rows', `<b>${d.rowCount}</b>`]);
+                        if (d.userCount != null) {
+                            rows.push(['users rows', `<b>${d.userCount}</b>`]);
+                        }
                         if (d.notificationCount != null) {
                             rows.push(['notifications rows', `<b>${d.notificationCount}</b>`]);
                         }
@@ -8779,10 +8782,10 @@
                     fetchJSON('json/agents.json'),
                     fetchJSON('json/company.json'),
                     fetchJSON('/api/data/api-keys'),
-                    fetchJSON('json/lease-files.json'),
-                    fetchJSON('json/translation-files.json'),
-                    fetchJSON('json/lease-activity-log.json'),
-                    fetchJSON('json/translation-activity-log.json'),
+                    fetchJSON('/api/data/lease-files'),
+                    fetchJSON('/api/data/translation-files'),
+                    fetchJSON('/api/data/lease-activity-log'),
+                    fetchJSON('/api/data/translation-activity-log'),
                     fetchJSON('/api/data/notifications'),
                     fetchJSON('json/plans.json'),
                     fetchJSON('/api/data/plan-history')

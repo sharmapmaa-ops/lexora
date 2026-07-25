@@ -70,6 +70,16 @@ def migrate_other_resources():
     Inki list db.py me hai (DB_BACKED_RESOURCES), isliye nayi resource
     add karne par ye script apne aap use bhi migrate karne lagegi.
     """
+    # users alag hai - wo DB_BACKED_RESOURCES me nahi (uska rasta
+    # auth_store se jata hai, /api/data/<n> se nahi).
+    users = other_json("users")
+    if users:
+        try:
+            saved = db.replace_users(users)
+            print(f"\n  {'users':<22} {saved} user(s) migrate hue")
+        except Exception as err:  # noqa: BLE001
+            print(f"\n  {'users':<22} ! fail: {err}")
+
     others = [n for n in db.DB_BACKED_RESOURCES if n != "payment-history"]
     if not others:
         return

@@ -138,6 +138,7 @@ def init_schema():
                 cur.execute(SCHEMA_SQL)
                 cur.execute(NOTIFICATIONS_SCHEMA_SQL)
                 cur.execute(DOCUMENTS_SCHEMA_SQL)
+                cur.execute(USERS_SCHEMA_SQL)
             conn.commit()
         _schema_ready = True
     return True
@@ -384,6 +385,205 @@ def replace_notifications(rows):
 
 
 # ============================================================
+# USERS - proper columns
+#
+# EK ZAROORI BAAT: is app me "boolean" fields sach me STRING hain -
+# emailVerified/lock/mobileVerified/twoFactorAuth me "Yes"/"No" aata hai,
+# True/False nahi. Poora Python aur JS code `== "Yes"` check karta hai.
+# Isliye ye columns BOOLEAN nahi, TEXT hain aur value bilkul waisi ki
+# waisi rehti hai. Type badalna alag refactor hai - usse yahan mila dena
+# chhupe hue bugs paida karta.
+#
+# None (JSON ka null) NULL banta hai aur wapas None hi milta hai, taaki
+# round-trip exact rahe.
+# ============================================================
+USERS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS users (
+    user_id                      TEXT PRIMARY KEY,
+    email                        TEXT NOT NULL,
+    password                     TEXT NOT NULL DEFAULT '',
+    first_name                   TEXT,
+    last_name                    TEXT,
+    gender                       TEXT,
+    birthdate                    TEXT,
+    mobile                       TEXT,
+    photo                        TEXT,
+    role                         TEXT NOT NULL DEFAULT 'User',
+    status                       TEXT NOT NULL DEFAULT 'Active',
+    is_locked                    TEXT,
+    email_verified               TEXT,
+    mobile_verified              TEXT,
+    two_factor_auth              TEXT,
+    session_status               TEXT,
+    plan                         TEXT,
+    plan_status                  TEXT,
+    plan_start_date              TEXT,
+    plan_end_date                TEXT,
+    api_key                      TEXT,
+    verification_code            TEXT,
+    verification_code_expires_at TEXT,
+    verification_purpose         TEXT,
+    razorpay_customer_id         TEXT,
+    sys_config                   TEXT,
+    -- Koi bhi field jo upar column me nahi hai, taaki naya field add
+    -- karne par data chup-chaap gum na ho.
+    extra                        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    position                     INTEGER NOT NULL DEFAULT 0,
+    updated_at                   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Duplicate email ab DB hi rok dega. Pehle sirf Python code rokta tha,
+-- aur do register requests ek saath aa jayein to wo bach nikalti thi.
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON users (LOWER(email));
+"""
+
+# JSON field  <->  column
+_USER_COLUMNS = (
+    ("id", "user_id"),
+    ("email", "email"),
+    ("password", "password"),
+    ("firstName", "first_name"),
+    ("lastName", "last_name"),
+    ("gender", "gender"),
+    ("birthdate", "birthdate"),
+    ("mobile", "mobile"),
+    ("photo", "photo"),
+    ("role", "role"),
+    ("status", "status"),
+    ("lock", "is_locked"),
+    ("emailVerified", "email_verified"),
+    ("mobileVerified", "mobile_verified"),
+    ("twoFactorAuth", "two_factor_auth"),
+    ("sessionStatus", "session_status"),
+    ("plan", "plan"),
+    ("planStatus", "plan_status"),
+    ("planStartDate", "plan_start_date"),
+    ("planEndDate", "plan_end_date"),
+    ("apiKey", "api_key"),
+    ("verificationCode", "verification_code"),
+    ("verificationCodeExpiresAt", "verification_code_expires_at"),
+    ("verificationPurpose", "verification_purpose"),
+    ("razorpayCustomerId", "razorpay_customer_id"),
+    ("sysConfig", "sys_config"),
+)
+
+_USER_JSON_KEYS = {j for j, _ in _USER_COLUMNS}
+
+
+def user_row_to_entry(row):
+    entry = {}
+    for json_key, col in _USER_COLUMNS:
+        entry[json_key] = row.get(col)
+    extra = row.get("extra") or {}
+    if isinstance(extra, dict):
+        entry.update(extra)
+    # Jo fields JSON me the hi nahi, unhe wapas mat bhejo - warna
+    # public_user_view aur frontend ko naye null fields dikhne lagenge.
+    return {k: v for k, v in entry.items() if v is not None or k in ("photo",
+            "verificationCode", "verificationCodeExpiresAt", "verificationPurpose")}
+
+
+def user_entry_to_params(entry, position=0):
+    params = {"position": position}
+    for json_key, col in _USER_COLUMNS:
+        params[col] = entry.get(json_key)
+    params["email"] = params["email"] or ""
+    params["password"] = params["password"] or ""
+    params["role"] = params["role"] or "User"
+    params["status"] = params["status"] or "Active"
+    params["extra"] = json.dumps(
+        {k: v for k, v in entry.items() if k not in _USER_JSON_KEYS}
+    )
+    return params
+
+
+_USER_COLS = [c for _, c in _USER_COLUMNS]
+
+USER_UPSERT_SQL = """
+INSERT INTO users ({cols}, extra, position)
+VALUES ({vals}, %(extra)s::jsonb, %(position)s)
+ON CONFLICT (user_id) DO UPDATE SET
+    {updates},
+    extra = EXCLUDED.extra,
+    position = EXCLUDED.position,
+    updated_at = now()
+""".format(
+    cols=", ".join(_USER_COLS),
+    vals=", ".join(f"%({c})s" for c in _USER_COLS),
+    updates=",\n    ".join(f"{c} = EXCLUDED.{c}" for c in _USER_COLS if c != "user_id"),
+)
+
+USERS_SELECT_SQL = "SELECT * FROM users ORDER BY position, user_id"
+
+
+def list_users():
+    init_schema()
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(USERS_SELECT_SQL)
+            rows = cur.fetchall()
+    return [user_row_to_entry(r) for r in rows]
+
+
+def replace_users(rows):
+    """Poori list save karo - auth_store.save_users() ka seedha replacement.
+
+    Sab kuch EK transaction me, isliye beech me koi aadhi user list nahi
+    dekh sakta.
+    """
+    init_schema()
+    clean = [r for r in rows if isinstance(r, dict) and r.get("id")]
+    with connect() as conn:
+        with conn.cursor() as cur:
+            ids = [r["id"] for r in clean]
+            if ids:
+                cur.execute("DELETE FROM users WHERE user_id <> ALL(%(ids)s)", {"ids": ids})
+            else:
+                cur.execute("DELETE FROM users")
+            for i, entry in enumerate(clean):
+                cur.execute(USER_UPSERT_SQL, user_entry_to_params(entry, i))
+        conn.commit()
+    return len(clean)
+
+
+def update_user(user_id, fields):
+    """Sirf di hui fields badlo - ek row, ek UPDATE.
+
+    Ye load-all/save-all se behtar hai: do requests ek saath aayein to
+    dono apni-apni field likhti hain, koi doosre ka change nahi udata.
+    Login (sessionStatus) aur profile update jaise hot paths ke liye.
+    """
+    init_schema()
+    mapping = dict(_USER_COLUMNS)
+    sets, params = [], {"user_id": user_id}
+    extra = {}
+    for key, value in (fields or {}).items():
+        col = mapping.get(key)
+        if col and col != "user_id":
+            sets.append(f"{col} = %({col})s")
+            params[col] = value
+        elif not col:
+            extra[key] = value
+
+    if extra:
+        sets.append("extra = extra || %(extra_patch)s::jsonb")
+        params["extra_patch"] = json.dumps(extra)
+    if not sets:
+        return False
+
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE users SET {', '.join(sets)}, updated_at = now()"
+                " WHERE user_id = %(user_id)s",
+                params,
+            )
+            changed = cur.rowcount
+        conn.commit()
+    return changed > 0
+
+
+# ============================================================
 # GENERIC DOCUMENT TABLE - chhoti list-type resources ke liye
 #
 # transactions ke liye maine asli columns banaye - wahan paise hain,
@@ -490,7 +690,14 @@ def replace_documents(resource, rows):
 # laani ho to yahan ek line add karni hai, server.py chhedna nahi padta.
 # ============================================================
 # JSONB document table par chalne wali resources.
-DOCUMENT_RESOURCES = ("plan-history", "api-keys", "payment-methods", "contact-submissions")
+DOCUMENT_RESOURCES = (
+    "plan-history", "api-keys", "payment-methods", "contact-submissions",
+    # Job state. Inme sirf metadata hai - asli PDF blobs browser ki memory
+    # me rehte hain (translationFileBlobs / leaseFileBlobs) aur kabhi save
+    # nahi hote, isliye rows chhoti hi rehti hain.
+    "lease-files", "translation-files",
+    "lease-activity-log", "translation-activity-log",
+)
 
 DB_BACKED_RESOURCES = ("payment-history", "notifications") + DOCUMENT_RESOURCES
 
@@ -563,6 +770,11 @@ def status():
                     if cur.fetchone()["present"]:
                         cur.execute("SELECT COUNT(*) AS n FROM notifications")
                         info["notificationCount"] = int(cur.fetchone()["n"] or 0)
+
+                    cur.execute("SELECT to_regclass('public.users') IS NOT NULL AS present")
+                    if cur.fetchone()["present"]:
+                        cur.execute("SELECT COUNT(*) AS n FROM users")
+                        info["userCount"] = int(cur.fetchone()["n"] or 0)
 
                     cur.execute("SELECT to_regclass('public.app_documents') IS NOT NULL AS present")
                     if cur.fetchone()["present"]:
