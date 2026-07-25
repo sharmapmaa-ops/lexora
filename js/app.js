@@ -3159,8 +3159,8 @@
             window.syncPayPanelAmount = function() {
                 const amountEl = document.getElementById('payPanelAmount');
                 const input = document.getElementById('balanceAmount');
-                if (!amountEl) return;
-                amountEl.textContent = formatMoney(input ? parseFloat(input.value) || 0 : 0);
+                if (amountEl) amountEl.textContent = formatMoney(input ? parseFloat(input.value) || 0 : 0);
+                syncQuickChips();
             };
 
             window.setBalanceAmount = function(value) {
@@ -3169,6 +3169,16 @@
                 input.value = value;
                 syncPayPanelAmount();
             };
+
+            // Chip highlight amount ke saath chalta hai, chahe user ne chip
+            // dabaya ho ya seedha type kiya ho.
+            function syncQuickChips() {
+                const input = document.getElementById('balanceAmount');
+                const current = input ? String(parseFloat(input.value) || '') : '';
+                document.querySelectorAll('.balance-quick-chip').forEach(chip => {
+                    chip.classList.toggle('is-active', chip.dataset.amount === current);
+                });
+            }
 
             // Razorpay's checkout.js takes a `parent` option that renders the
             // form inline instead of as a modal, but it is NOT in Razorpay's
@@ -6516,54 +6526,9 @@
             // ============================================================
             // 33. UPDATE CONTENT
             // ============================================================
-            // Har page ke upar title + subtitle (left) aur breadcrumb pill
-            // (right) - mockups wala header. Dashboard aur Services pages
-            // apna khud ka intro/layout rakhte hain, isliye unpar header
-            // nahi lagta (warna do heading dikhengi).
-            const PAGE_SUBTITLES = {
-                'Payment History':   'View all your transactions and account activity.',
-                'Balance':           'Add funds and keep track of your wallet balance.',
-                'Payment Mode':      'Manage the cards and UPI IDs saved to your account.',
-                'Plans & Offers':    'Upgrade, downgrade or choose the plan that fits your needs.',
-                'Plans':             'Upgrade, downgrade or choose the plan that fits your needs.',
-                'Notifications':     'Stay updated with important alerts and activities.',
-                'Profile':           'Manage your personal information and account preferences.',
-                'API Documentation': 'Generate your API key and explore our API reference to integrate Lexora services.',
-                'Support':           'Raise a ticket and track your previous requests.',
-                'Contact Us':        "We'd love to hear from you.",
-                'Help Center':       'Guides and answers to the most common questions.'
-            };
-
-            const HOME_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
-                + 'stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/>'
-                + '<path d="M5.5 9.5V20h13V9.5"/></svg>';
-
-            function buildPageHeader(breadcrumb) {
-                const raw = String(breadcrumb || '').trim();
-                if (!raw) return '';
-
-                // "\u{1F4B3} Payment / Payment History" -> ['Payment', 'Payment History']
-                const parts = raw.split('/')
-                    .map(p => p.replace(/^[^A-Za-z0-9]+/, '').trim())
-                    .filter(Boolean);
-                if (!parts.length) return '';
-
-                const title = parts[parts.length - 1];
-                if (title === 'Dashboard' || parts[0] === 'Services') return '';
-
-                const sub = PAGE_SUBTITLES[title] || '';
-                const mid = parts.length > 1
-                    ? parts.slice(0, -1).map(p =>
-                        `<span class="sep">\u203a</span><span>${escapeHtml(p)}</span>`).join('')
-                    : '';
-
-                return `
-                `;
-            }
-
             function updateContent(data, breadcrumb) {
                 const bodyContent = typeof data.body === 'function' ? data.body() : data.body;
-                contentBody.innerHTML = buildPageHeader(breadcrumb) + (bodyContent || '');
+                contentBody.innerHTML = bodyContent || '';
                 currentMenuDisplay.textContent = breadcrumb || 'Dashboard';
 
                 if (breadcrumb && breadcrumb.includes('Payment Mode')) {
@@ -6649,6 +6614,26 @@
             // ============================================================
             // 35. MENU RENDERER
             // ============================================================
+            // menu-config.json me labels emoji ke saath hain ("\u{1F4CA} Dashboard").
+            // Mockups me clean line icons hain, isliye emoji strip karke uski
+            // jagah inline SVG lagta hai. JSON ko haath nahi lagaya - agar
+            // kisi id ka icon yahan na ho to label waise ka waisa chalta hai.
+            const MENU_ICON_PATHS = {
+                'dashboard':    '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
+                'services':     '<path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 1 5.4-5.4l-2.6 2.6"/>',
+                'plans-offers': '<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+                'payment':      '<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19"/>',
+                'help':         '<circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .9-1 1.6v.3"/><path d="M12 17.2h.01"/>',
+                'admin':        '<path d="M12 3l7.5 3v5.5c0 4.4-3 8.2-7.5 9.5-4.5-1.3-7.5-5.1-7.5-9.5V6z"/>'
+            };
+
+            function menuIconHtml(id) {
+                const path = MENU_ICON_PATHS[id];
+                if (!path) return '';
+                return '<svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+                    + 'stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">' + path + '</svg>';
+            }
+
             function renderMenu() {
                 mainMenu.innerHTML = '';
                 const mainMenuItems = MENU_CONFIG.mainMenu.filter(item => !item.adminOnly || isAdminOrDeveloper());
@@ -6658,7 +6643,14 @@
                     li.className = 'menu-item';
 
                     const a = document.createElement('a');
-                    a.textContent = item.label;
+                    const icon = menuIconHtml(item.id);
+                    const label = icon
+                        ? String(item.label).replace(/^[^A-Za-z0-9]+/, '').trim()
+                        : item.label;
+                    // textContent pehle set hota hai (escaping ke liye), phir
+                    // icon prepend - taaki label kabhi HTML ki tarah na chale.
+                    a.textContent = label;
+                    if (icon) a.insertAdjacentHTML('afterbegin', icon);
                     a.dataset.id = item.id;
 
                     const hasSub = item.subItems && item.subItems.length > 0;
@@ -7005,45 +6997,78 @@
                         // meant to be Admin/Developer-only - that
                         // restriction was a misread of the original ask).
                         // Add Balance form (left) aur secure checkout
-                        // (right) ek hi card ke andar side-by-side rehte
-                        // hain, taaki payment isi website ka hissa lage -
-                        // koi alag popup nahi. Checkout ka actual mount
+                        // (right) ek hi row me - payment website ka hissa
+                        // lagta hai, alag popup nahi. Checkout ka mount
                         // point #rzpInlineMount hai (see payWithRazorpay).
+                        const QUICK_AMOUNTS = [500, 1000, 2500, 5000, 10000];
+                        const PAY_PERKS = [
+                            { icon: '<path d="M13 2 4.5 13H11l-1 9 8.5-11H12z"/>', title: 'Instant Credit',   sub: 'Added in seconds' },
+                            { icon: '<path d="M12 3l7.5 3v5.5c0 4.4-3 8.2-7.5 9.5-4.5-1.3-7.5-5.1-7.5-9.5V6z"/><path d="m9 12 2.2 2.2L15.5 10"/>', title: '100% Secure', sub: 'Razorpay Powered' },
+                            { icon: '<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19"/>', title: 'Multiple Options', sub: 'UPI, Cards, Wallets' },
+                            { icon: '<path d="M4 13v-1a8 8 0 0 1 16 0v1"/><rect x="2.5" y="13" width="4.5" height="6" rx="2"/><rect x="17" y="13" width="4.5" height="6" rx="2"/>', title: '24\u00d77 Support', sub: 'Always here to help' }
+                        ];
                         const topUpHtml = `
                         <div class="balance-topup-layout">
                             <div class="balance-add-card">
-                                <h3>➕ Add Balance</h3>
+                                <div class="ds-card-head">
+                                    <span class="ds-card-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="2.5" y="5.5" width="19" height="13" rx="3"/><path d="M2.5 10h19M12 14.5h4"/>
+                                        </svg>
+                                    </span>
+                                    <div>
+                                        <h3>Add Balance</h3>
+                                        <p class="ds-card-sub">Add funds to your Lexora account for seamless payments</p>
+                                    </div>
+                                </div>
+
                                 <div class="form-group">
-                                    <label>Amount (₹)</label>
+                                    <label>Amount (\u20b9)</label>
                                     <input type="number" id="balanceAmount" placeholder="Enter amount" min="1" step="1" oninput="syncPayPanelAmount()" />
                                 </div>
                                 <div class="balance-quick-row">
-                                    ${[500, 1000, 2000, 5000].map(v => `<button type="button" class="balance-quick-chip" onclick="setBalanceAmount(${v})">₹${v}</button>`).join('')}
+                                    ${QUICK_AMOUNTS.map(v => `<button type="button" class="balance-quick-chip" data-amount="${v}" onclick="setBalanceAmount(${v})">\u20b9${v.toLocaleString('en-IN')}</button>`).join('')}
                                 </div>
                                 <div class="form-group">
                                     <label>Description</label>
                                     <input type="text" id="balanceDescription" placeholder="Enter description" />
                                 </div>
-                                <button class="add-btn" onclick="addBalance()">+ Add Balance</button>
-                                <p class="balance-approval-note">Pay securely by UPI or card. Your balance is credited as soon as the payment is confirmed.</p>
+                                <button class="add-btn balance-add-submit" onclick="addBalance()">+ Add Balance</button>
+
+                                <p class="balance-approval-note">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M12 3l7.5 3v5.5c0 4.4-3 8.2-7.5 9.5-4.5-1.3-7.5-5.1-7.5-9.5V6z"/>
+                                    </svg>
+                                    Your amount will be credited to your wallet instantly after the payment is confirmed.
+                                </p>
+
+                                <div class="balance-perks">
+                                    ${PAY_PERKS.map(p => `<div class="balance-perk">
+                                        <span class="balance-perk-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p.icon}</svg></span>
+                                        <b>${p.title}</b>
+                                        <span>${p.sub}</span>
+                                    </div>`).join('')}
+                                </div>
                             </div>
 
                             <div class="balance-pay-panel" id="balancePayPanel">
                                 <div class="pay-panel-head">
-                                    <div>
+                                    <span class="ds-card-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>
+                                        </svg>
+                                    </span>
+                                    <div class="pay-panel-headings">
                                         <div class="pay-panel-title">Secure Checkout</div>
-                                        <div class="pay-panel-sub">UPI &amp; Cards · powered by Razorpay</div>
+                                        <div class="pay-panel-sub">Safe &amp; secure payment via Razorpay</div>
                                     </div>
-                                    <div class="pay-panel-amount" id="payPanelAmount">₹0.00</div>
+                                    <div class="pay-panel-amount" id="payPanelAmount">\u20b90.00</div>
                                 </div>
                                 <div class="pay-panel-body" id="rzpInlineMount"></div>
-                                <div class="pay-panel-foot">
-                                    <span>256-bit encrypted</span>
-                                    <span>PCI-DSS compliant</span>
-                                </div>
                             </div>
                         </div>
                         `;
+
                         return `
                         <div class="balance-grid" id="balanceGrid">
                             <div class="balance-card">
