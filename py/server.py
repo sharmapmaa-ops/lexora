@@ -1337,6 +1337,8 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/translation/list": self._handle_translation_list,
             "/api/lease/review-data": self._handle_lease_review_get,
             "/api/data/payment-history": self._handle_payment_history_get,
+            "/api/admin/db-status": self._handle_admin_db_status,
+            "/api/admin/db-transactions": self._handle_admin_db_transactions,
             "/api/integrations/status": self._handle_integrations_status,
             "/api/integrations/callback": self._handle_integrations_callback,
             "/api/lease/documents": self._handle_lease_documents,
@@ -1443,6 +1445,55 @@ class Handler(SimpleHTTPRequestHandler):
 
         self._send_json(200, {"ok": True})
 
+    def _handle_admin_db_status(self, query):
+        """Admin panel ka Database card. Sirf Admin/Developer ke liye,
+        aur DATABASE_URL ka password kabhi bahar nahi jata (db.safe_host)."""
+        self._require_role(("Admin", "Developer"))
+
+        if db is None:
+            return self._send_json(200, {
+                "enabled": False,
+                "reason": "db module could not be imported",
+                "jsonCount": len(self._read_payment_history_file()),
+            })
+
+        info = db.status()
+        json_rows = self._read_payment_history_file()
+        info["jsonCount"] = len(json_rows)
+
+        # JSON me hain par DB me nahi - matlab migration adhoori hai.
+        if info.get("tableExists"):
+            try:
+                db_ids = {r["id"] for r in db.list_transactions()}
+                info["missingFromDb"] = [
+                    r.get("id") for r in json_rows
+                    if r.get("id") and r.get("id") not in db_ids
+                ]
+            except Exception as err:  # noqa: BLE001
+                info["missingFromDb"] = []
+                info.setdefault("error", str(err))
+        return self._send_json(200, info)
+
+    def _handle_admin_db_transactions(self, query):
+        self._require_role(("Admin", "Developer"))
+        if db is None or not db.is_enabled():
+            return self._send_json(200, {"store": "json", "rows": self._read_payment_history_file()})
+        try:
+            return self._send_json(200, {"store": "postgres", "rows": db.list_transactions()})
+        except Exception as err:  # noqa: BLE001
+            return self._send_json(200, {
+                "store": "json", "rows": self._read_payment_history_file(), "error": str(err),
+            })
+
+    def _read_payment_history_file(self):
+        path = os.path.join(JSON_DIR, "payment-history.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                rows = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return []
+        return rows if isinstance(rows, list) else []
+
     def _handle_payment_history_get(self, query):
         """Payment history padhne ka ek hi rasta.
 
@@ -1463,13 +1514,7 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as err:  # noqa: BLE001
                 print(f"[db] read failed, falling back to JSON: {err}")
 
-        path = os.path.join(JSON_DIR, "payment-history.json")
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                rows = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            rows = []
-        return self._send_json(200, rows if isinstance(rows, list) else [])
+        return self._send_json(200, self._read_payment_history_file())
 
     # ------------------------------------------------------------------
     # Admin File Manager - GET routes

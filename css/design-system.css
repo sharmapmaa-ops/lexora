@@ -3011,3 +3011,61 @@ body, .center-content { background: #fff; }
 @media (max-width: 900px) {
     .svc-top-row { grid-template-columns: 1fr; }
 }
+
+/* =====================================================================
+   ADMIN > DATABASE card
+   ===================================================================== */
+.db-status-table { width: 100%; border-collapse: collapse; }
+.db-status-table td { padding: 7px 0; font-size: .84rem; border-bottom: 1px solid var(--ds-line); }
+.db-status-table tr:last-child td { border-bottom: none; }
+.db-status-table td:first-child { color: var(--ds-muted); width: 230px; }
+.db-status-table code { font-family: 'SFMono-Regular', Consolas, monospace; font-size: .78rem; color: var(--ds-blue); }
+
+.db-chip {
+    display: inline-block;
+    border-radius: 999px;
+    font-size: .72rem;
+    font-weight: 700;
+    padding: 3px 11px;
+}
+
+.db-chip.is-on  { background: #dcf5e6; color: #15803d; }
+.db-chip.is-off { background: #eceff5; color: #5b6a86; }
+
+.db-note { font-size: .78rem; color: var(--ds-muted); margin-left: 8px; }
+.db-note.is-bad { color: var(--ds-red); margin-left: 0; }
+
+.db-warn {
+    margin-top: 12px;
+    padding: 11px 13px;
+    border-radius: var(--ds-radius-sm);
+    background: #fdf3d0;
+    border: 1px solid #e8cf7a;
+    color: #7a5b00;
+    font-size: .81rem;
+    line-height: 1.5;
+}
+
+.db-warn code { background: rgba(0,0,0,.06); padding: 1px 5px; border-radius: 4px; }
+
+.db-balances {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--ds-line);
+    font-size: .82rem;
+}
+
+.db-balances span { color: var(--ds-muted); }
+.db-balances em   { font-style: normal; font-weight: 700; color: var(--ds-navy); margin-left: 5px; }
+
+.db-txn-source { padding: 10px 12px; border-bottom: 1px solid var(--ds-line); font-size: .8rem; }
+.db-txn-table { width: 100%; }
+.db-txn-table th, .db-txn-table td { font-size: .78rem; white-space: nowrap; }
+.db-txn-table td code { font-family: 'SFMono-Regular', Consolas, monospace; font-size: .74rem; }
+.db-txn-table .num { text-align: right; }
+.db-txn-table .credit { color: var(--ds-green); font-weight: 600; }
+.db-txn-table .debit  { color: var(--ds-red);   font-weight: 600; }

@@ -258,6 +258,57 @@ def get_balance(user_id):
     return _to_number(row["balance"]) if row else 0.0
 
 
+def safe_host():
+    """URL ka sirf host hissa - password kabhi bahar nahi jana chahiye."""
+    url = DATABASE_URL
+    if not url:
+        return ""
+    tail = url.split("@", 1)[1] if "@" in url else url
+    return tail.split("?", 1)[0]
+
+
+def status():
+    """Admin panel ke liye ek nazar me haalat. Kabhi throw nahi karta."""
+    info = {
+        "enabled": is_enabled(),
+        "reason": why_disabled(),
+        "host": safe_host(),
+        "connected": False,
+        "server": "",
+        "tableExists": False,
+        "rowCount": 0,
+        "balances": [],
+    }
+    if not is_enabled():
+        return info
+
+    try:
+        with connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT version() AS v")
+                info["server"] = (cur.fetchone()["v"] or "").split(",")[0]
+                info["connected"] = True
+
+                cur.execute("SELECT to_regclass('public.transactions') IS NOT NULL AS present")
+                info["tableExists"] = bool(cur.fetchone()["present"])
+
+                if info["tableExists"]:
+                    cur.execute("SELECT COUNT(*) AS n FROM transactions")
+                    info["rowCount"] = int(cur.fetchone()["n"] or 0)
+                    cur.execute(
+                        "SELECT user_id,"
+                        "       COALESCE(SUM(credit), 0) - COALESCE(SUM(debit), 0) AS balance"
+                        "  FROM transactions GROUP BY user_id ORDER BY user_id"
+                    )
+                    info["balances"] = [
+                        {"userId": r["user_id"], "balance": _to_number(r["balance"])}
+                        for r in cur.fetchall()
+                    ]
+    except Exception as err:  # noqa: BLE001
+        info["error"] = str(err)
+    return info
+
+
 def charge_if_sufficient(user_id, amount, description, txn_id,
                          payment_type="Service", payment_mode="Wallet"):
     """Balance check aur debit EK hi transaction me.

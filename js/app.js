@@ -5986,9 +5986,153 @@
                 }
             };
 
-            function buildAdminFilesBody() {
+            // ============================================================
+            // Admin > Database card
+            //
+            // Postgres chal raha hai ya nahi, kitni rows hain, JSON se
+            // match kar raha hai - sab yahin dikh jata hai. Terminal
+            // kholne ki zaroorat nahi. Password kabhi nahi aata; server
+            // sirf host bhejta hai (db.safe_host).
+            // ============================================================
+            function buildDbStatusCard() {
                 return `
-                    <div class="admin-files-card">
+                    <div class="admin-files-card db-status-card" id="dbStatusCard">
+                        <div class="admin-files-header">
+                            <h3>\u{1F5C4} Database</h3>
+                            <div class="card-sizes-actions">
+                                <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
+                                <button class="add-btn" onclick="openDbTransactions()">View Payment Table</button>
+                            </div>
+                        </div>
+                        <div id="dbStatusBody"><p class="ds-card-sub">Checking\u2026</p></div>
+                    </div>`;
+            }
+
+            function dbChip(ok, text) {
+                return `<span class="db-chip ${ok ? 'is-on' : 'is-off'}">${escapeHtml(text)}</span>`;
+            }
+
+            window.refreshDbStatus = async function() {
+                const body = document.getElementById('dbStatusBody');
+                if (!body) return;
+                body.innerHTML = '<p class="ds-card-sub">Checking\u2026</p>';
+                try {
+                    const res = await authFetch('/api/admin/db-status');
+                    const d = await res.json();
+                    if (!res.ok) throw new Error(d.error || 'Could not read database status.');
+
+                    const rows = [];
+                    if (!d.enabled) {
+                        rows.push(['Store', dbChip(false, 'JSON files') + ' <span class="db-note">'
+                            + escapeHtml(d.reason || '') + '</span>']);
+                    } else {
+                        rows.push(['Store', d.connected ? dbChip(true, 'PostgreSQL') : dbChip(false, 'Not reachable')]);
+                        if (d.host)   rows.push(['Host', `<code>${escapeHtml(d.host)}</code>`]);
+                        if (d.server) rows.push(['Server', escapeHtml(d.server)]);
+                        rows.push(['transactions table', d.tableExists
+                            ? dbChip(true, 'exists') : dbChip(false, 'not created yet')]);
+                        rows.push(['Rows in database', `<b>${d.rowCount}</b>`]);
+                    }
+                    rows.push(['Rows in payment-history.json', `<b>${d.jsonCount}</b>`]);
+                    if (d.error) rows.push(['Error', `<span class="db-note is-bad">${escapeHtml(d.error)}</span>`]);
+
+                    const missing = d.missingFromDb || [];
+                    const warn = missing.length
+                        ? `<div class="db-warn">${missing.length} row(s) JSON me hain par database me nahi \u2014
+                           migration adhoori hai. <code>python3 py/migrate_json_to_pg.py</code> chalayein
+                           (duplicate nahi banenge).</div>`
+                        : '';
+
+                    const bal = (d.balances || []).length
+                        ? `<div class="db-balances"><b>Balance (database se)</b>
+                             ${d.balances.map(b => `<span>${escapeHtml(b.userId)}
+                               <em>${formatMoney(b.balance)}</em></span>`).join('')}
+                           </div>`
+                        : '';
+
+                    body.innerHTML = `<table class="db-status-table"><tbody>
+                        ${rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}
+                    </tbody></table>${warn}${bal}`;
+                } catch (err) {
+                    body.innerHTML = `<p class="db-note is-bad">${escapeHtml(err.message)}</p>`;
+                }
+            };
+
+            window.openDbTransactions = async function() {
+                openAdminModal(`
+                    <div class="admin-modal-overlay" id="adminFileOverlay">
+                        <div class="admin-modal-card card-layout-modal">
+                            <button class="admin-modal-close" onclick="adminCloseFileModal()">\u2715</button>
+                            <h3 class="admin-modal-title">\u{1F5C4} Payment table</h3>
+                            <div class="card-layout-scroll" id="dbTxnScroll">
+                                <p class="ds-card-sub" style="padding:14px;">Loading\u2026</p>
+                            </div>
+                            <div class="admin-modal-actions">
+                                <button class="admin-btn" onclick="downloadDbTransactions()">\u2B07 Download CSV</button>
+                                <button class="admin-modal-cancel" onclick="adminCloseFileModal()">Close</button>
+                            </div>
+                        </div>
+                    </div>`);
+                try {
+                    const res = await authFetch('/api/admin/db-transactions');
+                    const d = await res.json();
+                    const rows = d.rows || [];
+                    _dbTxnRows = rows;
+                    const scroll = document.getElementById('dbTxnScroll');
+                    if (!scroll) return;
+                    scroll.innerHTML = `
+                        <div class="db-txn-source">Source: ${dbChip(d.store === 'postgres', d.store === 'postgres' ? 'PostgreSQL' : 'JSON file')}
+                            <span class="db-note">${rows.length} row(s)</span></div>
+                        <table class="admin-json-table db-txn-table">
+                            <thead><tr>
+                                <th>Txn ID</th><th>Date</th><th>Time</th><th>User</th>
+                                <th>Type</th><th>Mode</th><th>Description</th>
+                                <th class="num">Credit</th><th class="num">Debit</th><th>Status</th>
+                            </tr></thead>
+                            <tbody>
+                                ${rows.length === 0
+                                    ? '<tr><td colspan="10" class="api-prev-empty">Koi transaction nahi mila.</td></tr>'
+                                    : rows.map(r => `<tr>
+                                        <td><code>${escapeHtml(r.id || '')}</code></td>
+                                        <td>${escapeHtml(r.date || '')}</td>
+                                        <td>${escapeHtml(r.time || '')}</td>
+                                        <td>${escapeHtml(r.userId || '')}</td>
+                                        <td>${escapeHtml(r.paymentType || '')}</td>
+                                        <td>${escapeHtml(r.paymentMode || '')}</td>
+                                        <td>${escapeHtml(r.description || '')}</td>
+                                        <td class="num credit">${r.credit ? formatMoney(r.credit) : '-'}</td>
+                                        <td class="num debit">${r.debit ? formatMoney(r.debit) : '-'}</td>
+                                        <td>${txnStatusPill(r.status)}</td>
+                                    </tr>`).join('')}
+                            </tbody>
+                        </table>`;
+                } catch (err) {
+                    const scroll = document.getElementById('dbTxnScroll');
+                    if (scroll) scroll.innerHTML = `<p class="db-note is-bad" style="padding:14px;">${escapeHtml(err.message)}</p>`;
+                }
+            };
+
+            let _dbTxnRows = [];
+
+            window.downloadDbTransactions = function() {
+                const cols = ['id', 'date', 'time', 'userId', 'paymentType', 'paymentMode',
+                              'description', 'credit', 'debit', 'status'];
+                // Quotes double karke wrap - warna description me comma ho to
+                // CSV ke columns khisak jate hain.
+                const cell = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+                const csv = [cols.join(',')]
+                    .concat(_dbTxnRows.map(r => cols.map(c => cell(r[c])).join(',')))
+                    .join('\n');
+                const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+                const a = document.createElement('a');
+                a.href = url; a.download = 'transactions.csv';
+                document.body.appendChild(a); a.click(); a.remove();
+                URL.revokeObjectURL(url);
+            };
+
+            function buildAdminFilesBody() {
+                return buildDbStatusCard() + `
+                    <div class="admin-files-card" style="margin-top:16px;">
                         <div class="admin-files-header">
                             <h3>📁 Files and Folder</h3>
                         </div>
@@ -6968,6 +7112,7 @@
                         data = { body: buildProfileBody() };
                     } else if (action === 'Admin') {
                         data = { body: buildAdminFilesBody() };
+                        setTimeout(refreshDbStatus, 60);
                     } else if (action === 'Notification') {
                         data = { body: buildNotificationBody() };
                     }
