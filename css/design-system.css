@@ -2115,3 +2115,335 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
     .api-ref-nav, .api-ref-panel { height: auto; }
     .service-col { grid-template-rows: auto auto; }
 }
+
+/* =====================================================================
+   ROUND 6
+   ===================================================================== */
+
+/* ---- 3. chaaro service cards = center screen ki 40% height ----
+   160px = nav + footer + center-content ka padding. Do rows x 40% = 80%,
+   bacha 20% neeche wali perks strip ke liye. */
+.service-page-grid { --svc-card-h: calc((100vh - 160px) * 0.4); }
+
+.service-col > .service-card,
+.service-col > .file-list-card,
+.service-col > .activity-log-section,
+.service-col > .activity-log-section > .activity-log-card {
+    height: var(--svc-card-h);
+    min-height: 250px;
+}
+
+.service-col { grid-template-rows: var(--svc-card-h) var(--svc-card-h); }
+
+/* ---- 2. drop zone har service me bilkul ek jaisa ---- */
+.service-card .drop-zone,
+.file-list-card .drop-zone {
+    border: 2px dashed rgba(18,87,245,.35);
+    background: #fbfcff;
+    border-radius: 12px;
+    padding: 18px 16px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    text-align: center;
+}
+
+.drop-zone .drop-icon { display: none; }
+.drop-zone .drop-art  { width: 104px; height: 68px; }
+.drop-zone .drop-text { font-size: .98rem; font-weight: 700; color: var(--ds-navy); }
+.drop-zone .drop-sub  { font-size: .78rem; color: var(--ds-muted); }
+
+/* ===================== SUPPORT ===================== */
+.support-log-header-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+
+.support-head { margin-bottom: 0; }
+
+.support-back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: #fff;
+    border: 1px solid rgba(18,87,245,.32);
+    border-radius: 9px;
+    color: var(--ds-blue);
+    font-family: inherit;
+    font-size: .82rem;
+    font-weight: 600;
+    padding: 9px 15px;
+    cursor: pointer;
+}
+
+.support-back-btn svg { width: 16px; height: 16px; }
+.support-back-btn:hover { background: rgba(18,87,245,.06); }
+
+/* ===================== CONTACT US ===================== */
+.contact-page { display: flex; flex-direction: column; gap: 18px; }
+
+.contact-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    gap: 24px;
+    align-items: center;
+}
+
+.contact-hero-copy h2 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1.85rem;
+    font-weight: 800;
+    color: var(--ds-navy);
+    letter-spacing: -.5px;
+    margin: 0 0 6px;
+}
+
+.contact-hero-copy > p { font-size: .88rem; color: var(--ds-muted); margin: 0 0 18px; }
+
+.contact-channels {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.contact-channel {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 16px;
+    border-radius: var(--ds-radius);
+    border: 1px solid var(--ds-line);
+    background: #fff;
+    box-shadow: var(--ds-shadow-sm);
+}
+
+.contact-channel.is-chat { background: #f2f7ff; border-color: #d5e4fd; }
+.contact-channel.is-wa   { background: #f2fdf7; border-color: #c9ead9; }
+.contact-channel.is-mail { background: #f7f4ff; border-color: #ddd3fb; }
+
+.contact-channel-icon {
+    width: 40px; height: 40px;
+    border-radius: 11px;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+    margin-bottom: 6px;
+}
+
+.contact-channel-icon svg { width: 20px; height: 20px; }
+.contact-channel.is-chat .contact-channel-icon { background: #2563eb; }
+.contact-channel.is-wa   .contact-channel-icon { background: #16a34a; }
+.contact-channel.is-mail .contact-channel-icon { background: #7c3aed; }
+
+.contact-channel b    { font-size: .92rem; color: var(--ds-navy); }
+.contact-channel span { font-size: .76rem; color: var(--ds-muted); }
+
+.contact-channel button {
+    align-self: flex-start;
+    margin-top: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border: none;
+    border-radius: 999px;
+    color: #fff;
+    font-family: inherit;
+    font-size: .78rem;
+    font-weight: 600;
+    padding: 8px 15px;
+    cursor: pointer;
+}
+
+.contact-channel.is-chat button { background: #2563eb; }
+.contact-channel.is-wa   button { background: #16a34a; }
+.contact-channel.is-mail button { background: #7c3aed; }
+.contact-channel button:disabled { background: #b9c4d6; cursor: default; }
+.contact-channel button em { font-style: normal; }
+
+.contact-hero-art { width: 100%; height: auto; max-height: 40vh; }
+
+/* ---- company details ---- */
+.contact-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    gap: 18px;
+    align-items: start;
+}
+
+.company-details-card, .company-map-card, .contact-faq-card {
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+    padding: 20px 22px;
+}
+
+.contact-right { display: flex; flex-direction: column; gap: 18px; }
+
+.contact-row {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--ds-line);
+}
+
+.contact-row:last-of-type { border-bottom: none; }
+
+.contact-row-icon {
+    width: 38px; height: 38px;
+    border-radius: 10px;
+    background: var(--ds-blue-soft);
+    color: var(--ds-blue);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+.contact-row-icon svg { width: 18px; height: 18px; }
+.contact-row-text  { flex: 1; min-width: 0; }
+.contact-row-label { display: block; font-size: .74rem; color: var(--ds-muted); }
+.contact-row-value { display: block; font-size: .88rem; font-weight: 600; color: var(--ds-navy); word-break: break-word; }
+.contact-row-value.is-link { color: var(--ds-blue); text-decoration: none; }
+.contact-row-value.is-link:hover { text-decoration: underline; }
+
+.contact-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 8px;
+    color: var(--ds-muted);
+    font-family: inherit;
+    font-size: .75rem;
+    font-weight: 600;
+    padding: 7px 11px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.contact-copy-btn svg { width: 14px; height: 14px; }
+.contact-copy-btn:hover { color: var(--ds-blue); border-color: var(--ds-blue); }
+.contact-copy-btn.is-done { color: var(--ds-green); border-color: var(--ds-green); }
+
+.contact-follow {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding-top: 16px;
+    margin-top: 6px;
+    border-top: 1px solid var(--ds-line);
+}
+
+.contact-follow > span { font-size: .78rem; color: var(--ds-muted); }
+
+/* ---- map ---- */
+.contact-map-wrap { position: relative; border-radius: var(--ds-radius-sm); overflow: hidden; }
+.contact-map-wrap iframe { width: 100%; height: 240px; border: 0; display: block; }
+
+.contact-map-link {
+    position: absolute;
+    right: 12px; bottom: 12px;
+    background: var(--ds-blue);
+    color: #fff;
+    border-radius: 8px;
+    font-size: .76rem;
+    font-weight: 600;
+    padding: 8px 14px;
+    text-decoration: none;
+    box-shadow: 0 4px 12px rgba(18,87,245,.3);
+}
+
+/* ---- FAQ ---- */
+.contact-faq-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+.contact-faq {
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    overflow: hidden;
+}
+
+.contact-faq summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 11px 14px;
+    font-size: .84rem;
+    font-weight: 600;
+    color: var(--ds-navy);
+    cursor: pointer;
+    list-style: none;
+}
+
+.contact-faq summary::-webkit-details-marker { display: none; }
+.contact-faq summary::after { content: '\25BE'; color: var(--ds-muted); font-size: .8rem; }
+.contact-faq[open] summary::after { transform: rotate(180deg); }
+.contact-faq p { margin: 0; padding: 0 14px 13px; font-size: .8rem; color: var(--ds-muted); line-height: 1.5; }
+
+/* ---- quick actions ---- */
+.contact-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) repeat(4, minmax(0, 1fr));
+    gap: 14px;
+    align-items: center;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+    padding: 18px 20px;
+}
+
+.contact-actions-copy b    { display: block; font-size: .95rem; color: var(--ds-blue); }
+.contact-actions-copy span { display: block; font-size: .76rem; color: var(--ds-muted); margin-top: 2px; }
+
+.contact-action {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    background: #f7f9fd;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    padding: 13px 14px;
+    cursor: pointer;
+    font-family: inherit;
+    text-align: left;
+    transition: .15s;
+}
+
+.contact-action:hover { background: #eef4ff; border-color: rgba(18,87,245,.3); }
+
+.contact-action-icon {
+    width: 36px; height: 36px;
+    border-radius: 9px;
+    background: var(--ds-blue-soft);
+    color: var(--ds-blue);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+.contact-action-icon svg { width: 17px; height: 17px; }
+.contact-action div  { flex: 1; min-width: 0; }
+.contact-action b    { display: block; font-size: .83rem; color: var(--ds-navy); }
+.contact-action span { display: block; font-size: .72rem; color: var(--ds-muted); }
+.contact-action em   { font-style: normal; color: #b9c4d6; }
+
+@media (max-width: 1150px) {
+    .contact-hero, .contact-grid { grid-template-columns: 1fr; }
+    .contact-hero-art { display: none; }
+    .contact-channels { grid-template-columns: 1fr; }
+    .contact-faq-grid { grid-template-columns: 1fr; }
+    .contact-actions  { grid-template-columns: 1fr 1fr; }
+    .service-col > .service-card,
+    .service-col > .file-list-card,
+    .service-col > .activity-log-section,
+    .service-col > .activity-log-section > .activity-log-card { height: auto; }
+    .service-col { grid-template-rows: auto auto; }
+}

@@ -3805,7 +3805,7 @@
 
             function apiRefServices() {
                 const menu = MENU_CONFIG.mainMenu.find(m => m.id === 'services');
-                if (!menu || !SERVICES_API_DATA) return [];
+                if (!menu) return [];
                 // Pehle sirf wahi services aati thi jinka SERVICES_API_DATA
                 // me entry thi - baaki chup-chaap gayab ho jati thi. Ab sab
                 // dikhti hain; jiska data nahi hai uska panel saaf bata deta
@@ -6969,6 +6969,14 @@
                         if (oldIcon) oldIcon.remove();
                         zone.insertAdjacentHTML('afterbegin', DROP_ART_SVG);
                     }
+                    // Kuch services heading ko <div> ya <p> me likhti hain -
+                    // unhe wahi classes de do jo Translation use karta hai,
+                    // taaki font/size/colour har jagah same rahe.
+                    zone.querySelectorAll('div, p, span').forEach(el => {
+                        const t = (el.textContent || '').trim();
+                        if (!el.className && /^drag\s*&?\s*drop/i.test(t)) el.className = 'drop-text';
+                        else if (!el.className && /^(or\s+)?click to browse/i.test(t)) el.className = 'drop-sub';
+                    });
                     if (!zone.querySelector('.drop-browse-btn')) {
                         const sub = zone.querySelector('.drop-sub');
                         const btn = '<button type="button" class="drop-browse-btn">'
@@ -7239,6 +7247,17 @@
             // ============================================================
             // Breadcrumb ke "Dashboard" link ke liye - inline onclick global
             // scope me chalta hai, aur loadContent() is IIFE ke andar hai.
+            window.copyContactValue = function(btn, value) {
+                navigator.clipboard.writeText(String(value || ''))
+                    .then(() => {
+                        const original = btn.innerHTML;
+                        btn.classList.add('is-done');
+                        btn.innerHTML = '\u2713 Copied';
+                        setTimeout(() => { btn.classList.remove('is-done'); btn.innerHTML = original; }, 1400);
+                    })
+                    .catch(() => showWarning('Could not copy \u2014 please select and copy manually.'));
+            };
+
             window.lexoraNavigate = function(parentId, subId) {
                 loadContent(parentId, subId || null);
             };
@@ -7804,15 +7823,29 @@
                     return `
                         <div class="history-card support-log-card support-log-full">
                             <div class="support-log-header-row">
-                                <h3>📋 Supports: Log</h3>
+                                <div class="ds-card-head support-head">
+                                    <span class="ds-card-icon is-filled">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="5" y="4" width="14" height="17" rx="2"/><rect x="9" y="2.5" width="6" height="3.5" rx="1.2"/><path d="M9 11h6M9 15h4"/>
+                                        </svg>
+                                    </span>
+                                    <div>
+                                        <h3 data-iconified="1">Supports: Log</h3>
+                                        <p class="ds-card-sub">Track and manage all your support requests in one place.</p>
+                                    </div>
+                                </div>
+                                <button class="support-back-btn" onclick="lexoraNavigate('services','other-services')">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+                                    Back to Other Services
+                                </button>
                             </div>
                             <div class="history-filter-bar">
                                 <div class="filter-group">
-                                    <label>From</label>
+                                    <label>From Date</label>
                                     <input type="date" id="supportFromDate" />
                                 </div>
                                 <div class="filter-group">
-                                    <label>To</label>
+                                    <label>To Date</label>
                                     <input type="date" id="supportToDate" />
                                 </div>
                                 <div class="filter-group">
@@ -7863,60 +7896,170 @@
                     }
                 },
                 'contact-us': {
+                    // Layout mockup se: hero (copy + channels + stats + art),
+                    // phir Company Details | Find Us + FAQ, phir quick
+                    // actions. Saara data COMPANY_INFO (json/company.json)
+                    // se aata hai - yahan kuch hardcode nahi hai.
                     body: function() {
                         const c = COMPANY_INFO || {};
                         const mapQuery = encodeURIComponent(c.location || c.address || c.name || '');
-                        const mapsLink = mapQuery ? `https://www.google.com/maps/search/?api=1&query=${mapQuery}` : '#';
                         const mapEmbedSrc = mapQuery ? `https://www.google.com/maps?q=${mapQuery}&output=embed` : '';
-                        // Phone and WhatsApp are nearly always the same number in
-                        // practice, so they're shown as one combined field rather
-                        // than two near-duplicate rows.
+                        const mapsLink = mapQuery ? `https://www.google.com/maps/search/?api=1&query=${mapQuery}` : '#';
+                        const waNumber = String(c.whatsapp || c.phone || '').replace(/[^\d]/g, '');
                         const phoneWhatsapp = [c.phone, c.whatsapp].filter((v, i, arr) => v && arr.indexOf(v) === i).join(' / ');
-                        const pairs = [
-                            [{ icon: '🏢', label: 'Company Name', value: c.name },
-                             { icon: '📍', label: 'Address', value: c.address }],
-                            [{ icon: '🕒', label: 'Working Hours', value: c.workingHours },
-                             { icon: '📅', label: 'Working Days', value: c.workingDays }],
-                            [{ icon: '✉️', label: 'Email', value: c.email, href: c.email ? `mailto:${c.email}` : null },
-                             { icon: '📞', label: 'Phone/Mobile/Whatsapp', value: phoneWhatsapp, href: c.phone ? `tel:${c.phone.replace(/[^+\d]/g, '')}` : null }]
+
+                        const ICON = {
+                            pin:   '<path d="M12 21s7-5.7 7-11a7 7 0 1 0-14 0c0 5.3 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/>',
+                            clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/>',
+                            cal:   '<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+                            mail:  '<rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M3 6.5l9 6.5 9-6.5"/>',
+                            phone: '<path d="M5 3.5h4l2 5-2.5 1.5a12 12 0 0 0 5.5 5.5L15.5 13l5 2v4a1.5 1.5 0 0 1-1.6 1.5A16.5 16.5 0 0 1 3.5 5.1 1.5 1.5 0 0 1 5 3.5z"/>'
+                        };
+                        const svg = (d, cls) => `<svg class="${cls || ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+
+                        const rows = [
+                            ['pin',   'Address',        c.address],
+                            ['clock', 'Working Hours',  c.workingHours],
+                            ['cal',   'Working Days',   c.workingDays],
+                            ['mail',  'Email',          c.email,        c.email ? `mailto:${c.email}` : null],
+                            ['phone', 'Phone / Mobile / WhatsApp', phoneWhatsapp, c.phone ? `tel:${String(c.phone).replace(/[^+\d]/g, '')}` : null]
+                        ].filter(r => r[2]);
+
+                        const faqs = [
+                            ['Billing & Payments', 'Wallet top-ups are charged per page or per document, and every transaction shows up in Payment History with its receipt.'],
+                            ['Account & Access', 'Use Forgot Password on the login screen to reset access. Two-factor authentication can be switched on from your Profile.'],
+                            ['Data & Security', "Files are processed for your job and are not used to train models. Only you and your account's admins can see your documents."],
+                            ['OCR & Data Extraction', 'OCR rebuilds scanned or photographed pages into editable Word. Data Extraction lets you define your own fields and returns a clean table.'],
+                            ['Translation Services', 'Over 60 languages, with the original page layout preserved. Choose Word or PDF output in the Setup card.'],
+                            ['API & Integrations', 'Generate a key under Help \u203a API Documentation, then call the REST endpoints listed there with a Bearer token.']
                         ];
-                        const fieldHtml = (f) => `
-                            <div class="contact-field">
-                                <div class="contact-field-label"><span class="contact-icon">${f.icon}</span>${f.label}</div>
-                                <div class="contact-field-value">${
-                                    f.href && f.value ? `<a href="${f.href}" class="contact-value-link">${escapeHtml(f.value)}</a>` : escapeHtml(f.value || '-')
-                                }</div>
-                            </div>`;
+
+                        const quick = [
+                            ['<rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M8.5 9h7M8.5 13h7M8.5 17h4"/>', 'Create Ticket', 'Submit a support request', "lexoraNavigate('help','support')"],
+                            ['<path d="M4 12.5 9 17l11-11"/><path d="M4 6.5h9"/>', 'Track Ticket', 'Check ticket status', "lexoraNavigate('help','support')"],
+                            ['<path d="M9 7 4.5 12 9 17M15 7l4.5 5L15 17"/>', 'API Documentation', 'Explore our API docs', "lexoraNavigate('help','api-documentation')"],
+                            [ICON.phone, 'Call Us', c.phone || '', c.phone ? `window.open('tel:${String(c.phone).replace(/[^+\d]/g, '')}')` : 'void(0)']
+                        ];
+
                         return `
-                        <div class="contact-us-row">
-                            <div class="payment-card company-details-card">
-                                <div class="company-details-header">
-                                    <div class="company-details-icon">🏢</div>
-                                    <div>
-                                        <h3 style="margin:0;border:none;padding:0;">${escapeHtml(c.name || 'Company Details')}</h3>
-                                        <div class="company-details-tagline">We'd love to hear from you</div>
+                        <div class="contact-page">
+                            <div class="contact-hero">
+                                <div class="contact-hero-copy">
+                                    <h2>We're here to help! <span class="dash-wave">\u{1F44B}</span></h2>
+                                    <p>Have a question or need support? Our team is ready to assist you.</p>
+
+                                    <div class="contact-channels">
+                                        <div class="contact-channel is-chat">
+                                            <span class="contact-channel-icon">${svg('<path d="M20 15a2.5 2.5 0 0 1-2.5 2.5H8L4 21V5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5z"/>')}</span>
+                                            <div>
+                                                <b>Raise a Ticket</b>
+                                                <span>Our team replies by email</span>
+                                            </div>
+                                            <button onclick="lexoraNavigate('help','support')">Open Support <em>\u2192</em></button>
+                                        </div>
+                                        <div class="contact-channel is-wa">
+                                            <span class="contact-channel-icon">${svg('<path d="M4 20l1.4-4A8 8 0 1 1 8 18.6z"/><path d="M9 9.5c.6 2.4 3.1 4.9 5.5 5.5"/>')}</span>
+                                            <div>
+                                                <b>WhatsApp</b>
+                                                <span>Chat on WhatsApp</span>
+                                            </div>
+                                            <button ${waNumber ? `onclick="window.open('https://wa.me/${waNumber}', '_blank')"` : 'disabled'}>Chat Now <em>\u2192</em></button>
+                                        </div>
+                                        <div class="contact-channel is-mail">
+                                            <span class="contact-channel-icon">${svg(ICON.mail)}</span>
+                                            <div>
+                                                <b>Email Us</b>
+                                                <span>Send us an email</span>
+                                            </div>
+                                            <button ${c.email ? `onclick="window.location.href='mailto:${c.email}'"` : 'disabled'}>Send Email <em>\u2192</em></button>
+                                        </div>
                                     </div>
                                 </div>
-                                <div class="card-body">
-                                    ${pairs.map(pair => `<div class="contact-field-row">${pair.map(fieldHtml).join('')}</div>`).join('')}
-                                    ${(function () {
-                                        const links = buildSocialLinksHtml({ size: 22, gap: 16, color: '#0369a1' });
-                                        return links ? `<div style="margin-top:14px;padding-top:14px;border-top:1px solid rgba(0,0,0,0.08);">
-                                            <div style="font-size:0.8rem;color:rgba(0,0,0,0.55);margin-bottom:8px;">Follow us</div>
-                                            ${links}
-                                        </div>` : '';
-                                    })()}
+
+                                <svg class="contact-hero-art" viewBox="0 0 420 300" fill="none" aria-hidden="true">
+                                    <ellipse cx="210" cy="255" rx="170" ry="20" fill="#dbe8fe"/>
+                                    <path d="M60 120a70 70 0 0 1 120-55 70 70 0 0 1 105 60 60 60 0 0 1-40 105H110a60 60 0 0 1-50-110z" fill="#eaf2fe"/>
+                                    <rect x="120" y="196" width="180" height="14" rx="7" fill="#b9d0f3"/>
+                                    <path d="M130 196l14-52h132l14 52z" fill="#dbe8fe"/>
+                                    <rect x="150" y="96" width="120" height="52" rx="6" fill="#fff" stroke="#c5daf9"/>
+                                    <circle cx="196" cy="72" r="26" fill="#f6c9a8"/>
+                                    <path d="M170 68a26 26 0 0 1 52 0v-6a26 26 0 0 0-52 0z" fill="#1d4ed8"/>
+                                    <path d="M168 66a6 6 0 0 1 0 14M224 66a6 6 0 0 1 0 14" stroke="#1d4ed8" stroke-width="5"/>
+                                    <path d="M168 66h56" stroke="#1d4ed8" stroke-width="5"/>
+                                    <path d="M204 90c8 4 14 14 14 24h-44c0-10 6-20 14-24z" fill="#2f7bf6"/>
+                                    <circle cx="300" cy="60" r="26" fill="#dbe8fe"/>
+                                    <circle cx="291" cy="60" r="3" fill="#7fb0f4"/><circle cx="300" cy="60" r="3" fill="#7fb0f4"/><circle cx="309" cy="60" r="3" fill="#7fb0f4"/>
+                                    <rect x="330" y="120" width="56" height="38" rx="6" fill="#2f7bf6"/>
+                                    <path d="M330 126l28 18 28-18" stroke="#fff" stroke-width="3" fill="none"/>
+                                </svg>
+                            </div>
+
+                            <div class="contact-grid">
+                                <div class="company-details-card">
+                                    <div class="ds-card-head">
+                                        <span class="ds-card-icon is-filled">${svg('<path d="M4 21V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v15M15 21V10h3a2 2 0 0 1 2 2v9M3 21h18M8 8h3M8 12h3M8 16h3"/>')}</span>
+                                        <div><h3 data-iconified="1">Company Details</h3></div>
+                                    </div>
+                                    ${rows.map(r => `
+                                        <div class="contact-row">
+                                            <span class="contact-row-icon">${svg(ICON[r[0]])}</span>
+                                            <div class="contact-row-text">
+                                                <span class="contact-row-label">${escapeHtml(r[1])}</span>
+                                                ${r[3]
+                                                    ? `<a class="contact-row-value is-link" href="${r[3]}">${escapeHtml(r[2])}</a>`
+                                                    : `<span class="contact-row-value">${escapeHtml(r[2])}</span>`}
+                                            </div>
+                                            <button class="contact-copy-btn" onclick="copyContactValue(this, ${JSON.stringify(String(r[2])).replace(/"/g, '&quot;')})">
+                                                ${svg('<rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>')}
+                                                Copy
+                                            </button>
+                                        </div>`).join('')}
+                                    <div class="contact-follow">
+                                        <span>Follow us</span>
+                                        ${buildSocialLinksHtml({ size: 20, gap: 12, color: '#1257f5' })}
+                                    </div>
+                                </div>
+
+                                <div class="contact-right">
+                                    <div class="company-map-card">
+                                        <div class="ds-card-head">
+                                            <span class="ds-card-icon is-filled">${svg('<path d="M9 4 3 6.5v14L9 18l6 2.5 6-2.5v-14L15 6.5z"/><path d="M9 4v14M15 6.5v14"/>')}</span>
+                                            <div><h3 data-iconified="1">Find Us</h3></div>
+                                        </div>
+                                        ${mapEmbedSrc ? `
+                                            <div class="contact-map-wrap">
+                                                <iframe src="${mapEmbedSrc}" loading="lazy" referrerpolicy="no-referrer-when-downgrade" title="Map"></iframe>
+                                                <a class="contact-map-link" href="${mapsLink}" target="_blank" rel="noopener">Get Directions</a>
+                                            </div>` : '<p class="ds-card-sub">No location set in company.json.</p>'}
+                                    </div>
+
+                                    <div class="contact-faq-card">
+                                        <div class="ds-card-head">
+                                            <span class="ds-card-icon is-filled">${svg('<circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .9-1 1.6v.3"/><path d="M12 17.2h.01"/>')}</span>
+                                            <div><h3 data-iconified="1">Frequently Asked Questions</h3></div>
+                                        </div>
+                                        <div class="contact-faq-grid">
+                                            ${faqs.map((f, i) => `
+                                                <details class="contact-faq" ${i === 0 ? 'open' : ''}>
+                                                    <summary>${escapeHtml(f[0])}</summary>
+                                                    <p>${escapeHtml(f[1])}</p>
+                                                </details>`).join('')}
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
-                            <div class="payment-card company-map-card">
-                                <h3>🗺️ Find Us</h3>
-                                <div class="card-body company-map-card-body">
-                                    <div class="company-map-wrap">
-                                        ${mapEmbedSrc ? `<iframe class="company-map-frame" src="${mapEmbedSrc}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>` :
-                                            `<div class="company-map-placeholder">🗺️ Add a Location in company.json to show a map here</div>`}
-                                        ${mapQuery ? `<a href="${mapsLink}" target="_blank" rel="noopener" class="company-map-directions">📍 Get Directions</a>` : ''}
-                                    </div>
+
+                            <div class="contact-actions">
+                                <div class="contact-actions-copy">
+                                    <b>Need more help?</b>
+                                    <span>Raise a ticket or explore our support resources.</span>
                                 </div>
+                                ${quick.map(q => `
+                                    <button class="contact-action" onclick="${q[3]}">
+                                        <span class="contact-action-icon">${svg(q[0])}</span>
+                                        <div><b>${escapeHtml(q[1])}</b><span>${escapeHtml(q[2])}</span></div>
+                                        <em>\u203a</em>
+                                    </button>`).join('')}
                             </div>
                         </div>
                     `;
@@ -8101,6 +8244,9 @@
                 paymentMethods = paymentMethodsData;
                 paymentHistory = paymentHistoryData;
                 SERVICES_API_DATA = servicesApiData;
+                // Agar API Documentation page pehle se khula hai to data
+                // aate hi reference dobara draw ho jaye.
+                if (document.getElementById('apiRefNav')) renderServicesApiList();
                 contactSubmissions = contactSubmissionsData;
                 MESSAGES = messagesData;
                 AGENTS_BY_SERVICE = agentsData;
