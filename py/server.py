@@ -466,6 +466,9 @@ ALLOWED_RESOURCES = {
     "translation-activity-log",
     "notifications",
     "plan-history",
+    # Card sizes (Admin Panel > Card Sizes). Sirf layout numbers hain -
+    # koi user data nahi - isliye baaki config files ki tarah safe hai.
+    "card-layout",
 }
 
 # json files that must never be served as static files (contain secrets).

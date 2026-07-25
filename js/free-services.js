@@ -409,13 +409,14 @@
 
     const used = {};
     const groups = GROUPS.map(function (g) {
+      // Poora tool object lautao (id/label/desc) - login page ko sirf
+      // label chahiye, par API Documentation ko id aur desc bhi chahiye.
       const tools = g.ids.map(function (id) { used[id] = true; return byId[id]; })
-        .filter(Boolean).map(function (t) { return t.label; });
+        .filter(Boolean);
       return { title: g.title, icon: g.icon, tools: tools };
     }).filter(function (g) { return g.tools.length; });
 
-    const more = allTools().filter(function (t) { return !used[t.id]; })
-      .map(function (t) { return t.label; });
+    const more = allTools().filter(function (t) { return !used[t.id]; });
     if (more.length) groups.push({ title: 'More Tools', icon: '\u{1F527}', tools: more });
 
     return groups;

@@ -3818,23 +3818,62 @@
             // dikhta tha.
             function apiDocsData() { return SERVICES_API_DATA || {}; }
 
+            // Free tools browser me chalte hain (pdf.js / pdf-lib), unka
+            // koi REST endpoint nahi hai. Isliye unke docs FreeServices ki
+            // registry se banaye jaate hain aur saaf-saaf "browser" kind me
+            // dikhte hain - jhooth-mooth ka REST endpoint likhne se behtar
+            // hai sach batana.
+            function freeToolDocs() {
+                if (!(window.FreeServices && typeof FreeServices.catalogue === 'function')) return [];
+                const out = [];
+                try {
+                    FreeServices.catalogue().forEach(group => {
+                        (group.tools || []).forEach(t => {
+                            if (!t || !t.id) return;
+                            out.push({
+                                id: 'free:' + t.id,
+                                kind: 'browser',
+                                label: t.label || t.id,
+                                group: group.title,
+                                desc: t.desc || '',
+                                toolId: t.id
+                            });
+                        });
+                    });
+                } catch (err) {
+                    console.warn('Could not read the free tools catalogue:', err);
+                }
+                return out;
+            }
+
             function apiRefServices() {
                 const menu = MENU_CONFIG && MENU_CONFIG.mainMenu
                     ? MENU_CONFIG.mainMenu.find(m => m.id === 'services') : null;
                 const data = apiDocsData();
-                if (!menu || !menu.subItems) {
-                    return Object.keys(data).map(id => ({ id: id, label: data[id].label || id }));
-                }
-                return menu.subItems.map(s => ({
-                    id: s.id,
-                    label: (data[s.id] && data[s.id].label)
-                        || String(s.label || s.id).replace(/^[^A-Za-z0-9]+/, '').trim()
+
+                // "Other Services" khud koi service nahi - wo free tools ka
+                // container hai. Usko list se hata kar uske andar ke saare
+                // tools alag-alag dikhaye jaate hain.
+                const paid = (menu && menu.subItems ? menu.subItems : [])
+                    .filter(s => s.id !== 'other-services')
+                    .map(s => ({
+                        id: s.id,
+                        kind: 'rest',
+                        group: 'Paid Services',
+                        label: (data[s.id] && data[s.id].label)
+                            || String(s.label || s.id).replace(/^[^A-Za-z0-9]+/, '').trim()
+                    }));
+
+                const known = paid.length ? paid : Object.keys(data).map(id => ({
+                    id: id, kind: 'rest', group: 'Paid Services', label: data[id].label || id
                 }));
+
+                return known.concat(freeToolDocs());
             }
 
             function firstDocumentedService(services) {
                 const data = apiDocsData();
-                const withDocs = services.find(s => data[s.id] && data[s.id].get);
+                const withDocs = services.find(s => s.kind === 'browser' || (data[s.id] && data[s.id].get));
                 return (withDocs || services[0] || {}).id || null;
             }
 
@@ -3897,17 +3936,45 @@
                 // Agar abhi tak koi choose nahi hua, ya jo chuna tha uske
                 // docs nahi hain, to pehli documented service par jao -
                 // taaki page khulte hi asli reference dikhe.
-                if (!apiRefActive || !services.some(s => s.id === apiRefActive)
-                    || !(data[apiRefActive] && data[apiRefActive].get)) {
-                    apiRefActive = firstDocumentedService(services);
-                }
+                const activeEntry = services.find(s => s.id === apiRefActive);
+                const activeOk = activeEntry
+                    && (activeEntry.kind === 'browser' || (data[apiRefActive] && data[apiRefActive].get));
+                if (!activeOk) apiRefActive = firstDocumentedService(services);
 
                 nav.innerHTML = services.map(s => `
-                    <button class="api-ref-nav-item ${s.id === apiRefActive ? 'is-active' : ''} ${data[s.id] && data[s.id].get ? '' : 'is-empty'}" onclick="setApiRefService('${s.id}')">
+                    <button class="api-ref-nav-item ${s.id === apiRefActive ? 'is-active' : ''} ${s.kind === 'browser' || (data[s.id] && data[s.id].get) ? '' : 'is-empty'}" onclick="setApiRefService('${s.id}')">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4"/></svg>
                         <span>${escapeHtml(s.label)}</span>
                         <em>\u203a</em>
                     </button>`).join('');
+
+                const entry = services.find(s => s.id === apiRefActive) || {};
+                if (entry.kind === 'browser') {
+                    const usage = `// ${entry.label} browser me chalta hai - koi upload nahi hota.\n`
+                        + `FreeServices.open('${entry.toolId}');`;
+                    const samples = {
+                        request: usage,
+                        response: `{\n    "runsIn": "browser",\n    "uploads": false,\n    "output": "file downloaded to your device"\n}`,
+                        headers: `{\n    "note": "No network call \u2014 no auth headers needed."\n}`,
+                        parameters: `{\n    "toolId": "${entry.toolId}",\n    "category": "${entry.group || ''}"\n}`
+                    };
+                    const tab = (id, label) =>
+                        `<button class="api-tab ${apiRefTab === id ? 'is-active' : ''}" onclick="setApiRefTab('${id}')">${label}</button>`;
+                    panel.innerHTML = `
+                        <div class="api-endpoint-head">
+                            <span class="api-method browser">BROWSER</span>
+                            <code class="api-endpoint-path">FreeServices.open('${escapeHtml(entry.toolId)}')</code>
+                            <button class="api-try-btn" onclick="lexoraNavigate('services','other-services')">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M7 4.5 19 12 7 19.5z"/></svg>
+                                Try It Out
+                            </button>
+                        </div>
+                        <p class="api-endpoint-desc">${escapeHtml(entry.desc || entry.label)} Runs entirely in your browser \u2014 nothing is uploaded and nothing is charged.</p>
+                        <div class="api-tabs">${tab('request', 'Usage')}${tab('response', 'Output')}${tab('headers', 'Auth')}${tab('parameters', 'Parameters')}</div>
+                        ${apiCodeBlock(samples[apiRefTab])}
+                    `;
+                    return;
+                }
 
                 const d = data[apiRefActive];
                 if (!d || !d.get) {
@@ -7143,10 +7210,6 @@
 
             function buildCardSizesPanel() {
                 const cards = (CARD_LAYOUT && CARD_LAYOUT.cards) || [];
-                if (!cards.length) {
-                    return '<div class="admin-files-card"><h3>\u{1F4D0} Card Sizes</h3>'
-                        + '<p class="ds-card-sub">json/card-layout.json load nahi hui.</p></div>';
-                }
 
                 const sections = [];
                 cards.forEach(c => {
@@ -7155,7 +7218,7 @@
                     s.items.push(c);
                 });
 
-                const field = (card, dim) => {
+                const sizeField = (card, dim) => {
                     const spec = card[dim] || { mode: 'auto', value: null };
                     return `
                         <div class="card-size-field">
@@ -7171,41 +7234,92 @@
                         </div>`;
                 };
 
+                // Har cell editable hai - section, label aur selector bhi -
+                // taaki naya card add karke uska selector yahin se set kiya
+                // ja sake, JSON file kholë bina.
+                const textField = (card, field, placeholder) => `
+                    <input type="text" class="card-size-text ${field === 'selector' ? 'is-code' : ''}"
+                           data-id="${card.id}" data-field="${field}" placeholder="${placeholder}"
+                           value="${escapeHtml(card[field] || '')}" oninput="onCardFieldChange(this)" />`;
+
                 return `
                     <div class="admin-files-card card-sizes-card">
                         <div class="admin-files-header">
                             <h3>\u{1F4D0} Card Sizes</h3>
                             <div class="card-sizes-actions">
+                                <button class="admin-btn" onclick="addCardLayoutRow()">+ Add card</button>
                                 <button class="admin-btn" onclick="downloadCardLayout()">\u2B07 Download JSON</button>
                                 <button class="admin-btn" onclick="resetCardLayout()">\u21BA Reset to auto</button>
                                 <button class="add-btn" onclick="saveCardLayout()">Save changes</button>
                             </div>
                         </div>
                         <p class="ds-card-sub">
-                            Har card ki width aur height yahan se set hoti hai.
+                            Poori json/card-layout.json yahan table me editable hai.
                             <b>auto</b> = CSS ka default, <b>px</b> = fixed pixels, <b>%</b> = parent ke hisab se.
-                            Save karte hi live lag jata hai.
+                            Har change turant page par lag jata hai; <b>Save changes</b> use disk par likh deta hai.
                         </p>
-                        ${sections.map(s => `
+                        ${cards.length === 0
+                            ? '<p class="ds-card-sub">Abhi koi card configured nahi hai \u2014 "+ Add card" se shuru karein.</p>'
+                            : sections.map(s => `
                             <div class="card-size-section">
                                 <h4>${escapeHtml(s.name)}</h4>
                                 <table class="admin-json-table card-size-table">
-                                    <thead><tr><th>Card</th><th style="width:190px;">Width</th><th style="width:190px;">Height</th></tr></thead>
+                                    <thead><tr>
+                                        <th style="width:150px;">Section</th>
+                                        <th style="width:190px;">Card</th>
+                                        <th>CSS selector</th>
+                                        <th style="width:180px;">Width</th>
+                                        <th style="width:180px;">Height</th>
+                                        <th style="width:44px;"></th>
+                                    </tr></thead>
                                     <tbody>
                                         ${s.items.map(c => `
                                             <tr>
-                                                <td>
-                                                    <b>${escapeHtml(c.label || c.id)}</b>
-                                                    <code>${escapeHtml(c.selector)}</code>
-                                                </td>
-                                                <td>${field(c, 'width')}</td>
-                                                <td>${field(c, 'height')}</td>
+                                                <td>${textField(c, 'section', 'Section')}</td>
+                                                <td>${textField(c, 'label', 'Card name')}</td>
+                                                <td>${textField(c, 'selector', '.my-card')}</td>
+                                                <td>${sizeField(c, 'width')}</td>
+                                                <td>${sizeField(c, 'height')}</td>
+                                                <td><button class="card-size-del" title="Remove" onclick="removeCardLayoutRow('${c.id}')">\u00d7</button></td>
                                             </tr>`).join('')}
                                     </tbody>
                                 </table>
                             </div>`).join('')}
                     </div>`;
             }
+
+            function refreshCardSizesPanel() {
+                const existing = document.querySelector('.card-sizes-card');
+                if (existing) existing.outerHTML = buildCardSizesPanel();
+            }
+
+            window.onCardFieldChange = function(el) {
+                const entry = cardLayoutEntry(el.dataset.id);
+                if (!entry) return;
+                entry[el.dataset.field] = el.value;
+                applyCardLayout();
+            };
+
+            window.addCardLayoutRow = function() {
+                if (!CARD_LAYOUT) CARD_LAYOUT = { version: 1, modes: ['auto', 'px', '%'], cards: [] };
+                if (!CARD_LAYOUT.cards) CARD_LAYOUT.cards = [];
+                CARD_LAYOUT.cards.push({
+                    id: 'card-' + Date.now().toString(36),
+                    section: 'Custom',
+                    label: 'New card',
+                    selector: '',
+                    width: { mode: 'auto', value: null },
+                    height: { mode: 'auto', value: null }
+                });
+                refreshCardSizesPanel();
+            };
+
+            window.removeCardLayoutRow = function(id) {
+                if (!CARD_LAYOUT || !CARD_LAYOUT.cards) return;
+                CARD_LAYOUT.cards = CARD_LAYOUT.cards.filter(c => c.id !== id);
+                applyCardLayout();
+                refreshCardSizesPanel();
+            };
 
             function cardLayoutEntry(id) {
                 return ((CARD_LAYOUT && CARD_LAYOUT.cards) || []).find(c => c.id === id);
@@ -7233,9 +7347,11 @@
             };
 
             window.saveCardLayout = async function() {
-                await saveJSON('card-layout', CARD_LAYOUT);
+                // Pehle apply - taaki dikhna turant shuru ho jaye, chahe disk
+                // write me kuch bhi ho.
                 applyCardLayout();
-                showSuccess('Card sizes saved.');
+                await saveJSON('card-layout', CARD_LAYOUT);
+                showSuccess('Card sizes applied and saved.');
             };
 
             window.resetCardLayout = function() {
@@ -7244,10 +7360,7 @@
                     c.height = { mode: 'auto', value: null };
                 });
                 applyCardLayout();
-                const body = document.getElementById('contentBody');
-                if (body && body.querySelector('.card-sizes-card')) {
-                    body.querySelector('.card-sizes-card').outerHTML = buildCardSizesPanel();
-                }
+                refreshCardSizesPanel();
             };
 
             window.downloadCardLayout = function() {
@@ -8689,7 +8802,15 @@
                             </div>
                         </div>
                     </div>
+                `;
+            }
 
+            // Tools card ab .auth-main (do-column grid) ke bahar render hota
+            // hai, isliye poori width leta hai - pehle wo left column me
+            // phansa hua tha.
+            function buildAuthToolsCard() {
+                const freeTools = authFreeTools();
+                return `
                     <div class="auth-tools-card">
                         <div class="auth-tools-col">
                             <div class="auth-tools-head">
@@ -8708,7 +8829,7 @@
                                 ${freeTools.map(c => `
                                     <div class="auth-free-cat">
                                         <b>${escapeHtml(c[0])}</b>
-                                        <span>${c[1].map(escapeHtml).join(' \u00b7 ')}</span>
+                                        <span>${c[1].map(t => escapeHtml(t.label || t)).join(' \u00b7 ')}</span>
                                     </div>`).join('')}
                             </div>
                         </div>
@@ -8909,12 +9030,10 @@
                             <div class="auth-main-left">${buildAuthLeftPanel()}</div>
                             <div class="auth-main-right">
                                 <div class="auth-card">${buildAuthCard()}</div>
-                                <div class="auth-side-art">
-                                    <img src="Pictures/auth-side.svg" alt=""
-                                         onerror="this.style.display='none';" />
-                                </div>
                             </div>
                         </div>
+
+                        ${buildAuthToolsCard()}
 
                         <div class="footer">
                             <div class="footer-inner">
