@@ -6082,7 +6082,9 @@
                     if (!scroll) return;
                     scroll.innerHTML = `
                         <div class="db-txn-source">Source: ${dbChip(d.store === 'postgres', d.store === 'postgres' ? 'PostgreSQL' : 'JSON file')}
-                            <span class="db-note">${rows.length} row(s)</span></div>
+                            <span class="db-note">${rows.length} row(s)</span>
+                            ${d.error ? `<div class="db-note is-bad">Database se padha nahi ja saka, JSON dikhaya ja raha hai \u2014 ${escapeHtml(d.error)}</div>` : ''}
+                        </div>
                         <table class="admin-json-table db-txn-table">
                             <thead><tr>
                                 <th>Txn ID</th><th>Date</th><th>Time</th><th>User</th>

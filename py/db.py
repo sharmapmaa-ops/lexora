@@ -207,9 +207,20 @@ ON CONFLICT (txn_id) DO NOTHING
 RETURNING *
 """
 
-SELECT_SQL = """
+# Pehle yahan ek hi query thi:
+#     WHERE (%(user_id)s IS NULL OR user_id = %(user_id)s)
+# Postgres us par fail karta hai - "could not determine data type of
+# parameter $1". Jab parameter sirf NULL se compare hota hai to usse type
+# ka koi hint nahi milta. Do alag queries clear bhi hain aur is problem
+# se bachti bhi hain.
+SELECT_ALL_SQL = """
 SELECT * FROM transactions
- WHERE (%(user_id)s IS NULL OR user_id = %(user_id)s)
+ ORDER BY txn_date DESC, created_at DESC
+"""
+
+SELECT_BY_USER_SQL = """
+SELECT * FROM transactions
+ WHERE user_id = %(user_id)s
  ORDER BY txn_date DESC, created_at DESC
 """
 
@@ -243,7 +254,10 @@ def list_transactions(user_id=None):
     init_schema()
     with connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(SELECT_SQL, {"user_id": user_id})
+            if user_id:
+                cur.execute(SELECT_BY_USER_SQL, {"user_id": user_id})
+            else:
+                cur.execute(SELECT_ALL_SQL)
             rows = cur.fetchall()
     return [row_to_entry(r) for r in rows]
 
@@ -328,7 +342,9 @@ def charge_if_sufficient(user_id, amount, description, txn_id,
             # functions"), aur waise bhi yahan kisi ek row ka lock nahi,
             # is USER ka lock chahiye. Advisory lock exactly yahi karta hai
             # aur COMMIT/ROLLBACK par apne aap chhoot jata hai.
-            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%(user_id)s))",
+            # ::text isliye ki parameter ka type Postgres ko saaf pata rahe
+            # (upar wali SELECT_SQL wali galti dobara na ho).
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%(user_id)s::text))",
                         {"user_id": user_id})
             cur.execute(
                 "SELECT COALESCE(SUM(credit), 0) - COALESCE(SUM(debit), 0) AS balance"
