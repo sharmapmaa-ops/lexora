@@ -786,3 +786,228 @@ body, input, select, textarea, button {
     .balance-grid   { grid-template-columns: 1fr; }
     .balance-perks  { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 16px; }
 }
+
+/* =====================================================================
+   NEW LOGO
+   lexora-logo.png me wordmark already hai, isliye uske bagal me alag se
+   "Lexora" likhna repeat ho jata tha. Text hide, logo wide, aur login
+   ke baad wala round frame hata diya.
+   ===================================================================== */
+.company-logo {
+    width: auto;
+    height: 40px;
+    min-width: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    overflow: visible;
+}
+
+.company-logo img { height: 100%; width: auto; padding: 0; object-fit: contain; }
+
+/* Sirf naam ka text hide karna hai, "|" separator rehna chahiye. */
+.company-name { font-size: 0; letter-spacing: 0; }
+.company-name .separator { font-size: 1.1rem; font-weight: 300; margin: 0 12px 0 14px; }
+
+.auth-topbar-name { display: none; }
+.auth-topbar-logo { width: auto; height: 3.6em; }
+
+/* ========================= DASHBOARD =========================
+   Mockup order: welcome | plan | wallet  /  today's transactions  /
+   4 stat tiles. Poora ek screen me aana chahiye, isliye .dash-page ek
+   flex column hai jisme sirf transactions card grow karta hai. */
+.dash-page {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-height: 0;
+}
+
+/* ---- 1. welcome block (koi card nahi) ---- */
+.dash-top {
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: 14px;
+    align-items: stretch;
+}
+
+.dash-welcome {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 2px 4px;
+}
+
+.dash-welcome-eyebrow { font-size: .8rem; font-weight: 600; color: var(--ds-navy); margin: 0; }
+
+.dash-welcome-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1.7rem;
+    font-weight: 800;
+    letter-spacing: -.5px;
+    color: var(--ds-navy);
+    margin: 2px 0 6px;
+}
+
+.dash-wave { font-size: 1.3rem; }
+.dash-welcome-sub { font-size: .76rem; color: var(--ds-muted); margin: 0; }
+
+/* ---- 2 & 3. plan / wallet hero cards ---- */
+.dash-hero-card {
+    position: relative;
+    display: flex;
+    gap: 12px;
+    padding: 15px 90px 15px 17px;
+    border-radius: 14px;
+    border: 1px solid;
+    overflow: hidden;
+}
+
+.dash-hero-plan   { background: linear-gradient(120deg, #f2f7ff, #e6eeff); border-color: #d5e4fd; }
+.dash-hero-wallet { background: linear-gradient(120deg, #f2fdf7, #e8f8ef); border-color: #c9ead9; }
+
+.dash-hero-icon {
+    width: 40px; height: 40px;
+    border-radius: 11px;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+    flex-shrink: 0;
+}
+
+.dash-hero-icon svg { width: 20px; height: 20px; }
+.dash-hero-plan   .dash-hero-icon { background: #2563eb; }
+.dash-hero-wallet .dash-hero-icon { background: #16a34a; }
+
+.dash-hero-body  { min-width: 0; }
+.dash-hero-label { font-size: .76rem; color: var(--ds-muted); }
+.dash-hero-value { font-size: 1.05rem; font-weight: 800; margin: 1px 0 9px; white-space: nowrap; }
+.dash-hero-plan   .dash-hero-value { color: #1d4ed8; }
+.dash-hero-wallet .dash-hero-value { color: #15803d; }
+
+.dash-hero-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #fff;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: .74rem;
+    font-weight: 600;
+    padding: 6px 12px;
+    cursor: pointer;
+    transition: .15s;
+}
+
+.dash-hero-plan   .dash-hero-btn { border: 1px solid #c7dafc; color: #1d4ed8; }
+.dash-hero-wallet .dash-hero-btn { border: 1px solid #bde5cf; color: #15803d; }
+.dash-hero-btn:hover { filter: brightness(.97); }
+
+.dash-hero-art {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 66px;
+    height: auto;
+    pointer-events: none;
+}
+
+/* ---- 4. today's transactions ---- */
+.dash-txn-card {
+    padding: 15px 17px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1;
+}
+
+.dash-txn-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.dash-txn-head .ds-card-icon { width: 36px; height: 36px; }
+.dash-txn-head .ds-card-icon svg { width: 18px; height: 18px; }
+.dash-txn-head h3 { flex: 1; margin: 0; font-size: .98rem; font-weight: 700; color: var(--ds-navy); }
+
+.dash-view-all {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 8px;
+    color: var(--ds-blue);
+    font-family: inherit;
+    font-size: .75rem;
+    font-weight: 600;
+    padding: 7px 12px;
+    cursor: pointer;
+}
+
+.dash-view-all:hover { background: rgba(18,87,245,.05); }
+
+.dash-txn-card > .card-body {
+    border: 1px solid var(--ds-line);
+    border-radius: 10px;
+    overflow: hidden;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Header aur body alag tables hain, isliye fixed layout - warna dono ke
+   columns align nahi hote. */
+.today-table { table-layout: fixed; width: 100%; }
+.dash-txn-card .history-table th { background: #f8fafc; font-size: .71rem; padding: 9px 8px; border-top: none; }
+.dash-txn-card .history-table td { font-size: .77rem; padding: 8px; }
+.dash-txn-card .history-table-wrapper { flex: 1; min-height: 0; overflow-y: auto; }
+
+.dash-empty-cell { text-align: center; padding: 16px 10px; }
+.dash-empty-art  { width: 54px; height: 42px; display: block; margin: 0 auto 6px; }
+.dash-empty-title{ display: block; font-weight: 700; color: var(--ds-navy); font-size: .85rem; }
+.dash-empty-sub  { display: block; font-size: .73rem; color: var(--ds-muted); margin-top: 2px; }
+
+/* ---- 5. stat tiles ---- */
+.dashboard-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+
+.dash-card {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    text-align: left;
+}
+
+.dash-card-icon {
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+    flex-shrink: 0;
+    margin-bottom: 0;
+    font-size: 1rem;
+}
+
+.dash-card-icon svg { width: 19px; height: 19px; }
+.dash-icon-blue   { background: #2563eb; }
+.dash-icon-green  { background: #16a34a; }
+.dash-icon-purple { background: #7c3aed; }
+.dash-icon-amber  { background: #ea9010; }
+
+.dash-card-text  { min-width: 0; }
+.dash-card-value { font-size: 1.15rem; font-weight: 800; color: var(--ds-navy); line-height: 1.15; }
+.dash-card-label { font-size: .77rem; font-weight: 600; color: var(--ds-navy); text-transform: none; letter-spacing: 0; }
+.dash-card-sub   { font-size: .67rem; color: var(--ds-muted); margin-top: 1px; line-height: 1.25; }
+
+@media (max-width: 1150px) {
+    .dash-top { grid-template-columns: 1fr; }
+    .dashboard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Transactions card ko bachi hui height le leni chahiye, warna bade
+   screens par neeche khali jagah reh jati thi. 154px = nav + footer +
+   center-content ka padding; min-height hai isliye content zyada ho to
+   card khud badh jata hai. */
+.dash-page { min-height: calc(100vh - 160px); }

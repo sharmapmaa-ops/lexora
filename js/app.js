@@ -4239,21 +4239,51 @@
 
                 if (todayList.length === 0) {
                     tbody.innerHTML =
-                        '<tr><td colspan="8" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions today.</td></tr>';
+                        '<tr><td colspan="9" class="dash-empty-cell">' +
+                        '<svg class="dash-empty-art" viewBox="0 0 72 56" fill="none" aria-hidden="true">' +
+                        '<path d="M8 26h14l4 7h20l4-7h14v20a4 4 0 0 1-4 4H12a4 4 0 0 1-4-4z" fill="#dbe8fe"/>' +
+                        '<path d="M8 26 18 8h36l10 18" stroke="#bcd6fb" stroke-width="3" stroke-linejoin="round" fill="none"/>' +
+                        '</svg>' +
+                        '<span class="dash-empty-title">No transactions today.</span>' +
+                        '<span class="dash-empty-sub">Once you make a transaction, it will appear here.</span>' +
+                        '</td></tr>';
                 } else {
                     renderHistoryRows(tbody, todayList);
                 }
 
-                let totalCredit = 0,
-                    totalDebit = 0;
-                myHistory.forEach(t => { totalCredit += Number(t.credit) || 0;
-                    totalDebit += Number(t.debit) || 0; });
-                const balanceEl = document.getElementById('dashBalance');
-                if (balanceEl) balanceEl.textContent = formatMoney(totalCredit - totalDebit);
-                // Bug 10: dashboard Current Plan hardcoded tha — actual plan
+                // Wallet balance poore history par, baaki teen tiles sirf
+                // aaj ke transactions par - mockup me labels "Today's ..."
+                // hain, to lifetime totals dikhana galat hota.
+                let totalCredit = 0, totalDebit = 0;
+                myHistory.forEach(t => {
+                    totalCredit += Number(t.credit) || 0;
+                    totalDebit += Number(t.debit) || 0;
+                });
+
+                let todayCredit = 0, todayDebit = 0, pending = 0;
+                todayList.forEach(t => {
+                    todayCredit += Number(t.credit) || 0;
+                    todayDebit += Number(t.debit) || 0;
+                    const status = String(t.status || '').toLowerCase();
+                    if (status && status !== 'success' && status !== 'failed') pending++;
+                });
+
+                const set = (id, value) => {
+                    const el = document.getElementById(id);
+                    if (el) el.textContent = value;
+                };
+
+                set('dashBalance', formatMoney(totalCredit - totalDebit));
+                set('dashTodayCount', String(todayList.length));
+                set('dashTodayCredit', formatMoney(todayCredit));
+                set('dashTodayDebit', formatMoney(todayDebit));
+                set('dashPending', String(pending));
+                // Bug 10: dashboard Current Plan hardcoded tha - actual plan
                 // se update karo (plan switch ke baad stale na dikhe).
-                const planEl = document.getElementById('dashCurrentPlan');
-                if (planEl) planEl.textContent = getMyPlan().name + ' Plan';
+                set('dashCurrentPlan', getMyPlan().name + ' Plan');
+                set('dashUserName', profileData
+                    ? (profileData.firstName + ' ' + profileData.lastName).trim()
+                    : 'there');
             }
 
             // Real counts (previously hardcoded placeholder numbers) - Lease
@@ -6875,41 +6905,136 @@
             // ============================================================
             const CONTENT_DATA = {
                 dashboard: {
+                    // Layout mockup se, upar se neeche:
+                    //   1. Welcome block (no card)  2. Current Plan card
+                    //   3. Wallet Balance card      4. Today's Transactions
+                    //   5. 4 stat tiles
+                    // Sab kuch ek screen me fit hona chahiye - isliye
+                    // .dash-page grid hai aur table area flexible.
                     body: `
-                        <div class="dashboard-grid">
-                            <div class="dash-card">
-                                <div class="dash-card-icon">📋</div>
-                                <div class="dash-card-value" id="dashCurrentPlan">—</div>
-                                <div class="dash-card-label">Current Plan</div>
+                        <div class="dash-page">
+                            <div class="dash-top">
+                                <div class="dash-welcome">
+                                    <p class="dash-welcome-eyebrow">Welcome back,</p>
+                                    <h1 class="dash-welcome-name"><span id="dashUserName">there</span>!<span class="dash-wave">\u{1F44B}</span></h1>
+                                    <p class="dash-welcome-sub">Here's what's happening with your account today.</p>
+                                </div>
+
+                                <div class="dash-hero-card dash-hero-plan">
+                                    <span class="dash-hero-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4M8.5 12h7M8.5 16h4"/>
+                                        </svg>
+                                    </span>
+                                    <div class="dash-hero-body">
+                                        <div class="dash-hero-label">Current Plan</div>
+                                        <div class="dash-hero-value" id="dashCurrentPlan">\u2014</div>
+                                        <button class="dash-hero-btn" onclick="lexoraNavigate('plans-offers')">Manage Plan <span>\u2192</span></button>
+                                    </div>
+                                    <svg class="dash-hero-art" viewBox="0 0 64 72" fill="none" aria-hidden="true">
+                                        <path d="M20 44h24v26l-12-8-12 8z" fill="#93b8fb"/>
+                                        <circle cx="32" cy="30" r="22" fill="#bcd6fb"/>
+                                        <circle cx="32" cy="30" r="16" fill="#6fa2f7"/>
+                                        <path d="m32 20 3.2 6.6 7.2 1-5.2 5.1 1.2 7.2-6.4-3.4-6.4 3.4 1.2-7.2-5.2-5.1 7.2-1z" fill="#fff"/>
+                                    </svg>
+                                </div>
+
+                                <div class="dash-hero-card dash-hero-wallet">
+                                    <span class="dash-hero-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H18a2 2 0 0 1 2 2v1"/><rect x="3" y="7.5" width="18" height="12" rx="2.5"/><circle cx="16.5" cy="13.5" r="1.3"/>
+                                        </svg>
+                                    </span>
+                                    <div class="dash-hero-body">
+                                        <div class="dash-hero-label">Wallet Balance</div>
+                                        <div class="dash-hero-value" id="dashBalance">\u20b90.00</div>
+                                        <button class="dash-hero-btn" onclick="lexoraNavigate('payment','balance')">Add Funds <span>+</span></button>
+                                    </div>
+                                    <svg class="dash-hero-art" viewBox="0 0 72 60" fill="none" aria-hidden="true">
+                                        <rect x="20" y="6" width="40" height="24" rx="3" fill="#86efac"/>
+                                        <rect x="26" y="12" width="28" height="14" rx="2" fill="#4ade80"/>
+                                        <rect x="4" y="20" width="60" height="34" rx="7" fill="#7f9cd4"/>
+                                        <path d="M4 30h60v10H4z" fill="#6b88c4"/>
+                                        <circle cx="52" cy="36" r="5" fill="#f5b642"/>
+                                    </svg>
+                                </div>
                             </div>
-                            <div class="dash-card">
-                                <div class="dash-card-icon">💰</div>
-                                <div class="dash-card-value" id="dashBalance">₹0.00</div>
-                                <div class="dash-card-label">Balance</div>
-                            </div>
-                        </div>
-                        <div class="history-card" style="height:280px;margin-top:20px;">
-                            <h3>📅 Today's Transactions</h3>
-                            <div class="card-body today-table-scroll-outer">
-                                <table class="history-table today-table" id="todayTableHeader">
-                                    <thead>
-                                        <tr>
-                                            <th>Date &amp; Time</th>
-                                            <th>T. ID</th>
-                                            <th>User ID</th>
-                                            <th>Payment Type</th>
-                                            <th>Payment Mode</th>
-                                            <th>Description</th>
-                                            <th>Credit</th>
-                                            <th>Debit</th>
-                                        </tr>
-                                    </thead>
-                                </table>
-                                <div class="history-table-wrapper" id="todayTableWrapper">
-                                    <table class="history-table today-table" id="todayTable">
-                                        <tbody id="todayTableBody">
-                                        </tbody>
+
+                            <div class="history-card dash-txn-card">
+                                <div class="dash-txn-head">
+                                    <span class="ds-card-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4"/>
+                                        </svg>
+                                    </span>
+                                    <h3>Today's Transactions</h3>
+                                    <button class="dash-view-all" onclick="lexoraNavigate('payment','payment-history')">View All Transactions <span>\u2192</span></button>
+                                </div>
+                                <div class="card-body today-table-scroll-outer">
+                                    <table class="history-table today-table" id="todayTableHeader">
+                                        <thead>
+                                            <tr>
+                                                <th>Date &amp; Time</th>
+                                                <th>T. ID</th>
+                                                <th>User ID</th>
+                                                <th>Payment Type</th>
+                                                <th>Payment Mode</th>
+                                                <th>Description</th>
+                                                <th>Credit</th>
+                                                <th>Debit</th>
+                                                <th>Status</th>
+                                            </tr>
+                                        </thead>
                                     </table>
+                                    <div class="history-table-wrapper" id="todayTableWrapper">
+                                        <table class="history-table today-table" id="todayTable">
+                                            <tbody id="todayTableBody">
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="dashboard-grid">
+                                <div class="dash-card">
+                                    <span class="dash-card-icon dash-icon-blue">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 20V11M12 20V4M18 20v-6"/></svg>
+                                    </span>
+                                    <div class="dash-card-text">
+                                        <div class="dash-card-value" id="dashTodayCount">0</div>
+                                        <div class="dash-card-label">Today's Transactions</div>
+                                        <div class="dash-card-sub">Total transactions made today</div>
+                                    </div>
+                                </div>
+                                <div class="dash-card">
+                                    <span class="dash-card-icon dash-icon-green">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+                                    </span>
+                                    <div class="dash-card-text">
+                                        <div class="dash-card-value" id="dashTodayCredit">\u20b90.00</div>
+                                        <div class="dash-card-label">Today's Credits</div>
+                                        <div class="dash-card-sub">Total amount credited today</div>
+                                    </div>
+                                </div>
+                                <div class="dash-card">
+                                    <span class="dash-card-icon dash-icon-purple">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6.5 13.5 12 19l5.5-5.5"/></svg>
+                                    </span>
+                                    <div class="dash-card-text">
+                                        <div class="dash-card-value" id="dashTodayDebit">\u20b90.00</div>
+                                        <div class="dash-card-label">Today's Debits</div>
+                                        <div class="dash-card-sub">Total amount debited today</div>
+                                    </div>
+                                </div>
+                                <div class="dash-card">
+                                    <span class="dash-card-icon dash-icon-amber">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/></svg>
+                                    </span>
+                                    <div class="dash-card-text">
+                                        <div class="dash-card-value" id="dashPending">0</div>
+                                        <div class="dash-card-label">Pending Activities</div>
+                                        <div class="dash-card-sub">Actions awaiting completion</div>
+                                    </div>
                                 </div>
                             </div>
                         </div>

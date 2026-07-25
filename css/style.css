@@ -54,9 +54,9 @@
         .company-logo {
             width: 34px;
             height: 34px;
-            background: transparent;
+            background: #ffffff;
             border: 2px solid rgba(255,255,255,0.4);
-            border-radius: 1px;
+            border-radius: 6px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -3889,8 +3889,8 @@
 }
 
 .auth-topbar-logo {
-    width: 12.4em;
-    height: 12.4em;
+    width: 3.4em;
+    height: 3.4em;
     object-fit: contain;
 }
 
