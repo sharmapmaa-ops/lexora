@@ -2651,12 +2651,17 @@
             // sirf formatMoney() se banti hai - currency badalni ho to
             // sirf CURRENCY_SYMBOL badalna hai, aur kahin nahi.
             // ============================================================
-            const CURRENCY_SYMBOL = '₹';
-            window.CURRENCY_SYMBOL = CURRENCY_SYMBOL;
+            // Symbol company.json se aata hai (COMPANY_INFO.currency).
+            // Wahan badalne par poore app me badal jayega - koi aur jagah
+            // hardcode nahi hai. Config load hone se pehle ₹ fallback.
+            function currencySymbol() {
+                return (COMPANY_INFO && COMPANY_INFO.currency) || '₹';
+            }
+            Object.defineProperty(window, 'CURRENCY_SYMBOL', { get: currencySymbol });
 
             function formatMoney(value) {
                 const n = Number(value);
-                return CURRENCY_SYMBOL + (isFinite(n) ? n : 0).toFixed(2);
+                return currencySymbol() + (isFinite(n) ? n : 0).toFixed(2);
             }
             window.formatMoney = formatMoney;
 
@@ -3034,7 +3039,7 @@
                 }
                 const sorted = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
                 const headers = ['Date & Time', 'T. ID', 'Payment Type', 'Payment Mode',
-                    'Description', 'Credit (' + CURRENCY_SYMBOL + ')', 'Debit (' + CURRENCY_SYMBOL + ')'
+                    'Description', 'Credit (' + currencySymbol() + ')', 'Debit (' + currencySymbol() + ')'
                 ];
                 let table = '<table border="1"><tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
                 sorted.forEach(t => {
@@ -3803,14 +3808,33 @@
             let apiRefActive = null;
             let apiRefTab = 'request';
 
+            // SERVICES_API_DATA async load hota hai, isliye yahan uspar
+            // koi bharosa nahi kiya jata: list menu se banti hai (jo hamesha
+            // maujood hai), labels jahan mile wahan data se, aur default
+            // selection HAMESHA pehli aisi service hoti hai jiske docs
+            // sach me maujood hain. Data late aaye to card dobara render
+            // ho jata hai. Isi wajah se pehle khaali/"Other Services"
+            // dikhta tha.
+            function apiDocsData() { return SERVICES_API_DATA || {}; }
+
             function apiRefServices() {
-                const menu = MENU_CONFIG.mainMenu.find(m => m.id === 'services');
-                if (!menu) return [];
-                // Pehle sirf wahi services aati thi jinka SERVICES_API_DATA
-                // me entry thi - baaki chup-chaap gayab ho jati thi. Ab sab
-                // dikhti hain; jiska data nahi hai uska panel saaf bata deta
-                // hai ki docs abhi nahi hain.
-                return menu.subItems;
+                const menu = MENU_CONFIG && MENU_CONFIG.mainMenu
+                    ? MENU_CONFIG.mainMenu.find(m => m.id === 'services') : null;
+                const data = apiDocsData();
+                if (!menu || !menu.subItems) {
+                    return Object.keys(data).map(id => ({ id: id, label: data[id].label || id }));
+                }
+                return menu.subItems.map(s => ({
+                    id: s.id,
+                    label: (data[s.id] && data[s.id].label)
+                        || String(s.label || s.id).replace(/^[^A-Za-z0-9]+/, '').trim()
+                }));
+            }
+
+            function firstDocumentedService(services) {
+                const data = apiDocsData();
+                const withDocs = services.find(s => data[s.id] && data[s.id].get);
+                return (withDocs || services[0] || {}).id || null;
             }
 
             // Chhota JSON highlighter - keys, strings aur numbers alag rang.
@@ -3866,17 +3890,25 @@
                 if (!nav || !panel) return;
 
                 const services = apiRefServices();
+                const data = apiDocsData();
                 if (services.length === 0) { nav.innerHTML = ''; panel.innerHTML = ''; return; }
-                if (!apiRefActive || !services.some(s => s.id === apiRefActive)) apiRefActive = services[0].id;
+
+                // Agar abhi tak koi choose nahi hua, ya jo chuna tha uske
+                // docs nahi hain, to pehli documented service par jao -
+                // taaki page khulte hi asli reference dikhe.
+                if (!apiRefActive || !services.some(s => s.id === apiRefActive)
+                    || !(data[apiRefActive] && data[apiRefActive].get)) {
+                    apiRefActive = firstDocumentedService(services);
+                }
 
                 nav.innerHTML = services.map(s => `
-                    <button class="api-ref-nav-item ${s.id === apiRefActive ? 'is-active' : ''} ${SERVICES_API_DATA[s.id] ? '' : 'is-empty'}" onclick="setApiRefService('${s.id}')">
+                    <button class="api-ref-nav-item ${s.id === apiRefActive ? 'is-active' : ''} ${data[s.id] && data[s.id].get ? '' : 'is-empty'}" onclick="setApiRefService('${s.id}')">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4"/></svg>
-                        <span>${escapeHtml((SERVICES_API_DATA[s.id] || {}).label || s.label)}</span>
+                        <span>${escapeHtml(s.label)}</span>
                         <em>\u203a</em>
                     </button>`).join('');
 
-                const d = SERVICES_API_DATA[apiRefActive];
+                const d = data[apiRefActive];
                 if (!d || !d.get) {
                     const label = (services.find(s => s.id === apiRefActive) || {}).label || apiRefActive;
                     panel.innerHTML = `
@@ -4880,16 +4912,6 @@
                             </div>
                         </div>
 
-                        <div class="service-perks profile-perks">
-                            ${[
-                                ['<path d="M12 3l7.5 3v5.5c0 4.4-3 8.2-7.5 9.5-4.5-1.3-7.5-5.1-7.5-9.5V6z"/><path d="m9 12 2.2 2.2L15.5 10"/>', 'Secure Account', 'Your data is encrypted and protected'],
-                                ['<rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>', 'Privacy Control', 'We never share your personal information'],
-                                ['<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 19.5a2.2 2.2 0 0 0 4 0"/>', 'Instant Updates', 'Get notified about important account activities'],
-                                ['<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3 4v4.5h4.5M12 7.5V12l3 2"/>', 'Account History', 'View your login and activity history anytime']
-                            ].map(p => `<div class="service-perk">
-                                <span class="service-perk-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p[0]}</svg></span>
-                                <div><b>${p[1]}</b><span>${p[2]}</span></div>
-                            </div>`).join('')}
                         </div>
                     </div>
                 `;
@@ -6993,6 +7015,8 @@
                     }
                 });
 
+                buildServiceTabStrips(root);
+
                 // Perks strip sirf service pages par, aur sirf ek baar.
                 // Other Services ke tools .service-page-grid use nahi karte,
                 // sirf .service-card - isliye wo bhi count hote hain.
@@ -7002,6 +7026,72 @@
                 }
             }
             window.enhanceServicePage = enhanceServicePage;
+
+            // .service-page-grid ke 2x2 cards ko do stacked tab strips me
+            // badal deta hai: [Upload File(s) | Setup] aur uske neeche
+            // [Uploaded Files | Activity Log]. Dono full width. Isse chaaro
+            // cards ki height apne aap barabar rehti hai aur koi card viewport
+            // se bahar nahi jata.
+            function buildServiceTabStrips(root) {
+                const grid = root.querySelector('.service-page-grid');
+                if (!grid || grid.dataset.tabbed) return;
+
+                const cols = Array.prototype.slice.call(grid.querySelectorAll(':scope > .service-col'));
+                if (cols.length < 2) return;
+
+                const cardsOf = col => Array.prototype.slice.call(col.children)
+                    .map(el => el.classList.contains('activity-log-section') ? el.firstElementChild : el)
+                    .filter(Boolean);
+
+                const groups = [cardsOf(cols[0]), cardsOf(cols[1])].filter(g => g.length);
+                if (!groups.length) return;
+
+                const titleOf = card => {
+                    const h = card.querySelector('h3');
+                    return h ? h.textContent.trim() : 'Panel';
+                };
+
+                const strips = groups.map((cards, gi) => {
+                    const strip = document.createElement('div');
+                    strip.className = 'svc-strip';
+
+                    const tabs = document.createElement('div');
+                    tabs.className = 'svc-tabs';
+                    const panes = document.createElement('div');
+                    panes.className = 'svc-panes';
+
+                    cards.forEach((card, ci) => {
+                        const btn = document.createElement('button');
+                        btn.className = 'svc-tab' + (ci === 0 ? ' is-active' : '');
+                        btn.type = 'button';
+                        const head = card.querySelector('h3');
+                        const icon = head && head.querySelector('.ds-card-icon');
+                        if (icon) btn.appendChild(icon.cloneNode(true));
+                        btn.appendChild(document.createTextNode(titleOf(card)));
+                        btn.onclick = () => {
+                            strip.querySelectorAll('.svc-tab').forEach((b, i) => b.classList.toggle('is-active', i === ci));
+                            strip.querySelectorAll('.svc-pane').forEach((p, i) => p.classList.toggle('is-active', i === ci));
+                        };
+                        tabs.appendChild(btn);
+
+                        const pane = document.createElement('div');
+                        pane.className = 'svc-pane' + (ci === 0 ? ' is-active' : '');
+                        if (head) head.remove();
+                        card.classList.add('svc-card-inner');
+                        pane.appendChild(card);
+                        panes.appendChild(pane);
+                    });
+
+                    strip.appendChild(tabs);
+                    strip.appendChild(panes);
+                    return strip;
+                });
+
+                grid.dataset.tabbed = '1';
+                grid.classList.add('is-tabbed');
+                grid.innerHTML = '';
+                strips.forEach(s => grid.appendChild(s));
+            }
 
             function updateContent(data, breadcrumb) {
                 const bodyContent = typeof data.body === 'function' ? data.body() : data.body;
@@ -8033,19 +8123,6 @@
                                             </div>` : '<p class="ds-card-sub">No location set in company.json.</p>'}
                                     </div>
 
-                                    <div class="contact-faq-card">
-                                        <div class="ds-card-head">
-                                            <span class="ds-card-icon is-filled">${svg('<circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .9-1 1.6v.3"/><path d="M12 17.2h.01"/>')}</span>
-                                            <div><h3 data-iconified="1">Frequently Asked Questions</h3></div>
-                                        </div>
-                                        <div class="contact-faq-grid">
-                                            ${faqs.map((f, i) => `
-                                                <details class="contact-faq" ${i === 0 ? 'open' : ''}>
-                                                    <summary>${escapeHtml(f[0])}</summary>
-                                                    <p>${escapeHtml(f[1])}</p>
-                                                </details>`).join('')}
-                                        </div>
-                                    </div>
                                 </div>
                             </div>
 
@@ -8375,24 +8452,19 @@
                 'Fast, reliable & privacy focused'
             ];
 
-            const AUTH_FEATURES = [
-                { icon: '\u2b06', title: 'Upload',            desc: 'Drop in your PDFs or images' },
-                { icon: '\u2699', title: 'Process',           desc: 'Choose your options and start' },
-                { icon: '\u2b07', title: 'Download',          desc: 'Get Word, Excel, CSV, JSON or PDF' },
-                { icon: '\u2295', title: 'Translation',       desc: '60+ languages, layout preserved exactly' },
-                { icon: '\u25a3', title: 'OCR',               desc: 'Scanned or photographed pages rebuilt into editable Word' },
-                { icon: '\u2261', title: 'Data Extraction',   desc: 'Define your own fields, get a clean table from every file' },
-                { icon: '\u25a4', title: 'BAI2',              desc: 'Bank statements converted to BAI2, CSV or JSON' },
-                { icon: '\u25a5', title: 'Lease Abstraction', desc: 'Structured lease fields with source citations' },
-                { icon: '\u2726', title: 'Free Tools',        desc: '29 PDF, image, data and calculator utilities' },
-                { icon: '\u2713', title: 'Secure',            desc: "Files processed in your browser. We don't store your documents" }
+            const AUTH_PAID_TOOLS = [
+                ['Document Translation', '60+ languages, layout preserved exactly'],
+                ['OCR Conversion', 'Scanned or photographed pages rebuilt into editable Word'],
+                ['Data Extraction', 'Define your own fields, get a clean table from every file'],
+                ['BAI2 Conversion', 'Bank statements converted to BAI2, CSV or JSON'],
+                ['Lease Abstraction', 'Structured lease fields with source citations']
             ];
 
-            const AUTH_TRUST = [
-                { title: 'Secure in Browser', desc: 'Files never leave your device' },
-                { title: 'Pay per Page',      desc: 'Only for what you process' },
-                { title: 'No Lock-in',        desc: 'Export anytime' },
-                { title: '29+ Free Tools',    desc: 'Built-in utilities to save time' }
+            const AUTH_FREE_TOOLS = [
+                ['PDF Tools', ['Merge', 'Split', 'Compress', 'Rotate', 'Watermark', 'Page Numbers', 'PDF to Word', 'PDF to Excel']],
+                ['Image Tools', ['Convert', 'Compress', 'Resize', 'Crop', 'Image to PDF']],
+                ['Data Tools', ['CSV to JSON', 'JSON Formatter', 'Excel to CSV', 'Text Diff', 'Base64']],
+                ['Calculators', ['EMI', 'GST', 'Percentage', 'Date Difference', 'Unit Convert']]
             ];
 
             function buildAuthLeftPanel() {
@@ -8435,25 +8507,28 @@
                         </div>
                     </div>
 
-                    <div class="auth-feature-grid">
-                        ${AUTH_FEATURES.map(function (f) {
-                            return `<div class="auth-feature-card">
-                                <div class="auth-feature-icon">${f.icon}</div>
-                                <div>
-                                    <div class="auth-feature-title">${escapeHtml(f.title)}</div>
-                                    <div class="auth-feature-desc">${escapeHtml(f.desc)}</div>
-                                </div>
-                            </div>`;
-                        }).join('')}
-                    </div>
-
-                    <div class="auth-trust-row">
-                        ${AUTH_TRUST.map(function (t) {
-                            return `<div class="auth-trust">
-                                <b>${escapeHtml(t.title)}</b>
-                                <span>${escapeHtml(t.desc)}</span>
-                            </div>`;
-                        }).join('')}
+                    <div class="auth-tools-card">
+                        <div class="auth-tools-col">
+                            <div class="auth-tools-head">
+                                <span class="auth-tools-dot is-paid"></span>Paid Services
+                            </div>
+                            <ul class="auth-tools-list">
+                                ${AUTH_PAID_TOOLS.map(t => `<li><b>${escapeHtml(t[0])}</b><span>${escapeHtml(t[1])}</span></li>`).join('')}
+                            </ul>
+                        </div>
+                        <div class="auth-tools-col is-free">
+                            <div class="auth-tools-head">
+                                <span class="auth-tools-dot is-free"></span>Free Tools
+                                <em>${AUTH_FREE_TOOLS.reduce((n, c) => n + c[1].length, 0)}+ utilities, no charge</em>
+                            </div>
+                            <div class="auth-free-grid">
+                                ${AUTH_FREE_TOOLS.map(c => `
+                                    <div class="auth-free-cat">
+                                        <b>${escapeHtml(c[0])}</b>
+                                        <span>${c[1].map(escapeHtml).join(' \u00b7 ')}</span>
+                                    </div>`).join('')}
+                            </div>
+                        </div>
                     </div>
                 `;
             }
