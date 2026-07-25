@@ -6558,17 +6558,6 @@
                     : '';
 
                 return `
-                    <div class="page-head">
-                        <div>
-                            <h1 class="page-head-title">${escapeHtml(title)}</h1>
-                            ${sub ? `<p class="page-head-sub">${escapeHtml(sub)}</p>` : ''}
-                        </div>
-                        <div class="page-crumb">
-                            ${HOME_ICON}<a onclick="lexoraNavigate('dashboard')">Dashboard</a>
-                            ${mid}
-                            <span class="sep">\u203a</span><span class="cur">${escapeHtml(title)}</span>
-                        </div>
-                    </div>
                 `;
             }
 
