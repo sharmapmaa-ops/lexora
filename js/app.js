@@ -27,6 +27,7 @@
             // 1. JSON CONFIGURATION
             // ============================================================
             let MENU_CONFIG = null;
+            let CARD_LAYOUT = null;
 
             // ============================================================
             // 2. SERVICE FILES DATA
@@ -4819,7 +4820,7 @@
                 return `
                     <div class="payment-layout">
                         <div class="payment-left">
-                            <div class="payment-card profile-photo-card" style="height:480px;">
+                            <div class="payment-card profile-photo-card">
                                 <div class="profile-photo-card-header">
                                     <h3>🖼️ Profile Photo</h3>
                                     <a class="profile-remove-photo-link" id="profileRemovePhotoLink" style="display:${profileData.photo ? 'inline-flex' : 'none'};" onclick="removeProfilePhoto()">🗑️ Remove Photo</a>
@@ -4841,7 +4842,7 @@
                             </div>
                         </div>
                         <div class="payment-right">
-                            <div class="payment-card" style="height:480px;">
+                            <div class="payment-card profile-info-card">
                                 <h3>👤 Personal Information</h3>
                                 <div class="card-body" style="overflow-y:auto;">
                                     <div class="payment-form">
@@ -5915,8 +5916,8 @@
             };
 
             function buildAdminFilesBody() {
-                return `
-                    <div class="admin-files-card">
+                return buildCardSizesPanel() + `
+                    <div class="admin-files-card" style="margin-top:16px;">
                         <div class="admin-files-header">
                             <h3>📁 Files and Folder</h3>
                         </div>
@@ -7093,10 +7094,179 @@
                 strips.forEach(s => grid.appendChild(s));
             }
 
+            // ============================================================
+            // CARD SIZES (json/card-layout.json)
+            //
+            // Har card ka width/height ek hi jagah se aata hai. Admin Panel >
+            // Card Sizes se edit hota hai, aur yahan se ek <style> tag me
+            // badal kar lag jata hai - isliye CSS file chhedne ki zaroorat
+            // nahi. mode 'auto' matlab CSS ka default chalne do.
+            // ============================================================
+            function cardSizeRule(dim, spec) {
+                if (!spec || spec.mode === 'auto' || !spec.mode) return '';
+                const n = Number(spec.value);
+                if (!isFinite(n) || n <= 0) return '';
+                const unit = spec.mode === '%' ? '%' : 'px';
+                return `${dim}: ${n}${unit} !important;`;
+            }
+
+            function applyCardLayout() {
+                let style = document.getElementById('cardLayoutStyle');
+                if (!style) {
+                    style = document.createElement('style');
+                    style.id = 'cardLayoutStyle';
+                    document.head.appendChild(style);
+                }
+                const cards = (CARD_LAYOUT && CARD_LAYOUT.cards) || [];
+                style.textContent = cards.map(c => {
+                    if (!c.selector) return '';
+                    const body = cardSizeRule('width', c.width) + cardSizeRule('height', c.height);
+                    return body ? `${c.selector} { ${body} }` : '';
+                }).filter(Boolean).join('\n');
+            }
+            window.applyCardLayout = applyCardLayout;
+
+            // Login screen ke cards bhi isi config se size lete hain, aur wo
+            // loadAppData() se pehle dikhta hai (jo login ke baad chalta
+            // hai). Isliye ye chhota standalone fetch - static file hai, auth
+            // ki zaroorat nahi. Fail ho jaye to CSS ke default chalte hain.
+            (async function loadCardLayoutEarly() {
+                try {
+                    const res = await fetch('json/card-layout.json');
+                    if (!res.ok) return;
+                    CARD_LAYOUT = await res.json();
+                    applyCardLayout();
+                } catch (err) {
+                    console.warn('Card sizes could not be loaded:', err);
+                }
+            })();
+
+            function buildCardSizesPanel() {
+                const cards = (CARD_LAYOUT && CARD_LAYOUT.cards) || [];
+                if (!cards.length) {
+                    return '<div class="admin-files-card"><h3>\u{1F4D0} Card Sizes</h3>'
+                        + '<p class="ds-card-sub">json/card-layout.json load nahi hui.</p></div>';
+                }
+
+                const sections = [];
+                cards.forEach(c => {
+                    let s = sections.find(x => x.name === c.section);
+                    if (!s) { s = { name: c.section || 'Other', items: [] }; sections.push(s); }
+                    s.items.push(c);
+                });
+
+                const field = (card, dim) => {
+                    const spec = card[dim] || { mode: 'auto', value: null };
+                    return `
+                        <div class="card-size-field">
+                            <select data-id="${card.id}" data-dim="${dim}" data-part="mode" onchange="onCardSizeChange(this)">
+                                ${['auto', 'px', '%'].map(m =>
+                                    `<option value="${m}" ${spec.mode === m ? 'selected' : ''}>${m}</option>`).join('')}
+                            </select>
+                            <input type="number" min="1" step="1" placeholder="\u2014"
+                                   data-id="${card.id}" data-dim="${dim}" data-part="value"
+                                   value="${spec.value != null ? spec.value : ''}"
+                                   ${spec.mode === 'auto' ? 'disabled' : ''}
+                                   oninput="onCardSizeChange(this)" />
+                        </div>`;
+                };
+
+                return `
+                    <div class="admin-files-card card-sizes-card">
+                        <div class="admin-files-header">
+                            <h3>\u{1F4D0} Card Sizes</h3>
+                            <div class="card-sizes-actions">
+                                <button class="admin-btn" onclick="downloadCardLayout()">\u2B07 Download JSON</button>
+                                <button class="admin-btn" onclick="resetCardLayout()">\u21BA Reset to auto</button>
+                                <button class="add-btn" onclick="saveCardLayout()">Save changes</button>
+                            </div>
+                        </div>
+                        <p class="ds-card-sub">
+                            Har card ki width aur height yahan se set hoti hai.
+                            <b>auto</b> = CSS ka default, <b>px</b> = fixed pixels, <b>%</b> = parent ke hisab se.
+                            Save karte hi live lag jata hai.
+                        </p>
+                        ${sections.map(s => `
+                            <div class="card-size-section">
+                                <h4>${escapeHtml(s.name)}</h4>
+                                <table class="admin-json-table card-size-table">
+                                    <thead><tr><th>Card</th><th style="width:190px;">Width</th><th style="width:190px;">Height</th></tr></thead>
+                                    <tbody>
+                                        ${s.items.map(c => `
+                                            <tr>
+                                                <td>
+                                                    <b>${escapeHtml(c.label || c.id)}</b>
+                                                    <code>${escapeHtml(c.selector)}</code>
+                                                </td>
+                                                <td>${field(c, 'width')}</td>
+                                                <td>${field(c, 'height')}</td>
+                                            </tr>`).join('')}
+                                    </tbody>
+                                </table>
+                            </div>`).join('')}
+                    </div>`;
+            }
+
+            function cardLayoutEntry(id) {
+                return ((CARD_LAYOUT && CARD_LAYOUT.cards) || []).find(c => c.id === id);
+            }
+
+            window.onCardSizeChange = function(el) {
+                const entry = cardLayoutEntry(el.dataset.id);
+                if (!entry) return;
+                const dim = el.dataset.dim;
+                entry[dim] = entry[dim] || { mode: 'auto', value: null };
+
+                if (el.dataset.part === 'mode') {
+                    entry[dim].mode = el.value;
+                    // auto par number box ka koi matlab nahi - disable kar do.
+                    const box = document.querySelector(
+                        `input[data-id="${el.dataset.id}"][data-dim="${dim}"]`);
+                    if (box) {
+                        box.disabled = el.value === 'auto';
+                        if (el.value === 'auto') { box.value = ''; entry[dim].value = null; }
+                    }
+                } else {
+                    entry[dim].value = el.value === '' ? null : Number(el.value);
+                }
+                applyCardLayout();
+            };
+
+            window.saveCardLayout = async function() {
+                await saveJSON('card-layout', CARD_LAYOUT);
+                applyCardLayout();
+                showSuccess('Card sizes saved.');
+            };
+
+            window.resetCardLayout = function() {
+                ((CARD_LAYOUT && CARD_LAYOUT.cards) || []).forEach(c => {
+                    c.width = { mode: 'auto', value: null };
+                    c.height = { mode: 'auto', value: null };
+                });
+                applyCardLayout();
+                const body = document.getElementById('contentBody');
+                if (body && body.querySelector('.card-sizes-card')) {
+                    body.querySelector('.card-sizes-card').outerHTML = buildCardSizesPanel();
+                }
+            };
+
+            window.downloadCardLayout = function() {
+                const blob = new Blob([JSON.stringify(CARD_LAYOUT, null, 1)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'card-layout.json';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+            };
+
             function updateContent(data, breadcrumb) {
                 const bodyContent = typeof data.body === 'function' ? data.body() : data.body;
                 contentBody.innerHTML = bodyContent || '';
                 upgradeCardHeaders(contentBody);
+                applyCardLayout();
                 enhanceServicePage(contentBody);
                 currentMenuDisplay.textContent = breadcrumb || 'Dashboard';
 
@@ -8282,6 +8452,7 @@
                     paymentMethodsData,
                     paymentHistoryData,
                     servicesApiData,
+                    cardLayoutData,
                     contactSubmissionsData,
                     meData,
                     messagesData,
@@ -8300,6 +8471,7 @@
                     fetchJSON('json/payment-methods.json'),
                     fetchJSON('json/payment-history.json'),
                     fetchJSON('json/services-api.json'),
+                    fetchJSON('json/card-layout.json'),
                     fetchJSON('json/contact-submissions.json'),
                     fetchJSON('/api/auth/me?userId=' + encodeURIComponent(CURRENT_USER_ID)),
                     fetchJSON('json/messages.json'),
@@ -8320,6 +8492,8 @@
                 MENU_CONFIG = menuConfig;
                 paymentMethods = paymentMethodsData;
                 paymentHistory = paymentHistoryData;
+                CARD_LAYOUT = cardLayoutData;
+                applyCardLayout();
                 SERVICES_API_DATA = servicesApiData;
                 // Agar API Documentation page pehle se khula hai to data
                 // aate hi reference dobara draw ho jaye.
@@ -8460,14 +8634,23 @@
                 ['Lease Abstraction', 'Structured lease fields with source citations']
             ];
 
-            const AUTH_FREE_TOOLS = [
-                ['PDF Tools', ['Merge', 'Split', 'Compress', 'Rotate', 'Watermark', 'Page Numbers', 'PDF to Word', 'PDF to Excel']],
-                ['Image Tools', ['Convert', 'Compress', 'Resize', 'Crop', 'Image to PDF']],
-                ['Data Tools', ['CSV to JSON', 'JSON Formatter', 'Excel to CSV', 'Text Diff', 'Base64']],
-                ['Calculators', ['EMI', 'GST', 'Percentage', 'Date Difference', 'Unit Convert']]
-            ];
+            // Free tools ki list FreeServices se aati hai - wahi registry
+            // jo "Other Services" page use karta hai. Manually likhne par
+            // list purani pad jati thi aur kai tools chhoot jate the.
+            function authFreeTools() {
+                if (window.FreeServices && typeof FreeServices.catalogue === 'function') {
+                    try {
+                        const groups = FreeServices.catalogue();
+                        if (groups && groups.length) return groups.map(g => [g.title, g.tools]);
+                    } catch (err) {
+                        console.warn('Could not read the free tools catalogue:', err);
+                    }
+                }
+                return [];
+            }
 
             function buildAuthLeftPanel() {
+                const freeTools = authFreeTools();
                 const name = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora';
                 const shortName = String(name).split(/\s+/)[0] || 'Lexora';
                 const logoPath = (COMPANY_INFO && COMPANY_INFO.logo) || 'Pictures/lexora-logo.png';
@@ -8519,10 +8702,10 @@
                         <div class="auth-tools-col is-free">
                             <div class="auth-tools-head">
                                 <span class="auth-tools-dot is-free"></span>Free Tools
-                                <em>${AUTH_FREE_TOOLS.reduce((n, c) => n + c[1].length, 0)}+ utilities, no charge</em>
+                                <em>${freeTools.reduce((n, c) => n + c[1].length, 0)} utilities, no charge</em>
                             </div>
                             <div class="auth-free-grid">
-                                ${AUTH_FREE_TOOLS.map(c => `
+                                ${freeTools.map(c => `
                                     <div class="auth-free-cat">
                                         <b>${escapeHtml(c[0])}</b>
                                         <span>${c[1].map(escapeHtml).join(' \u00b7 ')}</span>
@@ -8733,9 +8916,12 @@
                             </div>
                         </div>
 
-                        <div class="auth-footer">
-                            <span>&copy; ${new Date().getFullYear()} ${escapeHtml(name)}. All rights reserved. | Version 1.0.0</span>
-                            ${social ? `<span class="auth-footer-social">${social}</span>` : ''}
+                        <div class="footer">
+                            <div class="footer-inner">
+                                <span class="footer-spacer"></span>
+                                <span class="footer-copy">&copy; ${new Date().getFullYear()} ${escapeHtml(name)}. All rights reserved. | Version 1.0.0</span>
+                                <span id="authFooterSocial">${social || ''}</span>
+                            </div>
                         </div>
                     </div>
                 `;

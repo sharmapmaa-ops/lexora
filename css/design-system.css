@@ -2663,3 +2663,76 @@ label { font-size: .76rem; }
     .auth-tools-col.is-free { border-left: none; padding-left: 0; border-top: 1px solid var(--lx-line); padding-top: 1em; }
     .auth-free-grid { grid-template-columns: 1fr; }
 }
+
+/* =====================================================================
+   ROUND 8
+   ===================================================================== */
+
+/* ---- login ka footer ab bilkul dashboard wala hi hai ----
+   Pehle .auth-footer alag banaya tha; ab wahi .footer / .footer-inner
+   markup hai, bas page ke padding se bahar bleed karta hai taaki
+   full-width dikhe. */
+/* Full-bleed: container ki padding/max-width/centering se azaad hokar
+   poori viewport width leta hai. Negative-margin trick se 4px ka overflow
+   reh jata tha kyunki page center bhi hota hai. */
+.auth-page > .footer {
+    width: 100vw;
+    margin-left: calc(50% - 50vw);
+    margin-right: calc(50% - 50vw);
+    margin-top: 1.2em;
+    border-radius: 0;
+}
+
+/* 100vw scrollbar ko count karta hai - is ek jagah horizontal scroll rok do. */
+.auth-screen { overflow-x: hidden; }
+
+#authFooterSocial { display: inline-flex; gap: 10px; justify-self: end; grid-column: 3; }
+
+#authFooterSocial a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px; height: 30px;
+    border-radius: 8px;
+    background: rgba(255,255,255,.15);
+    color: #fff;
+}
+
+#authFooterSocial a:hover { background: rgba(255,255,255,.28); }
+
+
+
+/* ---- profile cards ab config se size lete hain ---- */
+.profile-photo-card, .profile-info-card { display: flex; flex-direction: column; }
+.profile-photo-card > .card-body, .profile-info-card > .card-body { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* ---- admin: Card Sizes panel ---- */
+.card-sizes-card .admin-files-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+
+.card-sizes-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.card-size-section { margin-top: 16px; }
+
+.card-size-section h4 {
+    font-size: .84rem;
+    font-weight: 700;
+    color: var(--ds-blue);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin: 0 0 8px;
+}
+
+.card-size-table { width: 100%; border: 1px solid var(--ds-line); border-radius: var(--ds-radius-sm); overflow: hidden; }
+.card-size-table td b    { display: block; font-size: .84rem; color: var(--ds-navy); }
+.card-size-table td code { font-size: .72rem; color: var(--ds-muted); }
+
+.card-size-field { display: flex; gap: 6px; align-items: center; }
+.card-size-field select { width: 78px; padding: 6px 8px; font-size: .8rem; }
+.card-size-field input  { width: 96px; padding: 6px 8px; font-size: .8rem; }
+.card-size-field input:disabled { background: #f2f5fa; color: #b0bcd0; }

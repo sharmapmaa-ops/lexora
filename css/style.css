@@ -3877,7 +3877,10 @@
     font-size: clamp(8.6px, 0.76vw, 13px);
     max-width: 132em;
     margin: 0 auto;
-    padding: 1.1em 2.2em 1.3em;
+    /* Padding ek variable me, taaki footer usi ko exactly cancel
+       kar sake (hardcode karne par 4px overflow aa raha tha). */
+    --auth-pad-x: 2.2em;
+    padding: 1.1em var(--auth-pad-x) 0;
 }
 
 /* ---- brand bar ---- */

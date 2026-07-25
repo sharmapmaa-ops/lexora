@@ -399,6 +399,28 @@
     return list;
   }
 
+  // Login page ko wahi catalogue chahiye jo Other Services dikhata hai.
+  // Pehle wo list manually likhi gayi thi, isliye kai tools chhoot gaye
+  // the. Ab ek hi source hai - naya tool register karte hi dono jagah
+  // apne aap aa jayega.
+  function catalogue() {
+    const byId = {};
+    allTools().forEach(function (t) { byId[t.id] = t; });
+
+    const used = {};
+    const groups = GROUPS.map(function (g) {
+      const tools = g.ids.map(function (id) { used[id] = true; return byId[id]; })
+        .filter(Boolean).map(function (t) { return t.label; });
+      return { title: g.title, icon: g.icon, tools: tools };
+    }).filter(function (g) { return g.tools.length; });
+
+    const more = allTools().filter(function (t) { return !used[t.id]; })
+      .map(function (t) { return t.label; });
+    if (more.length) groups.push({ title: 'More Tools', icon: '\u{1F527}', tools: more });
+
+    return groups;
+  }
+
   function toolCard(t) {
     return `
       <div class="tool-card" onclick="FreeServices.open('${t.id}')">
@@ -475,6 +497,7 @@
     render: render,
     has: has,
     open: open,
+    catalogue: catalogue,
     syncFromBox: syncFromBox,
     syncFromSlider: syncFromSlider,
     runEmi: runEmi,
