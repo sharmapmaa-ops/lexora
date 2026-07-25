@@ -632,11 +632,7 @@
                                         </svg>
                                         <div class="drop-text">Drag &amp; drop files here</div>
                                         <div class="drop-sub">or click to browse (PDF only)</div>
-                                        <button type="button" class="drop-browse-btn">
-                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2 2 0 0 1 5 5.5h4l2 2.5h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-                                            Browse Files
-                                        </button>
-                                        <div class="file-count-text" id="fileCountText">${fileCountText}</div>
+
                                     </div>
                                     <div class="drop-meta">Maximum file size: <b>50MB</b> &nbsp;\u2022&nbsp; Supported: <b>PDF</b></div>
                                     <input type="file" id="fileInput" multiple style="display:none;" accept=".pdf" onchange="handleFileUpload(event, '${serviceId}')" />
@@ -3633,6 +3629,14 @@
                 renderMessageBox({ title: title, message: message, buttons: buttons || ['OK'] });
             }
 
+            window.showSuccess = function(message) {
+                renderMessageBox({
+                    title: (MESSAGES.success && MESSAGES.success.title) || 'Done',
+                    message: message,
+                    buttons: ['OK']
+                });
+            };
+
             window.showWarning = function(message) {
                 renderMessageBox({ title: MESSAGES.warning.title, message: message, buttons: ['OK'] });
             };
@@ -5983,8 +5987,8 @@
             };
 
             function buildAdminFilesBody() {
-                return buildCardSizesPanel() + `
-                    <div class="admin-files-card" style="margin-top:16px;">
+                return `
+                    <div class="admin-files-card">
                         <div class="admin-files-header">
                             <h3>📁 Files and Folder</h3>
                         </div>
@@ -6279,6 +6283,12 @@
             let adminTableEditorState = { path: null, mode: null, columns: [], rows: [], selected: new Set() };
 
             window.adminOpenFile = async function(path) {
+                // card-layout.json ka apna table editor hai (units + live
+                // preview), isliye generic JSON viewer ki jagah wo kholte hain.
+                if (/card-layout\.json$/i.test(path)) {
+                    openAdminModal(buildCardLayoutModalHTML());
+                    return;
+                }
                 try {
                     const res = await authFetch('/api/admin/read?path=' + encodeURIComponent(path));
                     const data = await res.json();
@@ -7067,16 +7077,9 @@
                         if (!el.className && /^drag\s*&?\s*drop/i.test(t)) el.className = 'drop-text';
                         else if (!el.className && /^(or\s+)?click to browse/i.test(t)) el.className = 'drop-sub';
                     });
-                    if (!zone.querySelector('.drop-browse-btn')) {
-                        const sub = zone.querySelector('.drop-sub');
-                        const btn = '<button type="button" class="drop-browse-btn">'
-                            + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" '
-                            + 'stroke-linecap="round" stroke-linejoin="round">'
-                            + '<path d="M3 7.5A2 2 0 0 1 5 5.5h4l2 2.5h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'
-                            + '</svg>Browse Files</button>';
-                        if (sub) sub.insertAdjacentHTML('afterend', btn);
-                        else zone.insertAdjacentHTML('beforeend', btn);
-                    }
+                    // Browse Files button aur "No files uploaded yet" line
+                    // hata di - drop zone khud clickable hai, dono redundant the.
+                    zone.querySelectorAll('.drop-browse-btn, .file-count-text').forEach(el => el.remove());
                     if (!zone.parentElement.querySelector('.drop-meta')) {
                         zone.insertAdjacentHTML('afterend',
                             '<div class="drop-meta">Maximum file size: <b>50MB</b> &nbsp;\u2022&nbsp; Supported: <b>PDF</b></div>');
@@ -7085,13 +7088,9 @@
 
                 buildServiceTabStrips(root);
 
-                // Perks strip sirf service pages par, aur sirf ek baar.
-                // Other Services ke tools .service-page-grid use nahi karte,
-                // sirf .service-card - isliye wo bhi count hote hain.
-                const isServicePage = root.querySelector('.service-page-grid, .drop-zone, .service-card');
-                if (isServicePage && !root.querySelector('.service-perks')) {
-                    root.insertAdjacentHTML('beforeend', servicePerksHtml());
-                }
+                // Perks strip hata di gayi hai - agar kisi purane markup me
+                // reh gayi ho to bhi saaf kar do.
+                root.querySelectorAll('.service-perks').forEach(el => el.remove());
             }
             window.enhanceServicePage = enhanceServicePage;
 
@@ -7208,15 +7207,11 @@
                 }
             })();
 
-            function buildCardSizesPanel() {
+            // card-layout.json ka editor. Ye "Files and Folder" me us file
+            // par click karne se khulta hai (adminOpenFile) - alag se koi
+            // panel nahi. Ek hi table, Section bhi usi me ek column hai.
+            function buildCardLayoutModalHTML() {
                 const cards = (CARD_LAYOUT && CARD_LAYOUT.cards) || [];
-
-                const sections = [];
-                cards.forEach(c => {
-                    let s = sections.find(x => x.name === c.section);
-                    if (!s) { s = { name: c.section || 'Other', items: [] }; sections.push(s); }
-                    s.items.push(c);
-                });
 
                 const sizeField = (card, dim) => {
                     const spec = card[dim] || { mode: 'auto', value: null };
@@ -7234,46 +7229,34 @@
                         </div>`;
                 };
 
-                // Har cell editable hai - section, label aur selector bhi -
-                // taaki naya card add karke uska selector yahin se set kiya
-                // ja sake, JSON file kholë bina.
                 const textField = (card, field, placeholder) => `
                     <input type="text" class="card-size-text ${field === 'selector' ? 'is-code' : ''}"
                            data-id="${card.id}" data-field="${field}" placeholder="${placeholder}"
                            value="${escapeHtml(card[field] || '')}" oninput="onCardFieldChange(this)" />`;
 
                 return `
-                    <div class="admin-files-card card-sizes-card">
-                        <div class="admin-files-header">
-                            <h3>\u{1F4D0} Card Sizes</h3>
-                            <div class="card-sizes-actions">
-                                <button class="admin-btn" onclick="addCardLayoutRow()">+ Add card</button>
-                                <button class="admin-btn" onclick="downloadCardLayout()">\u2B07 Download JSON</button>
-                                <button class="admin-btn" onclick="resetCardLayout()">\u21BA Reset to auto</button>
-                                <button class="add-btn" onclick="saveCardLayout()">Save changes</button>
-                            </div>
-                        </div>
-                        <p class="ds-card-sub">
-                            Poori json/card-layout.json yahan table me editable hai.
-                            <b>auto</b> = CSS ka default, <b>px</b> = fixed pixels, <b>%</b> = parent ke hisab se.
-                            Har change turant page par lag jata hai; <b>Save changes</b> use disk par likh deta hai.
-                        </p>
-                        ${cards.length === 0
-                            ? '<p class="ds-card-sub">Abhi koi card configured nahi hai \u2014 "+ Add card" se shuru karein.</p>'
-                            : sections.map(s => `
-                            <div class="card-size-section">
-                                <h4>${escapeHtml(s.name)}</h4>
+                    <div class="admin-modal-overlay" id="adminFileOverlay">
+                        <div class="admin-modal-card card-layout-modal">
+                            <button class="admin-modal-close" onclick="adminCloseFileModal()">\u2715</button>
+                            <h3 class="admin-modal-title">\u{1F4D0} card-layout.json \u2014 Card Sizes</h3>
+                            <p class="ds-card-sub">
+                                <b>auto</b> = CSS ka default, <b>px</b> = fixed pixels, <b>%</b> = parent ke hisab se.
+                                Change karte hi page par lag jata hai; <b>Save</b> file me likh deta hai.
+                            </p>
+                            <div class="card-layout-scroll">
                                 <table class="admin-json-table card-size-table">
                                     <thead><tr>
                                         <th style="width:150px;">Section</th>
                                         <th style="width:190px;">Card</th>
                                         <th>CSS selector</th>
-                                        <th style="width:180px;">Width</th>
-                                        <th style="width:180px;">Height</th>
+                                        <th style="width:170px;">Width</th>
+                                        <th style="width:170px;">Height</th>
                                         <th style="width:44px;"></th>
                                     </tr></thead>
                                     <tbody>
-                                        ${s.items.map(c => `
+                                        ${cards.length === 0
+                                            ? '<tr><td colspan="6" class="api-prev-empty">Abhi koi card configured nahi hai \u2014 "+ Add card" se shuru karein.</td></tr>'
+                                            : cards.map(c => `
                                             <tr>
                                                 <td>${textField(c, 'section', 'Section')}</td>
                                                 <td>${textField(c, 'label', 'Card name')}</td>
@@ -7284,13 +7267,28 @@
                                             </tr>`).join('')}
                                     </tbody>
                                 </table>
-                            </div>`).join('')}
+                            </div>
+                            <div class="admin-modal-actions">
+                                <button class="admin-btn" onclick="addCardLayoutRow()">+ Add card</button>
+                                <button class="admin-btn" onclick="downloadCardLayout()">\u2B07 Download JSON</button>
+                                <button class="admin-btn" onclick="resetCardLayout()">\u21BA Reset to auto</button>
+                                <button class="admin-modal-save" onclick="saveCardLayout()">\u{1F4BE} Save</button>
+                                <button class="admin-modal-cancel" onclick="adminCloseFileModal()">Close</button>
+                            </div>
+                        </div>
                     </div>`;
             }
 
             function refreshCardSizesPanel() {
-                const existing = document.querySelector('.card-sizes-card');
-                if (existing) existing.outerHTML = buildCardSizesPanel();
+                const modal = document.querySelector('.card-layout-modal');
+                if (!modal) return;
+                const scroll = modal.querySelector('.card-layout-scroll');
+                const keep = scroll ? scroll.scrollTop : 0;
+                modal.outerHTML = buildCardLayoutModalHTML()
+                    .replace(/^[\s\S]*?<div class="admin-modal-card/, '<div class="admin-modal-card')
+                    .replace(/<\/div>\s*$/, '');
+                const again = document.querySelector('.card-layout-scroll');
+                if (again) again.scrollTop = keep;
             }
 
             window.onCardFieldChange = function(el) {
@@ -7311,14 +7309,14 @@
                     width: { mode: 'auto', value: null },
                     height: { mode: 'auto', value: null }
                 });
-                refreshCardSizesPanel();
+                openAdminModal(buildCardLayoutModalHTML());
             };
 
             window.removeCardLayoutRow = function(id) {
                 if (!CARD_LAYOUT || !CARD_LAYOUT.cards) return;
                 CARD_LAYOUT.cards = CARD_LAYOUT.cards.filter(c => c.id !== id);
                 applyCardLayout();
-                refreshCardSizesPanel();
+                openAdminModal(buildCardLayoutModalHTML());
             };
 
             function cardLayoutEntry(id) {
@@ -7360,7 +7358,7 @@
                     c.height = { mode: 'auto', value: null };
                 });
                 applyCardLayout();
-                refreshCardSizesPanel();
+                openAdminModal(buildCardLayoutModalHTML());
             };
 
             window.downloadCardLayout = function() {
@@ -8740,12 +8738,34 @@
             ];
 
             const AUTH_PAID_TOOLS = [
-                ['Document Translation', '60+ languages, layout preserved exactly'],
-                ['OCR Conversion', 'Scanned or photographed pages rebuilt into editable Word'],
-                ['Data Extraction', 'Define your own fields, get a clean table from every file'],
-                ['BAI2 Conversion', 'Bank statements converted to BAI2, CSV or JSON'],
-                ['Lease Abstraction', 'Structured lease fields with source citations']
+                ['Document Translation', '60+ languages, layout preserved exactly',
+                 '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 3 2.6 15 0 18M12 3c-2.6 3-2.6 15 0 18"/>'],
+                ['OCR Conversion', 'Scanned or photographed pages rebuilt into editable Word',
+                 '<path d="M4 8V6a2 2 0 0 1 2-2h2M20 8V6a2 2 0 0 0-2-2h-2M4 16v2a2 2 0 0 0 2 2h2M20 16v2a2 2 0 0 1-2 2h-2"/><path d="M7 12h10"/>'],
+                ['Data Extraction', 'Define your own fields, get a clean table from every file',
+                 '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 10h18M9 10v10"/>'],
+                ['BAI2 Conversion', 'Bank statements converted to BAI2, CSV or JSON',
+                 '<path d="M3 9.5 12 4l9 5.5"/><path d="M5 10.5v8M9.5 10.5v8M14.5 10.5v8M19 10.5v8M3 20h18"/>'],
+                ['Lease Abstraction', 'Structured lease fields with source citations',
+                 '<path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4M8.5 12h7M8.5 16h4"/>']
             ];
+
+            // Category ke hisab se icon - free tools ki list registry se
+            // aati hai, to icon yahan naam par map hota hai.
+            const AUTH_CAT_ICONS = {
+                'PDF Tools': '<path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4"/>',
+                'Image Tools': '<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><circle cx="8.5" cy="10" r="1.8"/><path d="m4.5 17 5-5 4 4 2.5-2 3.5 3.5"/>',
+                'Calculators': '<rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8 7h8M8 12h2M12 12h2M16 12h.01M8 16h2M12 16h2M16 16h.01"/>',
+                'Data Tools': '<path d="M6 20V11M12 20V4M18 20v-6"/>',
+                'Document Builders': '<path d="M5 3h9l5 5v13H5z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>',
+                'Utilities': '<path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 1 5.4-5.4l-2.6 2.6"/>',
+                'More Tools': '<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>'
+            };
+
+            function authIcon(path) {
+                return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '
+                    + 'stroke-linecap="round" stroke-linejoin="round">' + path + '</svg>';
+            }
 
             // Free tools ki list FreeServices se aati hai - wahi registry
             // jo "Other Services" page use karta hai. Manually likhne par
@@ -8770,10 +8790,6 @@
 
                 return `
                     <div class="auth-hero">
-                        <div class="auth-hero-art">
-                            <img src="Pictures/auth-hero.svg" alt=""
-                                 onerror="this.style.display='none';" />
-                        </div>
                         <div class="auth-hero-copy">
                             <img class="auth-brand-logo" src="${logoPath}" alt="${escapeHtml(shortName)}"
                                  onerror="this.onerror=null;this.src='Pictures/lexora-logo.png';" />
@@ -8794,12 +8810,6 @@
                                     </div>`;
                                 }).join('')}
                             </div>
-
-                            <div class="auth-check-grid">
-                                ${AUTH_CHECKS.map(function (c) {
-                                    return `<div class="auth-check"><span class="auth-check-mark">\u2713</span>${escapeHtml(c)}</div>`;
-                                }).join('')}
-                            </div>
                         </div>
                     </div>
                 `;
@@ -8817,7 +8827,10 @@
                                 <span class="auth-tools-dot is-paid"></span>Paid Services
                             </div>
                             <ul class="auth-tools-list">
-                                ${AUTH_PAID_TOOLS.map(t => `<li><b>${escapeHtml(t[0])}</b><span>${escapeHtml(t[1])}</span></li>`).join('')}
+                                ${AUTH_PAID_TOOLS.map(t => `<li>
+                                    <span class="auth-tool-icon is-paid">${authIcon(t[2])}</span>
+                                    <div><b>${escapeHtml(t[0])}</b><span>${escapeHtml(t[1])}</span></div>
+                                </li>`).join('')}
                             </ul>
                         </div>
                         <div class="auth-tools-col is-free">
@@ -8828,7 +8841,11 @@
                             <div class="auth-free-grid">
                                 ${freeTools.map(c => `
                                     <div class="auth-free-cat">
-                                        <b>${escapeHtml(c[0])}</b>
+                                        <div class="auth-free-cat-head">
+                                            <span class="auth-tool-icon is-free">${authIcon(AUTH_CAT_ICONS[c[0]] || AUTH_CAT_ICONS['More Tools'])}</span>
+                                            <b>${escapeHtml(c[0])}</b>
+                                            <em>${c[1].length}</em>
+                                        </div>
                                         <span>${c[1].map(t => escapeHtml(t.label || t)).join(' \u00b7 ')}</span>
                                     </div>`).join('')}
                             </div>

@@ -2809,3 +2809,163 @@ label { font-size: .76rem; }
 }
 
 .card-size-del:hover { background: rgba(220,47,56,.08); }
+
+/* =====================================================================
+   ROUND 10
+   ===================================================================== */
+
+/* ---- 4. premium 2-colour gradient; logo ka koi box/background nahi ----
+   Logo ka wordmark navy hai, isliye chrome light rakha gaya - dark par
+   wo gayab ho jata tha aur white box lagana padta tha. */
+:root {
+    --ds-nav: linear-gradient(115deg, #ffffff 0%, #d8e6fb 100%);
+    --ds-page: #ffffff;
+}
+
+.top-menu-bar {
+    border-bottom: 1px solid rgba(18, 87, 245, .14);
+    box-shadow: 0 2px 16px rgba(11, 42, 114, .07);
+}
+
+.company-logo {
+    background: transparent;
+    box-shadow: none;
+    border-radius: 0;
+    padding: 0;
+    height: 42px;
+}
+
+.company-name, .user-name { color: var(--ds-navy); }
+.company-name .separator  { color: rgba(11, 21, 51, .22); }
+.current-menu-name        { color: var(--ds-muted); }
+.current-menu-name span   { color: var(--ds-navy); }
+
+.menu-item > a { color: #23324d; }
+.menu-item > a:hover { background: rgba(18, 87, 245, .09); color: var(--ds-blue); }
+
+.menu-item.active > a,
+.menu-item > a.active {
+    background: rgba(18, 87, 245, .12);
+    color: var(--ds-blue);
+    box-shadow: inset 0 0 0 1px rgba(18, 87, 245, .3);
+}
+
+.user-profile:hover { background: rgba(18, 87, 245, .09); }
+.user-dropdown-arrow { color: var(--ds-muted); }
+.notification-badge { border-color: #eaf1fd; }
+
+.footer { color: var(--ds-muted); border-top: 1px solid rgba(18, 87, 245, .14); }
+.footer span, .footer-copy { color: var(--ds-navy); }
+#footerSocial a, #authFooterSocial a { background: rgba(18, 87, 245, .11); color: var(--ds-blue); }
+#footerSocial a:hover, #authFooterSocial a:hover { background: rgba(18, 87, 245, .22); }
+
+.auth-screen {
+    background:
+        radial-gradient(circle at 12% 8%, rgba(255,255,255,.95) 0%, transparent 46%),
+        linear-gradient(115deg, #ffffff 0%, #d8e6fb 100%);
+}
+
+body, .center-content { background: #fff; }
+
+/* ---- 3. login ka copyright bar scroll me bhi bottom par chipka rahe ---- */
+.auth-page > .footer { position: sticky; bottom: 0; z-index: 5; }
+
+/* ---- 6. balance tiles ab history-summary jaisa ek hi card ---- */
+.balance-grid {
+    display: flex;
+    gap: 0;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+    padding: 16px 8px;
+}
+
+.balance-grid .balance-card {
+    flex: 1;
+    background: transparent !important;
+    border: none !important;
+    border-right: 1px solid var(--ds-line) !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding: 0 22px;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-areas: "icon label" "icon num";
+    column-gap: 15px;
+    align-items: center;
+    text-align: left;
+}
+
+.balance-grid .balance-card:last-child { border-right: none !important; }
+.balance-grid .balance-card::after { display: none; }
+.balance-grid .balance-card::before { width: 46px; height: 46px; border-radius: 12px; }
+.balance-grid .balance-card .balance-label { grid-area: label; font-size: .8rem; text-transform: none; letter-spacing: 0; font-weight: 500; }
+.balance-grid .balance-card .balance-number { grid-area: num; font-size: 1.45rem; }
+
+/* ---- 7. login: hero image aur checklist gaye, tools card designed ---- */
+.auth-hero { grid-template-columns: 1fr; }
+.auth-hero-art, .auth-check-grid { display: none; }
+.auth-hero-copy { max-width: 62em; }
+
+.auth-tools-card {
+    background: linear-gradient(160deg, #ffffff 0%, #f6f9ff 100%);
+    border: 1px solid rgba(18, 87, 245, .16);
+    box-shadow: 0 0.6em 1.8em rgba(11, 42, 114, .08);
+    padding: 1.1em 1.4em;
+}
+
+.auth-tools-list li {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.7em;
+    padding: 0.32em 0;
+}
+
+.auth-tool-icon {
+    width: 2.05em;
+    height: 2.05em;
+    border-radius: 0.6em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.auth-tool-icon svg { width: 1.05em; height: 1.05em; }
+.auth-tool-icon.is-paid { background: #e4edfe; color: #1257f5; }
+.auth-tool-icon.is-free { background: #dcf3e7; color: #15803d; }
+
+.auth-free-cat {
+    background: #fff;
+    border: 1px solid rgba(18, 87, 245, .12);
+    border-radius: 0.7em;
+    padding: 0.6em 0.75em;
+}
+
+.auth-free-cat-head { display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.25em; }
+.auth-free-cat-head b { flex: 1; }
+
+.auth-free-cat-head em {
+    font-style: normal;
+    font-size: 0.76em;
+    font-weight: 700;
+    color: #15803d;
+    background: #dcf3e7;
+    border-radius: 999px;
+    padding: 0.12em 0.6em;
+}
+
+.auth-free-grid { grid-template-columns: 1fr 1fr 1fr; gap: 0.55em; }
+.auth-free-cat span { padding-left: 2.75em; }
+
+/* ---- 1. card-layout modal ---- */
+.card-layout-modal { width: min(1180px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
+.card-layout-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--ds-line); border-radius: var(--ds-radius-sm); margin: 10px 0 14px; }
+.admin-modal-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+@media (max-width: 1150px) {
+    .balance-grid { flex-direction: column; gap: 14px; }
+    .balance-grid .balance-card { border-right: none !important; padding: 0 16px; }
+    .auth-free-grid { grid-template-columns: 1fr; }
+}
