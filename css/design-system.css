@@ -1591,3 +1591,350 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
     .service-perk { border-right: none; }
     .notif-footer { flex-direction: column; align-items: flex-start; }
 }
+
+/* =====================================================================
+   ROUND 4
+   ===================================================================== */
+
+/* ---- 4. logo ke peeche kahin background nahi ---- */
+.company-logo, .auth-brand-logo, .auth-topbar-logo,
+.company-logo img, .profile-photo-preview.is-logo {
+    background: transparent !important;
+    box-shadow: none;
+}
+
+/* ---- 5. nav + footer ab login page wala light background ----
+   Pehle dono dark blue the. Ek hi gradient token se dono chalte hain,
+   to wapas dark karna ho to sirf --ds-nav badalna hai. */
+:root {
+    --ds-nav: linear-gradient(160deg, #eaf2fe 0%, #e3edfe 55%, #dbe8fe 100%);
+    --ds-page: #eef4fe;
+}
+
+.top-menu-bar {
+    box-shadow: 0 1px 0 rgba(18,87,245,.12), 0 4px 18px rgba(11,21,51,.05);
+    border-bottom: 1px solid rgba(18,87,245,.12);
+}
+
+.company-name, .auth-topbar-name { color: var(--ds-navy); }
+.company-name .separator { color: rgba(11,21,51,.25); }
+.current-menu-name       { color: var(--ds-muted); }
+.current-menu-name span  { color: var(--ds-navy); }
+
+.menu-item > a { color: var(--ds-ink); }
+.menu-item > a:hover { background: rgba(18,87,245,.09); color: var(--ds-blue); }
+
+.menu-item.active > a,
+.menu-item > a.active {
+    background: rgba(18,87,245,.11);
+    color: var(--ds-blue);
+    box-shadow: inset 0 0 0 1px rgba(18,87,245,.28);
+}
+
+.user-profile:hover { background: rgba(18,87,245,.09); }
+.user-name { color: var(--ds-navy); }
+.user-dropdown-arrow { color: var(--ds-muted); }
+.notification-badge { border-color: #eaf2fe; }
+
+.footer { color: var(--ds-muted); border-top: 1px solid rgba(18,87,245,.12); }
+.footer span { color: var(--ds-navy); }
+
+#footerSocial a { background: rgba(18,87,245,.10); color: var(--ds-blue); }
+#footerSocial a:hover { background: rgba(18,87,245,.2); }
+
+/* ---- 1 + 2. login page ---- */
+.auth-brand-logo {
+    display: block;
+    width: auto;
+    max-width: 100%;
+    height: 5.2em;
+    object-fit: contain;
+    object-position: left center;
+    margin: 0 0 0.35em -0.35em;
+}
+
+.auth-copyright {
+    text-align: center;
+    font-size: 0.92em;
+    color: var(--lx-muted);
+    margin-top: 0.9em;
+}
+
+/* ---- 8. API DOCUMENTATION ---- */
+.api-top-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 18px;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.api-notice {
+    display: flex;
+    gap: 12px;
+    background: #eef4ff;
+    border: 1px solid #d6e4fd;
+    border-radius: var(--ds-radius-sm);
+    padding: 14px 16px;
+}
+
+.api-notice-icon {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: var(--ds-blue);
+    color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+.api-notice-icon svg { width: 17px; height: 17px; }
+.api-notice b    { display: block; font-size: .85rem; color: var(--ds-navy); }
+.api-notice span { display: block; font-size: .78rem; color: var(--ds-muted); margin-top: 2px; }
+
+.api-key-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.api-action-btn svg { width: 15px; height: 15px; }
+
+.api-action-btn.generate-btn {
+    background: linear-gradient(135deg, #2f7bf6 0%, #0b48e0 100%);
+    color: #fff;
+    border: none;
+    box-shadow: 0 4px 12px rgba(18,87,245,.26);
+}
+
+.api-key-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 20px;
+    margin-bottom: 20px;
+}
+
+.api-label { font-size: .84rem; font-weight: 700; color: var(--ds-navy); margin-bottom: 8px; }
+.api-label-spaced { margin-top: 4px; }
+
+.api-key-box {
+    background: #f7f9fd;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    padding: 12px 14px;
+    font-size: .84rem;
+    color: var(--ds-navy);
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    overflow-x: auto;
+}
+
+.api-details { border: 1px solid var(--ds-line); border-radius: var(--ds-radius-sm); overflow: hidden; }
+
+.api-detail-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 11px 14px;
+    font-size: .82rem;
+    border-bottom: 1px solid var(--ds-line);
+}
+
+.api-detail-row:last-child { border-bottom: none; }
+.api-detail-row span:first-child { color: var(--ds-muted); }
+.api-detail-row b { color: var(--ds-navy); font-weight: 600; }
+
+.api-prev-wrap { border: 1px solid var(--ds-line); border-radius: var(--ds-radius-sm); overflow: hidden; }
+.api-prev-key   { font-family: 'SFMono-Regular', Consolas, monospace; font-size: .78rem; }
+.api-prev-empty { text-align: center; color: var(--ds-muted); padding: 22px 10px; }
+
+/* ---- Services API Reference ---- */
+.api-ref-card { margin-top: 20px; }
+
+.api-ref-layout {
+    display: grid;
+    grid-template-columns: 265px minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+}
+
+.api-ref-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    overflow: hidden;
+}
+
+.api-ref-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #fff;
+    border: none;
+    border-bottom: 1px solid var(--ds-line);
+    color: var(--ds-ink);
+    font-family: inherit;
+    font-size: .85rem;
+    font-weight: 500;
+    text-align: left;
+    padding: 13px 14px;
+    cursor: pointer;
+    transition: .15s;
+}
+
+.api-ref-nav-item:last-child { border-bottom: none; }
+.api-ref-nav-item svg { width: 16px; height: 16px; color: var(--ds-blue); flex-shrink: 0; }
+.api-ref-nav-item span { flex: 1; }
+.api-ref-nav-item em { font-style: normal; color: #b9c4d6; }
+.api-ref-nav-item:hover { background: #f5f8ff; }
+
+.api-ref-nav-item.is-active {
+    background: var(--ds-blue);
+    color: #fff;
+    font-weight: 600;
+}
+
+.api-ref-nav-item.is-active svg,
+.api-ref-nav-item.is-active em { color: #fff; }
+
+.api-ref-panel {
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    padding: 16px 18px 18px;
+}
+
+.api-endpoint-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+.api-method,
+.api-method.get,
+.api-method.post {
+    /* style.css me .api-method.get already hai (0,2,0), isliye yahan bhi
+       compound selector chahiye - warna wo jeet jaata hai. */
+    background: #1e3a8a;
+    color: #fff;
+    border-radius: 6px;
+    font-size: .72rem;
+    font-weight: 800;
+    letter-spacing: .5px;
+    padding: 5px 10px;
+}
+
+.api-endpoint-path {
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: .88rem;
+    color: var(--ds-navy);
+}
+
+.api-try-btn {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: #fff;
+    border: 1px solid rgba(18,87,245,.32);
+    border-radius: 8px;
+    color: var(--ds-blue);
+    font-family: inherit;
+    font-size: .78rem;
+    font-weight: 600;
+    padding: 7px 13px;
+    cursor: pointer;
+}
+
+.api-try-btn svg { width: 13px; height: 13px; fill: currentColor; }
+.api-try-btn:hover { background: rgba(18,87,245,.06); }
+.api-endpoint-desc { font-size: .82rem; color: var(--ds-muted); margin: 8px 0 0; }
+
+.api-tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--ds-line); margin: 14px 0 0; }
+
+.api-tab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--ds-muted);
+    font-family: inherit;
+    font-size: .83rem;
+    font-weight: 600;
+    padding: 9px 2px;
+    margin-bottom: -1px;
+    cursor: pointer;
+}
+
+.api-tab.is-active { color: var(--ds-blue); border-bottom-color: var(--ds-blue); }
+.api-tab:hover     { color: var(--ds-blue); }
+
+.api-code {
+    position: relative;
+    margin-top: 14px;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    background: #fbfcff;
+    overflow: hidden;
+}
+
+.api-code-bar {
+    position: absolute;
+    top: 8px; right: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    z-index: 1;
+}
+
+.api-code-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 6px;
+    color: var(--ds-muted);
+    font-family: inherit;
+    font-size: .72rem;
+    font-weight: 600;
+    padding: 5px 9px;
+    cursor: pointer;
+}
+
+.api-code-btn svg { width: 13px; height: 13px; }
+.api-code-btn:hover { color: var(--ds-blue); border-color: var(--ds-blue); }
+
+.api-code-fmt {
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 6px;
+    color: var(--ds-muted);
+    font-size: .72rem;
+    font-weight: 600;
+    padding: 5px 9px;
+}
+
+.api-code-body {
+    margin: 0;
+    padding: 14px 14px 14px 0;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: .8rem;
+    line-height: 1.65;
+    color: var(--ds-navy);
+    overflow-x: auto;
+    white-space: pre;
+}
+
+.api-code-line { display: block; }
+
+.api-code-no {
+    display: inline-block;
+    width: 42px;
+    padding-right: 14px;
+    text-align: right;
+    color: #b0bcd0;
+    user-select: none;
+}
+
+.tok-key { color: #b45309; }
+.tok-str { color: #15803d; }
+.tok-num { color: #1d4ed8; }
+.tok-lit { color: #7c3aed; }
+
+@media (max-width: 1150px) {
+    .api-top-row, .api-key-grid, .api-ref-layout { grid-template-columns: 1fr; }
+    .api-try-btn { margin-left: 0; }
+}

@@ -770,7 +770,6 @@
                     </div>
                     `}
 
-                    ${servicePerksHtml}
                 `;
             }
 
@@ -3763,50 +3762,125 @@
                     actionsEl.style.display = 'flex';
                 }
 
+                // Key Details box (Created On + Status) - mockup me key ke
+                // right side me.
+                const createdEl = document.getElementById('apiKeyCreatedOn');
+                if (createdEl) createdEl.textContent = activeKey.createdAt || '\u2014';
+                const statusEl = document.getElementById('apiKeyStatus');
+                if (statusEl) {
+                    const revoked = activeKey.status === 'revoked';
+                    statusEl.textContent = revoked ? 'Revoked' : 'Active';
+                    statusEl.className = 'txn-status-pill ' + (revoked ? 'failed' : 'success');
+                }
+
                 if (historyEl) {
                     const others = apiKeys.filter(k => k !== activeKey);
-                    if (others.length === 0) {
-                        historyEl.innerHTML = '';
-                    } else {
-                        historyEl.innerHTML =
-                            '<div style="margin-top:14px;font-size:0.8rem;color:rgba(0,0,0,0.6);">Previous keys:</div>' +
-                            '<ul style="list-style:none;padding:0;margin-top:6px;">' +
-                            others.map(k =>
-                                `<li style="padding:6px 0;border-bottom:1px solid rgba(0,0,139,0.05);font-family:monospace;font-size:0.8rem;">${k.key} <span style="color:rgba(0,0,0,0.4);font-family:inherit;">(${k.createdAt}${k.status === 'revoked' ? ' — Revoked' : ''})</span></li>`
-                                ).join('') +
-                            '</ul>';
-                    }
+                    historyEl.innerHTML = `
+                        <div class="api-prev-wrap">
+                            <table class="admin-json-table api-prev-table">
+                                <thead><tr><th>API Key</th><th>Created On</th><th>Status</th></tr></thead>
+                                <tbody>
+                                    ${others.length === 0
+                                        ? '<tr><td colspan="3" class="api-prev-empty">No previous keys yet.</td></tr>'
+                                        : others.map(k => `<tr>
+                                            <td class="api-prev-key">${escapeHtml(k.key)}</td>
+                                            <td>${escapeHtml(k.createdAt || '')}</td>
+                                            <td><span class="txn-status-pill ${k.status === 'revoked' ? 'failed' : 'success'}">${k.status === 'revoked' ? 'Revoked' : 'Active'}</span></td>
+                                        </tr>`).join('')}
+                                </tbody>
+                            </table>
+                        </div>`;
                 }
             }
 
-            function renderServicesApiList() {
-                const container = document.getElementById('servicesApiList');
-                if (!container) return;
+            // Sidebar + endpoint panel + tabs, SERVICES_API_DATA se hi
+            // (wahi data pehle ek lambi list me dikhta tha).
+            let apiRefActive = null;
+            let apiRefTab = 'request';
 
-                const servicesMenu = MENU_CONFIG.mainMenu.find(m => m.id === 'services');
-                if (!servicesMenu) return;
+            function apiRefServices() {
+                const menu = MENU_CONFIG.mainMenu.find(m => m.id === 'services');
+                if (!menu || !SERVICES_API_DATA) return [];
+                return menu.subItems.filter(s => SERVICES_API_DATA[s.id]);
+            }
 
-                container.innerHTML = servicesMenu.subItems.map(sub => {
-                    const apiData = SERVICES_API_DATA[sub.id];
-                    if (!apiData) return '';
-                    return `
-                        <div class="service-api-block">
-                            <h4>${apiData.icon} ${apiData.label}</h4>
-                            <div class="api-endpoint-row">
-                                <span class="api-method get">GET</span>
-                                <span class="api-endpoint-path">${apiData.get.endpoint}</span>
-                            </div>
-                            <p class="api-endpoint-desc">${apiData.get.description}</p>
-                            <pre class="api-example">${apiData.get.example}</pre>
-                            <div class="api-endpoint-row">
-                                <span class="api-method post">POST</span>
-                                <span class="api-endpoint-path">${apiData.post.endpoint}</span>
-                            </div>
-                            <p class="api-endpoint-desc">${apiData.post.description}</p>
-                            <pre class="api-example">${apiData.post.example}</pre>
+            // Chhota JSON highlighter - keys, strings aur numbers alag rang.
+            function highlightJson(text) {
+                const safe = escapeHtml(String(text || ''));
+                return safe
+                    .replace(/(&quot;[^&]*?&quot;)(\s*:)/g, '<span class="tok-key">$1</span>$2')
+                    .replace(/:(\s*)(&quot;.*?&quot;)/g, ':$1<span class="tok-str">$2</span>')
+                    .replace(/:(\s*)(-?\d+(?:\.\d+)?)/g, ':$1<span class="tok-num">$2</span>')
+                    .replace(/\b(true|false|null)\b/g, '<span class="tok-lit">$1</span>');
+            }
+
+            function apiCodeBlock(text) {
+                const lines = String(text || '').replace(/\t/g, '    ').split('\n');
+                return `
+                    <div class="api-code">
+                        <div class="api-code-bar">
+                            <button class="api-code-btn" onclick="copyApiSample(this)">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
+                                Copy
+                            </button>
+                            <span class="api-code-fmt">JSON</span>
                         </div>
-                    `;
-                }).join('');
+                        <pre class="api-code-body"><code>${lines.map((l, i) =>
+                            `<span class="api-code-line"><span class="api-code-no">${i + 1}</span>${highlightJson(l) || '&nbsp;'}</span>`).join('')}</code></pre>
+                    </div>`;
+            }
+
+            window.copyApiSample = function(btn) {
+                const pre = btn.closest('.api-code').querySelector('.api-code-body');
+                if (!pre) return;
+                navigator.clipboard.writeText(pre.innerText.replace(/^\s*\d+\s?/gm, ''))
+                    .then(() => showSuccess ? showSuccess('Copied to clipboard.') : null)
+                    .catch(() => showWarning('Could not copy \u2014 please select and copy manually.'));
+            };
+
+            window.setApiRefService = function(id) { apiRefActive = id; apiRefTab = 'request'; renderServicesApiList(); };
+            window.setApiRefTab = function(tab) { apiRefTab = tab; renderServicesApiList(); };
+
+            function renderServicesApiList() {
+                const nav = document.getElementById('apiRefNav');
+                const panel = document.getElementById('apiRefPanel');
+                if (!nav || !panel) return;
+
+                const services = apiRefServices();
+                if (services.length === 0) { nav.innerHTML = ''; panel.innerHTML = ''; return; }
+                if (!apiRefActive || !services.some(s => s.id === apiRefActive)) apiRefActive = services[0].id;
+
+                nav.innerHTML = services.map(s => `
+                    <button class="api-ref-nav-item ${s.id === apiRefActive ? 'is-active' : ''}" onclick="setApiRefService('${s.id}')">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4"/></svg>
+                        <span>${escapeHtml(SERVICES_API_DATA[s.id].label || s.label)}</span>
+                        <em>\u203a</em>
+                    </button>`).join('');
+
+                const d = SERVICES_API_DATA[apiRefActive];
+                const post = d.post || {};
+                const samples = {
+                    request: post.example || `{\n    "id": "<record id>"\n}`,
+                    response: d.get.example || '{}',
+                    headers: `{\n    "Authorization": "Bearer <your api key>",\n    "Content-Type": "application/json"\n}`,
+                    parameters: `{\n    "id": "path \u2014 required \u2014 the record identifier",\n    "format": "query \u2014 optional \u2014 json | csv"\n}`
+                };
+                const tab = (id, label) =>
+                    `<button class="api-tab ${apiRefTab === id ? 'is-active' : ''}" onclick="setApiRefTab('${id}')">${label}</button>`;
+
+                panel.innerHTML = `
+                    <div class="api-endpoint-head">
+                        <span class="api-method get">GET</span>
+                        <code class="api-endpoint-path">${escapeHtml(d.get.endpoint)}</code>
+                        <button class="api-try-btn" onclick="lexoraNavigate('services','${apiRefActive}')">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M7 4.5 19 12 7 19.5z"/></svg>
+                            Try It Out
+                        </button>
+                    </div>
+                    <p class="api-endpoint-desc">${escapeHtml(d.get.description || '')}</p>
+                    <div class="api-tabs">${tab('request', 'Request')}${tab('response', 'Response')}${tab('headers', 'Headers')}${tab('parameters', 'Parameters')}</div>
+                    ${apiCodeBlock(samples[apiRefTab])}
+                `;
             }
 
             // ============================================================
@@ -6831,10 +6905,70 @@
             }
             window.upgradeCardHeaders = upgradeCardHeaders;
 
+            const DROP_ART_SVG = '<svg class="drop-art" viewBox="0 0 120 78" fill="none" aria-hidden="true">'
+                + '<rect x="14" y="10" width="22" height="27" rx="4" fill="#e8433f" transform="rotate(-12 25 23)"/>'
+                + '<text x="25" y="28" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="8" font-weight="700" fill="#fff" transform="rotate(-12 25 23)">PDF</text>'
+                + '<rect x="48" y="4" width="22" height="27" rx="4" fill="#1257f5"/>'
+                + '<text x="59" y="22" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" font-weight="700" fill="#fff">W</text>'
+                + '<rect x="82" y="10" width="22" height="27" rx="4" fill="#1e9d63" transform="rotate(12 93 23)"/>'
+                + '<text x="93" y="28" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" font-weight="700" fill="#fff" transform="rotate(12 93 23)">X</text>'
+                + '<path d="M44 74a12 12 0 0 1 1-23 16 16 0 0 1 30-3 11 11 0 0 1-2 26z" fill="#2f7bf6"/>'
+                + '<path d="M60 68V52M52 58l8-8 8 8" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+            const SERVICE_PERK_ROWS = [
+                ['<path d="M12 3l7.5 3v5.5c0 4.4-3 8.2-7.5 9.5-4.5-1.3-7.5-5.1-7.5-9.5V6z"/>', 'Secure &amp; Private', 'Your files are encrypted and secure'],
+                ['<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.5"/><path d="m14.5 9.5 5-5"/>', 'High Accuracy', 'Advanced AI ensures best quality output'],
+                ['<path d="M13 2 4.5 13H11l-1 9 8.5-11H12z"/>', 'Fast Processing', 'Quick turnaround for your documents'],
+                ['<path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4"/>', 'Multiple Formats', 'Export to Word, Excel, CSV, JSON and more'],
+                ['<path d="M6.5 19a4.5 4.5 0 0 1 .5-9 6.5 6.5 0 0 1 12.4-1.3A4.2 4.2 0 0 1 18.5 19z"/>', 'Cloud Based', 'Access your files anytime, anywhere']
+            ];
+
+            function servicePerksHtml() {
+                return '<div class="service-perks">' + SERVICE_PERK_ROWS.map(p =>
+                    '<div class="service-perk"><span class="service-perk-icon">'
+                    + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '
+                    + 'stroke-linecap="round" stroke-linejoin="round">' + p[0] + '</svg></span>'
+                    + '<div><b>' + p[1] + '</b><span>' + p[2] + '</span></div></div>').join('') + '</div>';
+            }
+
+            function enhanceServicePage(root) {
+                if (!root) return;
+
+                root.querySelectorAll('.drop-zone').forEach(zone => {
+                    if (!zone.querySelector('.drop-art')) {
+                        const oldIcon = zone.querySelector('.drop-icon');
+                        if (oldIcon) oldIcon.remove();
+                        zone.insertAdjacentHTML('afterbegin', DROP_ART_SVG);
+                    }
+                    if (!zone.querySelector('.drop-browse-btn')) {
+                        const sub = zone.querySelector('.drop-sub');
+                        const btn = '<button type="button" class="drop-browse-btn">'
+                            + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" '
+                            + 'stroke-linecap="round" stroke-linejoin="round">'
+                            + '<path d="M3 7.5A2 2 0 0 1 5 5.5h4l2 2.5h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'
+                            + '</svg>Browse Files</button>';
+                        if (sub) sub.insertAdjacentHTML('afterend', btn);
+                        else zone.insertAdjacentHTML('beforeend', btn);
+                    }
+                    if (!zone.parentElement.querySelector('.drop-meta')) {
+                        zone.insertAdjacentHTML('afterend',
+                            '<div class="drop-meta">Maximum file size: <b>50MB</b> &nbsp;\u2022&nbsp; Supported: <b>PDF</b></div>');
+                    }
+                });
+
+                // Perks strip sirf service pages par, aur sirf ek baar.
+                const isServicePage = root.querySelector('.service-page-grid, .drop-zone');
+                if (isServicePage && !root.querySelector('.service-perks')) {
+                    root.insertAdjacentHTML('beforeend', servicePerksHtml());
+                }
+            }
+            window.enhanceServicePage = enhanceServicePage;
+
             function updateContent(data, breadcrumb) {
                 const bodyContent = typeof data.body === 'function' ? data.body() : data.body;
                 contentBody.innerHTML = bodyContent || '';
                 upgradeCardHeaders(contentBody);
+                enhanceServicePage(contentBody);
                 currentMenuDisplay.textContent = breadcrumb || 'Dashboard';
 
                 if (breadcrumb && breadcrumb.includes('Payment Mode')) {
@@ -7348,10 +7482,6 @@
                         const cols = isAdminOrDev ? 8 : 7;
                         const tick = '<svg class="plan-tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>';
                         return `
-                        <div class="plans-head">
-                            <h2>Choose the perfect plan for you</h2>
-                            <p>Upgrade, downgrade or choose the plan that fits your needs.</p>
-                        </div>
                         <div class="plans-grid">
                             ${PLANS_DATA.map(plan => {
                                 // Tier tay karta hai colour aur button style:
@@ -7609,27 +7739,97 @@
                     }
                 },
                 'api-documentation': {
-                    body: `
+                    // Order screenshot se: API Key card (notice + actions ->
+                    // key + details -> previous keys), phir Services API
+                    // Reference (sidebar + endpoint panel + tabs + code).
+                    // Purane ids (apiKeyDisplay / apiKeyActions /
+                    // apiKeyHistory) waise hi rakhe hain taaki
+                    // generateApiKey/copyApiKey/saveApiKey/revokeApiKey
+                    // bina badle chalte rahein.
+                    body: function() {
+                        return `
                         <div class="api-key-card">
-                            <h3>🔑 API Key</h3>
-                            <p style="font-size:0.85rem;color:rgba(0,0,0,0.6);margin-bottom:10px;">Generate a new API key to authenticate your requests. Keep it secret — treat it like a password.</p>
-                            <div class="api-key-row">
-                                <div class="api-key-box" id="apiKeyDisplay">No API key generated yet.</div>
-                                <div class="api-key-actions" id="apiKeyActions">
-                                    <button class="api-action-btn generate-btn" onclick="generateApiKey()">⚡ Generate New API Key</button>
-                                    <button class="api-action-btn copy-btn" onclick="copyApiKey()">📋 Copy</button>
-                                    <button class="api-action-btn save-btn" onclick="saveApiKey()">💾 Save</button>
-                                    <button class="api-action-btn revoke-btn" onclick="revokeApiKey()">🗑️ Delete</button>
+                            <div class="ds-card-head">
+                                <span class="ds-card-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                        <circle cx="8" cy="14" r="4.5"/><path d="m11.4 11 8.1-8.1M17 5.5l2.5 2.5M14.5 8l2.5 2.5"/>
+                                    </svg>
+                                </span>
+                                <div>
+                                    <h3>API Key</h3>
+                                    <p class="ds-card-sub">Generate a new API key to authenticate your requests. Keep it secret \u2014 treat it like a password.</p>
                                 </div>
                             </div>
+
+                            <div class="api-top-row">
+                                <div class="api-notice">
+                                    <span class="api-notice-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M12 3l7.5 3v5.5c0 4.4-3 8.2-7.5 9.5-4.5-1.3-7.5-5.1-7.5-9.5V6z"/><path d="m9 12 2.2 2.2L15.5 10"/>
+                                        </svg>
+                                    </span>
+                                    <div>
+                                        <b>Keep your API key secure and never share it publicly.</b>
+                                        <span>If you suspect your key has been compromised, generate a new one immediately.</span>
+                                    </div>
+                                </div>
+                                <div class="api-key-actions" id="apiKeyActions">
+                                    <button class="api-action-btn generate-btn" onclick="generateApiKey()">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13H11l-1 9 8.5-11H12z"/></svg>
+                                        Generate New API Key
+                                    </button>
+                                    <button class="api-action-btn copy-btn" onclick="copyApiKey()">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
+                                        Copy
+                                    </button>
+                                    <button class="api-action-btn save-btn" onclick="saveApiKey()">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h7M8 14h8"/></svg>
+                                        Save
+                                    </button>
+                                    <button class="api-action-btn revoke-btn" onclick="revokeApiKey()">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h16M9.5 6.5V4.5h5v2M7 6.5l1 13h8l1-13"/></svg>
+                                        Delete
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="api-key-grid">
+                                <div>
+                                    <div class="api-label">Your API Key</div>
+                                    <div class="api-key-box" id="apiKeyDisplay">No API key generated yet.</div>
+                                </div>
+                                <div>
+                                    <div class="api-label">Key Details</div>
+                                    <div class="api-details" id="apiKeyDetails">
+                                        <div class="api-detail-row"><span>Created On</span><b id="apiKeyCreatedOn">\u2014</b></div>
+                                        <div class="api-detail-row"><span>Status</span><span class="txn-status-pill success" id="apiKeyStatus">Active</span></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="api-label api-label-spaced">Previous Keys</div>
                             <div id="apiKeyHistory"></div>
                         </div>
-                        <div class="api-key-card">
-                            <h3>🛠️ Services API Reference</h3>
-                            <p style="font-size:0.85rem;color:rgba(0,0,0,0.6);margin-bottom:10px;">GET and POST endpoints with example requests/responses for each service.</p>
-                            <div id="servicesApiList"></div>
+
+                        <div class="api-key-card api-ref-card">
+                            <div class="ds-card-head">
+                                <span class="ds-card-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4M8.5 12h7M8.5 16h4"/>
+                                    </svg>
+                                </span>
+                                <div>
+                                    <h3>Services API Reference</h3>
+                                    <p class="ds-card-sub">GET and POST endpoints with example requests/responses for each service.</p>
+                                </div>
+                            </div>
+                            <div class="api-ref-layout">
+                                <div class="api-ref-nav" id="apiRefNav"></div>
+                                <div class="api-ref-panel" id="apiRefPanel"></div>
+                            </div>
                         </div>
-                    `
+                    `;
+                    }
                 },
                 support: {
                     body: function() {
@@ -8084,6 +8284,7 @@
             function buildAuthLeftPanel() {
                 const name = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora';
                 const shortName = String(name).split(/\s+/)[0] || 'Lexora';
+                const logoPath = (COMPANY_INFO && COMPANY_INFO.logo) || 'Pictures/lexora-logo.png';
 
                 return `
                     <div class="auth-hero">
@@ -8092,7 +8293,8 @@
                                  onerror="this.style.display='none';" />
                         </div>
                         <div class="auth-hero-copy">
-                            <h1 class="auth-brand-title">${escapeHtml(shortName)}</h1>
+                            <img class="auth-brand-logo" src="${logoPath}" alt="${escapeHtml(shortName)}"
+                                 onerror="this.onerror=null;this.src='Pictures/lexora-logo.png';" />
                             <p class="auth-brand-tagline">Document Intelligence Platform</p>
                             <p class="auth-brand-sub">
                                 Translate, read, and extract data from any document \u2014
@@ -8331,12 +8533,6 @@
 
                 root.innerHTML = `
                     <div class="auth-page">
-                        <div class="auth-topbar">
-                            <img class="auth-topbar-logo" src="${logoPath}" alt=""
-                                 onerror="this.onerror=null;this.src='Pictures/logo.png';" />
-                            <span class="auth-topbar-name">${escapeHtml(shortName).toUpperCase()}</span>
-                        </div>
-
                         <div class="auth-main">
                             <div class="auth-main-left">${buildAuthLeftPanel()}</div>
                             <div class="auth-main-right">
@@ -8349,6 +8545,10 @@
                         </div>
 
                         ${social ? `<div class="auth-social">${social}</div>` : ''}
+
+                        <div class="auth-copyright">
+                            &copy; ${new Date().getFullYear()} ${escapeHtml(name)}. All rights reserved. | Version 1.0.0
+                        </div>
                     </div>
                 `;
                 if (authState.step === 'verify') {
