@@ -1336,6 +1336,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/lease/list": self._handle_lease_list,
             "/api/translation/list": self._handle_translation_list,
             "/api/lease/review-data": self._handle_lease_review_get,
+            "/api/data/payment-history": self._handle_payment_history_get,
             "/api/integrations/status": self._handle_integrations_status,
             "/api/integrations/callback": self._handle_integrations_callback,
             "/api/lease/documents": self._handle_lease_documents,
@@ -1417,6 +1418,21 @@ class Handler(SimpleHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             return self._send_json(400, {"error": "Missing JSON body"})
 
+        # Postgres chalu ho to payment-history DB ki hai, file ki nahi -
+        # warna client ka PUT DB ko chup-chaap purani list se overwrite
+        # kar deta. Har row upsert hoti hai (txn_id par ON CONFLICT),
+        # isliye dobara bhejne se duplicate nahi bante.
+        if name == "payment-history" and db is not None and db.is_enabled():
+            if not isinstance(data, list):
+                return self._send_json(400, {"error": "payment-history must be a list"})
+            try:
+                for entry in data:
+                    if isinstance(entry, dict) and entry.get("id"):
+                        db.append_transaction(entry)
+                return self._send_json(200, {"ok": True, "store": "postgres"})
+            except Exception as err:  # noqa: BLE001
+                print(f"[db] bulk save failed, falling back to JSON: {err}")
+
         file_path = os.path.join(JSON_DIR, f"{name}.json")
         try:
             with open(file_path, "w", encoding="utf-8") as f:
@@ -1426,6 +1442,34 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send_json(500, {"error": "Failed to save"})
 
         self._send_json(200, {"ok": True})
+
+    def _handle_payment_history_get(self, query):
+        """Payment history padhne ka ek hi rasta.
+
+        Pehle browser seedha json/payment-history.json (static file) fetch
+        karta tha. Postgres chalu karne par writes DB me jaane lage par
+        reads wahi purani file se aate rahe - isliye naya transaction
+        dikhta tha aur 15-second poll par gayab ho jata tha. Ab dono ek hi
+        jagah se aate hain.
+        """
+        try:
+            self._authenticated_user_id()
+        except AuthError as err:
+            return self._send_json(401, {"error": str(err)})
+
+        if db is not None and db.is_enabled():
+            try:
+                return self._send_json(200, db.list_transactions())
+            except Exception as err:  # noqa: BLE001
+                print(f"[db] read failed, falling back to JSON: {err}")
+
+        path = os.path.join(JSON_DIR, "payment-history.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                rows = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            rows = []
+        return self._send_json(200, rows if isinstance(rows, list) else [])
 
     # ------------------------------------------------------------------
     # Admin File Manager - GET routes

@@ -214,6 +214,7 @@
     if (!host) return;
     if (!document.getElementById('srIn_' + id)) return;
     host.innerHTML = render(id);
+    if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
   }
 
   // ── interactions ───────────────────────────────────────────────────

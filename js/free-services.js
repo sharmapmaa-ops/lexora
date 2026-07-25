@@ -487,6 +487,7 @@
   function open(id) {
     const host = document.getElementById('contentBody');
     if (host) host.innerHTML = render(id);
+    if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
     if (window.setLexoraBreadcrumb) {
       const base = window.__lexoraBreadcrumb || '\ud83d\udee0\ufe0f Services / Other Services';
       const name = id === 'other-services' ? '' : titleOf(id);

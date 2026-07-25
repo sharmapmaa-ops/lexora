@@ -7094,6 +7094,20 @@
             }
             window.enhanceServicePage = enhanceServicePage;
 
+            // Other Services ke tools (service-runner.js, ocr-service.js,
+            // data-extraction.js, bai2.js, free-services.js) contentBody ko
+            // KHUD replace karte hain - wo updateContent() se nahi guzarte.
+            // Isliye unpar header icons aur tab layout kabhi lagta hi nahi
+            // tha. Ye ek shared hook hai jo wahi dono kaam karta hai; har
+            // module apne render ke baad ise call karta hai.
+            window.lexoraEnhancePage = function(host) {
+                const root = host || document.getElementById('contentBody');
+                if (!root) return;
+                upgradeCardHeaders(root);
+                enhanceServicePage(root);
+                applyCardLayout();
+            };
+
             // .service-page-grid ke 2x2 cards ko do stacked tab strips me
             // badal deta hai: [Upload File(s) | Setup] aur uske neeche
             // [Uploaded Files | Activity Log]. Dono full width. Isse chaaro
@@ -7106,6 +7120,11 @@
             // Ye transform DOM par chalta hai, isliye har service par lagta
             // hai - Translation/Lease (app.js) aur Other Services ke saare
             // tools (service-runner.js) - kyunki sabka markup ek jaisa hai.
+            // Tool pages har file pick / progress update par poora re-render
+            // hote hain. Us waqt active tab reset ho jata tha aur user ko
+            // wapas Uploaded Files par pheink deta tha - isliye yaad rakhte hain.
+            let svcActiveTab = 0;
+
             function buildServiceTabStrips(root) {
                 const grid = root.querySelector('.service-page-grid');
                 if (!grid || grid.dataset.tabbed) return;
@@ -7136,22 +7155,24 @@
                     const panes = document.createElement('div');
                     panes.className = 'svc-panes';
 
+                    const startAt = Math.min(svcActiveTab, cards.length - 1);
                     cards.forEach((card, ci) => {
                         const btn = document.createElement('button');
                         btn.type = 'button';
-                        btn.className = 'svc-tab' + (ci === 0 ? ' is-active' : '');
+                        btn.className = 'svc-tab' + (ci === startAt ? ' is-active' : '');
                         const head = card.querySelector('h3');
                         const icon = head && head.querySelector('.ds-card-icon');
                         if (icon) btn.appendChild(icon.cloneNode(true));
                         btn.appendChild(document.createTextNode(titleOf(card)));
                         btn.onclick = () => {
+                            svcActiveTab = ci;
                             strip.querySelectorAll('.svc-tab').forEach((x, i) => x.classList.toggle('is-active', i === ci));
                             strip.querySelectorAll('.svc-pane').forEach((x, i) => x.classList.toggle('is-active', i === ci));
                         };
                         tabs.appendChild(btn);
 
                         const pane = document.createElement('div');
-                        pane.className = 'svc-pane' + (ci === 0 ? ' is-active' : '');
+                        pane.className = 'svc-pane' + (ci === startAt ? ' is-active' : '');
                         if (head) head.remove();
                         card.classList.add('svc-card-inner');
                         pane.appendChild(card);
@@ -8594,7 +8615,9 @@
                 ] = await Promise.all([
                     fetchJSON('json/menu-config.json'),
                     fetchJSON('json/payment-methods.json'),
-                    fetchJSON('json/payment-history.json'),
+                    // Postgres chalu ho to ye route DB se deta hai,
+                    // warna wahi JSON file - dono case me ek hi shape.
+                    fetchJSON('/api/data/payment-history'),
                     fetchJSON('json/services-api.json'),
                     fetchJSON('json/card-layout.json'),
                     fetchJSON('json/contact-submissions.json'),
@@ -9527,7 +9550,7 @@
                     try {
                         const [notifRes, payRes] = await Promise.all([
                             fetch('json/notifications.json?_=' + Date.now()),
-                            fetch('json/payment-history.json?_=' + Date.now()),
+                            authFetch('/api/data/payment-history?_=' + Date.now()),
                         ]);
                         const [freshNotifications, freshPaymentHistory] = await Promise.all([notifRes.json(), payRes.json()]);
 

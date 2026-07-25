@@ -705,6 +705,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     const host = document.getElementById('contentBody');
     if (!host || !document.getElementById('deInput')) return;
     host.innerHTML = render();
+    if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
   }
 
   window.DataExtraction = {

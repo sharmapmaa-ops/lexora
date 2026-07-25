@@ -570,6 +570,7 @@ Return ONLY this JSON, nothing else:
     const host = document.getElementById('contentBody');
     if (!host || !document.getElementById('baiInput')) return;
     host.innerHTML = render();
+    if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
   }
 
   window.Bai2 = {

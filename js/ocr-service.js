@@ -340,6 +340,7 @@
     const host = document.getElementById('contentBody');
     if (!host || !document.getElementById('ocrInput')) return;
     host.innerHTML = render();
+    if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
   }
 
   // Called when navigating away, so a half-finished run doesn't keep going
