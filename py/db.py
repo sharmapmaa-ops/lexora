@@ -34,6 +34,7 @@ USAGE
 """
 
 import datetime
+import json
 import os
 import threading
 
@@ -135,6 +136,7 @@ def init_schema():
         with connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(SCHEMA_SQL)
+                cur.execute(NOTIFICATIONS_SCHEMA_SQL)
             conn.commit()
         _schema_ready = True
     return True
@@ -272,6 +274,146 @@ def get_balance(user_id):
     return _to_number(row["balance"]) if row else 0.0
 
 
+# ============================================================
+# NOTIFICATIONS
+#
+# Shape: {id, userId, date, time, description, read} + optional meta
+# ({type, transactionId, handledResult, ...}). Meta khula-dhula hai,
+# isliye wo JSONB column me jata hai - naya field aaye to schema badalna
+# nahi padega.
+# ============================================================
+NOTIFICATIONS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS notifications (
+    notif_id    TEXT PRIMARY KEY,
+    user_id     TEXT        NOT NULL,
+    notif_date  DATE        NOT NULL,
+    notif_time  TEXT        NOT NULL DEFAULT '',
+    description TEXT        NOT NULL DEFAULT '',
+    is_read     BOOLEAN     NOT NULL DEFAULT FALSE,
+    meta        JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS notifications_user_idx
+    ON notifications (user_id, notif_date DESC, created_at DESC);
+"""
+
+# Ye keys column me jaati hain; baaki sab meta JSONB me chali jaati hain.
+_NOTIF_CORE = {"id", "userId", "date", "time", "description", "read"}
+
+
+def notif_row_to_entry(row):
+    entry = {
+        "id": row["notif_id"],
+        "userId": row["user_id"],
+        "date": row["notif_date"].isoformat() if row["notif_date"] else "",
+        "time": row["notif_time"] or "",
+        "description": row["description"] or "",
+        "read": bool(row["is_read"]),
+    }
+    meta = row.get("meta") or {}
+    if isinstance(meta, dict):
+        entry.update(meta)
+    return entry
+
+
+def notif_entry_to_params(entry):
+    meta = {k: v for k, v in entry.items() if k not in _NOTIF_CORE}
+    return {
+        "notif_id": entry.get("id") or "",
+        "user_id": entry.get("userId") or "",
+        "notif_date": entry.get("date") or datetime.date.today().isoformat(),
+        "notif_time": entry.get("time") or "",
+        "description": entry.get("description") or "",
+        "is_read": bool(entry.get("read")),
+        "meta": json.dumps(meta),
+    }
+
+
+NOTIF_INSERT_SQL = """
+INSERT INTO notifications (
+    notif_id, user_id, notif_date, notif_time, description, is_read, meta
+) VALUES (
+    %(notif_id)s, %(user_id)s, %(notif_date)s, %(notif_time)s,
+    %(description)s, %(is_read)s, %(meta)s::jsonb
+)
+ON CONFLICT (notif_id) DO UPDATE SET
+    is_read     = EXCLUDED.is_read,
+    description = EXCLUDED.description,
+    meta        = EXCLUDED.meta
+"""
+
+NOTIF_SELECT_SQL = """
+SELECT * FROM notifications ORDER BY notif_date DESC, created_at DESC
+"""
+
+
+def list_notifications():
+    init_schema()
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(NOTIF_SELECT_SQL)
+            rows = cur.fetchall()
+    return [notif_row_to_entry(r) for r in rows]
+
+
+def replace_notifications(rows):
+    """Poori list save karo - browser hamesha poora array bhejta hai.
+
+    Sab kuch EK transaction me: purani rows hatti hain aur nayi aati hain,
+    ya kuch nahi hota. Beech me koi aadhi list nahi dekh sakta - JSON file
+    me yahi sabse bada khatra tha.
+    """
+    init_schema()
+    keep = [r for r in rows if isinstance(r, dict) and r.get("id")]
+    with connect() as conn:
+        with conn.cursor() as cur:
+            ids = [r["id"] for r in keep]
+            if ids:
+                cur.execute(
+                    "DELETE FROM notifications WHERE notif_id <> ALL(%(ids)s)",
+                    {"ids": ids},
+                )
+            else:
+                cur.execute("DELETE FROM notifications")
+            for entry in keep:
+                cur.execute(NOTIF_INSERT_SQL, notif_entry_to_params(entry))
+        conn.commit()
+    return len(keep)
+
+
+# ============================================================
+# Resource registry
+#
+# server.py sirf ye do function call karta hai. Nayi JSON file DB par
+# laani ho to yahan ek line add karni hai, server.py chhedna nahi padta.
+# ============================================================
+DB_BACKED_RESOURCES = ("payment-history", "notifications")
+
+
+def list_resource(name):
+    if name == "payment-history":
+        return list_transactions()
+    if name == "notifications":
+        return list_notifications()
+    raise KeyError(name)
+
+
+def save_resource(name, rows):
+    if name == "payment-history":
+        # Transactions kabhi delete nahi hote - sirf upsert. Client ki
+        # purani list DB se rows uda na de.
+        saved = 0
+        for entry in rows:
+            if isinstance(entry, dict) and entry.get("id"):
+                append_transaction(entry)
+                saved += 1
+        return saved
+    if name == "notifications":
+        return replace_notifications(rows)
+    raise KeyError(name)
+
+
 def safe_host():
     """URL ka sirf host hissa - password kabhi bahar nahi jana chahiye."""
     url = DATABASE_URL
@@ -309,6 +451,10 @@ def status():
                 if info["tableExists"]:
                     cur.execute("SELECT COUNT(*) AS n FROM transactions")
                     info["rowCount"] = int(cur.fetchone()["n"] or 0)
+                    cur.execute("SELECT to_regclass('public.notifications') IS NOT NULL AS present")
+                    if cur.fetchone()["present"]:
+                        cur.execute("SELECT COUNT(*) AS n FROM notifications")
+                        info["notificationCount"] = int(cur.fetchone()["n"] or 0)
                     cur.execute(
                         "SELECT user_id,"
                         "       COALESCE(SUM(credit), 0) - COALESCE(SUM(debit), 0) AS balance"

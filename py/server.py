@@ -1337,6 +1337,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/translation/list": self._handle_translation_list,
             "/api/lease/review-data": self._handle_lease_review_get,
             "/api/data/payment-history": self._handle_payment_history_get,
+            "/api/data/notifications": self._handle_notifications_get,
             "/api/admin/db-status": self._handle_admin_db_status,
             "/api/admin/db-transactions": self._handle_admin_db_transactions,
             "/api/integrations/status": self._handle_integrations_status,
@@ -1420,20 +1421,17 @@ class Handler(SimpleHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             return self._send_json(400, {"error": "Missing JSON body"})
 
-        # Postgres chalu ho to payment-history DB ki hai, file ki nahi -
+        # DB-backed resource hai to file ki jagah Postgres me likho -
         # warna client ka PUT DB ko chup-chaap purani list se overwrite
-        # kar deta. Har row upsert hoti hai (txn_id par ON CONFLICT),
-        # isliye dobara bhejne se duplicate nahi bante.
-        if name == "payment-history" and db is not None and db.is_enabled():
+        # kar deta. Kaunsi resource DB par hai, ye db.py tay karta hai.
+        if db is not None and db.is_enabled() and name in db.DB_BACKED_RESOURCES:
             if not isinstance(data, list):
-                return self._send_json(400, {"error": "payment-history must be a list"})
+                return self._send_json(400, {"error": f"{name} must be a list"})
             try:
-                for entry in data:
-                    if isinstance(entry, dict) and entry.get("id"):
-                        db.append_transaction(entry)
+                db.save_resource(name, data)
                 return self._send_json(200, {"ok": True, "store": "postgres"})
             except Exception as err:  # noqa: BLE001
-                print(f"[db] bulk save failed, falling back to JSON: {err}")
+                print(f"[db] save of {name} failed, falling back to JSON: {err}")
 
         file_path = os.path.join(JSON_DIR, f"{name}.json")
         try:
@@ -1486,7 +1484,33 @@ class Handler(SimpleHTTPRequestHandler):
             })
 
     def _read_payment_history_file(self):
-        path = os.path.join(JSON_DIR, "payment-history.json")
+        return self._read_json_list("payment-history")
+
+    def _handle_notifications_get(self, query):
+        return self._serve_resource("notifications")
+
+    def _serve_resource(self, name):
+        """DB-backed resource ko padhne ka ek hi rasta (GET /api/data/<n>).
+
+        Postgres chalu ho to DB se, warna wahi JSON file. Nayi file DB par
+        laani ho to db.DB_BACKED_RESOURCES me naam add karke yahan ek route
+        register kar dijiye - is function me kuch nahi badalta.
+        """
+        try:
+            self._authenticated_user_id()
+        except AuthError as err:
+            return self._send_json(401, {"error": str(err)})
+
+        if db is not None and db.is_enabled() and name in db.DB_BACKED_RESOURCES:
+            try:
+                return self._send_json(200, db.list_resource(name))
+            except Exception as err:  # noqa: BLE001
+                print(f"[db] read of {name} failed, falling back to JSON: {err}")
+
+        return self._send_json(200, self._read_json_list(name))
+
+    def _read_json_list(self, name):
+        path = os.path.join(JSON_DIR, f"{name}.json")
         try:
             with open(path, "r", encoding="utf-8") as f:
                 rows = json.load(f)

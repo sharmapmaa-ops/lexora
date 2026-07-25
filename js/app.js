@@ -6031,7 +6031,10 @@
                         if (d.server) rows.push(['Server', escapeHtml(d.server)]);
                         rows.push(['transactions table', d.tableExists
                             ? dbChip(true, 'exists') : dbChip(false, 'not created yet')]);
-                        rows.push(['Rows in database', `<b>${d.rowCount}</b>`]);
+                        rows.push(['transactions rows', `<b>${d.rowCount}</b>`]);
+                        if (d.notificationCount != null) {
+                            rows.push(['notifications rows', `<b>${d.notificationCount}</b>`]);
+                        }
                     }
                     rows.push(['Rows in payment-history.json', `<b>${d.jsonCount}</b>`]);
                     if (d.error) rows.push(['Error', `<span class="db-note is-bad">${escapeHtml(d.error)}</span>`]);
@@ -8777,7 +8780,7 @@
                     fetchJSON('json/translation-files.json'),
                     fetchJSON('json/lease-activity-log.json'),
                     fetchJSON('json/translation-activity-log.json'),
-                    fetchJSON('json/notifications.json'),
+                    fetchJSON('/api/data/notifications'),
                     fetchJSON('json/plans.json'),
                     fetchJSON('json/plan-history.json')
                 ]);
@@ -9696,7 +9699,7 @@
                     if (!CURRENT_USER_ID || !AUTH_TOKEN) return;
                     try {
                         const [notifRes, payRes] = await Promise.all([
-                            fetch('json/notifications.json?_=' + Date.now()),
+                            authFetch('/api/data/notifications?_=' + Date.now()),
                             authFetch('/api/data/payment-history?_=' + Date.now()),
                         ]);
                         const [freshNotifications, freshPaymentHistory] = await Promise.all([notifRes.json(), payRes.json()]);
