@@ -227,7 +227,11 @@
             // always uses the strictly-own getMyPaymentHistory() above, this
             // one is only for what the *page* displays.
             function isAdminOrDeveloper() {
-                return !!profileData && (profileData.role === 'Admin' || profileData.role === 'Developer');
+                // TEMPORARY: role check disabled so Admin panel shows for
+                // every logged-in user. To go back to real role-based
+                // access, restore the line below and remove this override:
+                //   return !!profileData && (profileData.role === 'Admin' || profileData.role === 'Developer');
+                return !!profileData;
             }
 
             function getVisiblePaymentHistory() {
@@ -7192,9 +7196,12 @@
                     }
 
                     // Role-gated items (e.g. Admin) only render for allowed roles.
-                    if (Array.isArray(item.rolesAllowed) && !item.rolesAllowed.includes(myRole)) {
-                        return;
-                    }
+                    // TEMPORARY: disabled so every logged-in user sees them
+                    // (e.g. the Admin item). To restore real role-based
+                    // visibility, un-comment the check below.
+                    // if (Array.isArray(item.rolesAllowed) && !item.rolesAllowed.includes(myRole)) {
+                    //     return;
+                    // }
 
                     const btn = document.createElement('button');
                     btn.className = 'dropdown-item';

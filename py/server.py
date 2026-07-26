@@ -1286,11 +1286,21 @@ class Handler(SimpleHTTPRequestHandler):
     def _require_role(self, roles):
         """For routes that are inherently privileged (Admin File Manager,
         rule approval) rather than "acting as a specific user" - just
-        requires the session to belong to one of the given roles."""
+        requires the session to belong to one of the given roles.
+
+        TEMPORARY: role check disabled below so every logged-in user can
+        use these routes (matches the frontend override in isAdminOrDeveloper()
+        / renderProfileMenu() in js/app.js). To restore real role-based
+        access, delete the two lines under "TEMP bypass" and keep only the
+        commented-out check.
+        """
         session_user_id = self._authenticated_user_id()
-        if self._session_user_role(session_user_id) not in roles:
-            raise AuthError("You don't have permission to do that.")
+        # ---- TEMP bypass: any logged-in user passes _require_role ----
         return session_user_id
+        # ---- Original role check (restore by removing the bypass above) ----
+        # if self._session_user_role(session_user_id) not in roles:
+        #     raise AuthError("You don't have permission to do that.")
+        # return session_user_id
 
     def _read_json_body(self):
         length = int(self.headers.get("Content-Length") or 0)
