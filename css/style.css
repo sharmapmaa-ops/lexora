@@ -4769,6 +4769,56 @@
     background: white;
 }
 
+/* Admin > PostgreSQL tab: editable table grid (Add/Edit/Delete rows) */
+.db-cell-input {
+    width: 100%;
+    min-width: 90px;
+    padding: 6px 8px;
+    border: 1px solid rgba(0,0,0,0.12);
+    border-radius: 5px;
+    font-size: 0.76rem;
+    background: #fbfbfd;
+    box-sizing: border-box;
+    font-family: inherit;
+}
+
+.db-cell-input:disabled {
+    background: rgba(0,0,0,0.04);
+    color: rgba(0,0,0,0.4);
+    cursor: not-allowed;
+}
+
+.db-cell-input:focus {
+    outline: none;
+    border-color: darkblue;
+    background: white;
+}
+
+.db-cell-json {
+    min-width: 160px;
+    resize: vertical;
+    line-height: 1.3;
+}
+
+.db-edit-table td {
+    vertical-align: top;
+}
+
+.db-row-actions {
+    white-space: nowrap;
+    display: flex;
+    gap: 6px;
+}
+
+.db-row-actions .admin-btn {
+    padding: 6px 9px;
+    font-size: 0.8rem;
+}
+
+.db-new-row {
+    background: rgba(46, 160, 67, 0.06);
+}
+
 .admin-modal-note {
     font-size: 0.75rem;
     color: rgba(0,0,0,0.5);

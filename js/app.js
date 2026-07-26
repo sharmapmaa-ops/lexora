@@ -6008,7 +6008,6 @@
                         <div class="admin-toolbar">
                             <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
                             <button class="admin-btn admin-btn-save" onclick="runDbMigration()">\u2934 Run migration</button>
-                            <button class="add-btn" onclick="openDbTransactions()">View Payment Table</button>
                         </div>
                         <div id="dbStatusBody"><p class="ds-card-sub">Checking\u2026</p></div>
                     </div>`;
@@ -6035,39 +6034,19 @@
                         rows.push(['Store', d.connected ? dbChip(true, 'PostgreSQL') : dbChip(false, 'Not reachable')]);
                         if (d.host)   rows.push(['Host', `<code>${escapeHtml(d.host)}</code>`]);
                         if (d.server) rows.push(['Server', escapeHtml(d.server)]);
-                        rows.push(['transactions table', d.tableExists
-                            ? dbChip(true, 'exists') : dbChip(false, 'not created yet')]);
-                        rows.push(['transactions rows', `<b>${d.rowCount}</b>`]);
-                        if (d.userCount != null) {
-                            rows.push(['users rows', `<b>${d.userCount}</b>`]);
-                        }
-                        if (d.notificationCount != null) {
-                            rows.push(['notifications rows', `<b>${d.notificationCount}</b>`]);
-                        }
-                        (d.documentCounts || []).forEach(dc => {
-                            rows.push([`${escapeHtml(dc.resource)} rows`, `<b>${dc.count}</b>`]);
-                        });
                     }
-                    rows.push(['Rows in payment-history.json', `<b>${d.jsonCount}</b>`]);
                     if (d.error) rows.push(['Error', `<span class="db-note is-bad">${escapeHtml(d.error)}</span>`]);
 
                     const missing = d.missingFromDb || [];
                     const warn = missing.length
                         ? `<div class="db-warn">${missing.length} row(s) JSON me hain par database me nahi \u2014
-                           migration adhoori hai. <code>python3 py/migrate_json_to_pg.py</code> chalayein
+                           migration adhoori hai. "Run migration" button dabayein
                            (duplicate nahi banenge).</div>`
-                        : '';
-
-                    const bal = (d.balances || []).length
-                        ? `<div class="db-balances"><b>Balance (database se)</b>
-                             ${d.balances.map(b => `<span>${escapeHtml(b.userId)}
-                               <em>${formatMoney(b.balance)}</em></span>`).join('')}
-                           </div>`
                         : '';
 
                     body.innerHTML = `<table class="db-status-table"><tbody>
                         ${rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}
-                    </tbody></table>${warn}${bal}
+                    </tbody></table>${warn}
                     <div id="dbTablesBox"></div>`;
                     renderDbTables();
                 } catch (err) {
@@ -6101,42 +6080,173 @@
             };
 
             // Generic viewer - columns jo bhi row me aayein, wahi dikhte hain.
+            // name -> is db.py ka db.table_columns() jawab (columns metadata),
+            // taaki Save/Add row bhejte waqt pata rahe kaunsa column jsonb hai,
+            // primary key kaunsa hai, aur kaunsa column edit karne layak nahi
+            // (password jaisi masked columns).
+            let _dbTableColumns = [];
+
+            function _dbCellToInput(col, value) {
+                const raw = value == null ? '' : (typeof value === 'object' ? JSON.stringify(value) : String(value));
+                const safe = escapeHtml(raw).replace(/"/g, '&quot;');
+                if (!col.editable) {
+                    return `<input type="text" value="${safe}" disabled title="Ye column edit nahi ho sakta" />`;
+                }
+                if (col.type === 'jsonb' || col.type === 'json') {
+                    return `<textarea class="db-cell-input db-cell-json" rows="2" data-col="${escapeHtml(col.name)}">${escapeHtml(raw)}</textarea>`;
+                }
+                return `<input type="text" class="db-cell-input" data-col="${escapeHtml(col.name)}" value="${safe}" ${col.primaryKey ? 'title="Primary key - naya row banate waqt hi set karein"' : ''} />`;
+            }
+
+            function _dbReadRowInputs(tr) {
+                const values = {};
+                tr.querySelectorAll('[data-col]').forEach(input => {
+                    values[input.dataset.col] = input.value;
+                });
+                return values;
+            }
+
             window.openDbTable = async function(name) {
                 openAdminModal(`
-                    <div class="admin-modal-overlay" id="adminFileOverlay">
-                        <div class="admin-modal-card card-layout-modal">
+                    <div class="admin-modal-overlay" id="adminFileModalOverlay">
+                        <div class="admin-modal-card card-layout-modal db-table-modal">
                             <button class="admin-modal-close" onclick="adminCloseFileModal()">\u2715</button>
                             <h3 class="admin-modal-title">\u{1F5C4} ${escapeHtml(name)}</h3>
                             <div class="card-layout-scroll" id="dbTableScroll">
                                 <p class="ds-card-sub" style="padding:14px;">Loading\u2026</p>
                             </div>
                             <div class="admin-modal-actions">
+                                <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${name}')">+ Add row</button>
                                 <button class="admin-modal-cancel" onclick="adminCloseFileModal()">Close</button>
                             </div>
                         </div>
                     </div>`);
-                const scroll = () => document.getElementById('dbTableScroll');
+                await dbTableLoad(name);
+            };
+
+            window.dbTableLoad = async function(name) {
+                const scroll = document.getElementById('dbTableScroll');
+                if (!scroll) return;
+                scroll.innerHTML = '<p class="ds-card-sub" style="padding:14px;">Loading\u2026</p>';
                 try {
                     const res = await authFetch('/api/admin/db-table?name=' + encodeURIComponent(name));
                     const d = await res.json();
                     if (!res.ok) throw new Error(d.error || 'Could not read table.');
                     const rows = d.rows || [];
-                    const cols = rows.length ? Object.keys(rows[0]) : [];
-                    const el = scroll();
-                    if (!el) return;
-                    el.innerHTML = rows.length === 0
-                        ? '<p class="ds-card-sub" style="padding:14px;">Ye table abhi khaali hai.</p>'
-                        : `<div class="db-txn-source"><span class="db-note">${rows.length} row(s)
-                             \u2014 password / OTP / API key masked hain</span></div>
-                           <table class="admin-json-table db-txn-table">
-                             <thead><tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
-                             <tbody>${rows.map(r => `<tr>${cols.map(c =>
-                                 `<td>${escapeHtml(r[c] == null ? '' : String(r[c]))}</td>`).join('')}</tr>`).join('')}
-                             </tbody>
-                           </table>`;
+                    _dbTableColumns = d.columns || [];
+                    const cols = _dbTableColumns.length ? _dbTableColumns : (rows.length ? Object.keys(rows[0]).map(n => ({ name: n, type: 'text', editable: true, primaryKey: false })) : []);
+                    scroll.innerHTML = `
+                        <div class="db-txn-source"><span class="db-note">${rows.length} row(s)
+                             \u2014 password / OTP / API key masked hain aur edit nahi ho sakte</span></div>
+                        <table class="admin-json-table db-txn-table db-edit-table">
+                            <thead><tr>${cols.map(c => `<th>${escapeHtml(c.name)}${c.primaryKey ? ' \u{1F511}' : ''}</th>`).join('')}<th></th></tr></thead>
+                            <tbody id="dbTableBody">
+                                ${rows.map((r, i) => `
+                                    <tr data-row-index="${i}">
+                                        ${cols.map(c => `<td>${_dbCellToInput(c, r[c.name])}</td>`).join('')}
+                                        <td class="db-row-actions">
+                                            <button class="admin-btn admin-btn-save" onclick="dbTableSaveRow('${escapeHtml(name)}', ${i})">\u{1F4BE}</button>
+                                            <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteRow('${escapeHtml(name)}', ${i})">\u{1F5D1}</button>
+                                        </td>
+                                    </tr>`).join('')}
+                            </tbody>
+                        </table>`;
+                    scroll.dataset.rows = JSON.stringify(rows);
                 } catch (err) {
-                    const el = scroll();
-                    if (el) el.innerHTML = `<p class="db-note is-bad" style="padding:14px;">${escapeHtml(err.message)}</p>`;
+                    scroll.innerHTML = `<p class="db-note is-bad" style="padding:14px;">${escapeHtml(err.message)}</p>`;
+                }
+            };
+
+            function _dbKeyFor(name, row) {
+                const pkCols = _dbTableColumns.filter(c => c.primaryKey).map(c => c.name);
+                const key = {};
+                pkCols.forEach(c => { key[c] = row[c]; });
+                return key;
+            }
+
+            window.dbTableSaveRow = async function(name, index) {
+                const scroll = document.getElementById('dbTableScroll');
+                const tr = scroll && scroll.querySelector(`tr[data-row-index="${index}"]`);
+                if (!tr) return;
+                const originalRows = JSON.parse(scroll.dataset.rows || '[]');
+                const originalRow = originalRows[index] || {};
+                const values = _dbReadRowInputs(tr);
+                try {
+                    const key = _dbKeyFor(name, originalRow);
+                    const res = await authFetch('/api/admin/db-table-update', {
+                        method: 'POST',
+                        body: JSON.stringify({ table: name, key, values })
+                    });
+                    const d = await res.json();
+                    if (!res.ok) throw new Error(d.error || 'Save failed.');
+                    showSuccess('Row save ho gaya.');
+                    await dbTableLoad(name);
+                    renderDbTables();
+                } catch (err) {
+                    showWarning(err.message);
+                }
+            };
+
+            window.dbTableDeleteRow = async function(name, index) {
+                const scroll = document.getElementById('dbTableScroll');
+                const originalRows = JSON.parse((scroll && scroll.dataset.rows) || '[]');
+                const originalRow = originalRows[index] || {};
+                showConfirm('Delete row', 'Ye row Postgres se hamesha ke liye hat jayegi. Pakka?',
+                    async function(yes) {
+                        if (!yes) return;
+                        try {
+                            const key = _dbKeyFor(name, originalRow);
+                            const res = await authFetch('/api/admin/db-table-delete', {
+                                method: 'POST',
+                                body: JSON.stringify({ table: name, key })
+                            });
+                            const d = await res.json();
+                            if (!res.ok) throw new Error(d.error || 'Delete failed.');
+                            showSuccess('Row delete ho gaya.');
+                            await dbTableLoad(name);
+                            renderDbTables();
+                        } catch (err) {
+                            showWarning(err.message);
+                        }
+                    });
+            };
+
+            window.dbTableAddRow = async function(name) {
+                const scroll = document.getElementById('dbTableScroll');
+                if (!scroll) return;
+                const cols = _dbTableColumns.filter(c => c.editable);
+                if (!cols.length) { showWarning('Is table me koi editable column nahi mila.'); return; }
+                const tbody = document.getElementById('dbTableBody');
+                if (!tbody) return;
+                const tempIndex = 'new';
+                const rowHtml = `
+                    <tr data-row-index="${tempIndex}" class="db-new-row">
+                        ${_dbTableColumns.map(c => `<td>${_dbCellToInput(c, '')}</td>`).join('')}
+                        <td class="db-row-actions">
+                            <button class="admin-btn admin-btn-save" onclick="dbTableInsertRow('${escapeHtml(name)}', this)">\u{1F4BE}</button>
+                            <button class="admin-btn admin-btn-delete" onclick="this.closest('tr').remove()">\u2715</button>
+                        </td>
+                    </tr>`;
+                tbody.insertAdjacentHTML('beforeend', rowHtml);
+                tbody.lastElementChild.scrollIntoView({ block: 'nearest' });
+            };
+
+            window.dbTableInsertRow = async function(name, btn) {
+                const tr = btn.closest('tr');
+                if (!tr) return;
+                const values = _dbReadRowInputs(tr);
+                try {
+                    const res = await authFetch('/api/admin/db-table-insert', {
+                        method: 'POST',
+                        body: JSON.stringify({ table: name, values })
+                    });
+                    const d = await res.json();
+                    if (!res.ok) throw new Error(d.error || 'Insert failed.');
+                    showSuccess('Naya row ban gaya.');
+                    await dbTableLoad(name);
+                    renderDbTables();
+                } catch (err) {
+                    showWarning(err.message);
                 }
             };
 
@@ -6163,7 +6273,7 @@
 
             window.openDbTransactions = async function() {
                 openAdminModal(`
-                    <div class="admin-modal-overlay" id="adminFileOverlay">
+                    <div class="admin-modal-overlay" id="adminFileModalOverlay">
                         <div class="admin-modal-card card-layout-modal">
                             <button class="admin-modal-close" onclick="adminCloseFileModal()">\u2715</button>
                             <h3 class="admin-modal-title">\u{1F5C4} Payment table</h3>
@@ -7552,7 +7662,7 @@
                            value="${escapeHtml(card[field] || '')}" oninput="onCardFieldChange(this)" />`;
 
                 return `
-                    <div class="admin-modal-overlay" id="adminFileOverlay">
+                    <div class="admin-modal-overlay" id="adminFileModalOverlay">
                         <div class="admin-modal-card card-layout-modal">
                             <button class="admin-modal-close" onclick="adminCloseFileModal()">\u2715</button>
                             <h3 class="admin-modal-title">\u{1F4D0} card-layout.json \u2014 Card Sizes</h3>
