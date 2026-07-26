@@ -1,0 +1,12 @@
+[
+    {
+        "id": 1,
+        "name": "HDFC Bank Debit Card",
+        "details": "**** **** **** 4821",
+        "icon": "💳",
+        "expires": "05/29",
+        "isDefault": true,
+        "type": "card",
+        "userId": "U0000001"
+    }
+]

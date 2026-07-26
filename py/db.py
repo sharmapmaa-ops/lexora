@@ -139,6 +139,7 @@ def init_schema():
                 cur.execute(NOTIFICATIONS_SCHEMA_SQL)
                 cur.execute(DOCUMENTS_SCHEMA_SQL)
                 cur.execute(USERS_SCHEMA_SQL)
+                cur.execute(SETTINGS_SCHEMA_SQL)
             conn.commit()
         _schema_ready = True
     return True
@@ -697,9 +698,20 @@ DOCUMENT_RESOURCES = (
     # nahi hote, isliye rows chhoti hi rehti hain.
     "lease-files", "translation-files",
     "lease-activity-log", "translation-activity-log",
+    # Plans list (json/plans.json tha) - array of plan objects, id field
+    # hi document pattern ke liye kaafi hai.
+    "plans",
 )
 
 DB_BACKED_RESOURCES = ("payment-history", "notifications") + DOCUMENT_RESOURCES
+
+# Ye JSON files list nahi, ek hi object/dict thi (menu-config.json,
+# company.json waghera) - inke liye alag key-value table (app_settings),
+# kyunki document pattern (id ke saath rows) inpar fit nahi baithta.
+SETTINGS_RESOURCES = (
+    "menu-config", "services-api", "card-layout", "messages", "agents",
+    "company", "rules",
+)
 
 
 def list_resource(name):
@@ -736,7 +748,48 @@ def save_resource(name, rows):
 # seedha jata hai (usko parameter nahi banaya ja sakta), isliye
 # allowlist hi ekmatra suraksha hai - koi bhi naam accept karna SQL
 # injection ka darwaza khol dega.
-KNOWN_TABLES = ("users", "transactions", "notifications", "app_documents")
+KNOWN_TABLES = ("users", "transactions", "notifications", "app_documents", "app_settings")
+
+# ============================================================
+# app_settings - singleton/object JSON files (menu-config.json,
+# company.json, waghera). Har ek ek hi row hai, poora object JSONB me.
+# ============================================================
+SETTINGS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS app_settings (
+    name       TEXT PRIMARY KEY,
+    data       JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+"""
+
+
+def get_setting(name):
+    """Ek settings object wapas karta hai, ya None agar abhi tak save nahi hui."""
+    if name not in SETTINGS_RESOURCES:
+        raise ValueError(f"Unknown setting: {name}")
+    init_schema()
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT data FROM app_settings WHERE name = %(name)s", {"name": name})
+            row = cur.fetchone()
+    return row["data"] if row else None
+
+
+def save_setting(name, data):
+    """Poora object upsert karta hai (delete + insert nahi, seedha replace)."""
+    if name not in SETTINGS_RESOURCES:
+        raise ValueError(f"Unknown setting: {name}")
+    init_schema()
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_settings (name, data) VALUES (%(name)s, %(data)s::jsonb)"
+                " ON CONFLICT (name) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+                {"name": name, "data": json.dumps(data)},
+            )
+        conn.commit()
+    return True
+
 
 # Admin ko bhi password hash ya OTP dekhne ki zaroorat nahi. Screenshot
 # ya screen-share me leak hona asaan hai, isliye server hi mask karta
@@ -813,6 +866,15 @@ def migrate_from_json(json_dir):
         except (OSError, json.JSONDecodeError):
             return []
 
+    def read_obj(name):
+        path = os.path.join(json_dir, f"{name}.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else None
+        except (OSError, json.JSONDecodeError):
+            return None
+
     users = read("users")
     if users:
         try:
@@ -842,6 +904,16 @@ def migrate_from_json(json_dir):
             continue
         try:
             report.append({"resource": name, "rows": save_resource(name, rows), "ok": True})
+        except Exception as err:  # noqa: BLE001
+            report.append({"resource": name, "error": str(err), "ok": False})
+
+    for name in SETTINGS_RESOURCES:
+        data = read_obj(name)
+        if data is None:
+            continue
+        try:
+            save_setting(name, data)
+            report.append({"resource": name, "rows": 1, "ok": True})
         except Exception as err:  # noqa: BLE001
             report.append({"resource": name, "error": str(err), "ok": False})
 

@@ -486,6 +486,15 @@ ALLOWED_RESOURCES = {
     # Card sizes (Admin Panel > Card Sizes). Sirf layout numbers hain -
     # koi user data nahi - isliye baaki config files ki tarah safe hai.
     "card-layout",
+    # Ye sab pehle static json/*.json files ki tarah serve hote the -
+    # ab db.SETTINGS_RESOURCES / db.DOCUMENT_RESOURCES ke through Postgres
+    # se aate hain (fallback: json file, agar DB configured na ho).
+    "menu-config",
+    "services-api",
+    "messages",
+    "agents",
+    "company",
+    "plans",
 }
 
 # json files that must never be served as static files (contain secrets).
@@ -977,6 +986,13 @@ _VERIFICATION_PURPOSE_LABELS = {
 
 
 def _load_company_name():
+    if db is not None and db.is_enabled():
+        try:
+            data = db.get_setting("company")
+            if data:
+                return data.get("name", "Lexora AI Solutions")
+        except Exception as err:  # noqa: BLE001
+            print(f"[db] company name read failed, falling back to JSON: {err}")
     try:
         with open(os.path.join(JSON_DIR, "company.json"), "r", encoding="utf-8") as f:
             return json.load(f).get("name", "Lexora AI Solutions")
@@ -1396,10 +1412,29 @@ class Handler(SimpleHTTPRequestHandler):
         if name not in ALLOWED_RESOURCES:
             return self._send_json(404, {"error": f'Unknown resource "{name}"'})
 
-        try:
-            self._authenticated_user_id()
-        except AuthError as err:
-            return self._send_json(401, {"error": str(err)})
+        # "company" branding aur "card-layout" (login screen card sizes)
+        # pehle public static files the (auth screen inhe login se pehle
+        # padhta hai) - Postgres me move hone ke baad bhi same exposure
+        # level rakha hai, koi user data inme nahi hai.
+        if name not in ("company", "card-layout"):
+            try:
+                self._authenticated_user_id()
+            except AuthError as err:
+                return self._send_json(401, {"error": str(err)})
+
+        # DB-backed resource hai to Postgres se seedha - warna neeche wali
+        # json file fallback chalti hai (DB disabled ho, ya row abhi tak
+        # na bani ho).
+        if db is not None and db.is_enabled():
+            try:
+                if name in db.DB_BACKED_RESOURCES:
+                    return self._send_json(200, db.list_resource(name))
+                if name in db.SETTINGS_RESOURCES:
+                    data = db.get_setting(name)
+                    if data is not None:
+                        return self._send_json(200, data)
+            except Exception as err:  # noqa: BLE001
+                print(f"[db] read of {name} failed, falling back to JSON: {err}")
 
         file_path = os.path.join(JSON_DIR, f"{name}.json")
         try:
@@ -1465,6 +1500,15 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send_json(400, {"error": f"{name} must be a list"})
             try:
                 db.save_resource(name, data)
+                return self._send_json(200, {"ok": True, "store": "postgres"})
+            except Exception as err:  # noqa: BLE001
+                print(f"[db] save of {name} failed, falling back to JSON: {err}")
+
+        if db is not None and db.is_enabled() and name in db.SETTINGS_RESOURCES:
+            if not isinstance(data, dict):
+                return self._send_json(400, {"error": f"{name} must be an object"})
+            try:
+                db.save_setting(name, data)
                 return self._send_json(200, {"ok": True, "store": "postgres"})
             except Exception as err:  # noqa: BLE001
                 print(f"[db] save of {name} failed, falling back to JSON: {err}")
@@ -3418,6 +3462,13 @@ class Handler(SimpleHTTPRequestHandler):
         return dev.get("id") if dev else None
 
     def _load_rules(self):
+        if db is not None and db.is_enabled():
+            try:
+                data = db.get_setting("rules")
+                if data:
+                    return data
+            except Exception as err:  # noqa: BLE001
+                print(f"[db] rules read failed, falling back to JSON: {err}")
         try:
             with open(self._rules_path(), "r", encoding="utf-8") as f:
                 return json.load(f)
@@ -3426,6 +3477,12 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _save_rules(self, data):
         data["totalRules"] = len(data.get("approved", [])) + len(data.get("pending", []))
+        if db is not None and db.is_enabled():
+            try:
+                db.save_setting("rules", data)
+                return
+            except Exception as err:  # noqa: BLE001
+                print(f"[db] rules save failed, falling back to JSON: {err}")
         with open(self._rules_path(), "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
             f.write("\n")

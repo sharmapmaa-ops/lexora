@@ -133,6 +133,10 @@ def main():
             if name == "payment-history":
                 continue
             print(f"[dry-run] {name}: {len(other_json(name))} row(s) insert hoti.")
+        for name in db.SETTINGS_RESOURCES:
+            path = os.path.join(os.path.dirname(JSON_PATH), f"{name}.json")
+            present = os.path.exists(path)
+            print(f"[dry-run] {name}: {'1 object save hoga' if present else 'json file nahi mili - skip'}")
         print("Kuch likha nahi gaya.")
         return 0
 

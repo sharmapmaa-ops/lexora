@@ -6392,13 +6392,7 @@
                     return;
                 }
                 try {
-                    const res = await authFetch('/api/admin/write', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ path: 'json/plans.json', content: JSON.stringify(updated, null, 2) })
-                    });
-                    const data = await res.json();
-                    if (!res.ok) throw new Error(data.error || 'Save failed');
+                    await saveJSON('plans', updated);
                     PLANS_DATA = updated;
                     adminCloseFileModal();
                     showMessage('✅ Saved', 'Plan pricing updated successfully.', ['OK']);
@@ -7521,7 +7515,7 @@
             // ki zaroorat nahi. Fail ho jaye to CSS ke default chalte hain.
             (async function loadCardLayoutEarly() {
                 try {
-                    const res = await fetch('json/card-layout.json');
+                    const res = await fetch('/api/data/card-layout');
                     if (!res.ok) return;
                     CARD_LAYOUT = await res.json();
                     applyCardLayout();
@@ -8901,25 +8895,25 @@
                     plansData,
                     planHistoryData
                 ] = await Promise.all([
-                    fetchJSON('json/menu-config.json'),
+                    fetchJSON('/api/data/menu-config'),
                     fetchJSON('/api/data/payment-methods'),
                     // Postgres chalu ho to ye route DB se deta hai,
                     // warna wahi JSON file - dono case me ek hi shape.
                     fetchJSON('/api/data/payment-history'),
-                    fetchJSON('json/services-api.json'),
-                    fetchJSON('json/card-layout.json'),
+                    fetchJSON('/api/data/services-api'),
+                    fetchJSON('/api/data/card-layout'),
                     fetchJSON('/api/data/contact-submissions'),
                     fetchJSON('/api/auth/me?userId=' + encodeURIComponent(CURRENT_USER_ID)),
-                    fetchJSON('json/messages.json'),
-                    fetchJSON('json/agents.json'),
-                    fetchJSON('json/company.json'),
+                    fetchJSON('/api/data/messages'),
+                    fetchJSON('/api/data/agents'),
+                    fetchJSON('/api/data/company'),
                     fetchJSON('/api/data/api-keys'),
                     fetchJSON('/api/data/lease-files'),
                     fetchJSON('/api/data/translation-files'),
                     fetchJSON('/api/data/lease-activity-log'),
                     fetchJSON('/api/data/translation-activity-log'),
                     fetchJSON('/api/data/notifications'),
-                    fetchJSON('json/plans.json'),
+                    fetchJSON('/api/data/plans'),
                     fetchJSON('/api/data/plan-history')
                 ]);
                 PLANS_DATA = plansData || [];
@@ -9862,7 +9856,7 @@
 
             async function boot() {
                 try {
-                    COMPANY_INFO = await fetchJSON('json/company.json');
+                    COMPANY_INFO = await fetchJSON('/api/data/company');
                 } catch (e) { /* auth screen falls back to a default name */ }
 
                 if (tryHandleMagicVerifyLink()) return;
