@@ -729,6 +729,125 @@ def save_resource(name, rows):
     raise KeyError(name)
 
 
+# ============================================================
+# TABLE BROWSER + MIGRATION (Admin Panel ke liye)
+# ============================================================
+# Sirf ye tables dikhayi/padhi ja sakti hain. Table ka naam SQL me
+# seedha jata hai (usko parameter nahi banaya ja sakta), isliye
+# allowlist hi ekmatra suraksha hai - koi bhi naam accept karna SQL
+# injection ka darwaza khol dega.
+KNOWN_TABLES = ("users", "transactions", "notifications", "app_documents")
+
+# Admin ko bhi password hash ya OTP dekhne ki zaroorat nahi. Screenshot
+# ya screen-share me leak hona asaan hai, isliye server hi mask karta
+# hai - browser tak asli value jati hi nahi.
+MASKED_COLUMNS = {"password", "verification_code", "api_key", "apiKey"}
+
+
+def _mask(value):
+    text = str(value or "")
+    if not text:
+        return ""
+    return (text[:4] + "\u2022" * 8 + text[-2:]) if len(text) > 10 else "\u2022" * 8
+
+
+def list_tables():
+    """Har table ka naam + row count."""
+    init_schema()
+    out = []
+    with connect() as conn:
+        with conn.cursor() as cur:
+            for name in KNOWN_TABLES:
+                cur.execute("SELECT to_regclass(%(t)s) IS NOT NULL AS present",
+                            {"t": "public." + name})
+                if not cur.fetchone()["present"]:
+                    out.append({"name": name, "rows": None, "exists": False})
+                    continue
+                cur.execute(f"SELECT COUNT(*) AS n FROM {name}")
+                out.append({"name": name, "rows": int(cur.fetchone()["n"] or 0), "exists": True})
+    return out
+
+
+def table_rows(name, limit=500):
+    """Ek table ka raw data (masked). name allowlist se hi aata hai."""
+    if name not in KNOWN_TABLES:
+        raise ValueError(f"Unknown table: {name}")
+    init_schema()
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT * FROM {name} LIMIT %(limit)s", {"limit": int(limit)})
+            rows = cur.fetchall()
+
+    out = []
+    for row in rows:
+        clean = {}
+        for key, value in row.items():
+            if key in MASKED_COLUMNS:
+                clean[key] = _mask(value)
+            elif hasattr(value, "isoformat"):
+                clean[key] = value.isoformat(sep=" ", timespec="seconds") \
+                    if hasattr(value, "hour") else value.isoformat()
+            elif isinstance(value, (dict, list)):
+                clean[key] = json.dumps(value)
+            else:
+                clean[key] = value
+        out.append(clean)
+    return out
+
+
+def migrate_from_json(json_dir):
+    """json/ se Postgres - CLI script aur Admin Panel dono isi ko call karte hain.
+
+    Dobara chalane par duplicate nahi bante (sab upsert hai), isliye
+    adhoori migration bina dar ke phir se chalayi ja sakti hai.
+    """
+    init_schema()
+    report = []
+
+    def read(name):
+        path = os.path.join(json_dir, f"{name}.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                rows = json.load(f)
+            return rows if isinstance(rows, list) else []
+        except (OSError, json.JSONDecodeError):
+            return []
+
+    users = read("users")
+    if users:
+        try:
+            report.append({"resource": "users", "rows": replace_users(users), "ok": True})
+        except Exception as err:  # noqa: BLE001
+            report.append({"resource": "users", "error": str(err), "ok": False})
+
+    txns = read("payment-history")
+    if txns:
+        inserted = 0
+        try:
+            for i, entry in enumerate(txns):
+                if not entry.get("id"):
+                    entry["id"] = f"LEGACY-{i + 1:05d}"
+                if entry.get("userId"):
+                    append_transaction(entry)
+                    inserted += 1
+            report.append({"resource": "payment-history", "rows": inserted, "ok": True})
+        except Exception as err:  # noqa: BLE001
+            report.append({"resource": "payment-history", "error": str(err), "ok": False})
+
+    for name in DB_BACKED_RESOURCES:
+        if name == "payment-history":
+            continue
+        rows = read(name)
+        if not rows:
+            continue
+        try:
+            report.append({"resource": name, "rows": save_resource(name, rows), "ok": True})
+        except Exception as err:  # noqa: BLE001
+            report.append({"resource": name, "error": str(err), "ok": False})
+
+    return report
+
+
 def safe_host():
     """URL ka sirf host hissa - password kabhi bahar nahi jana chahiye."""
     url = DATABASE_URL

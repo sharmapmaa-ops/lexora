@@ -3625,6 +3625,18 @@
     gap: 10px;
 }
 
+/* Admin > Files card ke andar tab strip + har tab ka panel */
+.admin-files-tab-strip {
+    margin-top: -4px;
+}
+
+#adminFilesTabBody,
+.db-status-card {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
 .admin-btn {
     border: none;
     border-radius: 6px;

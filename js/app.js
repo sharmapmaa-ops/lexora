@@ -5168,6 +5168,8 @@
             // /api/admin/* routes in py/server.py.
             // ============================================================
             let adminCurrentPath = '';
+            // 'files' ya 'postgres' - Admin > Files card ka kaunsa tab khula hai.
+            let adminFilesActiveTab = 'files';
             let adminEntries = [];
             let adminSelectedPaths = new Set();
 
@@ -5987,22 +5989,22 @@
             };
 
             // ============================================================
-            // Admin > Database card
+            // Admin > Files card - "PostgreSQL" tab
             //
             // Postgres chal raha hai ya nahi, kitni rows hain, JSON se
-            // match kar raha hai - sab yahin dikh jata hai. Terminal
-            // kholne ki zaroorat nahi. Password kabhi nahi aata; server
-            // sirf host bhejta hai (db.safe_host).
+            // match kar raha hai, aur sabhi tables ki list - sab yahin
+            // dikh jata hai. Terminal kholne ki zaroorat nahi hai: migration
+            // bhi yahin se "Run migration" button se chal jati hai.
+            // Password kabhi nahi aata; server sirf host bhejta hai
+            // (db.safe_host).
             // ============================================================
-            function buildDbStatusCard() {
+            function buildDbStatusPanel() {
                 return `
-                    <div class="admin-files-card db-status-card" id="dbStatusCard">
-                        <div class="admin-files-header">
-                            <h3>\u{1F5C4} Database</h3>
-                            <div class="card-sizes-actions">
-                                <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
-                                <button class="add-btn" onclick="openDbTransactions()">View Payment Table</button>
-                            </div>
+                    <div class="db-status-card" id="dbStatusCard">
+                        <div class="admin-toolbar">
+                            <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
+                            <button class="admin-btn admin-btn-save" onclick="runDbMigration()">\u2934 Run migration</button>
+                            <button class="add-btn" onclick="openDbTransactions()">View Payment Table</button>
                         </div>
                         <div id="dbStatusBody"><p class="ds-card-sub">Checking\u2026</p></div>
                     </div>`;
@@ -6061,10 +6063,98 @@
 
                     body.innerHTML = `<table class="db-status-table"><tbody>
                         ${rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}
-                    </tbody></table>${warn}${bal}`;
+                    </tbody></table>${warn}${bal}
+                    <div id="dbTablesBox"></div>`;
+                    renderDbTables();
                 } catch (err) {
                     body.innerHTML = `<p class="db-note is-bad">${escapeHtml(err.message)}</p>`;
                 }
+            };
+
+            // Har table apne row count aur View button ke saath.
+            window.renderDbTables = async function() {
+                const box = document.getElementById('dbTablesBox');
+                if (!box) return;
+                try {
+                    const res = await authFetch('/api/admin/db-tables');
+                    const d = await res.json();
+                    if (!d.enabled || !(d.tables || []).length) { box.innerHTML = ''; return; }
+                    box.innerHTML = `
+                        <div class="db-tables">
+                            <b>Tables</b>
+                            ${d.tables.map(t => `
+                                <div class="db-table-row">
+                                    <code>${escapeHtml(t.name)}</code>
+                                    ${t.exists
+                                        ? `<span class="db-note">${t.rows} row(s)</span>
+                                           <button class="admin-btn" onclick="openDbTable('${t.name}')">View</button>`
+                                        : dbChip(false, 'not created')}
+                                </div>`).join('')}
+                        </div>`;
+                } catch (err) {
+                    box.innerHTML = `<p class="db-note is-bad">${escapeHtml(err.message)}</p>`;
+                }
+            };
+
+            // Generic viewer - columns jo bhi row me aayein, wahi dikhte hain.
+            window.openDbTable = async function(name) {
+                openAdminModal(`
+                    <div class="admin-modal-overlay" id="adminFileOverlay">
+                        <div class="admin-modal-card card-layout-modal">
+                            <button class="admin-modal-close" onclick="adminCloseFileModal()">\u2715</button>
+                            <h3 class="admin-modal-title">\u{1F5C4} ${escapeHtml(name)}</h3>
+                            <div class="card-layout-scroll" id="dbTableScroll">
+                                <p class="ds-card-sub" style="padding:14px;">Loading\u2026</p>
+                            </div>
+                            <div class="admin-modal-actions">
+                                <button class="admin-modal-cancel" onclick="adminCloseFileModal()">Close</button>
+                            </div>
+                        </div>
+                    </div>`);
+                const scroll = () => document.getElementById('dbTableScroll');
+                try {
+                    const res = await authFetch('/api/admin/db-table?name=' + encodeURIComponent(name));
+                    const d = await res.json();
+                    if (!res.ok) throw new Error(d.error || 'Could not read table.');
+                    const rows = d.rows || [];
+                    const cols = rows.length ? Object.keys(rows[0]) : [];
+                    const el = scroll();
+                    if (!el) return;
+                    el.innerHTML = rows.length === 0
+                        ? '<p class="ds-card-sub" style="padding:14px;">Ye table abhi khaali hai.</p>'
+                        : `<div class="db-txn-source"><span class="db-note">${rows.length} row(s)
+                             \u2014 password / OTP / API key masked hain</span></div>
+                           <table class="admin-json-table db-txn-table">
+                             <thead><tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
+                             <tbody>${rows.map(r => `<tr>${cols.map(c =>
+                                 `<td>${escapeHtml(r[c] == null ? '' : String(r[c]))}</td>`).join('')}</tr>`).join('')}
+                             </tbody>
+                           </table>`;
+                } catch (err) {
+                    const el = scroll();
+                    if (el) el.innerHTML = `<p class="db-note is-bad" style="padding:14px;">${escapeHtml(err.message)}</p>`;
+                }
+            };
+
+            window.runDbMigration = function() {
+                showConfirm('Run migration',
+                    'json/ files ka data Postgres me copy hoga. Dobara chalane par duplicate '
+                    + 'nahi bante, aur JSON files ko haath nahi lagta. Chalayein?',
+                    async function(yes) {
+                        if (!yes) return;
+                        try {
+                            const res = await authFetch('/api/admin/db-migrate', { method: 'POST', body: '{}' });
+                            const d = await res.json();
+                            if (!res.ok) throw new Error(d.error || 'Migration failed.');
+                            const lines = (d.report || []).map(r => r.ok
+                                ? `${r.resource}: ${r.rows} row(s)`
+                                : `${r.resource}: FAILED - ${r.error}`).join('\n');
+                            showSuccess(lines || 'Migrate karne ko kuch nahi mila.');
+                            refreshDbStatus();
+                        } catch (err) {
+                            showWarning(err.message);
+                        }
+                    });
             };
 
             window.openDbTransactions = async function() {
@@ -6141,41 +6231,73 @@
                 URL.revokeObjectURL(url);
             };
 
+            // "Files and Folder" tab ka andar wala hissa (toolbar + table).
+            function buildAdminFilesTabPanel() {
+                return `
+                    <div class="admin-toolbar">
+                        <button class="admin-btn admin-btn-add-file" onclick="document.getElementById('adminFileInput').click()">📄 Add File</button>
+                        <button class="admin-btn admin-btn-add-folder" onclick="adminAddFolder()">📁 Add Folder</button>
+                        <button class="admin-btn admin-btn-delete" onclick="adminDeleteSelected()">🗑️ Delete</button>
+                        <button class="admin-btn admin-btn-download" onclick="adminDownloadSelected()">⬇️ Download</button>
+                        <button class="admin-btn admin-btn-add-folder" onclick="adminOpenPricingEditor()">💲 Plan Pricing</button>
+                        <input type="file" id="adminFileInput" style="display:none;" onchange="adminUploadFile(event)" />
+                    </div>
+                    <div class="admin-breadcrumb" id="adminBreadcrumb"></div>
+                    <div class="admin-table-wrapper">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th><input type="checkbox" id="adminSelectAll" onchange="adminToggleSelectAll(this)" /></th>
+                                    <th>Name</th>
+                                    <th>Type</th>
+                                    <th>Size</th>
+                                    <th>Modified</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="adminTableBody">
+                                <tr><td colspan="6" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">Loading…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            }
+
+            // Ek hi card, do tabs: "Files and Folder" (purana file manager)
+            // aur "PostgreSQL" (tables ki list + Run migration - codespace
+            // terminal kholne ki zaroorat nahi).
             function buildAdminFilesBody() {
-                return buildDbStatusCard() + `
-                    <div class="admin-files-card" style="margin-top:16px;">
+                return `
+                    <div class="admin-files-card" id="adminFilesCard">
                         <div class="admin-files-header">
-                            <h3>📁 Files and Folder</h3>
+                            <h3>${adminFilesActiveTab === 'postgres' ? '\u{1F5C4} PostgreSQL' : '📁 Files and Folder'}</h3>
                         </div>
-                        <div class="admin-toolbar">
-                            <button class="admin-btn admin-btn-add-file" onclick="document.getElementById('adminFileInput').click()">📄 Add File</button>
-                            <button class="admin-btn admin-btn-add-folder" onclick="adminAddFolder()">📁 Add Folder</button>
-                            <button class="admin-btn admin-btn-delete" onclick="adminDeleteSelected()">🗑️ Delete</button>
-                            <button class="admin-btn admin-btn-download" onclick="adminDownloadSelected()">⬇️ Download</button>
-                            <button class="admin-btn admin-btn-add-folder" onclick="adminOpenPricingEditor()">💲 Plan Pricing</button>
-                            <input type="file" id="adminFileInput" style="display:none;" onchange="adminUploadFile(event)" />
+                        <div class="rules-tab-strip admin-files-tab-strip">
+                            <button class="rules-tab-btn ${adminFilesActiveTab === 'files' ? 'active' : ''}"
+                                    onclick="switchAdminFilesTab('files')">📁 Files and Folder</button>
+                            <button class="rules-tab-btn ${adminFilesActiveTab === 'postgres' ? 'active' : ''}"
+                                    onclick="switchAdminFilesTab('postgres')">\u{1F5C4} PostgreSQL</button>
                         </div>
-                        <div class="admin-breadcrumb" id="adminBreadcrumb"></div>
-                        <div class="admin-table-wrapper">
-                            <table class="admin-table">
-                                <thead>
-                                    <tr>
-                                        <th><input type="checkbox" id="adminSelectAll" onchange="adminToggleSelectAll(this)" /></th>
-                                        <th>Name</th>
-                                        <th>Type</th>
-                                        <th>Size</th>
-                                        <th>Modified</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="adminTableBody">
-                                    <tr><td colspan="6" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">Loading…</td></tr>
-                                </tbody>
-                            </table>
+                        <div id="adminFilesTabBody">
+                            ${adminFilesActiveTab === 'postgres' ? buildDbStatusPanel() : buildAdminFilesTabPanel()}
                         </div>
                     </div>
                 `;
             }
+
+            // Tab badalne par poora card dobara banate hain (taaki active
+            // underline sahi tab par jaye), phir us tab ka data load karte hain.
+            window.switchAdminFilesTab = function(tab) {
+                adminFilesActiveTab = tab === 'postgres' ? 'postgres' : 'files';
+                const card = document.getElementById('adminFilesCard');
+                if (!card) return;
+                card.outerHTML = buildAdminFilesBody();
+                if (adminFilesActiveTab === 'postgres') {
+                    refreshDbStatus();
+                } else {
+                    loadAdminDirectory(adminCurrentPath || '');
+                }
+            };
 
             function buildAdminBreadcrumb(path) {
                 const parts = path ? path.split('/') : [];
@@ -7122,14 +7244,17 @@
                     if (action === 'Profile') {
                         data = { body: buildProfileBody() };
                     } else if (action === 'Admin') {
+                        adminFilesActiveTab = 'files'; // panel har baar Files tab se khule
                         data = { body: buildAdminFilesBody() };
-                        setTimeout(refreshDbStatus, 60);
                     } else if (action === 'Notification') {
                         data = { body: buildNotificationBody() };
                     }
                     updateContent(data, pagePath);
                     contentArea.classList.remove('loading');
-                    if (action === 'Admin') loadAdminDirectory('');
+                    if (action === 'Admin') {
+                        if (adminFilesActiveTab === 'postgres') refreshDbStatus();
+                        else loadAdminDirectory('');
+                    }
                     if (action === 'Notification') renderNotificationTable();
                 }, 300);
 

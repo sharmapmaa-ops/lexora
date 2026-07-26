@@ -1345,6 +1345,8 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/data/translation-activity-log": self._handle_translation_activity_get,
             "/api/admin/db-status": self._handle_admin_db_status,
             "/api/admin/db-transactions": self._handle_admin_db_transactions,
+            "/api/admin/db-tables": self._handle_admin_db_tables,
+            "/api/admin/db-table": self._handle_admin_db_table,
             "/api/integrations/status": self._handle_integrations_status,
             "/api/integrations/callback": self._handle_integrations_callback,
             "/api/lease/documents": self._handle_lease_documents,
@@ -1406,6 +1408,21 @@ class Handler(SimpleHTTPRequestHandler):
     # ------------------------------------------------------------------
     # PUT  (JSON persistence - /api/data/<name>)
     # ------------------------------------------------------------------
+    def _handle_admin_db_migrate(self, body):
+        """Migration Admin Panel se - terminal ki zaroorat nahi.
+
+        Dobara chalane par duplicate nahi bante, isliye ye button safely
+        kai baar dabaya ja sakta hai.
+        """
+        self._require_role(("Admin", "Developer"))
+        if db is None or not db.is_enabled():
+            return self._send_json(400, {"error": "Database is not configured (DATABASE_URL missing)."})
+        try:
+            report = db.migrate_from_json(JSON_DIR)
+        except Exception as err:  # noqa: BLE001
+            return self._send_json(500, {"error": str(err)})
+        return self._send_json(200, {"ok": True, "report": report})
+
     def do_PUT(self):
         name = self._resource_name()
         if name is None:
@@ -1480,6 +1497,30 @@ class Handler(SimpleHTTPRequestHandler):
                 info["missingFromDb"] = []
                 info.setdefault("error", str(err))
         return self._send_json(200, info)
+
+    def _handle_admin_db_tables(self, query):
+        self._require_role(("Admin", "Developer"))
+        if db is None or not db.is_enabled():
+            return self._send_json(200, {"enabled": False, "tables": []})
+        try:
+            return self._send_json(200, {"enabled": True, "tables": db.list_tables()})
+        except Exception as err:  # noqa: BLE001
+            return self._send_json(200, {"enabled": True, "tables": [], "error": str(err)})
+
+    def _handle_admin_db_table(self, query):
+        self._require_role(("Admin", "Developer"))
+        name = (query.get("name", [""])[0] or "").strip()
+        if db is None or not db.is_enabled():
+            return self._send_json(400, {"error": "Database is not configured."})
+        try:
+            rows = db.table_rows(name)
+        except ValueError as err:
+            # Allowlist ke bahar ka naam - table name SQL me seedha jata
+            # hai, isliye yahan koi narmi nahi.
+            return self._send_json(400, {"error": str(err)})
+        except Exception as err:  # noqa: BLE001
+            return self._send_json(500, {"error": str(err)})
+        return self._send_json(200, {"name": name, "rows": rows})
 
     def _handle_admin_db_transactions(self, query):
         self._require_role(("Admin", "Developer"))
@@ -1682,6 +1723,7 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
 
         routes = {
+            "/api/admin/db-migrate": self._handle_admin_db_migrate,
             "/api/upload-photo": self._handle_upload_photo,
             "/api/send-acknowledgement": self._handle_send_acknowledgement,
             "/api/send-ticket-update": self._handle_send_ticket_update,

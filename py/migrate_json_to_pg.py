@@ -139,25 +139,15 @@ def main():
     created = db.init_schema()
     print("schema:", "banaya gaya" if created else "pehle se maujood tha")
 
-    inserted = skipped = 0
-    with db.connect() as conn:
-        with conn.cursor() as cur:
-            for r in rows:
-                cur.execute(db.INSERT_SQL, db.entry_to_params(r))
-                if cur.fetchone():
-                    inserted += 1
-                else:
-                    skipped += 1  # ye txn_id pehle se tha
-        conn.commit()
+    # Wahi function jo Admin Panel ka "Run migration" button use karta hai -
+    # do jagah do alag logic rakhne se wo waqt ke saath alag ho jate hain.
+    for item in db.migrate_from_json(os.path.dirname(JSON_PATH)):
+        if item.get("ok"):
+            print(f"  {item['resource']:<24} {item['rows']} row(s)")
+        else:
+            print(f"  {item['resource']:<24} ! {item.get('error')}")
 
-    print(f"\nHo gaya: {inserted} insert, {skipped} pehle se maujood.")
-
-    total = len(db.list_transactions())
-    print(f"transactions table me ab {total} row(s) hain.")
-
-    migrate_other_resources()
-
-    users = {r.get("userId") for r in rows}
+    users = {r.get("userId") for r in rows if r.get("userId")}
     print("\nPer-user balance (Postgres se):")
     for u in sorted(users):
         print(f"  {u}: {db.get_balance(u):.2f}")

@@ -3069,3 +3069,24 @@ body, .center-content { background: #fff; }
 .db-txn-table .num { text-align: right; }
 .db-txn-table .credit { color: var(--ds-green); font-weight: 600; }
 .db-txn-table .debit  { color: var(--ds-red);   font-weight: 600; }
+
+/* ---- Admin > Database: table list ---- */
+.db-tables {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--ds-line);
+}
+
+.db-tables > b { display: block; font-size: .82rem; color: var(--ds-navy); margin-bottom: 8px; }
+
+.db-table-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--ds-line);
+}
+
+.db-table-row:last-child { border-bottom: none; }
+.db-table-row code { flex: 1; font-family: 'SFMono-Regular', Consolas, monospace; font-size: .8rem; color: var(--ds-blue); }
+.db-table-row .admin-btn { padding: 5px 12px; font-size: .76rem; }
