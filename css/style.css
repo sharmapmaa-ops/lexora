@@ -1695,6 +1695,20 @@
 
         .support-log-card.support-log-full {
             max-width: 100%;
+            /* Item 4 - card ki height fix: Payment History wale
+               .history-card se zyada chrome hai yahan (header-row +
+               filter-bar + pager + footer-row), isliye apni alag, badi
+               fixed height. overflow-y:auto safety net hai (Admin Panel
+               ke fix jaisa hi) - agar kabhi kuch fit na ho to poora card
+               scroll hoga, kuch gayab ya bahar nahi jayega. */
+            height: 700px;
+            max-height: 88vh;
+            overflow-y: auto;
+        }
+
+        .support-log-card.support-log-full .card-body {
+            overflow: visible;
+            min-height: 0;
         }
 
         .support-contact-card {
@@ -1756,6 +1770,7 @@
         /* Both scrollbars, columns sized to their content (autofit) */
         .support-table-scroll {
             flex: 1;
+            min-height: 320px;
             overflow: auto;
             border: 1px solid rgba(0,0,139,0.1);
             border-radius: 4px;
@@ -2495,6 +2510,10 @@
         .filter-btn.delete-btn:hover {
             background: #e74c3c;
             color: white;
+        }
+
+        .support-log-card.support-log-full #supportPager {
+            flex-shrink: 0;
         }
 
         .support-log-footer-row {
@@ -3640,10 +3659,15 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-    /* Card ki height fix - content lambi ho to card khud nahi badhta,
-       andar wali table apna scroll sambhal leti hai (item 1.11). */
-    height: 900px;
-    max-height: 88vh;
+    /* Card ki height fix (item 1.11): table ki height chhoti nahi karni
+       thi - card khud badi honi chahiye thi taaki table + bottom
+       buttons dono comfortably fit ho jayein. overflow-y:auto safety
+       net hai: agar phir bhi kuch bada nikle to poora CARD scroll ho
+       jayega (kuch gayab ya card ke bahar nahi jayega). */
+    height: 1100px;
+    max-height: 92vh;
+    overflow-y: auto;
+    overflow-x: hidden;
 }
 
 #dbStatusBody {
@@ -3664,7 +3688,7 @@
     display: flex;
     flex-direction: column;
     flex: 1;
-    min-height: 500px;
+    min-height: 0;
 }
 
 .admin-btn {
@@ -4907,6 +4931,7 @@
     gap: 10px;
     margin-top: 12px;
     flex-wrap: wrap;
+    flex-shrink: 0;
 }
 
 .admin-toolbar-spacer { flex: 1; }
@@ -5493,6 +5518,69 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
     background: #1257f5;
     border-color: #1257f5;
     color: #fff;
+}
+
+/* ===== Item 3 - Payment page (merged Balance + Payment History) ===== */
+.payment-tab-strip {
+    margin: 16px 0 6px;
+}
+
+.balance-add-card-full {
+    max-width: 100%;
+    width: 100%;
+    margin-top: 10px;
+    box-sizing: border-box;
+}
+
+.balance-form-row {
+    display: flex;
+    gap: 16px;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+
+.balance-form-row .form-group {
+    flex: 1;
+    min-width: 220px;
+    margin-bottom: 0;
+}
+
+.balance-form-row .balance-add-submit {
+    height: 42px;
+    white-space: nowrap;
+}
+
+/* Secure Checkout - ab inline panel nahi, ek popup modal hai. Backdrop
+   baaki screen ko disable rakhta hai jab tak payment complete/cancel
+   na ho jaye (resetPayPanel() hi ise hide karta hai). */
+.balance-checkout-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    box-sizing: border-box;
+}
+
+.balance-checkout-modal.show {
+    display: flex;
+}
+
+.balance-checkout-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(11, 21, 51, 0.6);
+}
+
+.balance-checkout-modal .balance-pay-panel {
+    position: relative;
+    z-index: 1;
+    width: min(480px, 94vw);
+    max-height: 88vh;
+    overflow: auto;
 }
 
 .balance-pay-panel {
