@@ -77,16 +77,7 @@
                     {
                         "id": "payment",
                         "label": "💳 Payment",
-                        "subItems": [
-                            {
-                                "id": "balance",
-                                "label": "Balance"
-                            },
-                            {
-                                "id": "payment-history",
-                                "label": "Payment History"
-                            }
-                        ]
+                        "subItems": []
                     },
                     {
                         "id": "help",
@@ -3246,37 +3237,16 @@
                 updateSummary(filtered);
             };
 
-            window.downloadHistoryExcel = function() {
-                const filtered = getFilteredHistory();
-                if (filtered.length === 0) {
-                    showWarning('No data available to download for the selected range.');
-                    return;
-                }
-                const sorted = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
-                const headers = ['Date & Time', 'T. ID', 'Payment Type', 'Payment Mode',
-                    'Description', 'Credit (' + currencySymbol() + ')', 'Debit (' + currencySymbol() + ')'
-                ];
-                let table = '<table border="1"><tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
-                sorted.forEach(t => {
-                    const dateTimeText = t.time ? `${t.date}, ${t.time}` : t.date;
-                    table += '<tr>' +
-                        `<td>${dateTimeText}</td><td>${t.id}</td><td>${t.paymentType}</td>` +
-                        `<td>${t.paymentMode}</td><td>${t.description}</td>` +
-                        `<td>${t.credit > 0 ? t.credit.toFixed(2) : ''}</td>` +
-                        `<td>${t.debit > 0 ? t.debit.toFixed(2) : ''}</td>` +
-                        '</tr>';
-                });
-                table += '</table>';
-
-                const blob = new Blob(['\ufeff' + table], { type: 'application/vnd.ms-excel' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'Payment_History_' + localDateStr() + '.xls';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
+            // Item 3 - "Download" ab Excel nahi, ek PDF invoice deta hai
+            // (company logo, client naam/mobile/email, saare transactions
+            // date/time wise) - server (/api/payment/invoice-pdf) reportlab
+            // se banata hai. window.open() jaisa hi pattern jo downloadFile()
+            // pehle se use karta hai (Authorization header ki jagah token
+            // query param, kyunki ye ek plain browser navigation hai).
+            window.downloadHistoryInvoicePdf = function() {
+                const url = '/api/payment/invoice-pdf?userId=' + encodeURIComponent(CURRENT_USER_ID) +
+                    '&token=' + encodeURIComponent(AUTH_TOKEN || '');
+                window.open(url, '_blank');
             };
 
             function updateSummary(list) {
@@ -3294,6 +3264,165 @@
                 document.getElementById('totalDebit').textContent = formatMoney(totalDebit);
                 document.getElementById('currentBalance').textContent = formatMoney(balance);
             }
+
+            // ============================================================
+            // 22a. PAYMENT PAGE - MERGED TABS (item 3)
+            //
+            // "Balance" aur "Payment History" ab alag menu items nahi -
+            // ek hi "Payment" page ke andar ek tab-strip se switch hote
+            // hain (Admin Panel ke PostgreSQL table-tabs jaisa pattern).
+            // ============================================================
+            let paymentActiveTab = 'balance';
+
+            function paymentTabHtml(tab) {
+                if (tab === 'history') {
+                    return `
+                        <div class="history-summary" id="historySummary">
+                            <div class="summary-item">
+                                <span class="summary-icon summary-icon-credit"></span>
+                                <span class="summary-label">Total Credit</span>
+                                <span class="summary-value credit-value" id="totalCredit">${currencySymbol()}0.00</span>
+                            </div>
+                            <div class="summary-item">
+                                <span class="summary-icon summary-icon-debit"></span>
+                                <span class="summary-label">Total Debit</span>
+                                <span class="summary-value debit-value" id="totalDebit">${currencySymbol()}0.00</span>
+                            </div>
+                            <div class="summary-item">
+                                <span class="summary-icon summary-icon-balance"></span>
+                                <span class="summary-label">Current Balance</span>
+                                <span class="summary-value" id="currentBalance">${currencySymbol()}0.00</span>
+                            </div>
+                        </div>
+
+                        <div class="history-card">
+                            <h3>💳 Payment History</h3>
+                            <div class="history-filter-bar">
+                                <div class="filter-group">
+                                    <label>From Date</label>
+                                    <input type="date" id="historyFromDate" />
+                                </div>
+                                <div class="filter-group">
+                                    <label>To Date</label>
+                                    <input type="date" id="historyToDate" />
+                                </div>
+                                ${isAdminOrDeveloper() ? `
+                                    <div class="filter-group filter-group-search">
+                                        <label>User</label>
+                                        <input type="text" id="historyUserFilter" placeholder="User ID or email" oninput="applyHistoryFilter()" />
+                                    </div>
+                                ` : ''}
+                                <button class="filter-btn is-primary" onclick="applyHistoryFilter()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
+                                    Filter
+                                </button>
+                                <button class="filter-btn reset-btn" onclick="clearHistoryFilter()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+                                    Clear
+                                </button>
+                                <div class="filter-bar-spacer"></div>
+                                <button class="filter-btn download-btn" onclick="downloadHistoryInvoicePdf()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
+                                    Download
+                                </button>
+                                <button class="filter-btn raise-issue-btn" onclick="openRaiseIssueModal()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg>
+                                    Raise Issue
+                                </button>
+                            </div>
+                            <div class="card-body payment-history-scroll-outer">
+                                <table class="history-table payment-history-table" id="historyTableHeader">
+                                    <thead>
+                                        <tr>
+                                            <th style="width:36px;"><input type="checkbox" id="historySelectAll" onchange="toggleSelectAllTransactions(this.checked)" /></th>
+                                            <th>Date &amp; Time</th>
+                                            <th>Transaction ID</th>
+                                            <th>User ID</th>
+                                            <th>Payment Mode</th>
+                                            <th>Description</th>
+                                            <th>Credit</th>
+                                            <th>Debit</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                </table>
+                                <div class="history-table-wrapper" id="historyTableWrapper">
+                                    <table class="history-table payment-history-table" id="historyTable">
+                                        <tbody id="historyTableBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="history-pager" id="historyPager"></div>
+                        </div>`;
+                }
+
+                // 'balance' tab - Add Balance form. Item 3: preset amount
+                // chips aur "why pay us" perks list hata di gayi hain;
+                // Amount ke right me Description, uske right me submit
+                // button - card ab full width hai. Checkout ab yahan
+                // inline nahi - alag popup modal me khulta hai
+                // (#balanceCheckoutModal, page-level, payWithRazorpay()).
+                return `
+                    <div class="balance-add-card balance-add-card-full">
+                        <div class="ds-card-head">
+                            <span class="ds-card-icon">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                    <rect x="2.5" y="5.5" width="19" height="13" rx="3"/><path d="M2.5 10h19M12 14.5h4"/>
+                                </svg>
+                            </span>
+                            <div>
+                                <h3>Add Balance</h3>
+                                <p class="ds-card-sub">Add funds to your Lexora account for seamless payments</p>
+                            </div>
+                        </div>
+
+                        <div class="balance-form-row">
+                            <div class="form-group">
+                                <label>Amount (\u20b9)</label>
+                                <input type="number" id="balanceAmount" placeholder="Enter amount" min="1" step="1" oninput="syncPayPanelAmount()" />
+                            </div>
+                            <div class="form-group">
+                                <label>Description</label>
+                                <input type="text" id="balanceDescription" placeholder="Enter description" />
+                            </div>
+                            <button class="add-btn balance-add-submit" onclick="addBalance()">+ Add Balance</button>
+                        </div>
+
+                        <p class="balance-approval-note">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 3l7.5 3v5.5c0 4.4-3 8.2-7.5 9.5-4.5-1.3-7.5-5.1-7.5-9.5V6z"/>
+                            </svg>
+                            Your amount will be credited to your wallet instantly after the payment is confirmed.
+                        </p>
+                    </div>`;
+            }
+
+            function renderPaymentTabContent(tab) {
+                if (tab === 'history') {
+                    renderPaymentHistory();
+                } else {
+                    populateBalancePaymentMethods();
+                    resetPayPanel();
+                }
+                updateBalanceDisplay();
+            }
+
+            window.switchPaymentTab = function(tab) {
+                paymentActiveTab = tab;
+                document.querySelectorAll('#paymentTabStrip .rules-tab-btn').forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.tab === tab);
+                });
+                const host = document.getElementById('paymentTabBody');
+                if (host) host.innerHTML = paymentTabHtml(tab);
+                renderPaymentTabContent(tab);
+            };
+
+            // Dashboard ke "Add Funds" / "View All Transactions" shortcuts
+            // ke liye - Payment page par seedha sahi tab khol kar jaate hain.
+            window.lexoraNavigatePaymentTab = function(tab) {
+                paymentActiveTab = tab;
+                lexoraNavigate('payment');
+            };
 
             // ============================================================
             // 22. BALANCE FUNCTIONS
@@ -3480,6 +3609,8 @@
             window.resetPayPanel = function() {
                 const panel = document.getElementById('balancePayPanel');
                 const mount = document.getElementById('rzpInlineMount');
+                const modal = document.getElementById('balanceCheckoutModal');
+                if (modal) modal.classList.remove('show');
                 if (!mount) return;
                 Array.prototype.slice.call(mount.querySelectorAll('iframe')).forEach(f => f.remove());
                 if (panel) panel.classList.remove('is-busy', 'is-inline');
@@ -3574,6 +3705,14 @@
                     showWarning('Payment gateway failed to load. Please check your connection and try again.');
                     return;
                 }
+
+                // Item 3 - Secure Checkout ab ek popup card hai; baaki
+                // screen backdrop se disable rehti hai jab tak payment
+                // complete ya cancel na ho jaye (resetPayPanel ise hide
+                // karta hai - payment.failed, modal.ondismiss, aur
+                // verify-payment ke success/catch, sab wahi call karte hain).
+                const checkoutModal = document.getElementById('balanceCheckoutModal');
+                if (checkoutModal) checkoutModal.classList.add('show');
 
                 authPost('/api/payment/create-order', { userId: CURRENT_USER_ID, amount: amount })
                     .then(order => {
@@ -8049,18 +8188,8 @@
                     }, 50);
                 }
 
-                if (breadcrumb && breadcrumb.includes('Payment History')) {
-                    setTimeout(renderPaymentHistory, 50);
-                }
-
-                if (breadcrumb && breadcrumb.includes('Balance')) {
-                    setTimeout(() => {
-                        populateBalancePaymentMethods();
-                        updateBalanceDisplay();
-                        // Draw the idle state into the checkout panel so the
-                        // right half of the Add Balance card is never blank.
-                        resetPayPanel();
-                    }, 50);
+                if (breadcrumb === '💳 Payment') {
+                    setTimeout(() => { renderPaymentTabContent(paymentActiveTab); }, 50);
                 }
 
                 if (breadcrumb === '📊 Dashboard') {
@@ -8439,7 +8568,7 @@
                                     <div class="dash-hero-body">
                                         <div class="dash-hero-label">Wallet Balance</div>
                                         <div class="dash-hero-value" id="dashBalance">\u20b90.00</div>
-                                        <button class="dash-hero-btn" onclick="lexoraNavigate('payment','balance')">Add Funds <span>+</span></button>
+                                        <button class="dash-hero-btn" onclick="lexoraNavigatePaymentTab('balance')">Add Funds <span>+</span></button>
                                     </div>
                                     <svg class="dash-hero-art" viewBox="0 0 72 60" fill="none" aria-hidden="true">
                                         <rect x="20" y="6" width="40" height="24" rx="3" fill="#86efac"/>
@@ -8459,7 +8588,7 @@
                                         </svg>
                                     </span>
                                     <h3>Today's Transactions</h3>
-                                    <button class="dash-view-all" onclick="lexoraNavigate('payment','payment-history')">View All Transactions <span>\u2192</span></button>
+                                    <button class="dash-view-all" onclick="lexoraNavigatePaymentTab('history')">View All Transactions <span>\u2192</span></button>
                                 </div>
                                 <div class="card-body today-table-scroll-outer">
                                     <table class="history-table today-table" id="todayTableHeader">
@@ -8589,84 +8718,12 @@
                     `;
                     }
                 },
-                balance: {
+                payment: {
                     body: function() {
-                        // "Add Balance" is for every user (this was never
-                        // meant to be Admin/Developer-only - that
-                        // restriction was a misread of the original ask).
-                        // Add Balance form (left) aur secure checkout
-                        // (right) ek hi row me - payment website ka hissa
-                        // lagta hai, alag popup nahi. Checkout ka mount
-                        // point #rzpInlineMount hai (see payWithRazorpay).
-                        const QUICK_AMOUNTS = [500, 1000, 2500, 5000, 10000];
-                        const PAY_PERKS = [
-                            { icon: '<path d="M13 2 4.5 13H11l-1 9 8.5-11H12z"/>', title: 'Instant Credit',   sub: 'Added in seconds' },
-                            { icon: '<path d="M12 3l7.5 3v5.5c0 4.4-3 8.2-7.5 9.5-4.5-1.3-7.5-5.1-7.5-9.5V6z"/><path d="m9 12 2.2 2.2L15.5 10"/>', title: '100% Secure', sub: 'Razorpay Powered' },
-                            { icon: '<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19"/>', title: 'Multiple Options', sub: 'UPI, Cards, Wallets' },
-                            { icon: '<path d="M4 13v-1a8 8 0 0 1 16 0v1"/><rect x="2.5" y="13" width="4.5" height="6" rx="2"/><rect x="17" y="13" width="4.5" height="6" rx="2"/>', title: '24\u00d77 Support', sub: 'Always here to help' }
-                        ];
-                        const topUpHtml = `
-                        <div class="balance-topup-layout">
-                            <div class="balance-add-card">
-                                <div class="ds-card-head">
-                                    <span class="ds-card-icon">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                                            <rect x="2.5" y="5.5" width="19" height="13" rx="3"/><path d="M2.5 10h19M12 14.5h4"/>
-                                        </svg>
-                                    </span>
-                                    <div>
-                                        <h3>Add Balance</h3>
-                                        <p class="ds-card-sub">Add funds to your Lexora account for seamless payments</p>
-                                    </div>
-                                </div>
-
-                                <div class="form-group">
-                                    <label>Amount (\u20b9)</label>
-                                    <input type="number" id="balanceAmount" placeholder="Enter amount" min="1" step="1" oninput="syncPayPanelAmount()" />
-                                </div>
-                                <div class="balance-quick-row">
-                                    ${QUICK_AMOUNTS.map(v => `<button type="button" class="balance-quick-chip" data-amount="${v}" onclick="setBalanceAmount(${v})">\u20b9${v.toLocaleString('en-IN')}</button>`).join('')}
-                                </div>
-                                <div class="form-group">
-                                    <label>Description</label>
-                                    <input type="text" id="balanceDescription" placeholder="Enter description" />
-                                </div>
-                                <button class="add-btn balance-add-submit" onclick="addBalance()">+ Add Balance</button>
-
-                                <p class="balance-approval-note">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                                        <path d="M12 3l7.5 3v5.5c0 4.4-3 8.2-7.5 9.5-4.5-1.3-7.5-5.1-7.5-9.5V6z"/>
-                                    </svg>
-                                    Your amount will be credited to your wallet instantly after the payment is confirmed.
-                                </p>
-
-                                <div class="balance-perks">
-                                    ${PAY_PERKS.map(p => `<div class="balance-perk">
-                                        <span class="balance-perk-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p.icon}</svg></span>
-                                        <b>${p.title}</b>
-                                        <span>${p.sub}</span>
-                                    </div>`).join('')}
-                                </div>
-                            </div>
-
-                            <div class="balance-pay-panel" id="balancePayPanel">
-                                <div class="pay-panel-head">
-                                    <span class="ds-card-icon">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                                            <rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>
-                                        </svg>
-                                    </span>
-                                    <div class="pay-panel-headings">
-                                        <div class="pay-panel-title">Secure Checkout</div>
-                                        <div class="pay-panel-sub">Safe &amp; secure payment via Razorpay</div>
-                                    </div>
-                                    <div class="pay-panel-amount" id="payPanelAmount">\u20b90.00</div>
-                                </div>
-                                <div class="pay-panel-body" id="rzpInlineMount"></div>
-                            </div>
-                        </div>
-                        `;
-
+                        // Item 3 - Balance aur Payment History ab ek hi
+                        // "Payment" section me hain, tab-strip se switch
+                        // hote hain (Admin Panel ke PostgreSQL tabs jaisa
+                        // pattern) - alag menu items nahi hain ab.
                         return `
                         <div class="balance-grid" id="balanceGrid">
                             <div class="balance-card">
@@ -8682,95 +8739,33 @@
                                 <div class="balance-label">Current Balance</div>
                             </div>
                         </div>
-                        ${topUpHtml}
-                    `;
-                    }
-                },
-                'payment-history': {
-                    body: function() {
-                    // Mockup order: filter bar -> table -> pagination footer
-                    // -> alag summary card. Filter/Clear filled+plain, aur
-                    // Download/Raise Issue right side me outlined.
-                    return `
-                        <div class="history-summary" id="historySummary">
-                            <div class="summary-item">
-                                <span class="summary-icon summary-icon-credit"></span>
-                                <span class="summary-label">Total Credit</span>
-                                <span class="summary-value credit-value" id="totalCredit">\u20b90.00</span>
-                            </div>
-                            <div class="summary-item">
-                                <span class="summary-icon summary-icon-debit"></span>
-                                <span class="summary-label">Total Debit</span>
-                                <span class="summary-value debit-value" id="totalDebit">\u20b90.00</span>
-                            </div>
-                            <div class="summary-item">
-                                <span class="summary-icon summary-icon-balance"></span>
-                                <span class="summary-label">Current Balance</span>
-                                <span class="summary-value" id="currentBalance">\u20b90.00</span>
-                            </div>
+
+                        <div class="rules-tab-strip payment-tab-strip" id="paymentTabStrip">
+                            <button class="rules-tab-btn ${paymentActiveTab === 'balance' ? 'active' : ''}" data-tab="balance" onclick="switchPaymentTab('balance')">+ Add Balance</button>
+                            <button class="rules-tab-btn ${paymentActiveTab === 'history' ? 'active' : ''}" data-tab="history" onclick="switchPaymentTab('history')">\u{1F4B3} Payment History</button>
                         </div>
 
-                        <div class="history-card">
-                            <h3>💳 Payment History</h3>
-                            <div class="history-filter-bar">
-                                <div class="filter-group">
-                                    <label>From Date</label>
-                                    <input type="date" id="historyFromDate" />
-                                </div>
-                                <div class="filter-group">
-                                    <label>To Date</label>
-                                    <input type="date" id="historyToDate" />
-                                </div>
-                                ${isAdminOrDeveloper() ? `
-                                    <div class="filter-group filter-group-search">
-                                        <label>User</label>
-                                        <input type="text" id="historyUserFilter" placeholder="User ID or email" oninput="applyHistoryFilter()" />
+                        <div id="paymentTabBody">${paymentTabHtml(paymentActiveTab)}</div>
+
+                        <div class="balance-checkout-modal" id="balanceCheckoutModal">
+                            <div class="balance-checkout-backdrop"></div>
+                            <div class="balance-pay-panel" id="balancePayPanel">
+                                <div class="pay-panel-head">
+                                    <span class="ds-card-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>
+                                        </svg>
+                                    </span>
+                                    <div class="pay-panel-headings">
+                                        <div class="pay-panel-title">Secure Checkout</div>
+                                        <div class="pay-panel-sub">Safe &amp; secure payment via Razorpay</div>
                                     </div>
-                                ` : ''}
-                                <button class="filter-btn is-primary" onclick="applyHistoryFilter()">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
-                                    Filter
-                                </button>
-                                <button class="filter-btn reset-btn" onclick="clearHistoryFilter()">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
-                                    Clear
-                                </button>
-                                <div class="filter-bar-spacer"></div>
-                                <button class="filter-btn download-btn" onclick="downloadHistoryExcel()">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
-                                    Download Excel
-                                </button>
-                                <button class="filter-btn raise-issue-btn" onclick="openRaiseIssueModal()">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg>
-                                    Raise Issue
-                                </button>
-                            </div>
-                            <div class="card-body payment-history-scroll-outer">
-                                <table class="history-table payment-history-table" id="historyTableHeader">
-                                    <thead>
-                                        <tr>
-                                            <th style="width:36px;"><input type="checkbox" id="historySelectAll" onchange="toggleSelectAllTransactions(this.checked)" /></th>
-                                            <th>Date &amp; Time</th>
-                                            <th>Transaction ID</th>
-                                            <th>User ID</th>
-                                            <th>Payment Mode</th>
-                                            <th>Description</th>
-                                            <th>Credit</th>
-                                            <th>Debit</th>
-                                            <th>Status</th>
-                                        </tr>
-                                    </thead>
-                                </table>
-                                <div class="history-table-wrapper" id="historyTableWrapper">
-                                    <table class="history-table payment-history-table" id="historyTable">
-                                        <tbody id="historyTableBody"></tbody>
-                                    </table>
+                                    <div class="pay-panel-amount" id="payPanelAmount">${currencySymbol()}0.00</div>
                                 </div>
+                                <div class="pay-panel-body" id="rzpInlineMount"></div>
                             </div>
-                            <div class="history-pager" id="historyPager"></div>
                         </div>
-                        </div>
-                    `;
+                        `;
                     }
                 },
                 'api-documentation': {
@@ -10170,7 +10165,7 @@
                         if (payChanged) {
                             paymentHistory = freshPaymentHistory;
                             updateBalanceDisplay();
-                            if (activeItemId === 'payment-history') renderPaymentHistory();
+                            if (activeItemId === 'payment' && paymentActiveTab === 'history') renderPaymentHistory();
                             if (activeItemId === 'dashboard' && document.getElementById('todayTableBody')) renderTodayTransactions();
                         }
                     } catch (e) { /* a missed poll just tries again in 15s - not worth surfacing to the user */ }
