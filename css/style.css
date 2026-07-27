@@ -3641,12 +3641,9 @@
     flex-direction: column;
     gap: 14px;
     /* Card ki height fix - content lambi ho to card khud nahi badhta,
-       andar wali table apna scroll sambhal leti hai (item 1.11).
-       overflow:hidden zaroori hai warna andar ka content card ke border
-       se bahar chala jata hai agar kahin flex sahi se propagate na ho. */
+       andar wali table apna scroll sambhal leti hai (item 1.11). */
     height: 900px;
     max-height: 88vh;
-    overflow: hidden;
 }
 
 #dbStatusBody {
@@ -3654,7 +3651,6 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
-    overflow: hidden;
 }
 
 #dbTablesBox {
@@ -3662,14 +3658,13 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
-    overflow: hidden;
 }
 
 #dbActiveTableBody {
     display: flex;
     flex-direction: column;
     flex: 1;
-    min-height: 0;
+    min-height: 500px;
 }
 
 .admin-btn {
@@ -4865,7 +4860,7 @@
 
 .db-edit-table-wrapper {
     flex: 1;
-    min-height: 280px;
+    min-height: 440px;
     overflow: auto;
     border: 1px solid rgba(0,0,139,0.15);
     border-radius: 8px;
