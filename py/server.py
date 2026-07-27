@@ -1000,8 +1000,129 @@ def _load_company_name():
         return "Lexora AI Solutions"
 
 
-def escape_html(s):
-    return html_module.escape(str(s or ""))
+def _load_company_info():
+    """Poora company object (name + logo waghera) - invoice PDF ke header
+    ke liye. _load_company_name() jaisa hi fallback chain, bas poora
+    dict wapas karta hai."""
+    if db is not None and db.is_enabled():
+        try:
+            data = db.get_setting("company")
+            if data:
+                return data
+        except Exception as err:  # noqa: BLE001
+            print(f"[db] company info read failed, falling back to JSON: {err}")
+    try:
+        with open(os.path.join(JSON_DIR, "company.json"), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _build_invoice_pdf(company_name, logo_path, user, txns):
+    """Payment History > Download ke liye invoice PDF (item 3) - reportlab
+    platypus se, taaki lambi transaction list khud pagination kar le
+    (lease_engine ke reports jaisa hi approach)."""
+    import io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.platypus import (
+        SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image,
+    )
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_RIGHT
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("InvoiceTitle", parent=styles["Heading1"], fontSize=20, spaceAfter=2)
+    sub_style = ParagraphStyle("InvoiceSub", parent=styles["Normal"], textColor=colors.HexColor("#555555"))
+    label_style = ParagraphStyle("InvoiceLabel", parent=styles["Normal"], fontSize=10, leading=14)
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        topMargin=0.6 * inch, bottomMargin=0.6 * inch,
+        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+    )
+    story = []
+
+    # Header - company logo (agar mile) ke saath naam, right side "INVOICE".
+    header_cells = []
+    if logo_path:
+        try:
+            img = Image(logo_path, width=1.3 * inch, height=1.3 * inch, kind="proportional")
+        except Exception:  # noqa: BLE001
+            img = Paragraph(company_name, title_style)
+    else:
+        img = Paragraph(company_name, title_style)
+    header_cells.append([img, Paragraph("INVOICE", ParagraphStyle(
+        "InvoiceRight", parent=title_style, alignment=TA_RIGHT))])
+    header_table = Table(header_cells, colWidths=[3.5 * inch, 3.3 * inch])
+    header_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    story.append(header_table)
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(company_name, sub_style))
+    story.append(Spacer(1, 18))
+
+    # Client details.
+    full_name = f"{user.get('firstName') or ''} {user.get('lastName') or ''}".strip() or "-"
+    client_lines = [
+        f"<b>Bill To:</b> {escape_html(full_name)}",
+        f"<b>Mobile:</b> {escape_html(user.get('mobile') or '-')}",
+        f"<b>Email:</b> {escape_html(user.get('email') or '-')}",
+        f"<b>Invoice Date:</b> {escape_html(datetime.date.today().isoformat())}",
+    ]
+    for line in client_lines:
+        story.append(Paragraph(line, label_style))
+    story.append(Spacer(1, 18))
+
+    # Transaction table - sabhi transactions, date/time wise.
+    header_row = ["Date & Time", "Transaction ID", "Description", "Credit", "Debit", "Status"]
+    rows = [header_row]
+    total_credit = 0.0
+    total_debit = 0.0
+    for t in txns:
+        date_time = t.get("date") or ""
+        if t.get("time"):
+            date_time = f"{date_time} {t.get('time')}"
+        credit = float(t.get("credit") or 0)
+        debit = float(t.get("debit") or 0)
+        total_credit += credit
+        total_debit += debit
+        rows.append([
+            escape_html(date_time),
+            escape_html(t.get("id") or ""),
+            Paragraph(escape_html(t.get("description") or ""), label_style),
+            f"{credit:,.2f}" if credit else "",
+            f"{debit:,.2f}" if debit else "",
+            escape_html((t.get("status") or "").replace("_", " ").title()),
+        ])
+    if len(rows) == 1:
+        rows.append(["No transactions yet.", "", "", "", "", ""])
+
+    table = Table(rows, colWidths=[1.15 * inch, 1.0 * inch, 2.05 * inch, 0.8 * inch, 0.8 * inch, 0.9 * inch], repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0b1330")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f7fb")]),
+        ("ALIGN", (3, 0), (4, -1), "RIGHT"),
+    ]))
+    story.append(table)
+    story.append(Spacer(1, 14))
+    story.append(Paragraph(
+        f"<b>Total Credit:</b> {total_credit:,.2f} &nbsp;&nbsp; "
+        f"<b>Total Debit:</b> {total_debit:,.2f} &nbsp;&nbsp; "
+        f"<b>Net Balance:</b> {(total_credit - total_debit):,.2f}",
+        label_style,
+    ))
+
+    doc.build(story)
+    return buf.getvalue()
+
 
 
 def _integration_store_path(user_id):
@@ -1378,6 +1499,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/rules/list": self._handle_rules_list,
             "/api/lease/download": self._handle_lease_download,
             "/api/translation/download": self._handle_translation_download,
+            "/api/payment/invoice-pdf": self._handle_payment_invoice_pdf,
         }
         if not Handler._routes_checked:
             Handler._routes_checked = True
@@ -3319,6 +3441,55 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
         self.end_headers()
         self.wfile.write(data)
+
+    # ------------------------------------------------------------------
+    # Payment History > Download - ek PDF invoice (item 3): company logo,
+    # client ka naam/mobile/email, aur uske saare transactions date/time
+    # wise. Excel export (downloadHistoryExcel, purely client-side) ki
+    # jagah is route ne le li hai.
+    # ------------------------------------------------------------------
+    def _handle_payment_invoice_pdf(self, query):
+        if not lease_engine.REPORTLAB_OK:
+            return self._send_json(500, {"error": "PDF library (reportlab) is not installed on the server."})
+
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            return self._send_json(404, {"error": "Account not found."})
+
+        if db is not None and db.is_enabled():
+            try:
+                txns = db.list_transactions(user_id)
+            except Exception as err:  # noqa: BLE001
+                print(f"[db] invoice: transactions read failed, falling back to JSON: {err}")
+                txns = [r for r in self._read_payment_history_file() if r.get("userId") == user_id]
+        else:
+            txns = [r for r in self._read_payment_history_file() if r.get("userId") == user_id]
+
+        def _sort_key(t):
+            return (str(t.get("date") or ""), str(t.get("time") or ""))
+        txns = sorted(txns, key=_sort_key)
+
+        company = _load_company_info()
+        company_name = company.get("name") or "Lexora"
+        logo_rel = company.get("logo") or ""
+        logo_path = os.path.join(ROOT_DIR, logo_rel) if logo_rel else ""
+        if not os.path.isfile(logo_path):
+            logo_path = ""
+
+        try:
+            pdf_bytes = _build_invoice_pdf(company_name, logo_path, user, txns)
+        except Exception as err:  # noqa: BLE001
+            return self._send_json(500, {"error": f"Could not build invoice PDF: {err}"})
+
+        download_name = f"Invoice_{user_id}_{datetime.date.today().isoformat()}.pdf"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/pdf")
+        self.send_header("Content-Length", str(len(pdf_bytes)))
+        self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
+        self.end_headers()
+        self.wfile.write(pdf_bytes)
 
     # ------------------------------------------------------------------
     # Admin File Manager - POST routes
