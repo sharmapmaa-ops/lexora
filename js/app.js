@@ -3250,6 +3250,16 @@
             };
 
             function updateSummary(list) {
+                // Item 2 - "Total Credit / Total Debit / Current Balance"
+                // ab sirf Payment page ke top wale balance-grid me dikhte
+                // hain (updateBalanceDisplay se) - Payment History card
+                // ke andar ye duplicate summary hata di gayi hai, isliye
+                // yahan sirf ids maujood hone par hi update karte hain.
+                const creditEl = document.getElementById('totalCredit');
+                const debitEl = document.getElementById('totalDebit');
+                const balanceEl = document.getElementById('currentBalance');
+                if (!creditEl && !debitEl && !balanceEl) return;
+
                 const data = list || getMyPaymentHistory();
                 let totalCredit = 0,
                     totalDebit = 0;
@@ -3260,9 +3270,9 @@
                 });
                 const balance = totalCredit - totalDebit;
 
-                document.getElementById('totalCredit').textContent = formatMoney(totalCredit);
-                document.getElementById('totalDebit').textContent = formatMoney(totalDebit);
-                document.getElementById('currentBalance').textContent = formatMoney(balance);
+                if (creditEl) creditEl.textContent = formatMoney(totalCredit);
+                if (debitEl) debitEl.textContent = formatMoney(totalDebit);
+                if (balanceEl) balanceEl.textContent = formatMoney(balance);
             }
 
             // ============================================================
@@ -3277,24 +3287,6 @@
             function paymentTabHtml(tab) {
                 if (tab === 'history') {
                     return `
-                        <div class="history-summary" id="historySummary">
-                            <div class="summary-item">
-                                <span class="summary-icon summary-icon-credit"></span>
-                                <span class="summary-label">Total Credit</span>
-                                <span class="summary-value credit-value" id="totalCredit">${currencySymbol()}0.00</span>
-                            </div>
-                            <div class="summary-item">
-                                <span class="summary-icon summary-icon-debit"></span>
-                                <span class="summary-label">Total Debit</span>
-                                <span class="summary-value debit-value" id="totalDebit">${currencySymbol()}0.00</span>
-                            </div>
-                            <div class="summary-item">
-                                <span class="summary-icon summary-icon-balance"></span>
-                                <span class="summary-label">Current Balance</span>
-                                <span class="summary-value" id="currentBalance">${currencySymbol()}0.00</span>
-                            </div>
-                        </div>
-
                         <div class="history-card">
                             <h3>💳 Payment History</h3>
                             <div class="history-filter-bar">
@@ -3610,7 +3602,7 @@
                 const panel = document.getElementById('balancePayPanel');
                 const mount = document.getElementById('rzpInlineMount');
                 const modal = document.getElementById('balanceCheckoutModal');
-                if (modal) modal.classList.remove('show');
+                if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; }
                 if (!mount) return;
                 Array.prototype.slice.call(mount.querySelectorAll('iframe')).forEach(f => f.remove());
                 if (panel) panel.classList.remove('is-busy', 'is-inline');
@@ -3712,7 +3704,7 @@
                 // karta hai - payment.failed, modal.ondismiss, aur
                 // verify-payment ke success/catch, sab wahi call karte hain).
                 const checkoutModal = document.getElementById('balanceCheckoutModal');
-                if (checkoutModal) checkoutModal.classList.add('show');
+                if (checkoutModal) { checkoutModal.classList.add('show'); checkoutModal.style.display = 'flex'; }
 
                 authPost('/api/payment/create-order', { userId: CURRENT_USER_ID, amount: amount })
                     .then(order => {
@@ -4411,6 +4403,11 @@
                 return base;
             }
 
+            // Item 4 - Support Log me bhi 5/10/25/50 per page (Payment
+            // History wale pager jaisa hi pattern).
+            let supportPage = 1;
+            let supportPerPage = 5;
+
             function renderSupportTable() {
                 const tbody = document.getElementById('supportTableBody');
                 if (!tbody) return;
@@ -4418,8 +4415,68 @@
                 // Deliberately no default From/To pre-fill - every submission
                 // shows by default; a date range only narrows things down
                 // once the user actually picks one and applies it.
-                renderSupportRows(tbody, getFilteredSupport());
+                const filtered = getFilteredSupport();
+                const total = filtered.length;
+                const pages = Math.max(1, Math.ceil(total / supportPerPage));
+                if (supportPage > pages) supportPage = pages;
+
+                const sorted = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
+                const start = (supportPage - 1) * supportPerPage;
+                renderSupportRows(tbody, sorted.slice(start, start + supportPerPage));
+                renderSupportPager(total, pages, start);
             }
+
+            function renderSupportPager(total, pages, start) {
+                const pager = document.getElementById('supportPager');
+                if (!pager) return;
+
+                const shownFrom = total === 0 ? 0 : start + 1;
+                const shownTo = Math.min(start + supportPerPage, total);
+
+                const nums = [];
+                if (pages <= 5) {
+                    for (let i = 1; i <= pages; i++) nums.push(i);
+                } else if (supportPage <= 3) {
+                    nums.push(1, 2, 3, '\u2026', pages);
+                } else if (supportPage >= pages - 2) {
+                    nums.push(1, '\u2026', pages - 2, pages - 1, pages);
+                } else {
+                    nums.push(1, '\u2026', supportPage, '\u2026', pages);
+                }
+
+                const btn = (label, page, extra) =>
+                    page === null
+                        ? `<span class="pager-gap">${label}</span>`
+                        : `<button class="pager-btn ${extra || ''}" ${page ? `onclick="goSupportPage(${page})"` : 'disabled'}>${label}</button>`;
+
+                pager.innerHTML = `
+                    <span class="pager-count">Showing ${shownFrom} to ${shownTo} of ${total} entries</span>
+                    <div class="pager-controls">
+                        <select class="pager-select" onchange="setSupportPerPage(this.value)">
+                            ${[5, 10, 25, 50].map(n =>
+                                `<option value="${n}" ${n === supportPerPage ? 'selected' : ''}>${n} per page</option>`).join('')}
+                        </select>
+                        ${btn('\u00ab', supportPage > 1 ? 1 : 0)}
+                        ${btn('\u2039', supportPage > 1 ? supportPage - 1 : 0)}
+                        ${nums.map(n => n === '\u2026'
+                            ? btn('\u2026', null)
+                            : btn(n, n, n === supportPage ? 'is-current' : '')).join('')}
+                        ${btn('\u203a', supportPage < pages ? supportPage + 1 : 0)}
+                        ${btn('\u00bb', supportPage < pages ? pages : 0)}
+                    </div>
+                `;
+            }
+
+            window.goSupportPage = function(page) {
+                supportPage = page;
+                renderSupportTable();
+            };
+
+            window.setSupportPerPage = function(value) {
+                supportPerPage = Number(value) || 5;
+                supportPage = 1;
+                renderSupportTable();
+            };
 
             window.toggleSupportRowCheck = function(id, checkbox) {
                 if (checkbox.checked) selectedSupportIds.add(id);
@@ -4461,7 +4518,7 @@
                             );
                         }
                     });
-                    renderSupportRows(document.getElementById('supportTableBody'), getFilteredSupport());
+                    renderSupportTable();
                     showMessage('🗑️ Deleted', 'Selected item(s) have been deleted.', ['OK']);
                 });
             };
@@ -4477,13 +4534,15 @@
                     showWarning('"From" date cannot be after "To" date.');
                     return;
                 }
-                renderSupportRows(document.getElementById('supportTableBody'), getFilteredSupport());
+                supportPage = 1;
+                renderSupportTable();
             };
 
             window.resetSupportFilter = function() {
                 document.getElementById('supportFromDate').value = '';
                 document.getElementById('supportToDate').value = '';
-                renderSupportRows(document.getElementById('supportTableBody'), getFilteredSupport());
+                supportPage = 1;
+                renderSupportTable();
             };
 
             window.downloadSupportExcel = function() {
@@ -4653,7 +4712,7 @@
                 document.body.insertAdjacentHTML('beforeend', html);
 
                 const tbody = document.getElementById('supportTableBody');
-                if (tbody) renderSupportRows(tbody, getFilteredSupport());
+                if (tbody) renderSupportTable();
             };
 
             window.closeMessagePopup = function() {
@@ -4661,7 +4720,7 @@
                 if (overlay) overlay.remove();
                 selectedSupportId = null;
                 const tbody = document.getElementById('supportTableBody');
-                if (tbody) renderSupportRows(tbody, getFilteredSupport());
+                if (tbody) renderSupportTable();
             };
 
             window.selectSupportRow = function(id) {
@@ -4810,7 +4869,7 @@
                 sendContactAcknowledgementEmail(ticketId, type, subject, message);
                 addNotification(`Support ticket ${ticketId} ("${subject}") was created.`);
                 const tbody = document.getElementById('supportTableBody');
-                if (tbody) renderSupportRows(tbody, getFilteredSupport());
+                if (tbody) renderSupportTable();
                 showMessage('✅ Ticket Created', `Thank you for reaching out! Your ticket ID is <strong>${ticketId}</strong>. Our team will get back to you shortly.`, ['OK']);
             };
 
@@ -4828,7 +4887,7 @@
                 sendTicketUpdateEmail(item);
                 addNotificationFor(item.userId, `Support ticket ${item.id} ("${item.subject}") was updated - status: ${item.status}.`);
                 const tbody = document.getElementById('supportTableBody');
-                if (tbody) renderSupportRows(tbody, getFilteredSupport());
+                if (tbody) renderSupportTable();
                 showMessage('✅ Updated', 'The ticket status and response have been saved.', ['OK']);
             };
 
@@ -8747,7 +8806,7 @@
 
                         <div id="paymentTabBody">${paymentTabHtml(paymentActiveTab)}</div>
 
-                        <div class="balance-checkout-modal" id="balanceCheckoutModal">
+                        <div class="balance-checkout-modal" id="balanceCheckoutModal" style="display:none;">
                             <div class="balance-checkout-backdrop"></div>
                             <div class="balance-pay-panel" id="balancePayPanel">
                                 <div class="pay-panel-head">
@@ -8905,6 +8964,7 @@
                                         <tbody id="supportTableBody"></tbody>
                                     </table>
                                 </div>
+                                <div class="history-pager" id="supportPager"></div>
                                 <div class="support-log-footer-row">
                                     <button class="filter-btn delete-btn" onclick="deleteSelectedSupport()">🗑️ Delete</button>
                                     <a class="support-create-new-link" onclick="openMessagePopup('compose')">➕ Create New</a>
