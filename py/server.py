@@ -476,7 +476,8 @@ ALLOWED_RESOURCES = {
     "payment-history",
     "payment-methods",
     "contact-submissions",
-    "api-keys",
+    # "api-keys" hata di gayi (item 1.09) - key ab har user ke record
+    # (users.apiKey) par seedhi hai, /api/profile/update se save hoti hai.
     "lease-files",
     "translation-files",
     "lease-activity-log",
@@ -489,9 +490,8 @@ ALLOWED_RESOURCES = {
     # Ye sab pehle static json/*.json files ki tarah serve hote the -
     # ab db.SETTINGS_RESOURCES / db.DOCUMENT_RESOURCES ke through Postgres
     # se aate hain (fallback: json file, agar DB configured na ho).
-    "menu-config",
-    "services-api",
-    "messages",
+    # "menu-config" / "services-api" / "messages" hata di gayin (items
+    # 1.05 / 1.06 / 1.10) - ab app.js me hardcoded constants hain.
     "agents",
     "company",
     "plans",
@@ -1362,7 +1362,6 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/data/payment-history": self._handle_payment_history_get,
             "/api/data/notifications": self._handle_notifications_get,
             "/api/data/plan-history": self._handle_plan_history_get,
-            "/api/data/api-keys": self._handle_api_keys_get,
             "/api/data/payment-methods": self._handle_payment_methods_get,
             "/api/data/contact-submissions": self._handle_contact_submissions_get,
             "/api/data/lease-files": self._handle_lease_files_get,
@@ -1689,9 +1688,6 @@ class Handler(SimpleHTTPRequestHandler):
     # db.DB_BACKED_RESOURCES me naam + yahan ek line, bas.
     def _handle_plan_history_get(self, query):
         return self._serve_resource("plan-history")
-
-    def _handle_api_keys_get(self, query):
-        return self._serve_resource("api-keys")
 
     def _handle_payment_methods_get(self, query):
         return self._serve_resource("payment-methods")

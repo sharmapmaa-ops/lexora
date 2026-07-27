@@ -3630,11 +3630,41 @@
     margin-top: -4px;
 }
 
-#adminFilesTabBody,
+#adminFilesTabBody {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
 .db-status-card {
     display: flex;
     flex-direction: column;
     gap: 14px;
+    /* Card ki height fix - content lambi ho to card khud nahi badhta,
+       andar wali table apna scroll sambhal leti hai (item 1.11). */
+    height: 640px;
+    max-height: 78vh;
+}
+
+#dbStatusBody {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+#dbTablesBox {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+#dbActiveTableBody {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
 }
 
 .admin-btn {
@@ -4829,11 +4859,27 @@
 }
 
 .db-edit-table-wrapper {
-    max-height: 60vh;
+    flex: 1;
+    min-height: 0;
     overflow: auto;
     border: 1px solid rgba(0,0,139,0.15);
     border-radius: 8px;
     margin-top: 10px;
+}
+
+/* Header aur filter row scroll ke saath upar chipke rehte hain - sirf
+   data (tbody) neeche scroll hota hai (item 1.11). */
+.db-edit-table thead tr:first-child th {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: #0b1330;
+}
+
+.db-edit-table thead tr.db-filter-row th {
+    position: sticky;
+    top: 38px;
+    z-index: 3;
 }
 
 .db-filter-row th {

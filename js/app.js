@@ -25,8 +25,125 @@
 
             // ============================================================
             // 1. JSON CONFIGURATION
+            //
+            // MENU_CONFIG hardcoded hai (item 1.05) - pehle ek DB/JSON
+            // resource tha (menu-config.json / cfg_menu_config), ab
+            // seedha yahin project me hai. Admin Panel me alag se edit
+            // karne ki zaroorat nahi thi, isliye is Constant ko yahan
+            // rakhna zyada simple hai.
             // ============================================================
-            let MENU_CONFIG = null;
+            const MENU_CONFIG =             {
+                "mainMenu": [
+                    {
+                        "id": "dashboard",
+                        "label": "📊 Dashboard",
+                        "subItems": []
+                    },
+                    {
+                        "id": "services",
+                        "label": "🛠️ Services",
+                        "subItems": [
+                            {
+                                "id": "lease-abstraction",
+                                "label": "Lease Abstraction"
+                            },
+                            {
+                                "id": "translation",
+                                "label": "Translation"
+                            },
+                            {
+                                "id": "ocr",
+                                "label": "OCR"
+                            },
+                            {
+                                "id": "data-extraction",
+                                "label": "Data Extraction"
+                            },
+                            {
+                                "id": "bai2",
+                                "label": "BAI2"
+                            },
+                            {
+                                "id": "other-services",
+                                "label": "Other Services"
+                            }
+                        ]
+                    },
+                    {
+                        "id": "plans-offers",
+                        "label": "📋 Plans & Offers",
+                        "subItems": []
+                    },
+                    {
+                        "id": "payment",
+                        "label": "💳 Payment",
+                        "subItems": [
+                            {
+                                "id": "balance",
+                                "label": "Balance"
+                            },
+                            {
+                                "id": "payment-history",
+                                "label": "Payment History"
+                            }
+                        ]
+                    },
+                    {
+                        "id": "help",
+                        "label": "❓ Help",
+                        "subItems": [
+                            {
+                                "id": "api-documentation",
+                                "label": "API Documentation"
+                            },
+                            {
+                                "id": "support",
+                                "label": "Support"
+                            },
+                            {
+                                "id": "contact-us",
+                                "label": "Contact Us"
+                            }
+                        ]
+                    }
+                ],
+                "profileMenu": [
+                    {
+                        "id": "profile",
+                        "label": "👤 My Profile",
+                        "action": "Profile"
+                    },
+                    {
+                        "id": "admin",
+                        "label": "🗂️ Admin",
+                        "action": "Admin",
+                        "rolesAllowed": [
+                            "Developer",
+                            "Admin"
+                        ]
+                    },
+                    {
+                        "id": "notification",
+                        "label": "🔔 Notification",
+                        "action": "Notification"
+                    },
+                    {
+                        "type": "divider"
+                    },
+                    {
+                        "id": "logout",
+                        "label": "🚪 Logout",
+                        "action": "Logout",
+                        "isLogout": true
+                    }
+                ],
+                "user": {
+                    "name": "",
+                    "email": "",
+                    "initials": "",
+                    "avatar": null
+                }
+            };
             let CARD_LAYOUT = null;
 
             // ============================================================
@@ -50,15 +167,97 @@
             let nextTransactionId = 11;
 
             // ============================================================
-            // 5. API KEYS DATA
+            // 5. API KEY
+            //
+            // Ab alag "api-keys" table/resource nahi hai (item 1.09) -
+            // key seedhi current user ke record par hoti hai:
+            // profileData.apiKey / apiKeyCreatedAt / apiKeyStatus,
+            // profile update ke saath hi save hoti hai.
             // ============================================================
-            let apiKeys = [];
-            let nextApiKeyId = 1;
 
             // ============================================================
             // 6. SERVICES API REFERENCE DATA
+            //
+            // Hardcoded hai (item 1.10) - pehle services-api.json /
+            // cfg_services_api table se aata tha, ab seedha project me.
             // ============================================================
-            let SERVICES_API_DATA = null;
+            const SERVICES_API_DATA =             {
+                "lease-abstraction": {
+                    "label": "Lease Abstraction",
+                    "icon": "📄",
+                    "base": "/api/v1/lease-abstraction",
+                    "get": {
+                        "endpoint": "GET /api/v1/lease-abstraction/{id}",
+                        "description": "Retrieve the abstracted data of a specific lease document.",
+                        "example": "{\n  \"id\": \"LA-1042\",\n  \"fileName\": \"Office_Tower_Lease.pdf\",\n  \"status\": \"completed\",\n  \"leaseTerm\": { \"start\": \"2024-01-01\", \"end\": \"2029-12-31\" },\n  \"baseRent\": 45000,\n  \"currency\": \"USD\"\n}"
+                    },
+                    "post": {
+                        "endpoint": "POST /api/v1/lease-abstraction",
+                        "description": "Upload a new lease document for abstraction.",
+                        "example": "{\n  \"fileName\": \"Retail_Space_Agreement.pdf\",\n  \"fileUrl\": \"https://files.lexora.support/uploads/retail.pdf\",\n  \"priority\": \"normal\"\n}"
+                    }
+                },
+                "translation": {
+                    "label": "Translation",
+                    "icon": "🌐",
+                    "base": "/api/v1/translation",
+                    "get": {
+                        "endpoint": "GET /api/v1/translation/{id}",
+                        "description": "Retrieve the status and result of a translation job.",
+                        "example": "{\n  \"id\": \"TR-2089\",\n  \"sourceLanguage\": \"en\",\n  \"targetLanguage\": \"es\",\n  \"status\": \"completed\",\n  \"translatedFileUrl\": \"https://files.lexora.support/translated/doc_es.pdf\"\n}"
+                    },
+                    "post": {
+                        "endpoint": "POST /api/v1/translation",
+                        "description": "Submit a new document for translation.",
+                        "example": "{\n  \"fileUrl\": \"https://files.lexora.support/uploads/contract.pdf\",\n  \"sourceLanguage\": \"en\",\n  \"targetLanguage\": \"fr\"\n}"
+                    }
+                },
+                "ocr": {
+                    "label": "OCR",
+                    "icon": "🔍",
+                    "base": "/api/v1/ocr",
+                    "get": {
+                        "endpoint": "GET /api/v1/ocr/{id}",
+                        "description": "Retrieve the result of an OCR job, including the rebuilt document link.",
+                        "example": "{\n  \"id\": \"OCR-3311\",\n  \"fileName\": \"scanned_contract.pdf\",\n  \"status\": \"completed\",\n  \"pages\": 12,\n  \"outputUrl\": \"https://files.lexora.support/ocr/scanned_contract.doc\"\n}"
+                    },
+                    "post": {
+                        "endpoint": "POST /api/v1/ocr",
+                        "description": "Submit a PDF or image for OCR. The layout is preserved and an editable Word file is returned.",
+                        "example": "{\n  \"fileUrl\": \"https://files.lexora.support/uploads/scanned_contract.pdf\",\n  \"withOcr\": true\n}"
+                    }
+                },
+                "data-extraction": {
+                    "label": "Data Extraction",
+                    "icon": "🧾",
+                    "base": "/api/v1/data-extraction",
+                    "get": {
+                        "endpoint": "GET /api/v1/data-extraction/{id}",
+                        "description": "Retrieve the extracted field values for a submitted document.",
+                        "example": "{\n  \"id\": \"DX-778\",\n  \"fileName\": \"invoice_0421.pdf\",\n  \"status\": \"completed\",\n  \"fields\": {\n    \"Invoice No\": \"INV-0421\",\n    \"Invoice Date\": \"2026-06-14\",\n    \"Total Amount\": \"18,320.75\"\n  }\n}"
+                    },
+                    "post": {
+                        "endpoint": "POST /api/v1/data-extraction",
+                        "description": "Submit a document along with the field definitions to extract (maximum 30 fields).",
+                        "example": "{\n  \"fileUrl\": \"https://files.lexora.support/uploads/invoice_0421.pdf\",\n  \"withOcr\": false,\n  \"fields\": [\n    {\n      \"header\": \"Invoice No\",\n      \"description\": \"The invoice reference number\"\n    },\n    {\n      \"header\": \"Total Amount\",\n      \"description\": \"Final total payable including tax\"\n    }\n  ]\n}"
+                    }
+                },
+                "bai2": {
+                    "label": "BAI2",
+                    "icon": "🏦",
+                    "base": "/api/v1/bai2",
+                    "get": {
+                        "endpoint": "GET /api/v1/bai2/{id}",
+                        "description": "Retrieve a converted bank statement in BAI2, CSV or JSON form.",
+                        "example": "{\n  \"id\": \"BAI-204\",\n  \"fileName\": \"statement_june.pdf\",\n  \"status\": \"completed\",\n  \"account\": \"50100123456\",\n  \"currency\": \"INR\",\n  \"transactions\": 3,\n  \"outputUrl\": \"https://files.lexora.support/bai2/statement_june.bai\"\n}"
+                    },
+                    "post": {
+                        "endpoint": "POST /api/v1/bai2",
+                        "description": "Submit a bank statement (PDF or image) for conversion to BAI2 format.",
+                        "example": "{\n  \"fileUrl\": \"https://files.lexora.support/uploads/statement_june.pdf\",\n  \"withOcr\": true,\n  \"outputFormat\": \"bai2\"\n}"
+                    }
+                }
+            };
 
             // ============================================================
             // 6b. COMPANY DETAILS (logo, name, address, contact info, ...)
@@ -3587,9 +3786,9 @@
             // ============================================================
             // 23. MESSAGE BOX
             // ============================================================
-            // Title/buttons config per message type now lives in messages.json
-            // (loaded in loadAppData) instead of being hardcoded here.
-            let MESSAGES = {
+            // Hardcoded hai (item 1.06) - pehle messages.json /
+            // cfg_messages table se aata tha, ab seedha project me.
+            const MESSAGES = {
                 success: { title: '✅ Success', buttons: ['OK'], blocking: false },
                 warning: { title: '⚠️ Warning', buttons: ['OK'], blocking: false },
                 error: { title: '❌ Error', buttons: ['OK'], blocking: false },
@@ -3677,6 +3876,13 @@
 
             // ============================================================
             // 24. API KEY FUNCTIONS
+            //
+            // Ab alag "api-keys" table nahi hai (item 1.09) - key seedhi
+            // current user ke record par rehti hai: profileData.apiKey /
+            // apiKeyCreatedAt / apiKeyStatus, aur persistProfile() ke
+            // saath hi save hoti hai (jo poora profileData object
+            // /api/profile/update par bhej deta hai). Purani key history
+            // ab track nahi hoti - ek waqt me ek hi active key.
             // ============================================================
             function generateRandomKey() {
                 const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -3686,29 +3892,30 @@
             }
 
             function getActiveApiKey() {
-                return apiKeys.find(k => k.status !== 'revoked') || null;
+                if (!profileData || !profileData.apiKey || profileData.apiKeyStatus === 'revoked') return null;
+                return {
+                    key: profileData.apiKey,
+                    createdAt: profileData.apiKeyCreatedAt || '',
+                    status: profileData.apiKeyStatus || 'active'
+                };
             }
 
             window.generateApiKey = function() {
-                const newKey = {
-                    id: nextApiKeyId++,
-                    key: generateRandomKey(),
-                    createdAt: new Date().toLocaleString(),
-                    status: 'active',
-                    saved: false
-                };
-                apiKeys.unshift(newKey);
-                if (profileData) profileData.apiKey = newKey.key;
+                if (!profileData) return;
+                const newKey = generateRandomKey();
+                const createdAt = new Date().toLocaleString();
+                profileData.apiKey = newKey;
+                profileData.apiKeyCreatedAt = createdAt;
+                profileData.apiKeyStatus = 'active';
                 renderApiKeyDisplay();
-                persistApiKeys();
                 persistProfile();
                 addNotification('A new API key was generated for your account.');
-                if (profileData && profileData.email) {
+                if (profileData.email) {
                     sendGenericNotificationEmail(
                         profileData.email,
                         `${profileData.firstName} ${profileData.lastName}`,
                         'New API key generated',
-                        `A new API key was generated for your account just now (${newKey.createdAt}). ` +
+                        `A new API key was generated for your account just now (${createdAt}). ` +
                         `If you didn't do this, please revoke it immediately from your Profile and contact support.`
                     );
                 }
@@ -3731,18 +3938,6 @@
                 }
             };
 
-            window.saveApiKey = function() {
-                const activeKey = getActiveApiKey();
-                if (!activeKey) { showWarning('No active API key to save. Generate one first.'); return; }
-
-                activeKey.saved = true;
-                if (profileData) profileData.apiKey = activeKey.key;
-                renderApiKeyDisplay();
-                persistApiKeys();
-                persistProfile();
-                showMessage('💾 Saved', 'API key has been saved to your account record.', ['OK']);
-            };
-
             window.revokeApiKey = function() {
                 const activeKey = getActiveApiKey();
                 if (!activeKey) { showWarning('No active API key to revoke.'); return; }
@@ -3751,11 +3946,9 @@
                     'Are you sure you want to revoke this API key? Any application using it will stop working immediately.',
                     function(confirmed) {
                         if (confirmed) {
-                            activeKey.status = 'revoked';
-                            activeKey.revokedAt = new Date().toLocaleString();
-                            if (profileData && profileData.apiKey === activeKey.key) profileData.apiKey = null;
+                            const revokedAt = new Date().toLocaleString();
+                            profileData.apiKeyStatus = 'revoked';
                             renderApiKeyDisplay();
-                            persistApiKeys();
                             persistProfile();
                             addNotification('Your API key was revoked.');
                             if (profileData && profileData.email) {
@@ -3763,7 +3956,7 @@
                                     profileData.email,
                                     `${profileData.firstName} ${profileData.lastName}`,
                                     'API key revoked',
-                                    `Your API key was revoked just now (${activeKey.revokedAt}). It can no longer be used to access the API. ` +
+                                    `Your API key was revoked just now (${revokedAt}). It can no longer be used to access the API. ` +
                                     `If you didn't do this, please contact support right away.`
                                 );
                             }
@@ -3775,7 +3968,6 @@
             function renderApiKeyDisplay() {
                 const display = document.getElementById('apiKeyDisplay');
                 const actionsEl = document.getElementById('apiKeyActions');
-                const historyEl = document.getElementById('apiKeyHistory');
                 if (!display) return;
 
                 const activeKey = getActiveApiKey();
@@ -3787,9 +3979,7 @@
                     // hai. Asli value data attribute me, taaki Copy kaam kare.
                     activeApiKeyValue = activeKey.key;
                     display.dataset.key = activeKey.key;
-                    display.innerHTML = `<span class="api-key-text">${apiKeyVisible ? escapeHtml(activeKey.key) : '\u2022'.repeat(Math.min(44, activeKey.key.length))}</span>` +
-                        (activeKey.saved ?
-                            ' <span class="api-key-saved">(Saved)</span>' : '');
+                    display.innerHTML = `<span class="api-key-text">${apiKeyVisible ? escapeHtml(activeKey.key) : '\u2022'.repeat(Math.min(44, activeKey.key.length))}</span>`;
                 }
 
                 if (actionsEl) {
@@ -3802,30 +3992,12 @@
                 if (createdEl) createdEl.textContent = (activeKey && activeKey.createdAt) || '\u2014';
                 const statusEl = document.getElementById('apiKeyStatus');
                 if (statusEl) {
-                    const revoked = !activeKey || activeKey.status === 'revoked';
+                    const revoked = !activeKey;
                     statusEl.textContent = revoked ? 'Revoked' : 'Active';
                     statusEl.className = 'txn-status-pill ' + (revoked ? 'failed' : 'success');
                 }
-
-                if (historyEl) {
-                    const others = apiKeys.filter(k => k !== activeKey);
-                    historyEl.innerHTML = `
-                        <div class="api-prev-wrap">
-                            <table class="admin-json-table api-prev-table">
-                                <thead><tr><th>API Key</th><th>Created On</th><th>Status</th></tr></thead>
-                                <tbody>
-                                    ${others.length === 0
-                                        ? '<tr><td colspan="3" class="api-prev-empty">No previous keys yet.</td></tr>'
-                                        : others.map(k => `<tr>
-                                            <td class="api-prev-key">${escapeHtml(k.key)}</td>
-                                            <td>${escapeHtml(k.createdAt || '')}</td>
-                                            <td><span class="txn-status-pill ${k.status === 'revoked' ? 'failed' : 'success'}">${k.status === 'revoked' ? 'Revoked' : 'Active'}</span></td>
-                                        </tr>`).join('')}
-                                </tbody>
-                            </table>
-                        </div>`;
-                }
             }
+
 
             // Sidebar + endpoint panel + tabs, SERVICES_API_DATA se hi
             // (wahi data pehle ek lambi list me dikhta tha).
@@ -6045,11 +6217,6 @@
             function buildDbStatusPanel() {
                 return `
                     <div class="db-status-card" id="dbStatusCard">
-                        <div class="admin-toolbar">
-                            <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
-                            <button class="admin-btn admin-btn-save" onclick="runDbMigration()">\u2934 Run migration</button>
-                            <button class="admin-btn admin-btn-add-folder" onclick="adminOpenPricingEditor()">\u{1F4B2} Plan Pricing</button>
-                        </div>
                         <div id="dbStatusBody"><p class="ds-card-sub">Checking\u2026</p></div>
                     </div>`;
             }
@@ -6212,8 +6379,11 @@
                         <div class="db-edit-table-actions">
                             <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${escapeHtml(name)}')">+ Add Row</button>
                             <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Selected</button>
-                            <span class="admin-toolbar-spacer"></span>
                             <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
+                            <span class="admin-toolbar-spacer"></span>
+                            <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
+                            <button class="admin-btn admin-btn-save" onclick="runDbMigration()">\u2934 Run migration</button>
+                            <button class="admin-btn admin-btn-add-folder" onclick="adminOpenPricingEditor()">\u{1F4B2} Plan Pricing</button>
                         </div>`;
                     host.dataset.rows = JSON.stringify(rows);
                 } catch (err) {
@@ -8607,9 +8777,9 @@
                     // Order screenshot se: API Key card (notice + actions ->
                     // key + details -> previous keys), phir Services API
                     // Reference (sidebar + endpoint panel + tabs + code).
-                    // Purane ids (apiKeyDisplay / apiKeyActions /
-                    // apiKeyHistory) waise hi rakhe hain taaki
-                    // generateApiKey/copyApiKey/saveApiKey/revokeApiKey
+                    // Key ab profileData.apiKey par based hai (item 1.09) -
+                    // ids (apiKeyDisplay / apiKeyActions) waise hi rakhe
+                    // hain taaki generateApiKey/copyApiKey/revokeApiKey
                     // bina badle chalte rahein.
                     body: function() {
                         return `
@@ -8644,10 +8814,6 @@
                                     <button class="api-action-btn copy-btn" onclick="copyApiKey()">
                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
                                         Copy
-                                    </button>
-                                    <button class="api-action-btn save-btn" onclick="saveApiKey()">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h7M8 14h8"/></svg>
-                                        Save
                                     </button>
                                     <button class="api-action-btn revoke-btn" onclick="revokeApiKey()">
                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h16M9.5 6.5V4.5h5v2M7 6.5l1 13h8l1-13"/></svg>
@@ -8991,7 +9157,6 @@
             function persistPlanHistory() { return saveJSON('plan-history', planHistory); }
             function persistPaymentMethods() { return saveJSON('payment-methods', paymentMethods); }
             function persistContactSubmissions() { return saveJSON('contact-submissions', contactSubmissions); }
-            function persistApiKeys() { return saveJSON('api-keys', apiKeys); }
             function persistNotifications() { return saveJSON('notifications', notifications); }
 
             // Patches ONLY the currently logged-in user's own record via
@@ -9047,17 +9212,13 @@
 
             async function loadAppData() {
                 const [
-                    menuConfig,
                     paymentMethodsData,
                     paymentHistoryData,
-                    servicesApiData,
                     cardLayoutData,
                     contactSubmissionsData,
                     meData,
-                    messagesData,
                     agentsData,
                     companyData,
-                    apiKeysData,
                     leaseFilesData,
                     translationFilesData,
                     leaseActivityLogData,
@@ -9066,19 +9227,15 @@
                     plansData,
                     planHistoryData
                 ] = await Promise.all([
-                    fetchJSON('/api/data/menu-config').catch(() => ({})),
                     fetchJSON('/api/data/payment-methods'),
                     // Postgres chalu ho to ye route DB se deta hai,
                     // warna wahi JSON file - dono case me ek hi shape.
                     fetchJSON('/api/data/payment-history'),
-                    fetchJSON('/api/data/services-api').catch(() => ({})),
                     fetchJSON('/api/data/card-layout').catch(() => ({})),
                     fetchJSON('/api/data/contact-submissions'),
                     fetchJSON('/api/auth/me?userId=' + encodeURIComponent(CURRENT_USER_ID)),
-                    fetchJSON('/api/data/messages').catch(() => ({})),
                     fetchJSON('/api/data/agents').catch(() => ({})),
                     fetchJSON('/api/data/company').catch(() => ({})),
-                    fetchJSON('/api/data/api-keys'),
                     fetchJSON('/api/data/lease-files'),
                     fetchJSON('/api/data/translation-files'),
                     fetchJSON('/api/data/lease-activity-log'),
@@ -9090,20 +9247,16 @@
                 PLANS_DATA = plansData || [];
                 planHistory = planHistoryData || [];
 
-                MENU_CONFIG = menuConfig;
                 paymentMethods = paymentMethodsData;
                 paymentHistory = paymentHistoryData;
                 CARD_LAYOUT = cardLayoutData;
                 applyCardLayout();
-                SERVICES_API_DATA = servicesApiData;
                 // Agar API Documentation page pehle se khula hai to data
                 // aate hi reference dobara draw ho jaye.
                 if (document.getElementById('apiRefNav')) renderServicesApiList();
                 contactSubmissions = contactSubmissionsData;
-                MESSAGES = messagesData;
                 AGENTS_BY_SERVICE = agentsData;
                 COMPANY_INFO = companyData;
-                apiKeys = apiKeysData;
                 leaseFiles = leaseFilesData;
                 translationFiles = translationFilesData;
                 leaseActivityLog = leaseActivityLogData;
@@ -9118,7 +9271,6 @@
                 // sysConfig field (users.json), not a separate json file.
                 currentSystemConfig = (profileData && profileData.sysConfig) || 'Desktop';
 
-                nextApiKeyId = apiKeys.length ? Math.max(...apiKeys.map(k => k.id)) + 1 : 1;
                 nextLeaseFileId = leaseFiles.length ? Math.max(...leaseFiles.map(f => Number(f.id) || 0)) + 1 : 1;
                 nextTranslationFileId = translationFiles.length ? Math.max(...translationFiles.map(f => Number(f.id) || 0)) + 1 : 1;
                 nextTransactionId = paymentHistory.length + 1;

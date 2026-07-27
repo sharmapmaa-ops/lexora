@@ -593,7 +593,7 @@ def update_user(user_id, fields):
 # transactions ke liye maine asli columns banaye - wahan paise hain,
 # NUMERIC chahiye, CHECK constraints chahiye, aur SUM() query karni hai.
 #
-# Ye chaar (plan-history, api-keys, payment-methods, contact-submissions)
+# Ye teen (plan-history, payment-methods, contact-submissions)
 # alag maamla hain:
 #   * chhoti aur kam-likhi jaane wali hain
 #   * do to abhi bilkul khaali hain - unka schema maine guess karna padta
@@ -736,8 +736,11 @@ def save_setting(name, data):
 # laani ho to yahan ek line add karni hai, server.py chhedna nahi padta.
 # ============================================================
 # JSONB document table par chalne wali resources.
+#
+# "api-keys" yahan se hata di gayi hai (item 1.09) - key ab har user ke
+# apne record par (users.api_key) rehti hai, alag table ki zaroorat nahi.
 DOCUMENT_RESOURCES = (
-    "plan-history", "api-keys", "payment-methods", "contact-submissions",
+    "plan-history", "payment-methods", "contact-submissions",
     # Job state. Inme sirf metadata hai - asli PDF blobs browser ki memory
     # me rehte hain (translationFileBlobs / leaseFileBlobs) aur kabhi save
     # nahi hote, isliye rows chhoti hi rehti hain.
@@ -754,9 +757,12 @@ DB_BACKED_RESOURCES = ("payment-history", "notifications") + DOCUMENT_RESOURCES
 # company.json waghera) - inke liye alag "cfg_*" tables (ek row, poora
 # object JSONB me), kyunki document pattern (id ke saath rows) inpar
 # fit nahi baithta.
+#
+# "menu-config", "services-api", aur "messages" yahan se hata di gayi
+# hain (items 1.05 / 1.06 / 1.10) - ab teeno seedhe project me (app.js
+# ke andar constants ke roop me) hardcoded hain, DB/JSON resource nahi.
 SETTINGS_RESOURCES = (
-    "menu-config", "services-api", "card-layout", "messages", "agents",
-    "company", "rules",
+    "card-layout", "agents", "company", "rules",
 )
 
 
@@ -803,6 +809,44 @@ KNOWN_TABLES = (
     + tuple(_settings_table(n) for n in SETTINGS_RESOURCES)
 )
 
+# Ye tables Admin Panel ke table-browser tabs me nahi dikhti (item 1.01,
+# 1.07, 1.08) - Activity Log sirf us waqt dikhna chahiye jab koi user
+# ki file process ho rahi ho (wo alag, per-service panel already hai),
+# aur Payment Method / Plan History ab standalone admin tables ke roop
+# me manage nahi hote. Resource khud abhi bhi kaam karta hai (list/save
+# API), sirf is generic browser se hata hai.
+ADMIN_HIDDEN_TABLES = {
+    _doc_table("lease-activity-log"),
+    _doc_table("translation-activity-log"),
+    _doc_table("plan-history"),
+    _doc_table("payment-methods"),
+}
+
+# Company aur Plans (items 1.02 / 1.03) ka poora record ek hi JSONB
+# column me hota hai ("data") - generic viewer isko ek hi opaque blob
+# column dikhata, jabki chahiye tha ki uske andar ke chuninda fields
+# (logo/name/email, id/icon/name) khud alag table headers ban jayein.
+# Baaki fields (address, monthlyPrice, features, ...) JSON ke andar hi
+# rehte hain - flatten sirf ADMIN PANEL KI VIEW ke liye hai, save karte
+# waqt purane data ke saath merge ho jata hai, kuch delete nahi hota.
+VIRTUAL_TABLES = {
+    "cfg_company": {
+        "kind": "settings",
+        "resource": "company",
+        "fields": ["logo", "name", "email"],
+        "readonly_fields": set(),
+    },
+    "doc_plans": {
+        "kind": "document",
+        "resource": "plans",
+        "fields": ["id", "icon", "name"],
+        # 'id' rename allow nahi karte - baaki app me plan id se hi
+        # lookup hota hai (billing, plan switch, waghera); rename se
+        # references toot jayenge.
+        "readonly_fields": {"id"},
+    },
+}
+
 
 # Admin ko bhi password hash ya OTP dekhne ki zaroorat nahi. Screenshot
 # ya screen-share me leak hona asaan hai, isliye server hi mask karta
@@ -826,6 +870,19 @@ def table_columns(name):
     edit karne layak hai ya nahi (password jaisi masked columns nahi)."""
     if name not in KNOWN_TABLES:
         raise ValueError(f"Unknown table: {name}")
+    if name in VIRTUAL_TABLES:
+        spec = VIRTUAL_TABLES[name]
+        readonly = spec["readonly_fields"]
+        return [
+            {
+                "name": f,
+                "type": "text",
+                "nullable": True,
+                "primaryKey": spec["kind"] == "document" and f == "id",
+                "editable": f not in readonly,
+            }
+            for f in spec["fields"]
+        ]
     init_schema()
     with connect() as conn:
         with conn.cursor() as cur:
@@ -863,9 +920,80 @@ def _prepare_value(col_type, value):
     return value
 
 
+# ------------------------------------------------------------
+# VIRTUAL_TABLES helpers (company / plans) - values yahan hamesha
+# flat fields hain (logo/name/email ya id/icon/name), asli JSONB
+# "data" column ke andar purane fields ke saath merge hoke save hote
+# hain, taaki koi field khoya na jaye.
+# ------------------------------------------------------------
+def _virtual_insert_row(name, values):
+    spec = VIRTUAL_TABLES[name]
+    fields = spec["fields"]
+    clean = {f: values.get(f, "") for f in fields if f in values}
+    if spec["kind"] == "settings":
+        current = get_setting(spec["resource"]) or {}
+        current.update(clean)
+        save_setting(spec["resource"], current)
+        return True
+    # kind == "document": naya plan/document row - id zaroor chahiye.
+    new_id = str(clean.get("id") or "").strip()
+    if not new_id:
+        raise ValueError("'id' is required to add a new row.")
+    docs = list_documents(spec["resource"])
+    if any(str(d.get("id")) == new_id for d in docs):
+        raise ValueError(f"'{new_id}' already exists.")
+    docs.append(clean)
+    replace_documents(spec["resource"], docs)
+    return True
+
+
+def _virtual_update_row(name, key, values):
+    spec = VIRTUAL_TABLES[name]
+    fields = spec["fields"]
+    readonly = spec["readonly_fields"]
+    clean = {f: values.get(f, "") for f in fields if f in values and f not in readonly}
+    if spec["kind"] == "settings":
+        current = get_setting(spec["resource"]) or {}
+        current.update(clean)
+        save_setting(spec["resource"], current)
+        return 1
+    # kind == "document": key['id'] se original doc dhoondo, editable
+    # fields us par merge karo, baaki (monthlyPrice, features, ...) waisa
+    # hi rahega.
+    target_id = str(key.get("id") or "").strip()
+    if not target_id:
+        raise ValueError("Row identify nahi ho payi (id missing).")
+    docs = list_documents(spec["resource"])
+    affected = 0
+    for d in docs:
+        if str(d.get("id")) == target_id:
+            d.update(clean)
+            affected += 1
+    if affected:
+        replace_documents(spec["resource"], docs)
+    return affected
+
+
+def _virtual_delete_row(name, key):
+    spec = VIRTUAL_TABLES[name]
+    if spec["kind"] == "settings":
+        raise ValueError("Ye row delete nahi ho sakti.")
+    target_id = str(key.get("id") or "").strip()
+    if not target_id:
+        raise ValueError("Row identify nahi ho payi (id missing).")
+    docs = list_documents(spec["resource"])
+    remaining = [d for d in docs if str(d.get("id")) != target_id]
+    affected = len(docs) - len(remaining)
+    if affected:
+        replace_documents(spec["resource"], remaining)
+    return affected
+
+
 def insert_row(name, values):
     """Naya row insert karta hai. Sirf wahi columns jo table me sach me
     maujood hain aur masked nahi hain - baaki keys chup-chaap ignore."""
+    if name in VIRTUAL_TABLES:
+        return _virtual_insert_row(name, values)
     cols_info = {c["name"]: c for c in table_columns(name)}
     known = {
         k: v for k, v in values.items()
@@ -891,6 +1019,8 @@ def insert_row(name, values):
 
 def update_row(name, key, values):
     """Primary key se match hone wala ek hi row update karta hai."""
+    if name in VIRTUAL_TABLES:
+        return _virtual_update_row(name, key, values)
     pk_cols = PRIMARY_KEYS.get(name, ())
     if not pk_cols or set(key.keys()) != set(pk_cols):
         raise ValueError("Row identify nahi ho payi (primary key missing).")
@@ -926,6 +1056,8 @@ def delete_row(name, key):
     """Primary key se match hone wala ek hi row delete karta hai."""
     if name not in KNOWN_TABLES:
         raise ValueError(f"Unknown table: {name}")
+    if name in VIRTUAL_TABLES:
+        return _virtual_delete_row(name, key)
     pk_cols = PRIMARY_KEYS.get(name, ())
     if not pk_cols or set(key.keys()) != set(pk_cols):
         raise ValueError("Row identify nahi ho payi (primary key missing).")
@@ -953,12 +1085,14 @@ def _mask(value):
 
 
 def list_tables():
-    """Har table ka naam + row count."""
+    """Har table ka naam + row count (ADMIN_HIDDEN_TABLES chhod kar)."""
     init_schema()
     out = []
     with connect() as conn:
         with conn.cursor() as cur:
             for name in KNOWN_TABLES:
+                if name in ADMIN_HIDDEN_TABLES:
+                    continue
                 cur.execute("SELECT to_regclass(%(t)s) IS NOT NULL AS present",
                             {"t": "public." + name})
                 if not cur.fetchone()["present"]:
@@ -973,6 +1107,15 @@ def table_rows(name, limit=500):
     """Ek table ka raw data (masked). name allowlist se hi aata hai."""
     if name not in KNOWN_TABLES:
         raise ValueError(f"Unknown table: {name}")
+    if name in VIRTUAL_TABLES:
+        spec = VIRTUAL_TABLES[name]
+        fields = spec["fields"]
+        if spec["kind"] == "settings":
+            data = get_setting(spec["resource"]) or {}
+            return [{f: data.get(f, "") for f in fields}]
+        # kind == "document": har row ka apna data JSONB
+        docs = list_documents(spec["resource"])
+        return [{f: d.get(f, "") for f in fields} for d in docs]
     init_schema()
     with connect() as conn:
         with conn.cursor() as cur:
