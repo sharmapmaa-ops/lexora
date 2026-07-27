@@ -3784,10 +3784,10 @@
                 // Key Details box (Created On + Status) - mockup me key ke
                 // right side me.
                 const createdEl = document.getElementById('apiKeyCreatedOn');
-                if (createdEl) createdEl.textContent = activeKey.createdAt || '\u2014';
+                if (createdEl) createdEl.textContent = (activeKey && activeKey.createdAt) || '\u2014';
                 const statusEl = document.getElementById('apiKeyStatus');
                 if (statusEl) {
-                    const revoked = activeKey.status === 'revoked';
+                    const revoked = !activeKey || activeKey.status === 'revoked';
                     statusEl.textContent = revoked ? 'Revoked' : 'Active';
                     statusEl.className = 'txn-status-pill ' + (revoked ? 'failed' : 'success');
                 }
@@ -3929,7 +3929,7 @@
                 apiKeyVisible = !apiKeyVisible;
                 const btn = document.getElementById('apiKeyEye');
                 if (btn) btn.classList.toggle('is-on', apiKeyVisible);
-                renderApiKeyCard();
+                renderApiKeyDisplay();
             };
 
             function renderServicesApiList() {

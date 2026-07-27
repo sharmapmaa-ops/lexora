@@ -60,7 +60,8 @@
     running: false,
     files: [],
     nextId: 1,
-    log: []
+    log: [],
+    showFields: false    // "Fields to Extract" panel band se toggle hota hai
   };
 
   function esc(s) {
@@ -633,17 +634,11 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
                           onclick="DataExtraction.start()">▶️ Start</button>
                   <button class="process-btn clear-btn" ${STATE.running ? 'disabled' : ''}
                           onclick="DataExtraction.clearAll()">🗑️ Clear Files</button>
+                  <button class="process-btn" onclick="DataExtraction.toggleFieldsPanel()">
+                    🧾 Fields to Extract (${loadFields().length})${STATE.showFields ? ' ▲' : ' ▼'}
+                  </button>
                 </div>
               </div>
-            </div>
-          </div>
-
-          <div class="file-list-card" style="height:auto;">
-            <div class="file-list-card-header">
-              <h3>🧾 Fields to Extract</h3>
-            </div>
-            <div class="card-body">
-              ${fieldsTable()}
             </div>
           </div>
           </div>
@@ -696,6 +691,17 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
           </div>
         </div>
 
+        ${STATE.showFields ? `
+        <div class="file-list-card de-fields-full" style="height:auto;margin-top:16px;">
+          <div class="file-list-card-header" style="display:flex;justify-content:space-between;align-items:center;">
+            <h3>🧾 Fields to Extract</h3>
+            <button class="process-btn clear-btn" style="padding:4px 12px;" onclick="DataExtraction.toggleFieldsPanel()">✕ Close</button>
+          </div>
+          <div class="card-body">
+            ${fieldsTable()}
+          </div>
+        </div>` : ''}
+
         ${resultsTable()}
 
 `;
@@ -708,6 +714,11 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
   }
 
+  function toggleFieldsPanel() {
+    STATE.showFields = !STATE.showFields;
+    rerender();
+  }
+
   window.DataExtraction = {
     render: render,
     addField: addField,
@@ -717,6 +728,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     saveFields: saveFields,
     resetFields: resetFields,
     loadInvoiceDefaults: loadInvoiceDefaults,
+    toggleFieldsPanel: toggleFieldsPanel,
     onPick: onPick,
     toggleSelect: toggleSelect,
     toggleAll: toggleAll,

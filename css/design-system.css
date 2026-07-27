@@ -531,7 +531,8 @@ body, input, select, textarea, button {
 .user-profile .user-avatar        { order: 1; }
 .user-profile .user-name          { order: 2; }
 .user-profile .user-dropdown-arrow{ order: 3; }
-.user-avatar { position: relative; }
+.user-avatar { position: relative; overflow: visible; }
+.notification-badge { z-index: 2; }
 .notification-badge { position: absolute; top: -5px; right: -5px; }
 
 /* Active item mockup me amber hai, taaki blue nav par alag dikhe. */
