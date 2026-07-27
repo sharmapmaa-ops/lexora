@@ -3642,8 +3642,8 @@
     gap: 14px;
     /* Card ki height fix - content lambi ho to card khud nahi badhta,
        andar wali table apna scroll sambhal leti hai (item 1.11). */
-    height: 640px;
-    max-height: 78vh;
+    height: 900px;
+    max-height: 88vh;
 }
 
 #dbStatusBody {
@@ -3664,7 +3664,7 @@
     display: flex;
     flex-direction: column;
     flex: 1;
-    min-height: 0;
+    min-height: 500px;
 }
 
 .admin-btn {
@@ -4860,7 +4860,7 @@
 
 .db-edit-table-wrapper {
     flex: 1;
-    min-height: 0;
+    min-height: 440px;
     overflow: auto;
     border: 1px solid rgba(0,0,139,0.15);
     border-radius: 8px;
