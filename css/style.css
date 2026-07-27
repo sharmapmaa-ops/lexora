@@ -2533,6 +2533,16 @@
             gap: 10px;
         }
 
+        .api-doc-locked {
+            border-color: rgba(0,0,139,0.25);
+            background: rgba(0,0,139,0.03);
+        }
+
+        .api-doc-locked .plan-cta-btn {
+            margin-top: 6px;
+            align-self: flex-start;
+        }
+
         .api-key-card h3 {
             color: black;
             font-weight: 500;

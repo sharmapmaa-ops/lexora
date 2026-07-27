@@ -270,6 +270,13 @@
                     { name: 'Free', pricePerLeaseAbstraction: 1, pricePerTranslation: 1 };
             }
 
+            // Section 4 - API Documentation sirf Standard/Professional plan
+            // wale users ke liye hai. Free plan wale menu me dekh sakte
+            // hain, lekin click par ek upgrade message dikhta hai.
+            function canAccessApiDocs() {
+                return ['Standard', 'Professional'].includes(getMyPlan().name);
+            }
+
             function getServicePrice(serviceId, pageCount) {
                 const plan = getMyPlan();
                 if (serviceId === 'translation') {
@@ -6882,7 +6889,7 @@
                                        value="${Number(plan.monthlyPrice || 0)}" style="width:100%;" />
                             </div>
                             <div style="margin-bottom:8px;">
-                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Translation (${currencySymbol()} / page)</label>
+                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Translation / OCR / Data Extraction / BAI2 (${currencySymbol()} / page)</label>
                                 <input type="number" step="0.01" min="0" class="admin-price-input"
                                        data-plan-idx="${pIdx}" data-field="pricePerTranslation"
                                        value="${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)}" style="width:100%;" />
@@ -8765,6 +8772,9 @@
                                     <div class="plan-price">\u20b9${plan.monthlyPrice}<span>/month</span></div>
                                     <ul class="plan-features">
                                         <li>${tick}\u20b9${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / page (Translation)</li>
+                                        <li>${tick}\u20b9${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / page (OCR)</li>
+                                        <li>${tick}\u20b9${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / page (Data Extraction)</li>
+                                        <li>${tick}\u20b9${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / page (BAI2)</li>
                                         ${(plan.features || []).map(f => `<li>${tick}${escapeHtml(f)}</li>`).join('')}
                                     </ul>
                                     <button class="plan-cta-btn ${isMine ? 'is-current' : ''}" ${isMine ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
@@ -8835,7 +8845,29 @@
                     // ids (apiKeyDisplay / apiKeyActions) waise hi rakhe
                     // hain taaki generateApiKey/copyApiKey/revokeApiKey
                     // bina badle chalte rahein.
+                    //
+                    // Section 4 - ye page sirf Standard/Professional plan
+                    // wale users ke liye hai. Menu me sabko dikhta hai,
+                    // lekin Free plan wale click karne par upgrade message
+                    // dekhte hain, poora page content nahi.
                     body: function() {
+                        if (!canAccessApiDocs()) {
+                            return `
+                            <div class="api-key-card api-doc-locked">
+                                <div class="ds-card-head">
+                                    <span class="ds-card-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>
+                                        </svg>
+                                    </span>
+                                    <div>
+                                        <h3>API Documentation is a Standard/Professional feature</h3>
+                                        <p class="ds-card-sub">Your current plan (${escapeHtml(getMyPlan().name)}) doesn't include API access. Upgrade to Standard or Professional to generate an API key and use the REST endpoints.</p>
+                                    </div>
+                                </div>
+                                <button class="plan-cta-btn" onclick="lexoraNavigate('plans-offers')">View Plans &amp; Upgrade</button>
+                            </div>`;
+                        }
                         return `
                         <div class="api-key-card">
                             <div class="ds-card-head">
@@ -9512,44 +9544,79 @@
                 `;
             }
 
+            // Har service (paid ya free) ek hi shape me: type/label/desc/icon -
+            // taaki ek hi thumbnail-card renderer dono ke liye chale.
+            function authAllServices() {
+                const paid = AUTH_PAID_TOOLS.map(t => ({
+                    type: 'paid',
+                    label: t[0],
+                    desc: t[1],
+                    iconHtml: authIcon(t[2])
+                }));
+                const free = [];
+                authFreeTools().forEach(c => {
+                    const catIcon = AUTH_CAT_ICONS[c[0]] || AUTH_CAT_ICONS['More Tools'];
+                    c[1].forEach(t => {
+                        const emoji = (t && t.icon) || '';
+                        free.push({
+                            type: 'free',
+                            label: (t && (t.label || t)) || '',
+                            desc: (t && t.desc) || c[0],
+                            // Free tool ka apna emoji ho to wahi, warna category
+                            // ka SVG icon - dono case me kabhi khaali nahi rehta.
+                            iconHtml: emoji ? `<span class="auth-thumb-emoji">${emoji}</span>` : authIcon(catIcon)
+                        });
+                    });
+                });
+                return paid.concat(free);
+            }
+
+            function authServiceCardHtml(s) {
+                return `
+                    <div class="auth-thumb-card" data-type="${s.type}">
+                        <div class="auth-thumb-icon ${s.type === 'paid' ? 'is-paid' : 'is-free'}">${s.iconHtml}</div>
+                        <div class="auth-thumb-title">${escapeHtml(s.label)}</div>
+                        <div class="auth-thumb-desc">${escapeHtml(s.desc)}</div>
+                    </div>`;
+            }
+
             // Tools card ab .auth-main (do-column grid) ke bahar render hota
             // hai, isliye poori width leta hai - pehle wo left column me
             // phansa hua tha.
+            //
+            // Redesign (screenshot ke mutabik): upar teen filter buttons
+            // (All Services / Free Services / Paid Services, "All" default
+            // active), neeche saari services ek hi thumbnail-card grid me -
+            // har service apna icon + title + description ke saath, na ki
+            // free services ek jodi hui sentence me.
             function buildAuthToolsCard() {
-                const freeTools = authFreeTools();
+                const services = authAllServices();
+                const freeCount = services.filter(s => s.type === 'free').length;
+                const paidCount = services.filter(s => s.type === 'paid').length;
                 return `
-                    <div class="auth-tools-card">
-                        <div class="auth-tools-col">
-                            <div class="auth-tools-head">
-                                <span class="auth-tools-dot is-paid"></span>Paid Services
-                            </div>
-                            <ul class="auth-tools-list">
-                                ${AUTH_PAID_TOOLS.map(t => `<li>
-                                    <span class="auth-tool-icon is-paid">${authIcon(t[2])}</span>
-                                    <div><b>${escapeHtml(t[0])}</b><span>${escapeHtml(t[1])}</span></div>
-                                </li>`).join('')}
-                            </ul>
+                    <div class="auth-services-card">
+                        <div class="auth-filter-bar">
+                            <button class="auth-filter-btn active" data-filter="all" onclick="setAuthServiceFilter('all')">All Services <em>${services.length}</em></button>
+                            <button class="auth-filter-btn" data-filter="free" onclick="setAuthServiceFilter('free')">Free Services <em>${freeCount}</em></button>
+                            <button class="auth-filter-btn" data-filter="paid" onclick="setAuthServiceFilter('paid')">Paid Services <em>${paidCount}</em></button>
                         </div>
-                        <div class="auth-tools-col is-free">
-                            <div class="auth-tools-head">
-                                <span class="auth-tools-dot is-free"></span>Free Tools
-                                <em>${freeTools.reduce((n, c) => n + c[1].length, 0)} utilities, no charge</em>
-                            </div>
-                            <div class="auth-free-grid">
-                                ${freeTools.map(c => `
-                                    <div class="auth-free-cat">
-                                        <div class="auth-free-cat-head">
-                                            <span class="auth-tool-icon is-free">${authIcon(AUTH_CAT_ICONS[c[0]] || AUTH_CAT_ICONS['More Tools'])}</span>
-                                            <b>${escapeHtml(c[0])}</b>
-                                            <em>${c[1].length}</em>
-                                        </div>
-                                        <span>${c[1].map(t => escapeHtml(t.label || t)).join(' \u00b7 ')}</span>
-                                    </div>`).join('')}
-                            </div>
+                        <div class="auth-thumb-grid" id="authThumbGrid">
+                            ${services.map(authServiceCardHtml).join('')}
                         </div>
                     </div>
                 `;
             }
+
+            window.setAuthServiceFilter = function(filter) {
+                document.querySelectorAll('.auth-filter-btn').forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.filter === filter);
+                });
+                const grid = document.getElementById('authThumbGrid');
+                if (!grid) return;
+                grid.querySelectorAll('.auth-thumb-card').forEach(card => {
+                    card.style.display = (filter === 'all' || card.dataset.type === filter) ? '' : 'none';
+                });
+            };
 
             // "Remember me" sirf email yaad rakhta hai (password kabhi
             // nahi - wo browser ke password manager ka kaam hai). Session

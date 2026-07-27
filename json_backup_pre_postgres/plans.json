@@ -25,7 +25,8 @@
     "featured": false,
     "features": [
       "Email Support",
-      "Advanced Dashboard Access"
+      "Advanced Dashboard Access",
+      "API Documentation Access"
     ],
     "currency": "INR"
   },
@@ -40,7 +41,8 @@
     "featured": true,
     "features": [
       "Email Support",
-      "Advanced Dashboard Access"
+      "Advanced Dashboard Access",
+      "API Documentation Access"
     ],
     "currency": "INR"
   }
