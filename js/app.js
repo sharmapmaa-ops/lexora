@@ -5170,14 +5170,17 @@
             function updateAvatarDisplay() {
                 const avatarImg = document.getElementById('avatarImg');
                 const avatarTextEl = document.getElementById('avatarText');
-                if (profileData.photo) {
+                if (!avatarImg || !avatarTextEl) return;
+                if (profileData && profileData.photo) {
                     avatarImg.src = profileData.photo;
                     avatarImg.style.display = 'block';
                     avatarTextEl.style.display = 'none';
                 } else {
                     avatarImg.style.display = 'none';
                     avatarTextEl.style.display = 'block';
-                    avatarTextEl.textContent = (profileData.firstName[0] || '') + (profileData.lastName[0] || '');
+                    const first = (profileData && profileData.firstName) || '';
+                    const last = (profileData && profileData.lastName) || '';
+                    avatarTextEl.textContent = (first[0] || '') + (last[0] || '');
                 }
             }
 
@@ -7285,18 +7288,13 @@
             function setupUserProfile() {
                 const fallback = MENU_CONFIG.user;
                 const name = profileData ? `${profileData.firstName} ${profileData.lastName}` : fallback.name;
-                const avatarUrl = profileData ? profileData.photo : fallback.avatar;
-                const initials = profileData ?
-                    ((profileData.firstName[0] || '') + (profileData.lastName[0] || '')) :
-                    (fallback.initials || fallback.name.split(' ').map(n => n[0]).join(''));
 
                 userNameDisplay.textContent = name;
-
-                if (avatarUrl) {
-                    userAvatar.innerHTML = `<img src="${avatarUrl}" alt="${name}" />`;
-                } else {
-                    avatarText.textContent = initials;
-                }
+                // Photo ho ya na ho, avatarImg/avatarText/notificationBadge
+                // ko DOM se kabhi hataya nahi jata (sirf src/display badalte
+                // hain) - warna in IDs par baad ke saare lookups (Save
+                // Changes, notification badge) null milte hain.
+                updateAvatarDisplay();
 
                 renderProfileMenu();
             }
@@ -9018,18 +9016,18 @@
                     plansData,
                     planHistoryData
                 ] = await Promise.all([
-                    fetchJSON('/api/data/menu-config'),
+                    fetchJSON('/api/data/menu-config').catch(() => ({})),
                     fetchJSON('/api/data/payment-methods'),
                     // Postgres chalu ho to ye route DB se deta hai,
                     // warna wahi JSON file - dono case me ek hi shape.
                     fetchJSON('/api/data/payment-history'),
-                    fetchJSON('/api/data/services-api'),
-                    fetchJSON('/api/data/card-layout'),
+                    fetchJSON('/api/data/services-api').catch(() => ({})),
+                    fetchJSON('/api/data/card-layout').catch(() => ({})),
                     fetchJSON('/api/data/contact-submissions'),
                     fetchJSON('/api/auth/me?userId=' + encodeURIComponent(CURRENT_USER_ID)),
-                    fetchJSON('/api/data/messages'),
-                    fetchJSON('/api/data/agents'),
-                    fetchJSON('/api/data/company'),
+                    fetchJSON('/api/data/messages').catch(() => ({})),
+                    fetchJSON('/api/data/agents').catch(() => ({})),
+                    fetchJSON('/api/data/company').catch(() => ({})),
                     fetchJSON('/api/data/api-keys'),
                     fetchJSON('/api/data/lease-files'),
                     fetchJSON('/api/data/translation-files'),

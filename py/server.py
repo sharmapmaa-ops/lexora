@@ -1441,7 +1441,17 @@ class Handler(SimpleHTTPRequestHandler):
             with open(file_path, "r", encoding="utf-8") as f:
                 raw = f.read()
         except OSError:
-            return self._send_json(404, {"error": "Not found"})
+            # json/ me sirf sessions.json + extraction_prompt.txt bache
+            # hain - baaki files json_backup_pre_postgres/ me hain. Migration
+            # abhi tak na chali ho (ya table khaali ho) to yahan bhi dhoondh lo,
+            # warna company/menu-config jaisi cheezein first-load par hi
+            # 404 de kar poora app tod deti hain.
+            fallback_path = os.path.join(ROOT_DIR, "json_backup_pre_postgres", f"{name}.json")
+            try:
+                with open(fallback_path, "r", encoding="utf-8") as f:
+                    raw = f.read()
+            except OSError:
+                return self._send_json(404, {"error": "Not found"})
 
         body = raw.encode("utf-8")
         self.send_response(200)
