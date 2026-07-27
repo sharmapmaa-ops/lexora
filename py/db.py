@@ -823,23 +823,36 @@ ADMIN_HIDDEN_TABLES = {
 }
 
 # Company aur Plans (items 1.02 / 1.03) ka poora record ek hi JSONB
-# column me hota hai ("data") - generic viewer isko ek hi opaque blob
-# column dikhata, jabki chahiye tha ki uske andar ke chuninda fields
-# (logo/name/email, id/icon/name) khud alag table headers ban jayein.
-# Baaki fields (address, monthlyPrice, features, ...) JSON ke andar hi
-# rehte hain - flatten sirf ADMIN PANEL KI VIEW ke liye hai, save karte
-# waqt purane data ke saath merge ho jata hai, kuch delete nahi hota.
+# column me hota hai ("data") - generic viewer isko ek "key"/"value" jodi
+# ke roop me dikhata, jabki chahiye tha ki ANDAR KE SAARE fields (phone,
+# address, pricing, features, ...) apne-apne alag, sahi se aligned
+# column headers ban jayein - ek bhi field chhoote nahi.
+#
+# "types" me sirf wahi fields likhe hain jo nested object/array hain
+# (jaise company.social, plans.features) - unhe textarea (multi-line
+# JSON) ke roop me edit karna behtar hai; baaki sab plain text hai.
 VIRTUAL_TABLES = {
     "cfg_company": {
         "kind": "settings",
         "resource": "company",
-        "fields": ["logo", "name", "email"],
+        "fields": [
+            "name", "address", "workingHours", "workingDays", "location",
+            "email", "phone", "whatsapp", "logo", "social", "currency",
+        ],
+        "types": {"social": "jsonb"},
+        "jsonb_defaults": {"social": {}},
         "readonly_fields": set(),
     },
     "doc_plans": {
         "kind": "document",
         "resource": "plans",
-        "fields": ["id", "icon", "name"],
+        "fields": [
+            "id", "name", "icon", "monthlyPrice", "pricePerTranslation",
+            "pricePerLeaseAbstraction", "billingUnit", "featured",
+            "features", "currency",
+        ],
+        "types": {"features": "jsonb"},
+        "jsonb_defaults": {"features": []},
         # 'id' rename allow nahi karte - baaki app me plan id se hi
         # lookup hota hai (billing, plan switch, waghera); rename se
         # references toot jayenge.
@@ -873,10 +886,11 @@ def table_columns(name):
     if name in VIRTUAL_TABLES:
         spec = VIRTUAL_TABLES[name]
         readonly = spec["readonly_fields"]
+        types = spec.get("types", {})
         return [
             {
                 "name": f,
-                "type": "text",
+                "type": types.get(f, "text"),
                 "nullable": True,
                 "primaryKey": spec["kind"] == "document" and f == "id",
                 "editable": f not in readonly,
@@ -926,10 +940,34 @@ def _prepare_value(col_type, value):
 # "data" column ke andar purane fields ke saath merge hoke save hote
 # hain, taaki koi field khoya na jaye.
 # ------------------------------------------------------------
+def _virtual_clean_values(spec, values):
+    """Frontend se saare fields text/string ke roop me aate hain - jo
+    fields nested object/array hain (spec['types'] me 'jsonb'), unhe
+    yahan JSON se decode karte hain, taaki data me phir se asli
+    object/array ban jaye, string nahi. Khaali textarea ka matlab "isko
+    mat badlo" - taaki galti se poora field (jaise 'features' list) mit
+    na jaye."""
+    fields = spec["fields"]
+    types = spec.get("types", {})
+    clean = {}
+    for f in fields:
+        if f not in values:
+            continue
+        v = values.get(f, "")
+        if types.get(f) == "jsonb":
+            if isinstance(v, (dict, list)):
+                clean[f] = v
+            elif isinstance(v, str) and v.strip():
+                clean[f] = json.loads(v)
+            # empty/blank -> skip, don't overwrite existing value
+        else:
+            clean[f] = v
+    return clean
+
+
 def _virtual_insert_row(name, values):
     spec = VIRTUAL_TABLES[name]
-    fields = spec["fields"]
-    clean = {f: values.get(f, "") for f in fields if f in values}
+    clean = _virtual_clean_values(spec, values)
     if spec["kind"] == "settings":
         current = get_setting(spec["resource"]) or {}
         current.update(clean)
@@ -942,6 +980,8 @@ def _virtual_insert_row(name, values):
     docs = list_documents(spec["resource"])
     if any(str(d.get("id")) == new_id for d in docs):
         raise ValueError(f"'{new_id}' already exists.")
+    for f, default in spec.get("jsonb_defaults", {}).items():
+        clean.setdefault(f, default)
     docs.append(clean)
     replace_documents(spec["resource"], docs)
     return True
@@ -949,9 +989,9 @@ def _virtual_insert_row(name, values):
 
 def _virtual_update_row(name, key, values):
     spec = VIRTUAL_TABLES[name]
-    fields = spec["fields"]
     readonly = spec["readonly_fields"]
-    clean = {f: values.get(f, "") for f in fields if f in values and f not in readonly}
+    values = {k: v for k, v in values.items() if k not in readonly}
+    clean = _virtual_clean_values(spec, values)
     if spec["kind"] == "settings":
         current = get_setting(spec["resource"]) or {}
         current.update(clean)
