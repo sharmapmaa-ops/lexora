@@ -3374,11 +3374,11 @@
                         </div>
 
                         <div class="balance-form-row">
-                            <div class="form-group">
+                            <div class="form-group balance-amount-group">
                                 <label>Amount (\u20b9)</label>
                                 <input type="number" id="balanceAmount" placeholder="Enter amount" min="1" step="1" oninput="syncPayPanelAmount()" />
                             </div>
-                            <div class="form-group">
+                            <div class="form-group balance-description-group">
                                 <label>Description</label>
                                 <input type="text" id="balanceDescription" placeholder="Enter description" />
                             </div>
@@ -3437,10 +3437,14 @@
 
                 // Item - show exactly what will be deducted and require an
                 // explicit Confirm before charging anything, instead of
-                // switching immediately on click.
-                const confirmMsg = plan.monthlyPrice > 0 ?
+                // switching immediately on click. Downgrade never charges
+                // anything, chahe target plan ka monthlyPrice > 0 ho.
+                const isDowngrade = plan.monthlyPrice < getMyPlan().monthlyPrice;
+                const confirmMsg = (plan.monthlyPrice > 0 && !isDowngrade) ?
                     `Switching to the ${plan.name} plan will deduct ${currencySymbol()}${plan.monthlyPrice.toFixed(2)} from your wallet balance right now. Do you want to continue?` :
-                    `Switch to the ${plan.name} plan? This plan has no monthly charge.`;
+                    isDowngrade
+                        ? `Downgrade to the ${plan.name} plan? This is free - no charge will be made.`
+                        : `Switch to the ${plan.name} plan? This plan has no monthly charge.`;
                 showConfirm('Confirm Plan Change', confirmMsg, (confirmed) => {
                     if (confirmed) _doSwitchPlan(plan);
                 });
@@ -3486,7 +3490,10 @@
                     }
                 };
 
-                if (plan.monthlyPrice > 0) {
+                // Downgrade (target plan cheaper than current) never
+                // charges anything - only an actual upgrade deducts.
+                const isDowngrade = plan.monthlyPrice < getMyPlan().monthlyPrice;
+                if (plan.monthlyPrice > 0 && !isDowngrade) {
                     if (getCurrentBalance() < plan.monthlyPrice) {
                         showWarning(`Upgrading to ${plan.name} costs ${currencySymbol()}${plan.monthlyPrice}/month, but your wallet only has ${currencySymbol()}${getCurrentBalance().toFixed(2)}. Please add at least ${currencySymbol()}${(plan.monthlyPrice - getCurrentBalance()).toFixed(2)} to your wallet balance and try again.`);
                         return;
@@ -6427,16 +6434,21 @@
                     const d = await res.json();
                     if (!res.ok) throw new Error(d.error || 'Could not read database status.');
 
-                    const rows = [];
+                    // Store / Host / Server ab ek hi line me (pehle 3 alag
+                    // table rows the).
+                    let statusLine;
                     if (!d.enabled) {
-                        rows.push(['Store', dbChip(false, 'JSON files') + ' <span class="db-note">'
-                            + escapeHtml(d.reason || '') + '</span>']);
+                        statusLine = dbChip(false, 'JSON files') + ' <span class="db-note">'
+                            + escapeHtml(d.reason || '') + '</span>';
                     } else {
-                        rows.push(['Store', d.connected ? dbChip(true, 'PostgreSQL') : dbChip(false, 'Not reachable')]);
-                        if (d.host)   rows.push(['Host', `<code>${escapeHtml(d.host)}</code>`]);
-                        if (d.server) rows.push(['Server', escapeHtml(d.server)]);
+                        const parts = [d.connected ? dbChip(true, 'PostgreSQL') : dbChip(false, 'Not reachable')];
+                        if (d.host)   parts.push(`<span class="db-status-sep">Host:</span> <code>${escapeHtml(d.host)}</code>`);
+                        if (d.server) parts.push(`<span class="db-status-sep">Server:</span> ${escapeHtml(d.server)}`);
+                        statusLine = parts.join(' &nbsp; ');
                     }
-                    if (d.error) rows.push(['Error', `<span class="db-note is-bad">${escapeHtml(d.error)}</span>`]);
+                    const errorLine = d.error
+                        ? `<div class="db-note is-bad">${escapeHtml(d.error)}</div>`
+                        : '';
 
                     const missing = d.missingFromDb || [];
                     const warn = missing.length
@@ -6445,9 +6457,7 @@
                            (duplicate nahi banenge).</div>`
                         : '';
 
-                    body.innerHTML = `<table class="db-status-table"><tbody>
-                        ${rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}
-                    </tbody></table>${warn}
+                    body.innerHTML = `<div class="db-status-line">${statusLine}</div>${errorLine}${warn}
                     <div id="dbTablesBox"></div>`;
                     renderDbTables();
                 } catch (err) {
@@ -6455,11 +6465,13 @@
                 }
             };
 
-            // Kaunsa table tab abhi khula hai.
+            // Kaunsa table abhi khula hai.
             let dbActiveTable = null;
 
-            // Har table apna tab (naam + row count); click par uska data
-            // neeche isi panel me load hota hai - alag popup nahi.
+            // Ek hi selectbox me saari tables - option badalte hi table
+            // switch ho jaati hai. Naam se row-count hata diya (sirf naam
+            // dikhta hai ab) - row count table ke NEECHE caption me dikhta
+            // hai (dbTableLoad).
             window.renderDbTables = async function() {
                 const box = document.getElementById('dbTablesBox');
                 if (!box) return;
@@ -6472,13 +6484,14 @@
                         dbActiveTable = existing.length ? existing[0].name : null;
                     }
                     box.innerHTML = `
-                        <div class="rules-tab-strip db-table-tab-strip">
-                            ${d.tables.map(t => `
-                                <button class="rules-tab-btn ${t.name === dbActiveTable ? 'active' : ''}"
-                                        data-table="${escapeHtml(t.name)}"
-                                        ${t.exists ? `onclick="switchDbTable('${t.name}')"` : 'disabled title="Table not created yet"'}>
-                                    ${escapeHtml(_dbTableLabel(t.name))} (${t.exists ? t.rows : 0} Rows)
-                                </button>`).join('')}
+                        <div class="db-table-select-row">
+                            <label for="dbTableSelect">Table</label>
+                            <select id="dbTableSelect" class="db-table-select" onchange="switchDbTable(this.value)">
+                                ${d.tables.map(t => `
+                                    <option value="${escapeHtml(t.name)}" ${t.name === dbActiveTable ? 'selected' : ''} ${t.exists ? '' : 'disabled'}>
+                                        ${escapeHtml(_dbTableLabel(t.name))}${t.exists ? '' : ' (not created yet)'}
+                                    </option>`).join('')}
+                            </select>
                         </div>
                         <div id="dbActiveTableBody"></div>`;
                     if (dbActiveTable) dbTableLoad(dbActiveTable);
@@ -6495,9 +6508,6 @@
 
             window.switchDbTable = function(name) {
                 dbActiveTable = name;
-                document.querySelectorAll('.db-table-tab-strip .rules-tab-btn').forEach(btn => {
-                    btn.classList.toggle('active', btn.dataset.table === name);
-                });
                 dbTableLoad(name);
             };
 
@@ -6540,8 +6550,6 @@
                     _dbTableColumns = d.columns || (rows.length ? Object.keys(rows[0]).map(n => ({ name: n, type: 'text', editable: true, primaryKey: false })) : []);
                     const cols = _dbTableColumns;
                     host.innerHTML = `
-                        <div class="db-txn-source"><span class="db-note">${rows.length} row(s)
-                             \u2014 password / OTP / API key masked hain aur edit nahi ho sakte</span></div>
                         <div class="db-edit-table-wrapper">
                         <table class="admin-json-table db-txn-table db-edit-table">
                             <thead>
@@ -6569,6 +6577,7 @@
                             </tbody>
                         </table>
                         </div>
+                        <div class="db-table-caption">${rows.length} row(s)</div>
                         <div class="db-edit-table-actions">
                             <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${escapeHtml(name)}')">+ Add Row</button>
                             <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Selected</button>
@@ -8738,12 +8747,18 @@
                 },
                 'plans-offers': {
                     body: function() {
-                        const myPlanName = getMyPlan().name;
+                        const myPlan = getMyPlan();
+                        const myPlanName = myPlan.name;
                         const isAdminOrDev = isAdminOrDeveloper();
                         const historyRows = (isAdminOrDev ? planHistory : planHistory.filter(h => h.userId === CURRENT_USER_ID))
                             .slice().reverse();
                         const cols = isAdminOrDev ? 8 : 7;
                         const tick = '<svg class="plan-tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>';
+                        // Free Services - sabhi plan card me same list dikhti
+                        // hai, kyunki free tools kisi bhi plan par gated
+                        // nahi hain (login page wali FreeServices catalogue
+                        // hi reuse ki hai).
+                        const freeServiceNames = authFreeTools().flatMap(g => g[1]).map(t => (t && (t.label || t)) || '').filter(Boolean);
                         return `
                         <div class="plans-grid">
                             ${PLANS_DATA.map(plan => {
@@ -8751,6 +8766,16 @@
                                 // free = teal, paid = amber, featured = blue.
                                 const tier = plan.featured ? 'is-pro' : (plan.monthlyPrice > 0 ? 'is-standard' : 'is-free');
                                 const isMine = plan.name === myPlanName;
+                                // Upgrade/Downgrade label price ke comparison
+                                // se aata hai (plan naam hardcode nahi kiya) -
+                                // Free/Standard/Professional teeno ke liye
+                                // apne aap sahi kaam karta hai.
+                                const isDowngrade = plan.monthlyPrice < myPlan.monthlyPrice;
+                                let ctaLabel;
+                                if (isMine) ctaLabel = '\u2713 Current Plan';
+                                else if (isDowngrade) ctaLabel = 'Downgrade Now';
+                                else if (plan.monthlyPrice > 0) ctaLabel = 'Upgrade Now';
+                                else ctaLabel = 'Get Started';
                                 return `
                                 <div class="plan-card ${tier} ${plan.featured ? 'featured' : ''}">
                                     ${plan.featured ? '<div class="plan-badge">\u2605 Most Popular</div>' : ''}
@@ -8765,8 +8790,15 @@
                                         <li>${tick}\u20b9${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / page (BAI2)</li>
                                         ${(plan.features || []).map(f => `<li>${tick}${escapeHtml(f)}</li>`).join('')}
                                     </ul>
+                                    ${freeServiceNames.length ? `
+                                    <div class="plan-free-services">
+                                        <div class="plan-free-services-title">+ Free Services</div>
+                                        <ul class="plan-features plan-free-features">
+                                            ${freeServiceNames.map(n => `<li>${tick}${escapeHtml(n)}</li>`).join('')}
+                                        </ul>
+                                    </div>` : ''}
                                     <button class="plan-cta-btn ${isMine ? 'is-current' : ''}" ${isMine ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
-                                        ${isMine ? '\u2713 Current Plan' : (plan.monthlyPrice > 0 ? 'Upgrade Now' : 'Get Started')}
+                                        ${ctaLabel}
                                     </button>
                                 </div>`;
                             }).join('')}
@@ -8780,20 +8812,42 @@
                         // Item 1 - Balance Summary aur Add Balance ek row me
                         // (side by side), Payment History uske neeche -
                         // dono hamesha visible (ab tab-switch nahi hai).
+                        //
+                        // Balance Summary yahan .balance-grid/.balance-card
+                        // use nahi karta (wo classes multiple jagah
+                        // responsive overrides ke saath already defined
+                        // hain aur ek narrow column me squeeze hone par
+                        // teesra card (Current Balance) tut ke dikh raha
+                        // tha) - ek dedicated, conflict-free component hai.
                         return `
                         <div class="payment-top-row">
-                            <div class="balance-grid" id="balanceGrid">
-                                <div class="balance-card">
-                                    <div class="balance-number credit" id="totalCreditBalance">${currencySymbol()}0.00</div>
-                                    <div class="balance-label">Total Credit</div>
+                            <div class="payment-balance-summary" id="balanceGrid">
+                                <div class="payment-balance-item is-credit">
+                                    <span class="payment-balance-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5.5" width="19" height="13" rx="3"/><path d="M2.5 10h19"/></svg>
+                                    </span>
+                                    <div>
+                                        <div class="payment-balance-value" id="totalCreditBalance">${currencySymbol()}0.00</div>
+                                        <div class="payment-balance-label">Total Credit</div>
+                                    </div>
                                 </div>
-                                <div class="balance-card">
-                                    <div class="balance-number debit" id="totalDebitBalance">${currencySymbol()}0.00</div>
-                                    <div class="balance-label">Total Debit</div>
+                                <div class="payment-balance-item is-debit">
+                                    <span class="payment-balance-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5.5" width="19" height="13" rx="3"/><path d="M2.5 10h19"/></svg>
+                                    </span>
+                                    <div>
+                                        <div class="payment-balance-value" id="totalDebitBalance">${currencySymbol()}0.00</div>
+                                        <div class="payment-balance-label">Total Debit</div>
+                                    </div>
                                 </div>
-                                <div class="balance-card">
-                                    <div class="balance-number" id="currentBalanceDisplay">${currencySymbol()}0.00</div>
-                                    <div class="balance-label">Current Balance</div>
+                                <div class="payment-balance-item is-current">
+                                    <span class="payment-balance-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V9l8-6 8 6v12"/><path d="M9 21v-7h6v7"/></svg>
+                                    </span>
+                                    <div>
+                                        <div class="payment-balance-value" id="currentBalanceDisplay">${currencySymbol()}0.00</div>
+                                        <div class="payment-balance-label">Current Balance</div>
+                                    </div>
                                 </div>
                             </div>
 

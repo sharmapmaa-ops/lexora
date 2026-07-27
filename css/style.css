@@ -3184,6 +3184,31 @@
             color: black;
         }
 
+        .plan-free-services {
+            border-top: 1px dashed rgba(0,0,139,0.15);
+            margin-top: 4px;
+            padding-top: 10px;
+            text-align: left;
+        }
+
+        .plan-free-services-title {
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: #15803d;
+            margin-bottom: 8px;
+        }
+
+        .plan-free-features {
+            gap: 6px;
+            max-height: 220px;
+            overflow-y: auto;
+        }
+
+        .plan-free-features li {
+            font-size: 0.8rem;
+            color: rgba(0,0,0,0.75);
+        }
+
         .plan-cta-btn {
             margin-top: auto;
             padding: 10px 20px;
@@ -3669,17 +3694,13 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-    /* Card ki height fix (item 2): pehle fixed height + card-level
-       scrollbar diya tha, jisse chhoti tables (5 rows) ke liye bhi card
-       cut-off dikhta tha. Ab card apne content (status rows + tabs +
-       table + buttons) ke hisaab se khud size hoti hai (height: auto) -
-       jitna content utni height, buttons hamesha dikhte hain. max-height
-       + overflow sirf tab kaam aata hai jab content literally poore
-       viewport se bhi bada ho jaye. */
+    /* Card ki height fix (3rd baar - ab bilkul clear): koi bhi
+       max-height/overflow cap nahi hai iss card par. Card sirf apne
+       content (status line + table selector + table + buttons) ke
+       barabar height leta hai - chahe wo kitni bhi ho. Agar poore
+       viewport se bhi zyada ho jaye to POORA PAGE scroll hota hai
+       (browser ka normal scroll), card khud kabhi scroll nahi karta. */
     height: auto;
-    max-height: 92vh;
-    overflow-y: auto;
-    overflow-x: hidden;
 }
 
 #dbStatusBody {
@@ -4882,10 +4903,50 @@
 .de-fields-modal-card { width: min(1100px, 94vw); }
 .de-fields-scroll { max-height: 68vh; overflow: auto; margin-top: 6px; }
 
-/* Admin > PostgreSQL: one tab per table, inline editable grid below */
-.db-table-tab-strip {
-    flex-wrap: wrap;
+/* Admin > PostgreSQL: ek hi selectbox se table switch hoti hai */
+.db-table-select-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     margin-top: 8px;
+}
+
+.db-table-select-row label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: rgba(0,0,0,0.6);
+}
+
+.db-table-select {
+    padding: 8px 12px;
+    border: 1px solid rgba(0,0,139,0.2);
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #0b1533;
+    background: #fff;
+    min-width: 220px;
+}
+
+.db-table-caption {
+    font-size: 0.76rem;
+    color: rgba(0,0,0,0.5);
+    margin-top: 6px;
+}
+
+/* Store / Host / Server ek hi line me */
+.db-status-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.82rem;
+}
+
+.db-status-sep {
+    color: rgba(0,0,0,0.45);
+    font-weight: 600;
+    margin-left: 4px;
 }
 
 .db-edit-table-wrapper {
@@ -5532,29 +5593,71 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
    side, Payment History below (no more tab-switching) ===== */
 .payment-top-row {
     display: grid;
-    grid-template-columns: minmax(220px, 0.85fr) minmax(0, 1.4fr);
+    grid-template-columns: minmax(240px, 0.85fr) minmax(0, 1.4fr);
     gap: 20px;
     align-items: stretch;
     margin-bottom: 20px;
-}
-
-/* Balance Summary ab ek narrow column me hai - teen cards side-by-side
-   ki jagah ek column me stack hote hain. */
-.payment-top-row .balance-grid {
-    grid-template-columns: 1fr;
-    margin-bottom: 0;
 }
 
 .payment-top-row .balance-add-card-full {
     margin-top: 0;
 }
 
+/* Balance Summary - dedicated component (item Payment.1), teeno stats
+   ek column me vertically stacked, apna icon + value + label ke saath.
+   .balance-grid/.balance-card reuse nahi kiya - un par kayi jagah
+   responsive overrides hain jo is narrow column me cards ko tod dete
+   the (teesra card sirf icon dikhata tha, text ghayab ho jata tha). */
+.payment-balance-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    border: 2px solid blue;
+    border-radius: 8px;
+    padding: 18px;
+}
+
+.payment-balance-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.payment-balance-icon {
+    width: 42px;
+    height: 42px;
+    min-width: 42px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.payment-balance-icon svg { width: 22px; height: 22px; }
+
+.payment-balance-item.is-credit .payment-balance-icon { background: #dcf3e7; color: #15803d; }
+.payment-balance-item.is-debit .payment-balance-icon { background: #fbe1e1; color: #c0392b; }
+.payment-balance-item.is-current .payment-balance-icon { background: #e4edfe; color: #1257f5; }
+
+.payment-balance-value {
+    font-size: 1.25rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.payment-balance-item.is-credit .payment-balance-value { color: #15803d; }
+.payment-balance-item.is-debit .payment-balance-value { color: #c0392b; }
+.payment-balance-item.is-current .payment-balance-value { color: #0b1533; }
+
+.payment-balance-label {
+    font-size: 0.8rem;
+    color: rgba(0,0,0,0.55);
+    margin-top: 2px;
+}
+
 @media (max-width: 900px) {
     .payment-top-row {
         grid-template-columns: 1fr;
-    }
-    .payment-top-row .balance-grid {
-        grid-template-columns: 1fr 1fr 1fr;
     }
 }
 
@@ -5577,6 +5680,17 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
     flex: 1;
     min-width: 220px;
     margin-bottom: 0;
+}
+
+/* Amount chhota, Description bada - Payment section feedback */
+.balance-form-row .balance-amount-group {
+    flex: 0.6;
+    min-width: 140px;
+}
+
+.balance-form-row .balance-description-group {
+    flex: 2;
+    min-width: 260px;
 }
 
 .balance-form-row .balance-add-submit {
