@@ -99,7 +99,7 @@
       </div>
 
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px;">
-        ${fld('Currency symbol', `<input type="text" id="tDvCur" value="₹" style="width:100%;" oninput="ToolsDocs.recalcDoc()" />`)}
+        ${fld('Currency symbol', `<input type="text" id="tDvCur" value="" style="width:100%;" oninput="ToolsDocs.recalcDoc()" />`)}
         ${fld('Tax %', `<input type="number" id="tDvTax" value="18" step="any" oninput="ToolsDocs.recalcDoc()" style="width:100%;" />`)}
         ${fld('Notes', `<input type="text" id="tDvNotes" placeholder="Payment terms, thank-you note" style="width:100%;" />`, 2)}
       </div>

@@ -303,11 +303,11 @@ Return ONLY this JSON, nothing else:
 
     const rate = billing.perPageRate();
     const minNeeded = rate * selected.length;
-    log(`System > Checking Wallet Balance > ₹${minNeeded.toFixed(2)} required for ${selected.length} file(s) (${billing.planName()} plan: BAI2 ₹${rate}/Per Page)`, 'Info');
+    log(`System > Checking Wallet Balance > ${CURRENCY_SYMBOL}${minNeeded.toFixed(2)} required for ${selected.length} file(s) (${billing.planName()} plan: BAI2 ${CURRENCY_SYMBOL}${rate}/Per Page)`, 'Info');
     if (minNeeded > 0 && billing.balance() < minNeeded) {
-      log(`System > Process Aborted > Insufficient balance - you have ₹${billing.balance().toFixed(2)}`, 'Failed');
+      log(`System > Process Aborted > Insufficient balance - you have ${CURRENCY_SYMBOL}${billing.balance().toFixed(2)}`, 'Failed');
       rerender();
-      return setStatus(`Insufficient balance. At least ₹${minNeeded.toFixed(2)} is needed.`, 'error');
+      return setStatus(`Insufficient balance. At least ${CURRENCY_SYMBOL}${minNeeded.toFixed(2)} is needed.`, 'error');
     }
 
     STATE.running = true;
@@ -334,7 +334,7 @@ Return ONLY this JSON, nothing else:
           entry.pageCount = total;
           entry.progress = Math.round((p / total) * 70);
           log(`${label} > Page(${p}/${total}) > API Call(s) > JSON=${calls}, IMAGE=0`, 'Success');
-          log(`${label} > Page(${p}/${total}) > Amount Deducted from Wallet=₹${rate.toFixed(2)}`, 'Info');
+          log(`${label} > Page(${p}/${total}) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${rate.toFixed(2)}`, 'Info');
           rerender();
         });
 
@@ -356,7 +356,7 @@ Return ONLY this JSON, nothing else:
         log(`${label} > Error > ${entry.error}`, 'Failed');
       }
       log(`${label} > Page(All) > API Call(s) > JSON=${jsonCalls}, IMAGE=0`, 'Info');
-      log(`${label} > Page(All) > Amount Deducted from Wallet=₹${charged.toFixed(2)}`, 'Info');
+      log(`${label} > Page(All) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${charged.toFixed(2)}`, 'Info');
       rerender();
     }
 
@@ -399,7 +399,7 @@ Return ONLY this JSON, nothing else:
     if (!sel.length) return '';
     const rate = b.perPageRate();
     const total = sel.reduce(function (s, f) { return s + rate * Math.max(1, f.pageCount || 1); }, 0);
-    return `💰 Rate: ₹${rate.toFixed(2)}/page · Est. total: ₹${total.toFixed(2)} for ${sel.length} selected file(s)`;
+    return `💰 Rate: ${CURRENCY_SYMBOL}${rate.toFixed(2)}/page · Est. total: ${CURRENCY_SYMBOL}${total.toFixed(2)} for ${sel.length} selected file(s)`;
   }
 
   function fileRows() {

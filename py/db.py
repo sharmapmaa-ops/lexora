@@ -138,9 +138,11 @@ def init_schema():
             with conn.cursor() as cur:
                 cur.execute(SCHEMA_SQL)
                 cur.execute(NOTIFICATIONS_SCHEMA_SQL)
-                cur.execute(DOCUMENTS_SCHEMA_SQL)
                 cur.execute(USERS_SCHEMA_SQL)
-                cur.execute(SETTINGS_SCHEMA_SQL)
+                for resource in DOCUMENT_RESOURCES:
+                    cur.execute(DOCUMENTS_SCHEMA_TEMPLATE.format(table=_doc_table(resource)))
+                for name in SETTINGS_RESOURCES:
+                    cur.execute(SETTINGS_SCHEMA_TEMPLATE.format(table=_settings_table(name)))
             conn.commit()
         _schema_ready = True
     return True
@@ -605,36 +607,22 @@ def update_user(user_id, fields):
 # kisi resource par asli query zaroorat bane, tab uske liye transactions
 # jaisa proper table bana lena - registry ki wajah se wo change chhota hai.
 # ============================================================
-DOCUMENTS_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS app_documents (
-    resource   TEXT        NOT NULL,
-    doc_id     TEXT        NOT NULL,
+DOCUMENTS_SCHEMA_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS {table} (
+    doc_id     TEXT        PRIMARY KEY,
     position   INTEGER     NOT NULL DEFAULT 0,
     user_id    TEXT,
     data       JSONB       NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (resource, doc_id)
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
-CREATE INDEX IF NOT EXISTS app_documents_resource_idx
-    ON app_documents (resource, position);
 """
 
-DOC_SELECT_SQL = """
-SELECT data FROM app_documents
- WHERE resource = %(resource)s
- ORDER BY position, doc_id
-"""
 
-DOC_INSERT_SQL = """
-INSERT INTO app_documents (resource, doc_id, position, user_id, data)
-VALUES (%(resource)s, %(doc_id)s, %(position)s, %(user_id)s, %(data)s::jsonb)
-ON CONFLICT (resource, doc_id) DO UPDATE SET
-    position   = EXCLUDED.position,
-    user_id    = EXCLUDED.user_id,
-    data       = EXCLUDED.data,
-    updated_at = now()
-"""
+def _doc_table(resource):
+    """json/plan-history.json -> table doc_plan_history, waghera - har
+    JSON resource ki apni table (naam fixed registry se aata hai, kabhi
+    user input se nahi, isliye seedha SQL me daalna safe hai)."""
+    return "doc_" + resource.replace("-", "_")
 
 
 def _doc_id(entry, index):
@@ -648,10 +636,11 @@ def _doc_id(entry, index):
 
 
 def list_documents(resource):
+    table = _doc_table(resource)
     init_schema()
     with connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(DOC_SELECT_SQL, {"resource": resource})
+            cur.execute(f"SELECT data FROM {table} ORDER BY position, doc_id")
             rows = cur.fetchall()
     return [r["data"] for r in rows]
 
@@ -659,6 +648,7 @@ def list_documents(resource):
 def replace_documents(resource, rows):
     """Poori list ek transaction me. JSON array ka order `position` se
     bacha rehta hai - warna list har reload par phir se shuffle ho jati."""
+    table = _doc_table(resource)
     init_schema()
     clean = [r for r in rows if isinstance(r, dict)]
     with connect() as conn:
@@ -666,23 +656,77 @@ def replace_documents(resource, rows):
             ids = [_doc_id(r, i) for i, r in enumerate(clean)]
             if ids:
                 cur.execute(
-                    "DELETE FROM app_documents"
-                    " WHERE resource = %(resource)s AND doc_id <> ALL(%(ids)s)",
-                    {"resource": resource, "ids": ids},
+                    f"DELETE FROM {table} WHERE doc_id <> ALL(%(ids)s)",
+                    {"ids": ids},
                 )
             else:
-                cur.execute("DELETE FROM app_documents WHERE resource = %(resource)s",
-                            {"resource": resource})
+                cur.execute(f"DELETE FROM {table}")
             for i, entry in enumerate(clean):
-                cur.execute(DOC_INSERT_SQL, {
-                    "resource": resource,
-                    "doc_id": ids[i],
-                    "position": i,
-                    "user_id": entry.get("userId") or None,
-                    "data": json.dumps(entry),
-                })
+                cur.execute(
+                    f"INSERT INTO {table} (doc_id, position, user_id, data)"
+                    f" VALUES (%(doc_id)s, %(position)s, %(user_id)s, %(data)s::jsonb)"
+                    f" ON CONFLICT (doc_id) DO UPDATE SET"
+                    f"     position = EXCLUDED.position,"
+                    f"     user_id  = EXCLUDED.user_id,"
+                    f"     data     = EXCLUDED.data,"
+                    f"     updated_at = now()",
+                    {
+                        "doc_id": ids[i],
+                        "position": i,
+                        "user_id": entry.get("userId") or None,
+                        "data": json.dumps(entry),
+                    },
+                )
         conn.commit()
     return len(clean)
+
+
+# ============================================================
+# Singleton/object JSON files (menu-config.json, company.json, waghera) -
+# har ek ki apni table, ek hi row (id=1), poora object JSONB me.
+# ============================================================
+SETTINGS_SCHEMA_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS {table} (
+    id         SMALLINT PRIMARY KEY DEFAULT 1,
+    data       JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (id = 1)
+);
+"""
+
+
+def _settings_table(name):
+    return "cfg_" + name.replace("-", "_")
+
+
+def get_setting(name):
+    """Ek settings object wapas karta hai, ya None agar abhi tak save nahi hui."""
+    if name not in SETTINGS_RESOURCES:
+        raise ValueError(f"Unknown setting: {name}")
+    table = _settings_table(name)
+    init_schema()
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT data FROM {table} WHERE id = 1")
+            row = cur.fetchone()
+    return row["data"] if row else None
+
+
+def save_setting(name, data):
+    """Poora object upsert karta hai (delete + insert nahi, seedha replace)."""
+    if name not in SETTINGS_RESOURCES:
+        raise ValueError(f"Unknown setting: {name}")
+    table = _settings_table(name)
+    init_schema()
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO {table} (id, data) VALUES (1, %(data)s::jsonb)"
+                f" ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+                {"data": json.dumps(data)},
+            )
+        conn.commit()
+    return True
 
 
 # ============================================================
@@ -707,8 +751,9 @@ DOCUMENT_RESOURCES = (
 DB_BACKED_RESOURCES = ("payment-history", "notifications") + DOCUMENT_RESOURCES
 
 # Ye JSON files list nahi, ek hi object/dict thi (menu-config.json,
-# company.json waghera) - inke liye alag key-value table (app_settings),
-# kyunki document pattern (id ke saath rows) inpar fit nahi baithta.
+# company.json waghera) - inke liye alag "cfg_*" tables (ek row, poora
+# object JSONB me), kyunki document pattern (id ke saath rows) inpar
+# fit nahi baithta.
 SETTINGS_RESOURCES = (
     "menu-config", "services-api", "card-layout", "messages", "agents",
     "company", "rules",
@@ -749,47 +794,14 @@ def save_resource(name, rows):
 # seedha jata hai (usko parameter nahi banaya ja sakta), isliye
 # allowlist hi ekmatra suraksha hai - koi bhi naam accept karna SQL
 # injection ka darwaza khol dega.
-KNOWN_TABLES = ("users", "transactions", "notifications", "app_documents", "app_settings")
-
-# ============================================================
-# app_settings - singleton/object JSON files (menu-config.json,
-# company.json, waghera). Har ek ek hi row hai, poora object JSONB me.
-# ============================================================
-SETTINGS_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS app_settings (
-    name       TEXT PRIMARY KEY,
-    data       JSONB NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"""
-
-
-def get_setting(name):
-    """Ek settings object wapas karta hai, ya None agar abhi tak save nahi hui."""
-    if name not in SETTINGS_RESOURCES:
-        raise ValueError(f"Unknown setting: {name}")
-    init_schema()
-    with connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT data FROM app_settings WHERE name = %(name)s", {"name": name})
-            row = cur.fetchone()
-    return row["data"] if row else None
-
-
-def save_setting(name, data):
-    """Poora object upsert karta hai (delete + insert nahi, seedha replace)."""
-    if name not in SETTINGS_RESOURCES:
-        raise ValueError(f"Unknown setting: {name}")
-    init_schema()
-    with connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO app_settings (name, data) VALUES (%(name)s, %(data)s::jsonb)"
-                " ON CONFLICT (name) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
-                {"name": name, "data": json.dumps(data)},
-            )
-        conn.commit()
-    return True
+#
+# Har JSON resource ki apni physical table hai (doc_* / cfg_*) - ek
+# shared "app_documents"/"app_settings" table nahi, jaisa pehle tha.
+KNOWN_TABLES = (
+    ("users", "transactions", "notifications")
+    + tuple(_doc_table(n) for n in DOCUMENT_RESOURCES)
+    + tuple(_settings_table(n) for n in SETTINGS_RESOURCES)
+)
 
 
 # Admin ko bhi password hash ya OTP dekhne ki zaroorat nahi. Screenshot
@@ -798,15 +810,15 @@ def save_setting(name, data):
 MASKED_COLUMNS = {"password", "verification_code", "api_key", "apiKey"}
 
 # Har table ka primary key - update/delete WHERE clause banane ke liye.
-# Row identify karne ka yahi ekmatra tareeka hai (koi row "id" column
-# assume nahi karta - app_documents jaisi tables composite key use karti hain).
+# Row identify karne ka yahi ekmatra tareeka hai. doc_* tables ka PK
+# doc_id hai, cfg_* tables ka PK hamesha id=1 (ek hi row).
 PRIMARY_KEYS = {
     "users": ("user_id",),
     "transactions": ("txn_id",),
     "notifications": ("notif_id",),
-    "app_documents": ("resource", "doc_id"),
-    "app_settings": ("name",),
 }
+PRIMARY_KEYS.update({_doc_table(n): ("doc_id",) for n in DOCUMENT_RESOURCES})
+PRIMARY_KEYS.update({_settings_table(n): ("id",) for n in SETTINGS_RESOURCES})
 
 
 def table_columns(name):
@@ -988,8 +1000,12 @@ def table_rows(name, limit=500):
     return out
 
 
-def migrate_from_json(json_dir):
+def migrate_from_json(json_dir, fallback_dir=None):
     """json/ se Postgres - CLI script aur Admin Panel dono isi ko call karte hain.
+
+    fallback_dir: agar file json_dir me na mile, wahan dhoondhta hai
+    (json_backup_pre_postgres/ jaisi jagah, jahan pehle se-migrate ho
+    chuki resources move ki gayi thi).
 
     Dobara chalane par duplicate nahi bante (sab upsert hai), isliye
     adhoori migration bina dar ke phir se chalayi ja sakti hai.
@@ -997,19 +1013,27 @@ def migrate_from_json(json_dir):
     init_schema()
     report = []
 
-    def read(name):
+    def _find(name):
         path = os.path.join(json_dir, f"{name}.json")
+        if os.path.exists(path):
+            return path
+        if fallback_dir:
+            alt = os.path.join(fallback_dir, f"{name}.json")
+            if os.path.exists(alt):
+                return alt
+        return path  # not found anywhere - open() will just fail below
+
+    def read(name):
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(_find(name), "r", encoding="utf-8") as f:
                 rows = json.load(f)
             return rows if isinstance(rows, list) else []
         except (OSError, json.JSONDecodeError):
             return []
 
     def read_obj(name):
-        path = os.path.join(json_dir, f"{name}.json")
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(_find(name), "r", encoding="utf-8") as f:
                 data = json.load(f)
             return data if isinstance(data, dict) else None
         except (OSError, json.JSONDecodeError):
@@ -1107,16 +1131,6 @@ def status():
                         cur.execute("SELECT COUNT(*) AS n FROM users")
                         info["userCount"] = int(cur.fetchone()["n"] or 0)
 
-                    cur.execute("SELECT to_regclass('public.app_documents') IS NOT NULL AS present")
-                    if cur.fetchone()["present"]:
-                        cur.execute(
-                            "SELECT resource, COUNT(*) AS n FROM app_documents"
-                            " GROUP BY resource ORDER BY resource"
-                        )
-                        info["documentCounts"] = [
-                            {"resource": r["resource"], "count": int(r["n"])}
-                            for r in cur.fetchall()
-                        ]
                     cur.execute(
                         "SELECT user_id,"
                         "       COALESCE(SUM(credit), 0) - COALESCE(SUM(debit), 0) AS balance"

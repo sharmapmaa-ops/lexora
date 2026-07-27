@@ -1670,13 +1670,13 @@
             text-overflow: ellipsis;
         }
 
-        table.today-table th:nth-child(1), table.today-table td:nth-child(1) { width: 160px; }
-        table.today-table th:nth-child(2), table.today-table td:nth-child(2) { width: 110px; }
+        table.today-table th:nth-child(1), table.today-table td:nth-child(1) { width: 150px; }
+        table.today-table th:nth-child(2), table.today-table td:nth-child(2) { width: 130px; }
         table.today-table th:nth-child(3), table.today-table td:nth-child(3) { width: 100px; }
-        table.today-table th:nth-child(4), table.today-table td:nth-child(4) { width: 120px; }
-        table.today-table th:nth-child(5), table.today-table td:nth-child(5) { width: 190px; }
-        table.today-table th:nth-child(6), table.today-table td:nth-child(6) { width: 280px; }
-        table.today-table th:nth-child(7), table.today-table td:nth-child(7) { width: 100px; }
+        table.today-table th:nth-child(4), table.today-table td:nth-child(4) { width: 160px; }
+        table.today-table th:nth-child(5), table.today-table td:nth-child(5) { width: 300px; }
+        table.today-table th:nth-child(6), table.today-table td:nth-child(6) { width: 110px; }
+        table.today-table th:nth-child(7), table.today-table td:nth-child(7) { width: 110px; }
         table.today-table th:nth-child(8), table.today-table td:nth-child(8) { width: 100px; }
 
         /* ===== SUPPORT SECTION LAYOUT ===== */
@@ -2047,13 +2047,13 @@
         }
 
         table.payment-history-table th:nth-child(1), table.payment-history-table td:nth-child(1) { width: 36px; }
-        table.payment-history-table th:nth-child(2), table.payment-history-table td:nth-child(2) { width: 170px; }
-        table.payment-history-table th:nth-child(3), table.payment-history-table td:nth-child(3) { width: 110px; }
+        table.payment-history-table th:nth-child(2), table.payment-history-table td:nth-child(2) { width: 150px; }
+        table.payment-history-table th:nth-child(3), table.payment-history-table td:nth-child(3) { width: 130px; }
         table.payment-history-table th:nth-child(4), table.payment-history-table td:nth-child(4) { width: 100px; }
-        table.payment-history-table th:nth-child(5), table.payment-history-table td:nth-child(5) { width: 120px; }
-        table.payment-history-table th:nth-child(6), table.payment-history-table td:nth-child(6) { width: 150px; }
-        table.payment-history-table th:nth-child(7), table.payment-history-table td:nth-child(7) { width: 314px; }
-        table.payment-history-table th:nth-child(8), table.payment-history-table td:nth-child(8) { width: 100px; }
+        table.payment-history-table th:nth-child(5), table.payment-history-table td:nth-child(5) { width: 150px; }
+        table.payment-history-table th:nth-child(6), table.payment-history-table td:nth-child(6) { width: 314px; }
+        table.payment-history-table th:nth-child(7), table.payment-history-table td:nth-child(7) { width: 110px; }
+        table.payment-history-table th:nth-child(8), table.payment-history-table td:nth-child(8) { width: 110px; }
         table.payment-history-table th:nth-child(9), table.payment-history-table td:nth-child(9) { width: 100px; }
 
         #historyTableHeader {
@@ -4818,6 +4818,9 @@
 .db-new-row {
     background: rgba(46, 160, 67, 0.06);
 }
+
+.de-fields-modal-card { width: min(1100px, 94vw); }
+.de-fields-scroll { max-height: 68vh; overflow: auto; margin-top: 6px; }
 
 .admin-modal-note {
     font-size: 0.75rem;

@@ -1463,7 +1463,14 @@ class Handler(SimpleHTTPRequestHandler):
         if db is None or not db.is_enabled():
             return 400, {"error": "Database is not configured (DATABASE_URL missing)."}
         try:
-            report = db.migrate_from_json(JSON_DIR)
+            # json/ me ab sirf sessions.json + extraction_prompt.txt bache
+            # hain - baaki resource files json_backup_pre_postgres/ me hain,
+            # isliye wahan bhi dhoondh lo agar json/ me na milein.
+            fallback_dir = os.path.join(ROOT_DIR, "json_backup_pre_postgres")
+            report = db.migrate_from_json(
+                JSON_DIR,
+                fallback_dir=fallback_dir if os.path.isdir(fallback_dir) else None,
+            )
         except Exception as err:  # noqa: BLE001
             return 500, {"error": str(err)}
         return 200, {"ok": True, "report": report}

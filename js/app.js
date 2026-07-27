@@ -143,7 +143,7 @@
                     unitLabel = (myPlan.billingUnit || 'document') === 'page' ? 'page' : 'document';
                 }
                 const total = selectedFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
-                return `💰 Rate: ₹${perUnit.toFixed(2)}/${unitLabel} · Est. total: ₹${total.toFixed(2)} for ${selectedFiles.length} selected file(s)`;
+                return `💰 Rate: ${currencySymbol()}${perUnit.toFixed(2)}/${unitLabel} · Est. total: ${currencySymbol()}${total.toFixed(2)} for ${selectedFiles.length} selected file(s)`;
             }
 
             // Keeps the Est. charge line in sync the moment file selection
@@ -286,14 +286,14 @@
             // processing fee is debited, so the table always reflects a
             // real, already-completed charge.
             function notifyProcessCompletion(serviceName, fileName, charge, txnId) {
-                addNotification(`${serviceName} completed for "${fileName}" - ₹${charge.toFixed(2)} was deducted from your wallet (${txnId}).`);
+                addNotification(`${serviceName} completed for "${fileName}" - ${currencySymbol()}${charge.toFixed(2)} was deducted from your wallet (${txnId}).`);
                 if (!profileData || !profileData.email) return;
                 sendGenericNotificationEmail(
                     profileData.email,
                     `${profileData.firstName} ${profileData.lastName}`,
-                    `${serviceName} completed - ₹${charge.toFixed(2)} deducted`,
+                    `${serviceName} completed - ${currencySymbol()}${charge.toFixed(2)} deducted`,
                     `Your ${serviceName.toLowerCase()} request has finished processing. The table below shows what was charged to your wallet.`,
-                    [[serviceName, fileName, `₹${charge.toFixed(2)}`, `Completed (${txnId})`]],
+                    [[serviceName, fileName, `${currencySymbol()}${charge.toFixed(2)}`, `Completed (${txnId})`]],
                     ['Service', 'File', 'Charge', 'Action/Status']
                 );
             }
@@ -1240,7 +1240,7 @@
                 // Must match exactly what the processing loop will run:
                 // selection. (This previously excluded completed files, but
                 // re-running a selected completed file IS supported - so the
-                // check announced "₹0.00 for 0 file(s)" and then still billed
+                // check announced "0.00 for 0 file(s)" and then still billed
                 // per page for it.)
                 const billable = files.filter(f => f.selected !== false);
                 const myPlan = getMyPlan();
@@ -1255,20 +1255,20 @@
                 const totalNeeded = billable.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
                 const estimateNote = isPerPage ? ' (estimate - final charge depends on each file\'s actual page count)' : '';
                 const rateLabel = serviceId === 'translation'
-                    ? `${myPlan.name} plan: Translation ₹${(myPlan.pricePerTranslation != null ? myPlan.pricePerTranslation : 0)}/Per Page`
+                    ? `${myPlan.name} plan: Translation ${currencySymbol()}${(myPlan.pricePerTranslation != null ? myPlan.pricePerTranslation : 0)}/Per Page`
                     : `${myPlan.name} plan`;
                 const balanceCheckId = addActivity(serviceId,
-                    `System > Checking Wallet Balance > ₹${totalNeeded.toFixed(2)} required for ${billable.length} file(s) (${rateLabel})`, 'Processing');
+                    `System > Checking Wallet Balance > ${currencySymbol()}${totalNeeded.toFixed(2)} required for ${billable.length} file(s) (${rateLabel})`, 'Processing');
                 refreshServicePage(serviceId);
 
                 if (totalNeeded > 0 && getCurrentBalance() < totalNeeded) {
                     updateActivity(serviceId, balanceCheckId, 'Failed');
                     addActivity(serviceId,
-                        `System > Process Aborted > Insufficient balance - you have ₹${getCurrentBalance().toFixed(2)}, but ₹${totalNeeded.toFixed(2)} is required for ${billable.length} file(s)`,
+                        `System > Process Aborted > Insufficient balance - you have ${currencySymbol()}${getCurrentBalance().toFixed(2)}, but ${currencySymbol()}${totalNeeded.toFixed(2)} is required for ${billable.length} file(s)`,
                         'Failed');
                     refreshServicePage(serviceId);
                     persistServiceFiles(serviceId);
-                    showWarning(`Insufficient balance. Processing ${billable.length} file(s) requires ₹${totalNeeded.toFixed(2)}${estimateNote} on your ${myPlan.name} plan, but your wallet only has ₹${getCurrentBalance().toFixed(2)}. Please add balance and click Start again.`);
+                    showWarning(`Insufficient balance. Processing ${billable.length} file(s) requires ${currencySymbol()}${totalNeeded.toFixed(2)}${estimateNote} on your ${myPlan.name} plan, but your wallet only has ${currencySymbol()}${getCurrentBalance().toFixed(2)}. Please add balance and click Start again.`);
                     return;
                 }
                 updateActivity(serviceId, balanceCheckId, 'Info');
@@ -1565,7 +1565,7 @@
                             debit: chargeAmount
                         });
                         persistPaymentHistory();
-                        addActivity('lease-abstraction', `${fl}System > Process Charged > ₹${chargeAmount.toFixed(2)} deducted (${txnId})`, 'Success');
+                        addActivity('lease-abstraction', `${fl}System > Process Charged > ${currencySymbol()}${chargeAmount.toFixed(2)} deducted (${txnId})`, 'Success');
                         file.chargeTxnId = txnId;
                         file.chargeAmount = chargeAmount;
 
@@ -1969,7 +1969,7 @@
                                             totalCharged += perPageRate;
                                             pagesCharged++;
                                             addActivity('translation',
-                                                `${fl}${lbl} > Amount Deducted from Wallet=₹${perPageRate.toFixed(2)}`, 'Info');
+                                                `${fl}${lbl} > Amount Deducted from Wallet=${currencySymbol()}${perPageRate.toFixed(2)}`, 'Info');
                                         }
                                         addActivity('translation', `${fl}${lbl} > Text Data = ${ev.textData}`, 'Info');
 
@@ -2029,7 +2029,7 @@
                                     addActivity('translation',
                                         `${fl}Page(All) > API Call(s) > JSON=${totalJsonCalls}, IMAGE=${totalImageCalls}`, 'Info');
                                     addActivity('translation',
-                                        `${fl}Page(All) > Amount Deducted from Wallet=₹${totalCharged.toFixed(2)} (${pagesCharged} completed page(s))`, 'Info');
+                                        `${fl}Page(All) > Amount Deducted from Wallet=${currencySymbol()}${totalCharged.toFixed(2)} (${pagesCharged} completed page(s))`, 'Info');
                                 }
                                 file.status = 'error';
                                 file.errorLabel = 'Error';
@@ -2060,7 +2060,7 @@
                             addActivity('translation',
                                 `${fl}Page(All) > API Call(s) > JSON=${totalJsonCalls}, IMAGE=${totalImageCalls}`, 'Info');
                             addActivity('translation',
-                                `${fl}Page(All) > Amount Deducted from Wallet=₹${totalCharged.toFixed(2)}`, 'Info');
+                                `${fl}Page(All) > Amount Deducted from Wallet=${currencySymbol()}${totalCharged.toFixed(2)}`, 'Info');
 
                             file.docName = docName;
                             file.outputFormat = 'docx';
@@ -2162,7 +2162,7 @@
                             debit: chargeAmount
                         });
                         persistPaymentHistory();
-                        addActivity('translation', `${fl}System > Process Charged > ₹${chargeAmount.toFixed(2)} deducted (${txnId})`, 'Success');
+                        addActivity('translation', `${fl}System > Process Charged > ${currencySymbol()}${chargeAmount.toFixed(2)} deducted (${txnId})`, 'Success');
 
                         addActivity('translation', `${fl}Agents > ${agentName(processAgents, 0)} > Source text extracted`, 'Success');
                         addActivity('translation', `${fl}Agents > ${agentName(processAgents, 1)} > Translation complete`, 'Success');
@@ -2646,17 +2646,17 @@
             // ============================================================
             // 19b. CURRENCY - single source of truth
             //
-            // Purana bug: index.html / template HTML me "₹0.00" tha, lekin
+            // Purana bug: index.html / template HTML me "0.00" tha, lekin
             // jaise hi JS render karta tha wo "$0.00" ban jata tha, kyunki
             // har jagah alag-alag '$' hardcode tha. Ab har money value
             // sirf formatMoney() se banti hai - currency badalni ho to
             // sirf CURRENCY_SYMBOL badalna hai, aur kahin nahi.
             // ============================================================
-            // Symbol company.json se aata hai (COMPANY_INFO.currency).
+            // Symbol company.json (ab Postgres cfg_company) se aata hai.
             // Wahan badalne par poore app me badal jayega - koi aur jagah
-            // hardcode nahi hai. Config load hone se pehle ₹ fallback.
+            // hardcode nahi hai.
             function currencySymbol() {
-                return (COMPANY_INFO && COMPANY_INFO.currency) || '₹';
+                return (COMPANY_INFO && COMPANY_INFO.currency) || '';
             }
             Object.defineProperty(window, 'CURRENCY_SYMBOL', { get: currencySymbol });
 
@@ -2869,8 +2869,30 @@
                 return `<span class="txn-status-pill ${hit[0]}">${hit[1]}</span>`;
             }
 
+            // "H:MM AM/PM" (most rows) ya "HH:MM" (kuch purani rows) - dono
+            // ko ek hi 24-hour "MM/DD/YYYY HH:MM" me badal deta hai.
+            function formatTxnDateTime(dateStr, timeStr) {
+                const d = new Date(dateStr);
+                const mm = String(d.getMonth() + 1).padStart(2, '0');
+                const dd = String(d.getDate()).padStart(2, '0');
+                const yyyy = d.getFullYear();
+                let hh = '00', min = '00';
+                const m = String(timeStr || '').trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+                if (m) {
+                    let h = parseInt(m[1], 10);
+                    if (m[3]) {
+                        const ap = m[3].toUpperCase();
+                        if (ap === 'PM' && h !== 12) h += 12;
+                        if (ap === 'AM' && h === 12) h = 0;
+                    }
+                    hh = String(h).padStart(2, '0');
+                    min = m[2];
+                }
+                return `${mm}/${dd}/${yyyy} ${hh}:${min}`;
+            }
+
             function renderHistoryRows(tbody, list, includeCheckbox) {
-                const colCount = includeCheckbox ? 10 : 9;
+                const colCount = includeCheckbox ? 9 : 8;
                 if (list.length === 0) {
                     tbody.innerHTML =
                         `<tr><td colspan="${colCount}" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions found.</td></tr>`;
@@ -2880,13 +2902,7 @@
                 const sortedHistory = [...list].sort((a, b) => new Date(b.date) - new Date(a.date));
                 sortedHistory.forEach((transaction) => {
                     const tr = document.createElement('tr');
-                    const formattedDate = new Date(transaction.date).toLocaleDateString('en-US', {
-                        year: 'numeric',
-                        month: 'short',
-                        day: '2-digit'
-                    });
-                    // Transaction Date & Time together in a single column
-                    const dateTimeText = transaction.time ? `${formattedDate}, ${transaction.time}` : formattedDate;
+                    const dateTimeText = formatTxnDateTime(transaction.date, transaction.time);
                     // Item 3 - a balance-add sitting in pending_approval (or
                     // cancelled) shows a clear status prefix on its
                     // description, everywhere this row shape is used
@@ -2903,7 +2919,6 @@
                         <td>${dateTimeText}</td>
                         <td><span style="font-weight:500;color:darkblue;">${transaction.id}</span></td>
                         <td>${escapeHtml(transaction.userId || '')}</td>
-                        <td>${transaction.paymentType}</td>
                         <td>${transaction.paymentMode}</td>
                         <td>${descriptionText}</td>
                         <td class="credit">${transaction.credit > 0 ? formatMoney(transaction.credit) : '-'}</td>
@@ -3116,7 +3131,7 @@
                 // explicit Confirm before charging anything, instead of
                 // switching immediately on click.
                 const confirmMsg = plan.monthlyPrice > 0 ?
-                    `Switching to the ${plan.name} plan will deduct ₹${plan.monthlyPrice.toFixed(2)} from your wallet balance right now. Do you want to continue?` :
+                    `Switching to the ${plan.name} plan will deduct ${currencySymbol()}${plan.monthlyPrice.toFixed(2)} from your wallet balance right now. Do you want to continue?` :
                     `Switch to the ${plan.name} plan? This plan has no monthly charge.`;
                 showConfirm('Confirm Plan Change', confirmMsg, (confirmed) => {
                     if (confirmed) _doSwitchPlan(plan);
@@ -3158,14 +3173,14 @@
                             profileData.email, `${profileData.firstName} ${profileData.lastName}`,
                             `You're now on the ${plan.name} plan`,
                             `Your plan is now ${plan.name}. It's valid from ${profileData.planStartDate} to ${profileData.planEndDate}. ` +
-                            `Translation is billed at ₹${plan.pricePerTranslation}/page.`
+                            `Translation is billed at ${currencySymbol()}${plan.pricePerTranslation}/page.`
                         );
                     }
                 };
 
                 if (plan.monthlyPrice > 0) {
                     if (getCurrentBalance() < plan.monthlyPrice) {
-                        showWarning(`Upgrading to ${plan.name} costs ₹${plan.monthlyPrice}/month, but your wallet only has ₹${getCurrentBalance().toFixed(2)}. Please add at least ₹${(plan.monthlyPrice - getCurrentBalance()).toFixed(2)} to your wallet balance and try again.`);
+                        showWarning(`Upgrading to ${plan.name} costs ${currencySymbol()}${plan.monthlyPrice}/month, but your wallet only has ${currencySymbol()}${getCurrentBalance().toFixed(2)}. Please add at least ${currencySymbol()}${(plan.monthlyPrice - getCurrentBalance()).toFixed(2)} to your wallet balance and try again.`);
                         return;
                     }
                     const now = new Date();
@@ -3183,7 +3198,7 @@
                     });
                     persistPaymentHistory();
                     updateBalanceDisplay();
-                    addNotification(`₹${plan.monthlyPrice.toFixed(2)} was deducted for your ${plan.name} plan subscription (${txnId}).`);
+                    addNotification(`${currencySymbol()}${plan.monthlyPrice.toFixed(2)} was deducted for your ${plan.name} plan subscription (${txnId}).`);
                 }
                 finalizeSwitch();
                 showMessage('✅ Plan Updated', `You're now on the ${plan.name} plan.`, ['OK']);
@@ -3228,7 +3243,7 @@
                 renderPaymentHistory();
                 updateBalanceDisplay();
                 persistPaymentHistory();
-                showMessage('💸 Expense Recorded', `₹${amount.toFixed(2)} has been recorded as a business expense.`, ['OK']);
+                showMessage('💸 Expense Recorded', `${currencySymbol()}${amount.toFixed(2)} has been recorded as a business expense.`, ['OK']);
             };
 
             // Real, gateway-verified balance top-up. Unlike the manual/
@@ -3422,14 +3437,14 @@
                                         sendGenericNotificationEmail(
                                             profileData.email,
                                             `${profileData.firstName} ${profileData.lastName}`,
-                                            `₹${txn.credit.toFixed(2)} added to your balance`,
+                                            `${currencySymbol()}${txn.credit.toFixed(2)} added to your balance`,
                                             `Your payment was received and added to your wallet balance.`,
-                                            [[txn.paymentMode, description, `₹${txn.credit.toFixed(2)}`, `Completed (${txn.id})`]],
+                                            [[txn.paymentMode, description, `${currencySymbol()}${txn.credit.toFixed(2)}`, `Completed (${txn.id})`]],
                                             ['Payment Method', 'Description', 'Amount', 'Status']
                                         );
                                     }
-                                    addNotification(`₹${txn.credit.toFixed(2)} was added to your balance (Transaction ID: ${txn.id}).`);
-                                    showMessage('✅ Success', `₹${txn.credit.toFixed(2)} added successfully! Transaction ID: ${txn.id}`, ['OK']);
+                                    addNotification(`${currencySymbol()}${txn.credit.toFixed(2)} was added to your balance (Transaction ID: ${txn.id}).`);
+                                    showMessage('✅ Success', `${currencySymbol()}${txn.credit.toFixed(2)} added successfully! Transaction ID: ${txn.id}`, ['OK']);
                                 }).catch(err => {
                                     resetPayPanel();
                                     showWarning('Payment could not be verified: ' + err.message +
@@ -3527,16 +3542,16 @@
                 persistPaymentHistory();
                 markNotificationHandled(notificationId, 'Approved');
 
-                addNotificationFor(txn.userId, `✅ Your balance request for ₹${txn.credit.toFixed(2)} (${txnId}) was approved and added to your wallet.`);
+                addNotificationFor(txn.userId, `✅ Your balance request for ${currencySymbol()}${txn.credit.toFixed(2)} (${txnId}) was approved and added to your wallet.`);
                 const dirEntry = getUserDirectoryEntry(txn.userId);
                 if (dirEntry && dirEntry.email) {
                     sendGenericNotificationEmail(dirEntry.email, `${dirEntry.firstName} ${dirEntry.lastName}`,
                         'Your balance request was approved',
-                        `Your request to add ₹${txn.credit.toFixed(2)} to your wallet (Transaction ${txnId}) has been approved and is now reflected in your balance.`);
+                        `Your request to add ${currencySymbol()}${txn.credit.toFixed(2)} to your wallet (Transaction ${txnId}) has been approved and is now reflected in your balance.`);
                 }
                 if (txn.userId === CURRENT_USER_ID) updateBalanceDisplay();
                 renderNotificationTable();
-                showMessage('✅ Approved', `₹${txn.credit.toFixed(2)} has been added to the user's balance.`, ['OK']);
+                showMessage('✅ Approved', `${currencySymbol()}${txn.credit.toFixed(2)} has been added to the user's balance.`, ['OK']);
             };
 
             window.cancelBalanceRequest = function(txnId, notificationId) {
@@ -3546,12 +3561,12 @@
                 persistPaymentHistory();
                 markNotificationHandled(notificationId, 'Cancelled');
 
-                addNotificationFor(txn.userId, `❌ Your balance request for ₹${txn.credit.toFixed(2)} (${txnId}) was cancelled by an Admin/Developer.`);
+                addNotificationFor(txn.userId, `❌ Your balance request for ${currencySymbol()}${txn.credit.toFixed(2)} (${txnId}) was cancelled by an Admin/Developer.`);
                 const dirEntry = getUserDirectoryEntry(txn.userId);
                 if (dirEntry && dirEntry.email) {
                     sendGenericNotificationEmail(dirEntry.email, `${dirEntry.firstName} ${dirEntry.lastName}`,
                         'Your balance request was cancelled',
-                        `Your request to add ₹${txn.credit.toFixed(2)} to your wallet (Transaction ${txnId}) was cancelled. Please contact Support if you believe this is a mistake.`);
+                        `Your request to add ${currencySymbol()}${txn.credit.toFixed(2)} to your wallet (Transaction ${txnId}) was cancelled. Please contact Support if you believe this is a mistake.`);
                 }
                 renderNotificationTable();
                 showMessage('❌ Cancelled', `The balance request has been cancelled.`, ['OK']);
@@ -6436,19 +6451,19 @@
                         <div style="flex:1;min-width:220px;border:1px solid rgba(0,0,139,0.15);border-radius:8px;padding:14px;">
                             <h4 style="margin:0 0 10px 0;">${plan.icon || ''} ${escapeHtml(plan.name)}</h4>
                             <div style="margin-bottom:8px;">
-                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Monthly Price (₹)</label>
+                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Monthly Price (${currencySymbol()})</label>
                                 <input type="number" step="0.01" min="0" class="admin-price-input"
                                        data-plan-idx="${pIdx}" data-field="monthlyPrice"
                                        value="${Number(plan.monthlyPrice || 0)}" style="width:100%;" />
                             </div>
                             <div style="margin-bottom:8px;">
-                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Translation (₹ / page)</label>
+                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Translation (${currencySymbol()} / page)</label>
                                 <input type="number" step="0.01" min="0" class="admin-price-input"
                                        data-plan-idx="${pIdx}" data-field="pricePerTranslation"
                                        value="${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)}" style="width:100%;" />
                             </div>
                             <div style="margin-bottom:8px;">
-                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Lease Abstraction (₹ / document)</label>
+                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Lease Abstraction (${currencySymbol()} / document)</label>
                                 <input type="number" step="0.01" min="0" class="admin-price-input"
                                        data-plan-idx="${pIdx}" data-field="pricePerLeaseAbstraction"
                                        value="${Number(plan.pricePerLeaseAbstraction || 0)}" style="width:100%;" />
@@ -8233,9 +8248,8 @@
                                         <thead>
                                             <tr>
                                                 <th>Date &amp; Time</th>
-                                                <th>T. ID</th>
+                                                <th>Transaction ID</th>
                                                 <th>User ID</th>
-                                                <th>Payment Type</th>
                                                 <th>Payment Mode</th>
                                                 <th>Description</th>
                                                 <th>Credit</th>
@@ -8438,15 +8452,15 @@
                         return `
                         <div class="balance-grid" id="balanceGrid">
                             <div class="balance-card">
-                                <div class="balance-number credit" id="totalCreditBalance">₹0.00</div>
+                                <div class="balance-number credit" id="totalCreditBalance">${currencySymbol()}0.00</div>
                                 <div class="balance-label">Total Credit</div>
                             </div>
                             <div class="balance-card">
-                                <div class="balance-number debit" id="totalDebitBalance">₹0.00</div>
+                                <div class="balance-number debit" id="totalDebitBalance">${currencySymbol()}0.00</div>
                                 <div class="balance-label">Total Debit</div>
                             </div>
                             <div class="balance-card">
-                                <div class="balance-number" id="currentBalanceDisplay">₹0.00</div>
+                                <div class="balance-number" id="currentBalanceDisplay">${currencySymbol()}0.00</div>
                                 <div class="balance-label">Current Balance</div>
                             </div>
                         </div>
@@ -8519,9 +8533,8 @@
                                         <tr>
                                             <th style="width:36px;"><input type="checkbox" id="historySelectAll" onchange="toggleSelectAllTransactions(this.checked)" /></th>
                                             <th>Date &amp; Time</th>
-                                            <th>T. ID</th>
+                                            <th>Transaction ID</th>
                                             <th>User ID</th>
-                                            <th>Payment Type</th>
                                             <th>Payment Mode</th>
                                             <th>Description</th>
                                             <th>Credit</th>
