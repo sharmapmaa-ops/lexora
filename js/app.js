@@ -5190,8 +5190,6 @@
             // /api/admin/* routes in py/server.py.
             // ============================================================
             let adminCurrentPath = '';
-            // 'files' ya 'postgres' - Admin > Files card ka kaunsa tab khula hai.
-            let adminFilesActiveTab = 'files';
             let adminEntries = [];
             let adminSelectedPaths = new Set();
 
@@ -5265,6 +5263,8 @@
 
             // Tabs sirf view filter hain - data ek hi list se aata hai.
             let notificationFilter = 'all';
+            let notificationPageSize = 10;
+            let notificationPage = 1;
 
             function buildNotificationBody() {
                 const mine = getMyNotifications();
@@ -5284,18 +5284,18 @@
                             </button>
                         </div>
                         <div class="notif-tabs">${tab('all', 'All')}${tab('unread', 'Unread')}${tab('read', 'Read')}</div>
-                        <div class="card-body">
+                        <div class="card-body notif-table-scroll-outer">
                             <table class="history-table notif-table" id="notificationTableHeader">
                                 <thead>
                                     <tr>
                                         <th style="width:38px;"><input type="checkbox" onchange="toggleNotificationSelectAll(this)" /></th>
-                                        <th>Notification</th>
                                         <th style="width:230px;">Date &amp; Time</th>
+                                        <th>Notification</th>
                                         <th style="width:46px;"></th>
                                     </tr>
                                 </thead>
                             </table>
-                            <div class="history-table-wrapper" id="notificationTableWrapper">
+                            <div class="history-table-wrapper notif-table-wrapper" id="notificationTableWrapper">
                                 <table class="history-table notif-table" id="notificationTable">
                                     <tbody id="notificationTableBody"></tbody>
                                 </table>
@@ -5364,14 +5364,25 @@
                            : notificationFilter === 'read'   ? all.filter(n => n.read)
                            : all;
 
+                const totalPages = Math.max(1, Math.ceil(mine.length / notificationPageSize));
+                if (notificationPage > totalPages) notificationPage = totalPages;
+                if (notificationPage < 1) notificationPage = 1;
+                const startIdx = (notificationPage - 1) * notificationPageSize;
+                const pageRows = mine.slice(startIdx, startIdx + notificationPageSize);
+
                 const pager = document.getElementById('notificationPager');
                 if (pager) {
                     pager.innerHTML = mine.length === 0 ? '' : `
-                        <span class="pager-count">Showing 1 to ${mine.length} of ${mine.length}</span>
+                        <span class="pager-count">Showing ${startIdx + 1} to ${Math.min(startIdx + notificationPageSize, mine.length)} of ${mine.length}</span>
+                        <label class="pager-page-size">Rows per page
+                            <select onchange="setNotificationPageSize(this.value)">
+                                ${[5, 10, 25, 50].map(n => `<option value="${n}" ${notificationPageSize === n ? 'selected' : ''}>${n}</option>`).join('')}
+                            </select>
+                        </label>
                         <div class="pager-controls">
-                            <button class="pager-btn" disabled>\u00ab</button>
-                            <button class="pager-btn is-current">1</button>
-                            <button class="pager-btn" disabled>\u00bb</button>
+                            <button class="pager-btn" ${notificationPage <= 1 ? 'disabled' : ''} onclick="goToNotificationPage(${notificationPage - 1})">\u00ab</button>
+                            <button class="pager-btn is-current">${notificationPage} / ${totalPages}</button>
+                            <button class="pager-btn" ${notificationPage >= totalPages ? 'disabled' : ''} onclick="goToNotificationPage(${notificationPage + 1})">\u00bb</button>
                         </div>`;
                 }
 
@@ -5387,7 +5398,7 @@
                     return;
                 }
 
-                tbody.innerHTML = mine.map(n => {
+                tbody.innerHTML = pageRows.map(n => {
                     const needsAction = n.type === 'balance_approval' && !n.handledResult;
                     const actionsHtml = needsAction
                         ? '<span class="notification-action-hint">\u23f3 Action required - click to Approve/Cancel</span>'
@@ -5403,6 +5414,15 @@
                     <tr class="${n.read ? '' : 'notification-unread'}">
                         <td onclick="event.stopPropagation();"><input type="checkbox" class="notification-row-check" data-id="${n.id}" ${selectedNotificationIds.has(n.id) ? 'checked' : ''} onchange="toggleNotificationRowCheck('${n.id}', this)" /></td>
                         <td>
+                            <div class="notif-when">
+                                <span class="notif-dot ${n.read ? 'is-read' : ''}"></span>
+                                <div>
+                                    <span class="notif-date">${escapeHtml(n.date)} ${escapeHtml(n.time || '')}</span>
+                                    <span class="notif-ago">${notificationAgo(n.date, n.time)}</span>
+                                </div>
+                            </div>
+                        </td>
+                        <td>
                             <div class="notif-row">
                                 <span class="notif-row-icon is-${icon[0]}">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${icon[1]}</svg>
@@ -5414,20 +5434,22 @@
                                 </div>
                             </div>
                         </td>
-                        <td>
-                            <div class="notif-when">
-                                <span class="notif-dot ${n.read ? 'is-read' : ''}"></span>
-                                <div>
-                                    <span class="notif-date">${escapeHtml(n.date)} ${escapeHtml(n.time || '')}</span>
-                                    <span class="notif-ago">${notificationAgo(n.date, n.time)}</span>
-                                </div>
-                            </div>
-                        </td>
                         <td class="notif-menu-cell"><button class="notif-menu-btn" onclick="openNotificationPopup('${n.id}')" aria-label="Open notification">\u22ee</button></td>
                     </tr>`;
                 }).join('');
                 updateNotificationBadge();
             }
+
+            window.setNotificationPageSize = function(value) {
+                notificationPageSize = parseInt(value, 10) || 10;
+                notificationPage = 1;
+                renderNotificationTable();
+            };
+
+            window.goToNotificationPage = function(page) {
+                notificationPage = page;
+                renderNotificationTable();
+            };
 
             window.toggleNotificationRowCheck = function(id, checkbox) {
                 if (checkbox.checked) selectedNotificationIds.add(id);
@@ -6026,6 +6048,7 @@
                         <div class="admin-toolbar">
                             <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
                             <button class="admin-btn admin-btn-save" onclick="runDbMigration()">\u2934 Run migration</button>
+                            <button class="admin-btn admin-btn-add-folder" onclick="adminOpenPricingEditor()">\u{1F4B2} Plan Pricing</button>
                         </div>
                         <div id="dbStatusBody"><p class="ds-card-sub">Checking\u2026</p></div>
                     </div>`;
@@ -6072,7 +6095,11 @@
                 }
             };
 
-            // Har table apne row count aur View button ke saath.
+            // Kaunsa table tab abhi khula hai.
+            let dbActiveTable = null;
+
+            // Har table apna tab (naam + row count); click par uska data
+            // neeche isi panel me load hota hai - alag popup nahi.
             window.renderDbTables = async function() {
                 const box = document.getElementById('dbTablesBox');
                 if (!box) return;
@@ -6080,21 +6107,38 @@
                     const res = await authFetch('/api/admin/db-tables');
                     const d = await res.json();
                     if (!d.enabled || !(d.tables || []).length) { box.innerHTML = ''; return; }
+                    const existing = d.tables.filter(t => t.exists);
+                    if (!existing.some(t => t.name === dbActiveTable)) {
+                        dbActiveTable = existing.length ? existing[0].name : null;
+                    }
                     box.innerHTML = `
-                        <div class="db-tables">
-                            <b>Tables</b>
+                        <div class="rules-tab-strip db-table-tab-strip">
                             ${d.tables.map(t => `
-                                <div class="db-table-row">
-                                    <code>${escapeHtml(t.name)}</code>
-                                    ${t.exists
-                                        ? `<span class="db-note">${t.rows} row(s)</span>
-                                           <button class="admin-btn" onclick="openDbTable('${t.name}')">View</button>`
-                                        : dbChip(false, 'not created')}
-                                </div>`).join('')}
-                        </div>`;
+                                <button class="rules-tab-btn ${t.name === dbActiveTable ? 'active' : ''}"
+                                        data-table="${escapeHtml(t.name)}"
+                                        ${t.exists ? `onclick="switchDbTable('${t.name}')"` : 'disabled title="Table not created yet"'}>
+                                    ${escapeHtml(_dbTableLabel(t.name))} (${t.exists ? t.rows : 0} Rows)
+                                </button>`).join('')}
+                        </div>
+                        <div id="dbActiveTableBody"></div>`;
+                    if (dbActiveTable) dbTableLoad(dbActiveTable);
                 } catch (err) {
                     box.innerHTML = `<p class="db-note is-bad">${escapeHtml(err.message)}</p>`;
                 }
+            };
+
+            // doc_lease_files -> "Lease Files", cfg_menu_config -> "Menu Config"
+            function _dbTableLabel(name) {
+                return name.replace(/^(doc_|cfg_)/, '').split('_')
+                    .map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+            }
+
+            window.switchDbTable = function(name) {
+                dbActiveTable = name;
+                document.querySelectorAll('.db-table-tab-strip .rules-tab-btn').forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.table === name);
+                });
+                dbTableLoad(name);
             };
 
             // Generic viewer - columns jo bhi row me aayein, wahi dikhte hain.
@@ -6124,55 +6168,118 @@
                 return values;
             }
 
-            window.openDbTable = async function(name) {
-                openAdminModal(`
-                    <div class="admin-modal-overlay" id="adminFileModalOverlay">
-                        <div class="admin-modal-card card-layout-modal db-table-modal">
-                            <button class="admin-modal-close" onclick="adminCloseFileModal()">\u2715</button>
-                            <h3 class="admin-modal-title">\u{1F5C4} ${escapeHtml(name)}</h3>
-                            <div class="card-layout-scroll" id="dbTableScroll">
-                                <p class="ds-card-sub" style="padding:14px;">Loading\u2026</p>
-                            </div>
-                            <div class="admin-modal-actions">
-                                <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${name}')">+ Add row</button>
-                                <button class="admin-modal-cancel" onclick="adminCloseFileModal()">Close</button>
-                            </div>
-                        </div>
-                    </div>`);
-                await dbTableLoad(name);
-            };
-
             window.dbTableLoad = async function(name) {
-                const scroll = document.getElementById('dbTableScroll');
-                if (!scroll) return;
-                scroll.innerHTML = '<p class="ds-card-sub" style="padding:14px;">Loading\u2026</p>';
+                const host = document.getElementById('dbActiveTableBody');
+                if (!host) return;
+                host.innerHTML = '<p class="ds-card-sub" style="padding:14px;">Loading\u2026</p>';
                 try {
                     const res = await authFetch('/api/admin/db-table?name=' + encodeURIComponent(name));
                     const d = await res.json();
                     if (!res.ok) throw new Error(d.error || 'Could not read table.');
                     const rows = d.rows || [];
-                    _dbTableColumns = d.columns || [];
-                    const cols = _dbTableColumns.length ? _dbTableColumns : (rows.length ? Object.keys(rows[0]).map(n => ({ name: n, type: 'text', editable: true, primaryKey: false })) : []);
-                    scroll.innerHTML = `
+                    _dbTableColumns = d.columns || (rows.length ? Object.keys(rows[0]).map(n => ({ name: n, type: 'text', editable: true, primaryKey: false })) : []);
+                    const cols = _dbTableColumns;
+                    host.innerHTML = `
                         <div class="db-txn-source"><span class="db-note">${rows.length} row(s)
                              \u2014 password / OTP / API key masked hain aur edit nahi ho sakte</span></div>
+                        <div class="db-edit-table-wrapper">
                         <table class="admin-json-table db-txn-table db-edit-table">
-                            <thead><tr>${cols.map(c => `<th>${escapeHtml(c.name)}${c.primaryKey ? ' \u{1F511}' : ''}</th>`).join('')}<th></th></tr></thead>
+                            <thead>
+                                <tr>
+                                    <th><input type="checkbox" onchange="dbTableToggleAll(this)" /></th>
+                                    ${cols.map(c => `<th>${escapeHtml(_dbTableLabel(c.name))}${c.primaryKey ? ' \u{1F511}' : ''}</th>`).join('')}
+                                    <th></th>
+                                </tr>
+                                <tr class="db-filter-row">
+                                    <th></th>
+                                    ${cols.map((c, ci) => `<th><input type="text" class="db-filter-input" placeholder="Filter\u2026" oninput="dbTableFilter(${ci}, this.value)" /></th>`).join('')}
+                                    <th></th>
+                                </tr>
+                            </thead>
                             <tbody id="dbTableBody">
                                 ${rows.map((r, i) => `
                                     <tr data-row-index="${i}">
+                                        <td><input type="checkbox" class="db-row-select" /></td>
                                         ${cols.map(c => `<td>${_dbCellToInput(c, r[c.name])}</td>`).join('')}
                                         <td class="db-row-actions">
-                                            <button class="admin-btn admin-btn-save" onclick="dbTableSaveRow('${escapeHtml(name)}', ${i})">\u{1F4BE}</button>
-                                            <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteRow('${escapeHtml(name)}', ${i})">\u{1F5D1}</button>
+                                            <button class="admin-btn admin-btn-save" onclick="dbTableSaveRow('${escapeHtml(name)}', ${i})" title="Save">\u{1F4BE}</button>
+                                            <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteRow('${escapeHtml(name)}', ${i})" title="Delete">\u{1F5D1}</button>
                                         </td>
                                     </tr>`).join('')}
                             </tbody>
-                        </table>`;
-                    scroll.dataset.rows = JSON.stringify(rows);
+                        </table>
+                        </div>
+                        <div class="db-edit-table-actions">
+                            <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${escapeHtml(name)}')">+ Add Row</button>
+                            <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Selected</button>
+                            <span class="admin-toolbar-spacer"></span>
+                            <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
+                        </div>`;
+                    host.dataset.rows = JSON.stringify(rows);
                 } catch (err) {
-                    scroll.innerHTML = `<p class="db-note is-bad" style="padding:14px;">${escapeHtml(err.message)}</p>`;
+                    host.innerHTML = `<p class="db-note is-bad" style="padding:14px;">${escapeHtml(err.message)}</p>`;
                 }
+            };
+
+            window.dbTableToggleAll = function(cb) {
+                document.querySelectorAll('#dbTableBody .db-row-select').forEach(el => { el.checked = cb.checked; });
+            };
+
+            // Column-wise text filter - purely client side, jo already load
+            // ho chuki rows par chalta hai (mockup ke "Filter..." dropdown
+            // jaisa hi kaam, bas checklist ki jagah plain text match).
+            window.dbTableFilter = function(colIndex, value) {
+                const needle = value.trim().toLowerCase();
+                document.querySelectorAll('#dbTableBody tr').forEach(tr => {
+                    const cell = tr.children[colIndex + 1]; // +1 for the checkbox column
+                    if (!cell) return;
+                    const input = cell.querySelector('input,textarea');
+                    const text = (input ? input.value : cell.textContent).toLowerCase();
+                    tr.style.display = !needle || text.includes(needle) ? '' : 'none';
+                });
+            };
+
+            window.dbTableDownloadCsv = function(name) {
+                const rows = _dbTableColumns.length ? JSON.parse(document.getElementById('dbActiveTableBody').dataset.rows || '[]') : [];
+                if (!rows.length) { showWarning('No rows to download.'); return; }
+                const cols = _dbTableColumns.map(c => c.name);
+                const esc = v => `"${String(v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : v)).replace(/"/g, '""')}"`;
+                const csv = [cols.join(',')].concat(rows.map(r => cols.map(c => esc(r[c])).join(','))).join('\n');
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `${name}.csv`;
+                document.body.appendChild(a); a.click(); a.remove();
+                URL.revokeObjectURL(url);
+            };
+
+            window.dbTableDeleteSelected = async function(name) {
+                const host = document.getElementById('dbActiveTableBody');
+                const originalRows = JSON.parse((host && host.dataset.rows) || '[]');
+                const trs = Array.from(document.querySelectorAll('#dbTableBody tr')).filter(tr => {
+                    const cb = tr.querySelector('.db-row-select');
+                    return cb && cb.checked;
+                });
+                if (!trs.length) { showWarning('Koi row select nahi ki.'); return; }
+                showConfirm('Delete rows', `${trs.length} row(s) Postgres se hamesha ke liye hat jayengi. Pakka?`,
+                    async function(yes) {
+                        if (!yes) return;
+                        for (const tr of trs) {
+                            const idx = parseInt(tr.dataset.rowIndex, 10);
+                            const row = originalRows[idx];
+                            if (!row) continue;
+                            try {
+                                const key = _dbKeyFor(name, row);
+                                await authFetch('/api/admin/db-table-delete', {
+                                    method: 'POST',
+                                    body: JSON.stringify({ table: name, key })
+                                });
+                            } catch (err) { /* keep going, report at the end via reload */ }
+                        }
+                        showSuccess('Selected rows delete ho gaye.');
+                        await dbTableLoad(name);
+                        renderDbTables();
+                    });
             };
 
             function _dbKeyFor(name, row) {
@@ -6183,7 +6290,7 @@
             }
 
             window.dbTableSaveRow = async function(name, index) {
-                const scroll = document.getElementById('dbTableScroll');
+                const scroll = document.getElementById('dbActiveTableBody');
                 const tr = scroll && scroll.querySelector(`tr[data-row-index="${index}"]`);
                 if (!tr) return;
                 const originalRows = JSON.parse(scroll.dataset.rows || '[]');
@@ -6206,7 +6313,7 @@
             };
 
             window.dbTableDeleteRow = async function(name, index) {
-                const scroll = document.getElementById('dbTableScroll');
+                const scroll = document.getElementById('dbActiveTableBody');
                 const originalRows = JSON.parse((scroll && scroll.dataset.rows) || '[]');
                 const originalRow = originalRows[index] || {};
                 showConfirm('Delete row', 'Ye row Postgres se hamesha ke liye hat jayegi. Pakka?',
@@ -6230,7 +6337,7 @@
             };
 
             window.dbTableAddRow = async function(name) {
-                const scroll = document.getElementById('dbTableScroll');
+                const scroll = document.getElementById('dbActiveTableBody');
                 if (!scroll) return;
                 const cols = _dbTableColumns.filter(c => c.editable);
                 if (!cols.length) { showWarning('Is table me koi editable column nahi mila.'); return; }
@@ -6239,6 +6346,7 @@
                 const tempIndex = 'new';
                 const rowHtml = `
                     <tr data-row-index="${tempIndex}" class="db-new-row">
+                        <td></td>
                         ${_dbTableColumns.map(c => `<td>${_dbCellToInput(c, '')}</td>`).join('')}
                         <td class="db-row-actions">
                             <button class="admin-btn admin-btn-save" onclick="dbTableInsertRow('${escapeHtml(name)}', this)">\u{1F4BE}</button>
@@ -6363,73 +6471,19 @@
                 URL.revokeObjectURL(url);
             };
 
-            // "Files and Folder" tab ka andar wala hissa (toolbar + table).
-            function buildAdminFilesTabPanel() {
-                return `
-                    <div class="admin-toolbar">
-                        <button class="admin-btn admin-btn-add-file" onclick="document.getElementById('adminFileInput').click()">📄 Add File</button>
-                        <button class="admin-btn admin-btn-add-folder" onclick="adminAddFolder()">📁 Add Folder</button>
-                        <button class="admin-btn admin-btn-delete" onclick="adminDeleteSelected()">🗑️ Delete</button>
-                        <button class="admin-btn admin-btn-download" onclick="adminDownloadSelected()">⬇️ Download</button>
-                        <button class="admin-btn admin-btn-add-folder" onclick="adminOpenPricingEditor()">💲 Plan Pricing</button>
-                        <input type="file" id="adminFileInput" style="display:none;" onchange="adminUploadFile(event)" />
-                    </div>
-                    <div class="admin-breadcrumb" id="adminBreadcrumb"></div>
-                    <div class="admin-table-wrapper">
-                        <table class="admin-table">
-                            <thead>
-                                <tr>
-                                    <th><input type="checkbox" id="adminSelectAll" onchange="adminToggleSelectAll(this)" /></th>
-                                    <th>Name</th>
-                                    <th>Type</th>
-                                    <th>Size</th>
-                                    <th>Modified</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="adminTableBody">
-                                <tr><td colspan="6" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">Loading…</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                `;
-            }
-
-            // Ek hi card, do tabs: "Files and Folder" (purana file manager)
-            // aur "PostgreSQL" (tables ki list + Run migration - codespace
-            // terminal kholne ki zaroorat nahi).
+            // Ab sirf ek panel hai: PostgreSQL (Files and Folder file-manager
+            // pura hata diya gaya hai - saara data ab beeche hi tables me
+            // hai, alag file browser ki zaroorat nahi rahi).
             function buildAdminFilesBody() {
                 return `
                     <div class="admin-files-card" id="adminFilesCard">
                         <div class="admin-files-header">
-                            <h3>${adminFilesActiveTab === 'postgres' ? '\u{1F5C4} PostgreSQL' : '📁 Files and Folder'}</h3>
+                            <h3>\u{1F5C4} PostgreSQL</h3>
                         </div>
-                        <div class="rules-tab-strip admin-files-tab-strip">
-                            <button class="rules-tab-btn ${adminFilesActiveTab === 'files' ? 'active' : ''}"
-                                    onclick="switchAdminFilesTab('files')">📁 Files and Folder</button>
-                            <button class="rules-tab-btn ${adminFilesActiveTab === 'postgres' ? 'active' : ''}"
-                                    onclick="switchAdminFilesTab('postgres')">\u{1F5C4} PostgreSQL</button>
-                        </div>
-                        <div id="adminFilesTabBody">
-                            ${adminFilesActiveTab === 'postgres' ? buildDbStatusPanel() : buildAdminFilesTabPanel()}
-                        </div>
+                        ${buildDbStatusPanel()}
                     </div>
                 `;
             }
-
-            // Tab badalne par poora card dobara banate hain (taaki active
-            // underline sahi tab par jaye), phir us tab ka data load karte hain.
-            window.switchAdminFilesTab = function(tab) {
-                adminFilesActiveTab = tab === 'postgres' ? 'postgres' : 'files';
-                const card = document.getElementById('adminFilesCard');
-                if (!card) return;
-                card.outerHTML = buildAdminFilesBody();
-                if (adminFilesActiveTab === 'postgres') {
-                    refreshDbStatus();
-                } else {
-                    loadAdminDirectory(adminCurrentPath || '');
-                }
-            };
 
             function buildAdminBreadcrumb(path) {
                 const parts = path ? path.split('/') : [];
@@ -7368,17 +7422,13 @@
                     if (action === 'Profile') {
                         data = { body: buildProfileBody() };
                     } else if (action === 'Admin') {
-                        adminFilesActiveTab = 'files'; // panel har baar Files tab se khule
                         data = { body: buildAdminFilesBody() };
                     } else if (action === 'Notification') {
                         data = { body: buildNotificationBody() };
                     }
                     updateContent(data, pagePath);
                     contentArea.classList.remove('loading');
-                    if (action === 'Admin') {
-                        if (adminFilesActiveTab === 'postgres') refreshDbStatus();
-                        else loadAdminDirectory('');
-                    }
+                    if (action === 'Admin') refreshDbStatus();
                     if (action === 'Notification') renderNotificationTable();
                 }, 300);
 

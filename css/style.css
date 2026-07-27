@@ -4822,6 +4822,253 @@
 .de-fields-modal-card { width: min(1100px, 94vw); }
 .de-fields-scroll { max-height: 68vh; overflow: auto; margin-top: 6px; }
 
+/* Admin > PostgreSQL: one tab per table, inline editable grid below */
+.db-table-tab-strip {
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+
+.db-edit-table-wrapper {
+    max-height: 60vh;
+    overflow: auto;
+    border: 1px solid rgba(0,0,139,0.15);
+    border-radius: 8px;
+    margin-top: 10px;
+}
+
+.db-filter-row th {
+    padding: 4px 8px 8px;
+    background: #0b1330;
+}
+
+.db-filter-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 5px 7px;
+    border: 1px solid rgba(255,255,255,0.25);
+    border-radius: 5px;
+    font-size: 0.74rem;
+    background: rgba(255,255,255,0.08);
+    color: white;
+}
+
+.db-filter-input::placeholder { color: rgba(255,255,255,0.5); }
+.db-filter-input:focus { outline: none; background: white; color: #111; }
+
+.db-edit-table-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+}
+
+.admin-toolbar-spacer { flex: 1; }
+
+/* ===== Notifications page (was entirely unstyled before) ===== */
+.notif-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+.notif-head h3 { margin: 0; flex-shrink: 0; }
+
+.notif-count {
+    background: darkblue;
+    color: white;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 2px 9px;
+    border-radius: 999px;
+}
+
+.notif-mark-all {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: none;
+    border: 1px solid rgba(0,0,139,0.25);
+    color: darkblue;
+    font-size: 0.76rem;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: 7px;
+    cursor: pointer;
+}
+
+.notif-mark-all svg { width: 14px; height: 14px; }
+.notif-mark-all:hover { background: rgba(0,0,139,0.06); }
+
+.notif-tabs {
+    display: flex;
+    gap: 6px;
+    margin: 12px 0 4px;
+    flex-shrink: 0;
+}
+
+.notif-tab {
+    background: rgba(0,0,139,0.04);
+    border: 1px solid transparent;
+    color: rgba(0,0,0,0.55);
+    font-size: 0.76rem;
+    font-weight: 600;
+    padding: 6px 14px;
+    border-radius: 7px;
+    cursor: pointer;
+}
+
+.notif-tab.is-active {
+    background: darkblue;
+    color: white;
+}
+
+.notif-table thead th { vertical-align: middle; }
+
+.notif-table tbody td {
+    padding: 12px 10px;
+    vertical-align: top;
+    border-bottom: 1px solid rgba(0,0,139,0.07);
+}
+
+tr.notification-unread { background: rgba(0,0,139,0.025); }
+
+.notif-when {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.notif-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #2563eb;
+    margin-top: 6px;
+    flex-shrink: 0;
+}
+
+.notif-dot.is-read { background: rgba(0,0,0,0.15); }
+
+.notif-date {
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #111;
+}
+
+.notif-ago {
+    display: block;
+    font-size: 0.72rem;
+    color: rgba(0,0,0,0.45);
+    margin-top: 2px;
+}
+
+.notif-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    min-height: 36px;
+}
+
+.notif-row-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    background: rgba(0,0,139,0.08);
+    color: darkblue;
+}
+
+.notif-row-icon svg { width: 17px; height: 17px; }
+.notif-row-icon.is-warn { background: rgba(230,126,34,0.12); color: #b8620a; }
+.notif-row-icon.is-danger { background: rgba(220,53,69,0.12); color: #c0293b; }
+.notif-row-icon.is-success { background: rgba(46,160,67,0.12); color: #1f8a37; }
+
+.notif-row-text {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+
+.notification-desc-link {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #111;
+    cursor: pointer;
+}
+.notification-desc-link:hover { color: darkblue; text-decoration: underline; }
+
+.notif-row-detail {
+    font-size: 0.78rem;
+    color: rgba(0,0,0,0.55);
+    line-height: 1.4;
+}
+
+.notification-action-hint {
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: #b8620a;
+}
+
+.notification-handled-tag {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: rgba(0,0,0,0.45);
+}
+
+.notif-menu-cell { text-align: center; }
+.notif-menu-btn {
+    background: none;
+    border: none;
+    color: rgba(0,0,0,0.4);
+    font-size: 1rem;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 5px;
+}
+.notif-menu-btn:hover { background: rgba(0,0,139,0.06); color: darkblue; }
+
+.notif-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 12px;
+    flex-shrink: 0;
+}
+
+.notif-footer-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.notif-footer-pager {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 0.76rem;
+    color: rgba(0,0,0,0.55);
+    margin-left: auto;
+}
+
+.pager-page-size {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.pager-page-size select {
+    padding: 3px 6px;
+    border-radius: 5px;
+    border: 1px solid rgba(0,0,139,0.2);
+    font-size: 0.76rem;
+}
+
 .admin-modal-note {
     font-size: 0.75rem;
     color: rgba(0,0,0,0.5);
