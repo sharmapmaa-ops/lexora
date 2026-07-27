@@ -3283,17 +3283,15 @@
             }
 
             // ============================================================
-            // 22a. PAYMENT PAGE - MERGED TABS (item 3)
+            // 22a. PAYMENT PAGE (item 1)
             //
             // "Balance" aur "Payment History" ab alag menu items nahi -
-            // ek hi "Payment" page ke andar ek tab-strip se switch hote
-            // hain (Admin Panel ke PostgreSQL table-tabs jaisa pattern).
+            // ek hi "Payment" page ke andar, lekin tab se switch nahi
+            // hote - Balance Summary + Add Balance ek row me (side by
+            // side), Payment History uske neeche, dono hamesha visible.
             // ============================================================
-            let paymentActiveTab = 'balance';
-
-            function paymentTabHtml(tab) {
-                if (tab === 'history') {
-                    return `
+            function buildPaymentHistoryCardHtml() {
+                return `
                         <div class="history-card">
                             <h3>💳 Payment History</h3>
                             <div class="history-filter-bar">
@@ -3353,14 +3351,14 @@
                             </div>
                             <div class="history-pager" id="historyPager"></div>
                         </div>`;
-                }
+            }
 
-                // 'balance' tab - Add Balance form. Item 3: preset amount
-                // chips aur "why pay us" perks list hata di gayi hain;
-                // Amount ke right me Description, uske right me submit
-                // button - card ab full width hai. Checkout ab yahan
-                // inline nahi - alag popup modal me khulta hai
-                // (#balanceCheckoutModal, page-level, payWithRazorpay()).
+            // Item 1 - preset amount chips aur "why pay us" perks list
+            // pehle hi hata di gayi thi; is baar approval-note line bhi
+            // hata di ("Your amount will be credited..."). Checkout ab
+            // yahan inline nahi - alag popup modal me khulta hai
+            // (#balanceCheckoutModal, page-level, payWithRazorpay()).
+            function buildAddBalanceCardHtml() {
                 return `
                     <div class="balance-add-card balance-add-card-full">
                         <div class="ds-card-head">
@@ -3386,40 +3384,23 @@
                             </div>
                             <button class="add-btn balance-add-submit" onclick="addBalance()">+ Add Balance</button>
                         </div>
-
-                        <p class="balance-approval-note">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M12 3l7.5 3v5.5c0 4.4-3 8.2-7.5 9.5-4.5-1.3-7.5-5.1-7.5-9.5V6z"/>
-                            </svg>
-                            Your amount will be credited to your wallet instantly after the payment is confirmed.
-                        </p>
                     </div>`;
             }
 
-            function renderPaymentTabContent(tab) {
-                if (tab === 'history') {
-                    renderPaymentHistory();
-                } else {
-                    populateBalancePaymentMethods();
-                    resetPayPanel();
-                }
+            // Item 1 - ab tab-switch nahi hai, Add Balance aur Payment
+            // History dono hamesha ek saath dikhte hain, isliye page load
+            // par dono ke init function chala dete hain.
+            function renderPaymentPageContent() {
+                populateBalancePaymentMethods();
+                resetPayPanel();
+                renderPaymentHistory();
                 updateBalanceDisplay();
             }
 
-            window.switchPaymentTab = function(tab) {
-                paymentActiveTab = tab;
-                document.querySelectorAll('#paymentTabStrip .rules-tab-btn').forEach(btn => {
-                    btn.classList.toggle('active', btn.dataset.tab === tab);
-                });
-                const host = document.getElementById('paymentTabBody');
-                if (host) host.innerHTML = paymentTabHtml(tab);
-                renderPaymentTabContent(tab);
-            };
-
             // Dashboard ke "Add Funds" / "View All Transactions" shortcuts
-            // ke liye - Payment page par seedha sahi tab khol kar jaate hain.
-            window.lexoraNavigatePaymentTab = function(tab) {
-                paymentActiveTab = tab;
+            // ke liye - dono ab seedha Payment page par le jaate hain
+            // (ab alag tabs nahi hain, sab ek saath dikhta hai).
+            window.lexoraNavigatePaymentTab = function() {
                 lexoraNavigate('payment');
             };
 
@@ -3615,6 +3596,13 @@
                 if (panel) panel.classList.remove('is-busy', 'is-inline');
                 payPanelSetState(PAY_PANEL_IDLE_HTML);
                 syncPayPanelAmount();
+            };
+
+            // Item 1 - Secure Checkout card ko manually band karne ka
+            // button (pehle sirf payment complete/cancel/fail par apne
+            // aap hide hota tha, koi close button nahi tha).
+            window.closeCheckoutModal = function() {
+                resetPayPanel();
             };
 
             window.syncPayPanelAmount = function() {
@@ -8255,7 +8243,7 @@
                 }
 
                 if (breadcrumb === '💳 Payment') {
-                    setTimeout(() => { renderPaymentTabContent(paymentActiveTab); }, 50);
+                    setTimeout(() => { renderPaymentPageContent(); }, 50);
                 }
 
                 if (breadcrumb === '📊 Dashboard') {
@@ -8789,32 +8777,30 @@
                 },
                 payment: {
                     body: function() {
-                        // Item 3 - Balance aur Payment History ab ek hi
-                        // "Payment" section me hain, tab-strip se switch
-                        // hote hain (Admin Panel ke PostgreSQL tabs jaisa
-                        // pattern) - alag menu items nahi hain ab.
+                        // Item 1 - Balance Summary aur Add Balance ek row me
+                        // (side by side), Payment History uske neeche -
+                        // dono hamesha visible (ab tab-switch nahi hai).
                         return `
-                        <div class="balance-grid" id="balanceGrid">
-                            <div class="balance-card">
-                                <div class="balance-number credit" id="totalCreditBalance">${currencySymbol()}0.00</div>
-                                <div class="balance-label">Total Credit</div>
+                        <div class="payment-top-row">
+                            <div class="balance-grid" id="balanceGrid">
+                                <div class="balance-card">
+                                    <div class="balance-number credit" id="totalCreditBalance">${currencySymbol()}0.00</div>
+                                    <div class="balance-label">Total Credit</div>
+                                </div>
+                                <div class="balance-card">
+                                    <div class="balance-number debit" id="totalDebitBalance">${currencySymbol()}0.00</div>
+                                    <div class="balance-label">Total Debit</div>
+                                </div>
+                                <div class="balance-card">
+                                    <div class="balance-number" id="currentBalanceDisplay">${currencySymbol()}0.00</div>
+                                    <div class="balance-label">Current Balance</div>
+                                </div>
                             </div>
-                            <div class="balance-card">
-                                <div class="balance-number debit" id="totalDebitBalance">${currencySymbol()}0.00</div>
-                                <div class="balance-label">Total Debit</div>
-                            </div>
-                            <div class="balance-card">
-                                <div class="balance-number" id="currentBalanceDisplay">${currencySymbol()}0.00</div>
-                                <div class="balance-label">Current Balance</div>
-                            </div>
+
+                            ${buildAddBalanceCardHtml()}
                         </div>
 
-                        <div class="rules-tab-strip payment-tab-strip" id="paymentTabStrip">
-                            <button class="rules-tab-btn ${paymentActiveTab === 'balance' ? 'active' : ''}" data-tab="balance" onclick="switchPaymentTab('balance')">+ Add Balance</button>
-                            <button class="rules-tab-btn ${paymentActiveTab === 'history' ? 'active' : ''}" data-tab="history" onclick="switchPaymentTab('history')">\u{1F4B3} Payment History</button>
-                        </div>
-
-                        <div id="paymentTabBody">${paymentTabHtml(paymentActiveTab)}</div>
+                        ${buildPaymentHistoryCardHtml()}
 
                         <div class="balance-checkout-modal" id="balanceCheckoutModal" style="display:none;">
                             <div class="balance-checkout-backdrop"></div>
@@ -8830,6 +8816,9 @@
                                         <div class="pay-panel-sub">Safe &amp; secure payment via Razorpay</div>
                                     </div>
                                     <div class="pay-panel-amount" id="payPanelAmount">${currencySymbol()}0.00</div>
+                                    <button class="pay-panel-close-btn" onclick="closeCheckoutModal()" aria-label="Close" title="Close">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+                                    </button>
                                 </div>
                                 <div class="pay-panel-body" id="rzpInlineMount"></div>
                             </div>
@@ -9618,6 +9607,17 @@
                 });
             };
 
+            // Item 4 - "All Services" (default, sabse zyada cards) ki
+            // natural height ko hi grid ki min-height bana dete hain,
+            // taaki Free/Paid select karne par card ki height kam na ho
+            // jaye - teeno filters me hamesha same height dikhti hai.
+            function lockAuthThumbGridHeight() {
+                const grid = document.getElementById('authThumbGrid');
+                if (!grid) return;
+                grid.style.minHeight = '';
+                grid.style.minHeight = grid.scrollHeight + 'px';
+            }
+
             // "Remember me" sirf email yaad rakhta hai (password kabhi
             // nahi - wo browser ke password manager ka kaam hai). Session
             // token alag key me hai, isse chhedte nahi.
@@ -9829,6 +9829,7 @@
                     wireOtpBoxes();
                     startAuthCountdown();
                 }
+                lockAuthThumbGridHeight();
             }
 
             function wireOtpBoxes() {
@@ -10292,7 +10293,7 @@
                         if (payChanged) {
                             paymentHistory = freshPaymentHistory;
                             updateBalanceDisplay();
-                            if (activeItemId === 'payment' && paymentActiveTab === 'history') renderPaymentHistory();
+                            if (activeItemId === 'payment') renderPaymentHistory();
                             if (activeItemId === 'dashboard' && document.getElementById('todayTableBody')) renderTodayTransactions();
                         }
                     } catch (e) { /* a missed poll just tries again in 15s - not worth surfacing to the user */ }

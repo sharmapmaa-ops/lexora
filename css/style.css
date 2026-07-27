@@ -3669,12 +3669,14 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-    /* Card ki height fix (item 1.11): table ki height chhoti nahi karni
-       thi - card khud badi honi chahiye thi taaki table + bottom
-       buttons dono comfortably fit ho jayein. overflow-y:auto safety
-       net hai: agar phir bhi kuch bada nikle to poora CARD scroll ho
-       jayega (kuch gayab ya card ke bahar nahi jayega). */
-    height: 1100px;
+    /* Card ki height fix (item 2): pehle fixed height + card-level
+       scrollbar diya tha, jisse chhoti tables (5 rows) ke liye bhi card
+       cut-off dikhta tha. Ab card apne content (status rows + tabs +
+       table + buttons) ke hisaab se khud size hoti hai (height: auto) -
+       jitna content utni height, buttons hamesha dikhte hain. max-height
+       + overflow sirf tab kaam aata hai jab content literally poore
+       viewport se bhi bada ho jaye. */
+    height: auto;
     max-height: 92vh;
     overflow-y: auto;
     overflow-x: hidden;
@@ -3683,22 +3685,16 @@
 #dbStatusBody {
     display: flex;
     flex-direction: column;
-    flex: 1;
-    min-height: 0;
 }
 
 #dbTablesBox {
     display: flex;
     flex-direction: column;
-    flex: 1;
-    min-height: 0;
 }
 
 #dbActiveTableBody {
     display: flex;
     flex-direction: column;
-    flex: 1;
-    min-height: 0;
 }
 
 .admin-btn {
@@ -4893,8 +4889,10 @@
 }
 
 .db-edit-table-wrapper {
-    flex: 1;
-    min-height: 440px;
+    /* Chhoti tables (kam rows) apni natural height me dikhti hain - koi
+       forced empty space nahi. Bahut saari rows ho to max-height ke
+       baad khud scroll karti hai, poori card ko bada kiye bina. */
+    max-height: 55vh;
     overflow: auto;
     border: 1px solid rgba(0,0,139,0.15);
     border-radius: 8px;
@@ -5530,9 +5528,34 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
     color: #fff;
 }
 
-/* ===== Item 3 - Payment page (merged Balance + Payment History) ===== */
-.payment-tab-strip {
-    margin: 16px 0 6px;
+/* ===== Item 1 - Payment page: Balance Summary + Add Balance side by
+   side, Payment History below (no more tab-switching) ===== */
+.payment-top-row {
+    display: grid;
+    grid-template-columns: minmax(220px, 0.85fr) minmax(0, 1.4fr);
+    gap: 20px;
+    align-items: stretch;
+    margin-bottom: 20px;
+}
+
+/* Balance Summary ab ek narrow column me hai - teen cards side-by-side
+   ki jagah ek column me stack hote hain. */
+.payment-top-row .balance-grid {
+    grid-template-columns: 1fr;
+    margin-bottom: 0;
+}
+
+.payment-top-row .balance-add-card-full {
+    margin-top: 0;
+}
+
+@media (max-width: 900px) {
+    .payment-top-row {
+        grid-template-columns: 1fr;
+    }
+    .payment-top-row .balance-grid {
+        grid-template-columns: 1fr 1fr 1fr;
+    }
 }
 
 .balance-add-card-full {
@@ -5628,6 +5651,28 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
     font-weight: 700;
     color: #1257f5;
     white-space: nowrap;
+}
+
+.pay-panel-close-btn {
+    border: none;
+    background: rgba(0,0,139,0.06);
+    color: rgba(0,0,0,0.55);
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: 0.15s;
+}
+
+.pay-panel-close-btn svg { width: 16px; height: 16px; }
+
+.pay-panel-close-btn:hover {
+    background: rgba(220,38,38,0.12);
+    color: #dc2626;
 }
 
 .pay-panel-body {
