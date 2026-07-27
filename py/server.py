@@ -1124,6 +1124,10 @@ def _build_invoice_pdf(company_name, logo_path, user, txns):
     return buf.getvalue()
 
 
+def escape_html(s):
+    return html_module.escape(str(s or ""))
+
+
 
 def _integration_store_path(user_id):
     return _user_dir(_safe_id(user_id), "_integrations.json")
