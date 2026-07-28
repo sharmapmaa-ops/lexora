@@ -1018,10 +1018,18 @@ def _load_company_info():
         return {}
 
 
-def _build_invoice_pdf(company_name, logo_path, user, txns):
+def _build_invoice_pdf(company_name, logo_path, user, txns,
+                        start_date=None, end_date=None,
+                        opening_balance=None, closing_balance=None):
     """Payment History > Download ke liye invoice PDF (item 3) - reportlab
     platypus se, taaki lambi transaction list khud pagination kar le
-    (lease_engine ke reports jaisa hi approach)."""
+    (lease_engine ke reports jaisa hi approach).
+
+    Agar start_date/end_date diye ho (Payment History card ke "From"/"To"
+    filter jaisa hi range), to sirf usi range ke transactions dikhaye
+    jaate hain, aur opening_balance/closing_balance (dono non-None) us
+    range ke upar/neeche ek "Opening Balance" aur "Closing Balance" row
+    ke roop me table me jod diye jaate hain."""
     import io
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import inch
@@ -1073,13 +1081,43 @@ def _build_invoice_pdf(company_name, logo_path, user, txns):
         f"<b>Email:</b> {escape_html(user.get('email') or '-')}",
         f"<b>Invoice Date:</b> {escape_html(datetime.date.today().isoformat())}",
     ]
+    if start_date and end_date:
+        client_lines.append(f"<b>Statement Period:</b> {escape_html(start_date)} to {escape_html(end_date)}")
     for line in client_lines:
         story.append(Paragraph(line, label_style))
     story.append(Spacer(1, 18))
 
-    # Transaction table - sabhi transactions, date/time wise.
+    # Cell text jaise Date & Time ya Transaction ID lambe ho sakte hain aur
+    # unme spaces nahi hote (e.g. "TXN-RZP-04FDRLIbAX"), isliye plain string
+    # ke bajaye Paragraph(wordWrap="CJK") use karte hain taaki text apni
+    # column ke andar hi wrap ho jaaye, next column me overlap na kare.
+    cell_style = ParagraphStyle(
+        "InvoiceCell", parent=label_style, fontSize=8.5, leading=10.5, wordWrap="CJK",
+    )
+    balance_row_style = ParagraphStyle(
+        "InvoiceBalanceRow", parent=cell_style, fontName="Helvetica-Bold",
+    )
+
+    def _cell(text, bold=False):
+        return Paragraph(escape_html(text), balance_row_style if bold else cell_style)
+
+    # Transaction table - filter range ke transactions, date/time wise,
+    # opening balance (range se pehle ka balance) aur closing balance
+    # (range ke aakhri tak ka balance) ke saath.
     header_row = ["Date & Time", "Transaction ID", "Description", "Credit", "Debit", "Status"]
     rows = [header_row]
+    balance_row_indices = []  # opening/closing balance rows ko alag se style karne ke liye
+
+    if opening_balance is not None:
+        rows.append([
+            _cell(start_date or "", bold=True),
+            "",
+            _cell("Opening Balance", bold=True),
+            "", "",
+            _cell(f"{opening_balance:,.2f}", bold=True),
+        ])
+        balance_row_indices.append(len(rows) - 1)
+
     total_credit = 0.0
     total_debit = 0.0
     for t in txns:
@@ -1091,18 +1129,28 @@ def _build_invoice_pdf(company_name, logo_path, user, txns):
         total_credit += credit
         total_debit += debit
         rows.append([
-            escape_html(date_time),
-            escape_html(t.get("id") or ""),
-            Paragraph(escape_html(t.get("description") or ""), label_style),
+            _cell(date_time),
+            _cell(t.get("id") or ""),
+            _cell(t.get("description") or ""),
             f"{credit:,.2f}" if credit else "",
             f"{debit:,.2f}" if debit else "",
-            escape_html((t.get("status") or "").replace("_", " ").title()),
+            _cell((t.get("status") or "").replace("_", " ").title()),
         ])
-    if len(rows) == 1:
-        rows.append(["No transactions yet.", "", "", "", "", ""])
+    if len(rows) == (2 if opening_balance is not None else 1):
+        rows.append(["No transactions in this period.", "", "", "", "", ""])
+
+    if closing_balance is not None:
+        rows.append([
+            _cell(end_date or "", bold=True),
+            "",
+            _cell("Closing Balance", bold=True),
+            "", "",
+            _cell(f"{closing_balance:,.2f}", bold=True),
+        ])
+        balance_row_indices.append(len(rows) - 1)
 
     table = Table(rows, colWidths=[1.15 * inch, 1.0 * inch, 2.05 * inch, 0.8 * inch, 0.8 * inch, 0.9 * inch], repeatRows=1)
-    table.setStyle(TableStyle([
+    table_style = [
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0b1330")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTSIZE", (0, 0), (-1, -1), 8.5),
@@ -1110,15 +1158,27 @@ def _build_invoice_pdf(company_name, logo_path, user, txns):
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f7fb")]),
         ("ALIGN", (3, 0), (4, -1), "RIGHT"),
-    ]))
+    ]
+    for idx in balance_row_indices:
+        table_style.append(("BACKGROUND", (0, idx), (-1, idx), colors.HexColor("#e7ebfa")))
+        table_style.append(("SPAN", (0, idx), (1, idx)))
+    table.setStyle(TableStyle(table_style))
     story.append(table)
     story.append(Spacer(1, 14))
-    story.append(Paragraph(
+
+    summary_parts = [
         f"<b>Total Credit:</b> {total_credit:,.2f} &nbsp;&nbsp; "
         f"<b>Total Debit:</b> {total_debit:,.2f} &nbsp;&nbsp; "
-        f"<b>Net Balance:</b> {(total_credit - total_debit):,.2f}",
-        label_style,
-    ))
+        f"<b>Net Change:</b> {(total_credit - total_debit):,.2f}"
+    ]
+    if opening_balance is not None and closing_balance is not None:
+        summary_parts.append(
+            f"<b>Opening Balance:</b> {opening_balance:,.2f} &nbsp;&nbsp; "
+            f"<b>Closing Balance:</b> {closing_balance:,.2f}"
+        )
+    for part in summary_parts:
+        story.append(Paragraph(part, label_style))
+        story.append(Spacer(1, 4))
 
     doc.build(story)
     return buf.getvalue()
@@ -3462,6 +3522,12 @@ class Handler(SimpleHTTPRequestHandler):
         if not user:
             return self._send_json(404, {"error": "Account not found."})
 
+        # Payment History card ke "From"/"To" filter jaisa hi range yahan
+        # bhi lagate hain, taaki invoice sirf usi date range ke transactions
+        # dikhaye jo screen par filter karke dikhaye gaye the.
+        start_date = (query.get("startDate", [""])[0] or "").strip()
+        end_date = (query.get("endDate", [""])[0] or "").strip()
+
         if db is not None and db.is_enabled():
             try:
                 txns = db.list_transactions(user_id)
@@ -3475,6 +3541,21 @@ class Handler(SimpleHTTPRequestHandler):
             return (str(t.get("date") or ""), str(t.get("time") or ""))
         txns = sorted(txns, key=_sort_key)
 
+        # Opening balance = start date se pehle ke saare transactions ka
+        # net (credit - debit). Closing balance = opening + range ke
+        # transactions ka net (yaani range ke aakhri tak ka balance).
+        opening_balance = 0.0
+        in_range_txns = txns
+        if start_date and end_date:
+            before_start = [t for t in txns if str(t.get("date") or "") < start_date]
+            opening_balance = sum(float(t.get("credit") or 0) - float(t.get("debit") or 0) for t in before_start)
+            in_range_txns = [
+                t for t in txns
+                if start_date <= str(t.get("date") or "") <= end_date
+            ]
+        range_net = sum(float(t.get("credit") or 0) - float(t.get("debit") or 0) for t in in_range_txns)
+        closing_balance = opening_balance + range_net
+
         company = _load_company_info()
         company_name = company.get("name") or "Lexora"
         logo_rel = company.get("logo") or ""
@@ -3483,9 +3564,15 @@ class Handler(SimpleHTTPRequestHandler):
             logo_path = ""
 
         try:
-            pdf_bytes = _build_invoice_pdf(company_name, logo_path, user, txns)
+            pdf_bytes = _build_invoice_pdf(
+                company_name, logo_path, user, in_range_txns,
+                start_date=start_date, end_date=end_date,
+                opening_balance=opening_balance if (start_date and end_date) else None,
+                closing_balance=closing_balance if (start_date and end_date) else None,
+            )
         except Exception as err:  # noqa: BLE001
             return self._send_json(500, {"error": f"Could not build invoice PDF: {err}"})
+
 
         download_name = f"Invoice_{user_id}_{datetime.date.today().isoformat()}.pdf"
         self.send_response(200)
