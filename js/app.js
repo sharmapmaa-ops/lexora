@@ -3251,8 +3251,20 @@
             // pehle se use karta hai (Authorization header ki jagah token
             // query param, kyunki ye ek plain browser navigation hai).
             window.downloadHistoryInvoicePdf = function() {
-                const url = '/api/payment/invoice-pdf?userId=' + encodeURIComponent(CURRENT_USER_ID) +
+                let url = '/api/payment/invoice-pdf?userId=' + encodeURIComponent(CURRENT_USER_ID) +
                     '&token=' + encodeURIComponent(AUTH_TOKEN || '');
+
+                // Payment History card me jo From/To filter lagaya hua hai,
+                // wahi range invoice me bhi bheja jaata hai - taaki PDF me
+                // sirf utni hi date range ke transactions aaye jo screen
+                // par filter karke dikhaye gaye the (opening/closing
+                // balance ke saath).
+                const fromInput = document.getElementById('historyFromDate');
+                const toInput = document.getElementById('historyToDate');
+                if (fromInput && toInput && fromInput.value && toInput.value) {
+                    url += '&startDate=' + encodeURIComponent(fromInput.value) +
+                        '&endDate=' + encodeURIComponent(toInput.value);
+                }
                 window.open(url, '_blank');
             };
 
