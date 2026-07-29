@@ -39,6 +39,7 @@ import json
 import os
 import threading
 import time
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
 # psycopg optional hai: requirements me hai, par agar install na ho (ya
 # DATABASE_URL na ho) to app JSON par chalta rehna chahiye, crash nahi.
@@ -58,9 +59,34 @@ _schema_lock = threading.Lock()
 _schema_ready = False
 
 
-# ============================================================
-# Connection
-# ============================================================
+def _effective_database_url():
+    """DATABASE_URL with sslmode guaranteed to be set explicitly.
+
+    This used to just trust the URL as-is because Render's own connection
+    strings already include sslmode. That's a Render-specific assumption -
+    AWS RDS/Aurora Postgres connection strings do NOT include it by
+    default, so moving DATABASE_URL to an AWS endpoint without this would
+    silently connect without SSL (or fail, depending on the instance's
+    "Require SSL" setting). Local/loopback hosts are left alone since a
+    local Postgres for dev usually isn't configured for SSL at all.
+    """
+    url = DATABASE_URL
+    if not url:
+        return url
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return url
+    if parsed.hostname in ("localhost", "127.0.0.1", "::1"):
+        return url
+    query = dict(parse_qsl(parsed.query))
+    if "sslmode" not in query:
+        query["sslmode"] = "require"
+        parsed = parsed._replace(query=urlencode(query))
+        url = urlunparse(parsed)
+    return url
+
+
 def is_enabled():
     """True tabhi jab DATABASE_URL bhi ho aur psycopg bhi import ho saka ho."""
     return bool(DATABASE_URL) and psycopg is not None
@@ -78,23 +104,25 @@ def why_disabled():
 def connect():
     """Ek nayi connection. Caller `with` me use kare taaki commit/close ho.
 
-    Render ka Postgres SSL maangta hai; agar URL me sslmode nahi hai to
-    hum add nahi karte - Render apne URL me pehle se deta hai. Local dev
-    me sslmode ki zaroorat nahi hoti.
+    Works against any standard Postgres-compatible DATABASE_URL - Render,
+    AWS RDS/Aurora, or a local instance - not just Render. SSL is ensured
+    explicitly (see _effective_database_url) rather than assumed to
+    already be in the URL.
 
     Ek retry (short backoff ke baad) hai kyunki managed Postgres
-    (Render/etc) kabhi-kabhi ek connection attempt ko transiently reset/
-    refuse kar deta hai (idle wake-up, brief network blip) - agla attempt
-    usually turant successful hota hai. Bina isके, ye ek real intermittent
-    connection hiccup poore page load ko "Unable to load data" dikha deta
-    tha jab asal me sirf ek retry chahiye tha.
+    (Render/AWS/etc) kabhi-kabhi ek connection attempt ko transiently
+    reset/refuse kar deta hai (idle wake-up, brief network blip) - agla
+    attempt usually turant successful hota hai. Bina isके, ye ek real
+    intermittent connection hiccup poore page load ko "Unable to load
+    data" dikha deta tha jab asal me sirf ek retry chahiye tha.
     """
     if not is_enabled():
         raise RuntimeError("Database is not configured: " + why_disabled())
+    url = _effective_database_url()
     last_err = None
     for attempt in range(2):
         try:
-            return psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=8)
+            return psycopg.connect(url, row_factory=dict_row, connect_timeout=8)
         except Exception as err:  # noqa: BLE001 - retry once, then let the real error surface
             last_err = err
             if attempt == 0:

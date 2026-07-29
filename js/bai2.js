@@ -329,12 +329,14 @@ Return ONLY this JSON, nothing else:
       try {
         const pages = await pagesFromFile(entry.file, useOcr, function (p, total, calls) {
           jsonCalls += calls;
-          billing.charge(`BAI2 - ${entry.file.name} - page ${p}/${total}`, rate);
+          // FULL-FILE BILLING: accrue the running total only - nothing is
+          // actually charged to the wallet until the whole file finishes
+          // (see billing.charge() call after this try block). If the file
+          // fails partway, none of this is charged.
           charged += rate;
           entry.pageCount = total;
           entry.progress = Math.round((p / total) * 70);
           log(`${label} > Page(${p}/${total}) > API Call(s) > JSON=${calls}, IMAGE=0`, 'Success');
-          log(`${label} > Page(${p}/${total}) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${rate.toFixed(2)}`, 'Info');
           rerender();
         });
 
@@ -350,13 +352,20 @@ Return ONLY this JSON, nothing else:
         STATE.results.push({ file: entry.file.name, account: account, transactions: account.transactions });
         entry.status = 'Success';
         entry.progress = 100;
+
+        // Charge once, only now that the file has fully succeeded.
+        const txnId = billing.charge(`BAI2 - ${entry.file.name}`, charged);
+        log(`${label} > Page(All) > API Call(s) > JSON=${jsonCalls}, IMAGE=0`, 'Info');
+        log(`${label} > Page(All) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${charged.toFixed(2)}`, 'Info');
+        if (charged > 0 && window.notifyProcessCompletion) {
+          window.notifyProcessCompletion('BAI2', entry.file.name, charged, txnId);
+        }
       } catch (e) {
         entry.status = 'Failed';
         entry.error = e.message || 'Processing failed';
         log(`${label} > Error > ${entry.error}`, 'Failed');
+        log(`${label} > System > No charge - file did not finish processing`, 'Info');
       }
-      log(`${label} > Page(All) > API Call(s) > JSON=${jsonCalls}, IMAGE=0`, 'Info');
-      log(`${label} > Page(All) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${charged.toFixed(2)}`, 'Info');
       rerender();
     }
 

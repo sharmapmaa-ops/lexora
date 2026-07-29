@@ -92,8 +92,10 @@
 
       let charged = 0, jsonCalls = 0, imageCalls = 0;
       try {
-        // Per-page rows and per-page billing come from the pipeline's
-        // structured events, exactly as Translation does it.
+        // Per-page rows come from the pipeline's structured events, same
+        // as Translation - but billing is now FULL-FILE: pages only
+        // accrue toward the total, nothing is charged to the wallet
+        // until the whole file finishes successfully below.
         if (window.setPipelineEventHandler) {
           window.setPipelineEventHandler(function (ev) {
             if (!ev || ev.type !== 'page') return;
@@ -102,9 +104,7 @@
             const lbl = `Page(${ev.page}/${ev.totalPages})`;
             log(`${label} > ${lbl} > API Call(s) > JSON=${ev.jsonCalls}, IMAGE=${ev.imageCalls}`, 'Success');
             if (ev.ok) {
-              billing.charge(`OCR - ${entry.file.name} - page ${ev.page}/${ev.totalPages}`, rate);
               charged += rate;
-              log(`${label} > ${lbl} > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${rate.toFixed(2)}`, 'Info');
             }
             log(`${label} > ${lbl} > Text Data = ${ev.textData}`, 'Info');
             entry.pageCount = ev.totalPages;
@@ -134,16 +134,20 @@
 
         entry.status = 'Success';
         entry.progress = 100;
+
+        // Charge once, only now that the file has fully succeeded.
+        const txnId = billing.charge(`OCR - ${entry.file.name}`, charged);
         log(`${label} > Page(All) > API Call(s) > JSON=${jsonCalls}, IMAGE=${imageCalls}`, 'Info');
         log(`${label} > Page(All) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${charged.toFixed(2)}`, 'Info');
         log(`${label} > Generate Output > ${name}`, 'Success');
+        if (charged > 0 && window.notifyProcessCompletion) {
+          window.notifyProcessCompletion('OCR', entry.file.name, charged, txnId);
+        }
       } catch (e) {
         entry.status = 'Failed';
         entry.error = e.message || 'Processing failed';
         log(`${label} > Error > ${entry.error}`, 'Failed');
-        if (charged > 0) {
-          log(`${label} > Page(All) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${charged.toFixed(2)} (completed pages only)`, 'Info');
-        }
+        log(`${label} > System > No charge - file did not finish processing`, 'Info');
       }
       rerender();
     }

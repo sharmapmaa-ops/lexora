@@ -1399,8 +1399,17 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
     cursor: pointer;
 }
 
-.notif-tab.is-active { color: var(--ds-blue); border-bottom-color: var(--ds-blue); }
+.notif-tab.is-active { background: none; color: var(--ds-blue); border-bottom-color: var(--ds-blue); }
 .notif-tab:hover     { color: var(--ds-blue); }
+
+/* Card is a fixed 450px (.history-card, style.css) but its flex children
+   default to min-height:auto, which lets a tall content run (e.g. the
+   "All" tab with more rows than "Read"/"Unread") push past that height
+   instead of scrolling inside it - min-height:0 is what actually makes
+   the overflow-y:auto on .history-table-wrapper take effect, so the card
+   stays the same height no matter which of the 3 tabs is selected. */
+.notif-card .card-body,
+.notif-card .history-table-wrapper { min-height: 0; }
 
 .notif-table { table-layout: fixed; width: 100%; }
 .notif-table td { vertical-align: middle; }
@@ -3221,7 +3230,7 @@ body, .center-content { background: #fff; }
 
 .admin-ov-stat-row {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 16px;
     margin-bottom: 20px;
 }
@@ -3253,6 +3262,7 @@ body, .center-content { background: #fff; }
 .admin-ov-stat-icon-revenue { background: #e3f8ef; color: #15803d; }
 .admin-ov-stat-icon-tickets { background: #fde8e8; color: #c0392b; }
 .admin-ov-stat-icon-newusers { background: #eef1fb; color: var(--ds-navy); }
+.admin-ov-stat-icon-active { background: #e3f8ef; color: #15803d; }
 
 .admin-ov-stat-value { font-size: 1.3rem; font-weight: 800; color: var(--ds-navy); line-height: 1.2; }
 .admin-ov-stat-value.is-revenue { color: #15803d; }
@@ -3311,6 +3321,9 @@ body, .center-content { background: #fff; }
 .admin-ov-rank-name { flex: 1; color: var(--ds-ink); font-weight: 600; }
 .admin-ov-rank-value { color: var(--ds-blue); font-size: .85rem; font-weight: 600; }
 
+@media (max-width: 1100px) {
+    .admin-ov-stat-row { grid-template-columns: repeat(3, 1fr); }
+}
 @media (max-width: 900px) {
     .admin-ov-stat-row { grid-template-columns: repeat(2, 1fr); }
     .admin-ov-row-2col { grid-template-columns: 1fr; }

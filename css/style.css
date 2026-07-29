@@ -5010,10 +5010,13 @@
 }
 
 .db-edit-table-wrapper {
-    /* Chhoti tables (kam rows) apni natural height me dikhti hain - koi
-       forced empty space nahi. Bahut saari rows ho to max-height ke
-       baad khud scroll karti hai, poori card ko bada kiye bina. */
-    max-height: 55vh;
+    /* Explicitly a FIXED height (not max-height/auto) - switching the
+       Table select dropdown must never resize this card, regardless of
+       whether the newly-selected table has 2 rows or 200. Tables shorter
+       than this just show blank space below their last row; tables
+       taller than this scroll internally. This intentionally overrides
+       the older "let it size to content" approach for this one element. */
+    height: 400px;
     overflow: auto;
     border: 1px solid rgba(0,0,139,0.15);
     border-radius: 8px;

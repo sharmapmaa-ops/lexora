@@ -4263,13 +4263,18 @@ class Handler(SimpleHTTPRequestHandler):
     def _handle_auth_register(self, body):
         first = (body.get("firstName") or "").strip()
         last = (body.get("lastName") or "").strip()
+        account_type = body.get("accountType") or "Personal"
+        if account_type not in ("Personal", "Organisation", "Company"):
+            account_type = "Personal"
         gender = body.get("gender") or ""
         birthdate = body.get("birthdate") or ""
         mobile = (body.get("mobile") or "").strip()
         email = (body.get("email") or "").strip().lower()
         password = body.get("password") or ""
 
-        if not first or not last or not email or not password:
+        # Organisation/Company accounts have no last name - the org/company
+        # name IS the account name (sent in as firstName by the frontend).
+        if not first or (account_type == "Personal" and not last) or not email or not password:
             raise ValueError("Please fill in all required fields.")
 
         users = auth_store.load_users()
@@ -4333,6 +4338,7 @@ class Handler(SimpleHTTPRequestHandler):
             "plan": "Free", "planStartDate": today.isoformat(),
             "planEndDate": (today + datetime.timedelta(days=7)).isoformat(), "planStatus": "Active",
             "createdAt": datetime.datetime.utcnow().isoformat() + "Z",
+            "accountType": account_type,
         }
         users.append(new_user)
         auth_store.save_users(users)

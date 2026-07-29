@@ -390,17 +390,14 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
 
       let fileCharged = 0, fileJson = 0, fileImage = 0;
       try {
-        // Charging happens per page AS each page is read, so if a later
-        // page fails the user keeps what completed and only pays for that.
+        // FULL-FILE BILLING: pages only accrue toward the total as they're
+        // read - nothing is actually charged to the wallet until the
+        // whole file (text read + field extraction) finishes successfully
+        // below. If it fails partway, none of this is charged.
         const chargePage = function (pageNo, total, jsonCalls) {
           fileJson += jsonCalls;
-          billing.charge(
-            `Data Extraction - ${entry.file.name} - page ${pageNo}/${total}`,
-            perPageRate
-          );
           fileCharged += perPageRate;
           log(`${label} > Page(${pageNo}/${total}) > API Call(s) > JSON=${jsonCalls}, IMAGE=0`, 'Success');
-          log(`${label} > Page(${pageNo}/${total}) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${perPageRate.toFixed(2)}`, 'Info');
           entry.pageCount = total;
           entry.progress = Math.round((pageNo / total) * 80);
           rerender();
@@ -423,14 +420,21 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
         STATE.rows.push({ file: entry.file.name, values: values });
         entry.status = 'Success';
         entry.progress = 100;
+
+        // Charge once, only now that the file has fully succeeded.
+        const txnId = billing.charge(`Data Extraction - ${entry.file.name}`, fileCharged);
+        log(`${label} > Page(All) > API Call(s) > JSON=${fileJson}, IMAGE=${fileImage}`, 'Info');
+        log(`${label} > Page(All) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${fileCharged.toFixed(2)}`, 'Info');
+        if (fileCharged > 0 && window.notifyProcessCompletion) {
+          window.notifyProcessCompletion('Data Extraction', entry.file.name, fileCharged, txnId);
+        }
       } catch (e) {
         entry.status = 'Failed';
         entry.error = e.message || 'Extraction failed';
         log(`${label} > Error > ${entry.error}`, 'Failed');
+        log(`${label} > System > No charge - file did not finish processing`, 'Info');
       }
 
-      log(`${label} > Page(All) > API Call(s) > JSON=${fileJson}, IMAGE=${fileImage}`, 'Info');
-      log(`${label} > Page(All) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${fileCharged.toFixed(2)}`, 'Info');
       rerender();
     }
 

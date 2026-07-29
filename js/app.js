@@ -84,14 +84,6 @@
                         "label": "❓ Help",
                         "subItems": [
                             {
-                                "id": "api-documentation",
-                                "label": "API Documentation"
-                            },
-                            {
-                                "id": "support",
-                                "label": "Support"
-                            },
-                            {
                                 "id": "contact-us",
                                 "label": "Contact Us"
                             }
@@ -103,6 +95,16 @@
                         "id": "profile",
                         "label": "👤 My Profile",
                         "action": "Profile"
+                    },
+                    {
+                        "id": "api-documentation",
+                        "label": "📘 API Documentation",
+                        "action": "API Documentation"
+                    },
+                    {
+                        "id": "support",
+                        "label": "🎫 Support",
+                        "action": "Support"
                     },
                     {
                         "id": "admin",
@@ -504,6 +506,7 @@
                     CURRENT_USER_ID
                 );
             }
+            window.notifyProcessCompletion = notifyProcessCompletion;
 
             function getMyLeaseActivityLog() {
                 return leaseActivityLog.filter(a => a.userId === CURRENT_USER_ID);
@@ -781,14 +784,6 @@
                             </select>
                           </div>
                         </div>
-                        <div style="display:flex;align-items:center;gap:20px;margin-top:10px;">
-                            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
-                                   title="Checked (With OCR): full vision-based OCR - reads scanned/photographed pages too. Unchecked: faster local text extraction - text-based PDFs only (not scanned/photo). Translation works in both. The original page background is always kept behind the text automatically.">
-                                <input type="checkbox" id="translationHybridCheck" style="width:auto;margin:0;" ${translationHybridMode ? 'checked' : ''} ${processState.running ? 'disabled' : ''}
-                                       onchange="setTranslationHybridMode(this.checked)" />
-                                <span>With OCR</span>
-                            </label>
-                        </div>
                     </div>
                 ` : `
                     <div class="setup-group">
@@ -1057,18 +1052,17 @@
                 '<option value="Afrikaans">Afrikaans</option>' +
                 '<option value="Filipino (Tagalog)">Filipino (Tagalog)</option>';
 
-            let translationHybridMode = false;   // default: UNCHECKED (user spec)
+            const translationHybridMode = false;   // With OCR checkbox removed - translation is text-based only now.
             // Image is ALWAYS placed behind the text now (no more With Image
             // checkbox), and cleaning is automatic: Text-based mode always
             // uses deterministic local paint; With-OCR mode uses the page's
             // own OCR JSON background flag to decide between AI clean (real
             // background/graphics present) and local paint (text-only page).
-            window.setTranslationHybridMode = function(checked) {
-                translationHybridMode = !!checked;
-                // This toggle now only changes HOW text is extracted
-                // (local text-layer vs vision OCR). Image handling and
-                // translation are the same either way; price is a flat
-                // per-plan rate regardless of mode.
+            window.setTranslationHybridMode = function() {
+                // No-op: the With OCR checkbox was removed - translation is
+                // always text-based extraction now (translationHybridMode is
+                // a fixed constant above), kept only so nothing throws if
+                // some stale cached markup still references this function.
             };
 
             // Translation output file format: 'docx' (default) or 'pdf'.
@@ -2139,7 +2133,6 @@
                             const perPageRate = getServicePrice('translation', 1);
                             let totalJsonCalls = 0, totalImageCalls = 0;
                             let totalCharged = 0, pagesCharged = 0;
-                            const pageTxnIds = [];
 
                             let offlineBlob;
                             let lastLoggedMsg = '';
@@ -2154,29 +2147,15 @@
                                         totalJsonCalls += ev.jsonCalls;
                                         totalImageCalls += ev.imageCalls;
 
-                                        // PER-PAGE BILLING: charge as soon as this
-                                        // page completes, so if a later page fails
-                                        // the user keeps the finished pages and is
-                                        // only billed for those.
+                                        // FULL-FILE BILLING: pages only accrue toward
+                                        // the total here - nothing is actually
+                                        // deducted from the wallet until the whole
+                                        // file finishes successfully (see the single
+                                        // charge after the try/catch below). If the
+                                        // file fails partway, none of this is charged.
                                         if (ev.ok) {
-                                            const nowP = new Date();
-                                            const txnIdP = 'TXN' + String(nextTransactionId++).padStart(3, '0');
-                                            pageTxnIds.push(txnIdP);
-                                            paymentHistory.push({
-                                                id: txnIdP,
-                                                date: localDateStr(nowP),
-                                                time: nowP.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
-                                                userId: CURRENT_USER_ID,
-                                                paymentType: 'Service Fee',
-                                                paymentMode: 'Wallet Balance',
-                                                description: `Translation - ${file.name} - page ${ev.page}/${ev.totalPages} (${modeName}${isTranslate ? ' ' + targetLanguage : ' Original'})`,
-                                                credit: 0,
-                                                debit: perPageRate
-                                            });
                                             totalCharged += perPageRate;
                                             pagesCharged++;
-                                            addActivity('translation',
-                                                `${fl}${lbl} > Amount Deducted from Wallet=${currencySymbol()}${perPageRate.toFixed(2)}`, 'Info');
                                         }
                                         addActivity('translation', `${fl}${lbl} > Text Data = ${ev.textData}`, 'Info');
 
@@ -2229,15 +2208,11 @@
                                 // ERROR LINE: rehti hai (hatti nahi), aur File Processing
                                 // ki alag failed line bhi.
                                 addActivity('translation', `${fl}Error > ${offErr.message}`, 'Failed');
-                                if (pagesCharged > 0) {
-                                    // Per-page billing means the pages that DID
-                                    // complete were already charged - show that
-                                    // total so the partial charge isn't a surprise.
-                                    addActivity('translation',
-                                        `${fl}Page(All) > API Call(s) > JSON=${totalJsonCalls}, IMAGE=${totalImageCalls}`, 'Info');
-                                    addActivity('translation',
-                                        `${fl}Page(All) > Amount Deducted from Wallet=${currencySymbol()}${totalCharged.toFixed(2)} (${pagesCharged} completed page(s))`, 'Info');
-                                }
+                                // Full-file billing: the file didn't finish, so
+                                // nothing is charged at all - not even for the
+                                // pages that did complete before the failure.
+                                addActivity('translation',
+                                    `${fl}System > No charge - file did not finish processing (${pagesCharged} page(s) had completed before the error)`, 'Info');
                                 file.status = 'error';
                                 file.errorLabel = 'Error';
                                 file.errorReason = offErr.message || 'Processing failed';
@@ -2261,13 +2236,30 @@
                             translationBlobStore[file.id] = { blob: offlineBlob, name: docName + outExt };
                             file.progress = '95';
 
-                            // Billing already happened PER PAGE as each page
-                            // completed (see onEvent above) - no charge here,
-                            // that would double-bill. These are the summary rows.
+                            // FULL-FILE BILLING: the file finished successfully -
+                            // this is the one and only wallet charge for it, for
+                            // every page combined (previously this deducted once
+                            // per page as each one completed).
+                            let fileTxnId = '';
+                            if (totalCharged > 0) {
+                                const nowF = new Date();
+                                fileTxnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                                paymentHistory.push({
+                                    id: fileTxnId,
+                                    date: localDateStr(nowF),
+                                    time: nowF.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                                    userId: CURRENT_USER_ID,
+                                    paymentType: 'Service Fee',
+                                    paymentMode: 'Wallet Balance',
+                                    description: `Translation - ${file.name} (${modeName}${isTranslate ? ' ' + targetLanguage : ' Original'})`,
+                                    credit: 0,
+                                    debit: totalCharged
+                                });
+                            }
                             addActivity('translation',
                                 `${fl}Page(All) > API Call(s) > JSON=${totalJsonCalls}, IMAGE=${totalImageCalls}`, 'Info');
                             addActivity('translation',
-                                `${fl}Page(All) > Amount Deducted from Wallet=${currencySymbol()}${totalCharged.toFixed(2)}`, 'Info');
+                                `${fl}Page(All) > Amount Deducted from Wallet=${currencySymbol()}${totalCharged.toFixed(2)} (${pagesCharged} page(s), charged once on completion)`, 'Info');
 
                             file.docName = docName;
                             file.outputFormat = 'docx';
@@ -2275,7 +2267,7 @@
                             file.progress = '100';
                             addActivity('translation', `${fl}Generate Output > ${docName}${outExt}`, 'Success');
                             if (totalCharged > 0) {
-                                notifyProcessCompletion('Translation', file.name, totalCharged, pageTxnIds[pageTxnIds.length - 1] || '');
+                                notifyProcessCompletion('Translation', file.name, totalCharged, fileTxnId);
                             }
                             file.status = 'completed';
                             activeAgentId = null;
@@ -7103,6 +7095,7 @@
                     return `<div class="content-section"><h3>🔒 Access restricted</h3><p>This page is only available to Admin and Developer accounts.</p></div>`;
                 }
                 const totalUsers = USER_DIRECTORY.length;
+                const activeUsers = USER_DIRECTORY.filter(function (u) { return u.status === 'Active'; }).length;
 
                 const cutoff = new Date();
                 cutoff.setDate(cutoff.getDate() - 30);
@@ -7142,13 +7135,17 @@
 
                 return `
                     <div class="admin-ov-header">
-                        <h2>Admin Overview</h2>
+                        <h2>Overview</h2>
                         <p>Platform-wide stats across every user and service.</p>
                     </div>
                     <div class="admin-ov-stat-row">
                         <div class="admin-ov-stat-card">
                             <span class="admin-ov-stat-icon admin-ov-stat-icon-users">👥</span>
                             <div><div class="admin-ov-stat-value">${totalUsers}</div><div class="admin-ov-stat-label">Total Users</div></div>
+                        </div>
+                        <div class="admin-ov-stat-card">
+                            <span class="admin-ov-stat-icon admin-ov-stat-icon-active">✅</span>
+                            <div><div class="admin-ov-stat-value">${activeUsers}</div><div class="admin-ov-stat-label">Active Users</div></div>
                         </div>
                         <div class="admin-ov-stat-card">
                             <span class="admin-ov-stat-icon admin-ov-stat-icon-revenue">₹</span>
@@ -8083,13 +8080,14 @@
                     // TEMPORARY: disabled so every logged-in user sees them
                     // (e.g. the Admin item). To restore real role-based
                     // visibility, un-comment the check below.
-                    // if (Array.isArray(item.rolesAllowed) && !item.rolesAllowed.includes(myRole)) {
-                    //     return;
-                    // }
+                    // Role-gated items (Admin, Overview) only render for allowed roles.
+                    if (Array.isArray(item.rolesAllowed) && !item.rolesAllowed.includes(myRole)) {
+                        return;
+                    }
 
                     // Admin Overview stays Admin/Developer-only regardless of
-                    // the generic (currently disabled) check above - this one
-                    // was a specific, explicit ask.
+                    // the check above (belt-and-suspenders, since this one
+                    // was a specific, explicit ask).
                     if (item.id === 'admin-overview' && !isAdminOrDeveloper()) return;
 
                     const btn = document.createElement('button');
@@ -8143,6 +8141,10 @@
                         data = { body: buildAdminFilesBody() };
                     } else if (action === 'AdminOverview') {
                         data = { body: buildAdminOverviewBody() };
+                    } else if (action === 'API Documentation') {
+                        data = { body: CONTENT_DATA['api-documentation'].body() };
+                    } else if (action === 'Support') {
+                        data = { body: CONTENT_DATA['support'].body() };
                     } else if (action === 'Notification') {
                         data = { body: buildNotificationBody() };
                     }
@@ -9425,13 +9427,13 @@
                             ['Data & Security', "Files are processed for your job and are not used to train models. Only you and your account's admins can see your documents."],
                             ['OCR & Data Extraction', 'OCR rebuilds scanned or photographed pages into editable Word. Data Extraction lets you define your own fields and returns a clean table.'],
                             ['Translation Services', 'Over 60 languages, with the original page layout preserved. Choose Word or PDF output in the Setup card.'],
-                            ['API & Integrations', 'Generate a key under Help \u203a API Documentation, then call the REST endpoints listed there with a Bearer token.']
+                            ['API & Integrations', 'Generate a key under Profile \u203a API Documentation, then call the REST endpoints listed there with a Bearer token.']
                         ];
 
                         const quick = [
-                            ['<rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M8.5 9h7M8.5 13h7M8.5 17h4"/>', 'Create Ticket', 'Submit a support request', "lexoraNavigate('help','support')"],
-                            ['<path d="M4 12.5 9 17l11-11"/><path d="M4 6.5h9"/>', 'Track Ticket', 'Check ticket status', "lexoraNavigate('help','support')"],
-                            ['<path d="M9 7 4.5 12 9 17M15 7l4.5 5L15 17"/>', 'API Documentation', 'Explore our API docs', "lexoraNavigate('help','api-documentation')"],
+                            ['<rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M8.5 9h7M8.5 13h7M8.5 17h4"/>', 'Create Ticket', 'Submit a support request', "handleUserAction('Support')"],
+                            ['<path d="M4 12.5 9 17l11-11"/><path d="M4 6.5h9"/>', 'Track Ticket', 'Check ticket status', "handleUserAction('Support')"],
+                            ['<path d="M9 7 4.5 12 9 17M15 7l4.5 5L15 17"/>', 'API Documentation', 'Explore our API docs', "handleUserAction('API Documentation')"],
                             [ICON.phone, 'Call Us', c.phone || '', c.phone ? `window.open('tel:${String(c.phone).replace(/[^+\d]/g, '')}')` : 'void(0)']
                         ];
 
@@ -9449,7 +9451,7 @@
                                                 <b>Raise a Ticket</b>
                                                 <span>Our team replies by email</span>
                                             </div>
-                                            <button onclick="lexoraNavigate('help','support')">Open Support <em>\u2192</em></button>
+                                            <button onclick="handleUserAction('Support')">Open Support <em>\u2192</em></button>
                                         </div>
                                         <div class="contact-channel is-wa">
                                             <span class="contact-channel-icon">${svg('<path d="M4 20l1.4-4A8 8 0 1 1 8 18.6z"/><path d="M9 9.5c.6 2.4 3.1 4.9 5.5 5.5"/>')}</span>
@@ -10095,9 +10097,28 @@
                 return `
                     <h2 class="auth-card-title">Create Account</h2>
                     <p class="auth-card-note">Fill your details — verification code will be sent.</p>
-                    <div class="auth-form-row">
+                    <div class="auth-form-group">
+                        <div class="profile-vcd-radio-group" id="regAccountTypeGroup" style="margin-top:0;">
+                            <label class="profile-vcd-radio">
+                                <input type="radio" name="regAccountType" value="Personal" checked onchange="onRegAccountTypeChange()" />
+                                <span>Personal</span>
+                            </label>
+                            <label class="profile-vcd-radio">
+                                <input type="radio" name="regAccountType" value="Organisation" onchange="onRegAccountTypeChange()" />
+                                <span>Organisation</span>
+                            </label>
+                            <label class="profile-vcd-radio">
+                                <input type="radio" name="regAccountType" value="Company" onchange="onRegAccountTypeChange()" />
+                                <span>Company</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="auth-form-row" id="regPersonalNameRow">
                         <input type="text" id="regFirstName" class="auth-input" placeholder="First Name *" />
                         <input type="text" id="regLastName" class="auth-input" placeholder="Last Name *" />
+                    </div>
+                    <div class="auth-form-group" id="regOrgNameGroup" style="display:none;">
+                        <input type="text" id="regOrgName" class="auth-input" placeholder="Organisation Name *" />
                     </div>
                     <div class="auth-form-row">
                         <select id="regGender" class="auth-input">
@@ -10108,10 +10129,8 @@
                         </select>
                         <input type="date" id="regBirthdate" class="auth-input" />
                     </div>
-                    <div class="auth-form-group">
+                    <div class="auth-form-row">
                         <input type="text" id="regMobile" class="auth-input" placeholder="Mobile No *" />
-                    </div>
-                    <div class="auth-form-group">
                         <input type="email" id="regEmail" class="auth-input" placeholder="Email Address *" />
                     </div>
                     <div class="auth-form-row">
@@ -10399,10 +10418,37 @@
                 }
             };
 
+            window.onRegAccountTypeChange = function() {
+                const typeInput = document.querySelector('input[name="regAccountType"]:checked');
+                const type = typeInput ? typeInput.value : 'Personal';
+                const personalRow = document.getElementById('regPersonalNameRow');
+                const orgGroup = document.getElementById('regOrgNameGroup');
+                const orgInput = document.getElementById('regOrgName');
+                if (type === 'Personal') {
+                    if (personalRow) personalRow.style.display = '';
+                    if (orgGroup) orgGroup.style.display = 'none';
+                } else {
+                    if (personalRow) personalRow.style.display = 'none';
+                    if (orgGroup) orgGroup.style.display = '';
+                    if (orgInput) orgInput.placeholder = (type === 'Company' ? 'Company Name *' : 'Organisation Name *');
+                }
+            };
+
             window.handleAuthRegister = async function() {
                 hideAuthError();
-                const firstName = document.getElementById('regFirstName').value.trim();
-                const lastName = document.getElementById('regLastName').value.trim();
+                const typeInput = document.querySelector('input[name="regAccountType"]:checked');
+                const accountType = typeInput ? typeInput.value : 'Personal';
+                const isOrg = accountType !== 'Personal';
+
+                // Organisation/Company accounts have no first/last name -
+                // the single org/company name IS the account's name, and
+                // is what shows up everywhere firstName+lastName normally
+                // would (profile, admin directory, notifications, and -
+                // per the ask - the invoice PDF).
+                const firstName = isOrg
+                    ? document.getElementById('regOrgName').value.trim()
+                    : document.getElementById('regFirstName').value.trim();
+                const lastName = isOrg ? '' : document.getElementById('regLastName').value.trim();
                 const gender = document.getElementById('regGender').value;
                 const birthdate = document.getElementById('regBirthdate').value;
                 const mobile = document.getElementById('regMobile').value.trim();
@@ -10410,8 +10456,10 @@
                 const password = document.getElementById('regPassword').value;
                 const confirmPassword = document.getElementById('regConfirmPassword').value;
 
-                if (!firstName || !lastName || !email || !password) {
-                    showAuthError('Please fill in all required fields.');
+                if (!firstName || (!isOrg && !lastName) || !email || !password) {
+                    showAuthError(isOrg
+                        ? `Please enter your ${accountType.toLowerCase()} name and fill in all required fields.`
+                        : 'Please fill in all required fields.');
                     return;
                 }
                 if (password !== confirmPassword) {
@@ -10421,7 +10469,7 @@
 
                 try {
                     const res = await authPost('/api/auth/register', {
-                        firstName, lastName, gender, birthdate, mobile, email, password
+                        firstName, lastName, gender, birthdate, mobile, email, password, accountType
                     });
                     authState.verifyPurpose = 'register';
                     authState.userId = res.userId;
@@ -10765,6 +10813,86 @@
                 initializeApp();
             };
 
+            // Plan expiry reminders + auto-downgrade to Free.
+            //
+            // Runs once per app load (right after profileData/PLANS_DATA are
+            // in) rather than as a real backend-scheduled job - consistent
+            // with how plan switching already works entirely client-side
+            // (_doSwitchPlan above persists via /api/profile/update and
+            // /api/data/plan-history, no server-side plan logic exists).
+            // Means the check only actually fires for a user once they open
+            // the app again, which is an accepted tradeoff of that same
+            // existing architecture.
+            const PLAN_EXPIRY_REMINDER_DAYS = 3;
+
+            async function checkPlanExpiryAndNotify() {
+                if (!profileData || profileData.plan === 'Free' || !profileData.planEndDate) return;
+
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                const endDate = new Date(profileData.planEndDate);
+                if (isNaN(endDate.getTime())) return;
+                endDate.setHours(0, 0, 0, 0);
+                const daysLeft = Math.round((endDate - today) / 86400000);
+                const planName = profileData.plan;
+
+                if (daysLeft < 0) {
+                    // Already expired - auto-downgrade to Free, same
+                    // bookkeeping _doSwitchPlan does for any plan switch.
+                    const freePlan = PLANS_DATA.find(p => p.name === 'Free') || { name: 'Free', monthlyPrice: 0, pricePerTranslation: 0 };
+                    const now = new Date();
+                    const newEnd = new Date(now);
+                    newEnd.setDate(newEnd.getDate() + 7);
+                    const startDateStr = localDateStr(now);
+                    const endDateStr = localDateStr(newEnd);
+
+                    profileData.plan = freePlan.name;
+                    profileData.planStartDate = startDateStr;
+                    profileData.planEndDate = endDateStr;
+                    profileData.planStatus = 'Active';
+                    profileData.planReminderSentFor = null;
+                    await persistProfile();
+
+                    planHistory.push({
+                        userId: CURRENT_USER_ID,
+                        planName: freePlan.name,
+                        startDate: startDateStr,
+                        endDate: endDateStr,
+                        frequency: 'Monthly',
+                        amount: 0,
+                        pricePerTranslation: freePlan.pricePerTranslation,
+                    });
+                    persistPlanHistory();
+
+                    addNotification(`Your ${planName} plan ended and your account has moved to the Free plan. You can upgrade again anytime from Plans & Offers to continue on ${planName}.`);
+                    sendGenericNotificationEmail(
+                        profileData.email, `${profileData.firstName} ${profileData.lastName}`,
+                        `Your ${planName} plan has ended`,
+                        `Your ${planName} plan ended and your account has moved to the Free plan. You can upgrade again anytime from Plans & Offers to continue on ${planName}.`,
+                        null, null, CURRENT_USER_ID
+                    );
+                } else if (daysLeft <= PLAN_EXPIRY_REMINDER_DAYS && profileData.planReminderSentFor !== profileData.planEndDate) {
+                    // Not expired yet, but close - remind once per cycle
+                    // (de-duped against the current planEndDate so it
+                    // doesn't repeat every single day, and resets
+                    // naturally once the plan is renewed and gets a new
+                    // planEndDate).
+                    const dayWord = daysLeft === 1 ? 'day' : 'days';
+                    const msg = daysLeft === 0
+                        ? `Your ${planName} plan ends today. Renew from Plans & Offers to continue on ${planName} - otherwise you'll automatically move to the Free plan.`
+                        : `Your ${planName} plan ends in ${daysLeft} ${dayWord} (${profileData.planEndDate}). Renew from Plans & Offers to continue on ${planName} - otherwise you'll automatically move to the Free plan.`;
+
+                    addNotification(msg);
+                    sendGenericNotificationEmail(
+                        profileData.email, `${profileData.firstName} ${profileData.lastName}`,
+                        `Your ${planName} plan ends soon`, msg, null, null, CURRENT_USER_ID
+                    );
+
+                    profileData.planReminderSentFor = profileData.planEndDate;
+                    persistProfile();
+                }
+            }
+
             async function initializeApp() {
                 try {
                     await loadAppData();
@@ -10784,6 +10912,7 @@
 
                 setupUserProfile();
                 applyCompanyBranding();
+                checkPlanExpiryAndNotify();
                 // Real company/user name is in place now - safe to reveal
                 // the shell (see boot()/completeLogin() notes).
                 document.getElementById('appShell').style.display = '';
