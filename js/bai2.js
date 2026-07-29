@@ -484,6 +484,7 @@ Return ONLY this JSON, nothing else:
           <div class="service-card">
             <h3>⚙️ Setup</h3>
             <div class="card-body">
+              <div id="baiSetup">
               <div class="setup-group">
                 <label>Output Format</label>
                 <select id="baiFormat" style="width:100%;" ${STATE.running ? 'disabled' : ''}>
@@ -498,6 +499,7 @@ Return ONLY this JSON, nothing else:
                     <span>With OCR</span>
                   </label>
                 </div>
+              </div>
               </div>
               <div class="setup-group" style="margin-top:8px;">
                 <div class="process-controls">
@@ -566,10 +568,42 @@ Return ONLY this JSON, nothing else:
 `;
   }
 
+  // rerender() replaces the WHOLE page (file table, log, Setup card) on
+  // every progress tick, log line, and file pick - so without this, the
+  // Output Format select and With OCR checkbox silently reset to their
+  // hardcoded defaults mid-run, same issue fixed in service-runner.js.
+  function _captureSetupValues() {
+    const container = document.getElementById('baiSetup');
+    const values = {};
+    if (!container) return values;
+    container.querySelectorAll('input, select, textarea').forEach(function (el) {
+      const key = el.name || el.id;
+      if (!key) return;
+      if (el.type === 'checkbox') values[key] = el.checked;
+      else if (el.type === 'radio') { if (el.checked) values[key] = el.value; }
+      else values[key] = el.value;
+    });
+    return values;
+  }
+
+  function _restoreSetupValues(values) {
+    const container = document.getElementById('baiSetup');
+    if (!container || !values) return;
+    container.querySelectorAll('input, select, textarea').forEach(function (el) {
+      const key = el.name || el.id;
+      if (!key || !(key in values)) return;
+      if (el.type === 'checkbox') el.checked = !!values[key];
+      else if (el.type === 'radio') el.checked = (el.value === values[key]);
+      else el.value = values[key];
+    });
+  }
+
   function rerender() {
     const host = document.getElementById('contentBody');
     if (!host || !document.getElementById('baiInput')) return;
+    const savedSetup = _captureSetupValues();
     host.innerHTML = render();
+    _restoreSetupValues(savedSetup);
     if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
   }
 

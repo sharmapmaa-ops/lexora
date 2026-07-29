@@ -4332,6 +4332,7 @@ class Handler(SimpleHTTPRequestHandler):
             "verificationMethod": "email", "sysConfig": "Desktop",
             "plan": "Free", "planStartDate": today.isoformat(),
             "planEndDate": (today + datetime.timedelta(days=7)).isoformat(), "planStatus": "Active",
+            "createdAt": datetime.datetime.utcnow().isoformat() + "Z",
         }
         users.append(new_user)
         auth_store.save_users(users)

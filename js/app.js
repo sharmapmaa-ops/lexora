@@ -114,6 +114,15 @@
                         ]
                     },
                     {
+                        "id": "admin-overview",
+                        "label": "📈 Overview",
+                        "action": "AdminOverview",
+                        "rolesAllowed": [
+                            "Developer",
+                            "Admin"
+                        ]
+                    },
+                    {
                         "id": "notification",
                         "label": "🔔 Notification",
                         "action": "Notification"
@@ -7046,6 +7055,138 @@
             // Ab sirf ek panel hai: PostgreSQL (Files and Folder file-manager
             // pura hata diya gaya hai - saara data ab beeche hi tables me
             // hai, alag file browser ki zaroorat nahi rahi).
+            // ============================================================
+            // Admin Overview (Profile > Overview, Admin/Developer only)
+            //
+            // Deliberately computed entirely client-side from data the SPA
+            // already has loaded for an Admin/Developer (full paymentHistory,
+            // full contactSubmissions via isAdminOrDeveloper(), USER_DIRECTORY,
+            // PLANS_DATA) - no new backend endpoint needed, and it can never
+            // drift out of sync with what those other admin views show.
+            // ============================================================
+            function _adminOverviewServiceNameFromDescription(description) {
+                // "Lease Abstraction - somefile.pdf" -> "Lease Abstraction".
+                // Falls back to the whole description if there's no " - ".
+                const idx = (description || '').indexOf(' - ');
+                return (idx === -1 ? (description || '') : description.slice(0, idx)).trim() || 'Other';
+            }
+
+            function buildAdminOverviewDonutSvg(entries, colors) {
+                const total = entries.reduce(function (sum, e) { return sum + e[1]; }, 0);
+                if (!total) return '';
+                const radius = 70, cx = 90, cy = 90;
+                const circumference = 2 * Math.PI * radius;
+                let offset = 0;
+                const segments = entries.map(function (entry, i) {
+                    const frac = entry[1] / total;
+                    const dash = frac * circumference;
+                    const svgSeg = `<circle cx="${cx}" cy="${cy}" r="${radius}" fill="none" stroke="${colors[i % colors.length]}"
+                        stroke-width="30" stroke-dasharray="${dash} ${circumference - dash}"
+                        stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})"><title>${escapeHtml(entry[0])}: ${entry[1]}</title></circle>`;
+                    offset += dash;
+                    return svgSeg;
+                }).join('');
+                return `<svg viewBox="0 0 180 180" width="220" height="220">${segments}</svg>`;
+            }
+
+            function buildAdminOverviewRankedList(entries, unitLabel) {
+                if (!entries.length) return '<p class="admin-ov-empty">No jobs processed yet.</p>';
+                return `<ul class="admin-ov-ranked-list">${entries.map(function (entry, i) {
+                    return `<li><span class="admin-ov-rank-badge">${i + 1}</span>` +
+                        `<span class="admin-ov-rank-name">${escapeHtml(entry[0])}</span>` +
+                        `<span class="admin-ov-rank-value">${entry[1]} ${unitLabel}</span></li>`;
+                }).join('')}</ul>`;
+            }
+
+            function buildAdminOverviewBody() {
+                if (!isAdminOrDeveloper()) {
+                    return `<div class="content-section"><h3>🔒 Access restricted</h3><p>This page is only available to Admin and Developer accounts.</p></div>`;
+                }
+                const totalUsers = USER_DIRECTORY.length;
+
+                const cutoff = new Date();
+                cutoff.setDate(cutoff.getDate() - 30);
+                const newUsers30d = USER_DIRECTORY.filter(function (u) {
+                    // Accounts created before this field existed have no
+                    // createdAt at all - treat those as "new" too rather
+                    // than silently excluding them from a count that's
+                    // supposed to describe recent signups.
+                    if (!u.createdAt) return true;
+                    const d = new Date(u.createdAt);
+                    return !isNaN(d.getTime()) && d >= cutoff;
+                }).length;
+
+                const totalRevenue = paymentHistory
+                    .filter(function (t) { return t.paymentType === 'Balance Received' && t.status !== 'cancelled'; })
+                    .reduce(function (sum, t) { return sum + (Number(t.credit) || 0); }, 0);
+
+                const openTickets = contactSubmissions.filter(function (t) { return t.status !== 'Resolved'; }).length;
+
+                const planCounts = {};
+                USER_DIRECTORY.forEach(function (u) {
+                    const p = u.plan || 'Free';
+                    planCounts[p] = (planCounts[p] || 0) + 1;
+                });
+                const planEntries = Object.entries(planCounts).sort(function (a, b) { return b[1] - a[1]; });
+
+                const serviceCounts = {};
+                paymentHistory.forEach(function (t) {
+                    if (t.paymentType !== 'Service Fee') return;
+                    const name = _adminOverviewServiceNameFromDescription(t.description);
+                    serviceCounts[name] = (serviceCounts[name] || 0) + 1;
+                });
+                const serviceEntries = Object.entries(serviceCounts).sort(function (a, b) { return b[1] - a[1]; });
+
+                const donutColors = ['#2d3fa0', '#1fb17a', '#f2a93b', '#e0546a', '#7c5cff', '#22b8cf'];
+                const donutSvg = buildAdminOverviewDonutSvg(planEntries, donutColors);
+
+                return `
+                    <div class="admin-ov-header">
+                        <h2>Admin Overview</h2>
+                        <p>Platform-wide stats across every user and service.</p>
+                    </div>
+                    <div class="admin-ov-stat-row">
+                        <div class="admin-ov-stat-card">
+                            <span class="admin-ov-stat-icon admin-ov-stat-icon-users">👥</span>
+                            <div><div class="admin-ov-stat-value">${totalUsers}</div><div class="admin-ov-stat-label">Total Users</div></div>
+                        </div>
+                        <div class="admin-ov-stat-card">
+                            <span class="admin-ov-stat-icon admin-ov-stat-icon-revenue">₹</span>
+                            <div><div class="admin-ov-stat-value is-revenue">${currencySymbol()}${totalRevenue.toFixed(2)}</div><div class="admin-ov-stat-label">Total Revenue</div></div>
+                        </div>
+                        <div class="admin-ov-stat-card">
+                            <span class="admin-ov-stat-icon admin-ov-stat-icon-tickets">🎫</span>
+                            <div><div class="admin-ov-stat-value is-tickets">${openTickets}</div><div class="admin-ov-stat-label">Open Tickets</div></div>
+                        </div>
+                        <div class="admin-ov-stat-card">
+                            <span class="admin-ov-stat-icon admin-ov-stat-icon-newusers">👤➕</span>
+                            <div><div class="admin-ov-stat-value">${newUsers30d}</div><div class="admin-ov-stat-label">New Users (30d)</div></div>
+                        </div>
+                    </div>
+                    <div class="admin-ov-row-2col">
+                        <div class="admin-ov-card">
+                            <h3>Plan Distribution</h3>
+                            <div class="admin-ov-donut-wrap">
+                                ${donutSvg || '<p class="admin-ov-empty">No plan data yet.</p>'}
+                            </div>
+                        </div>
+                        <div class="admin-ov-card">
+                            <h3>Jobs Processed by Service</h3>
+                            ${buildAdminOverviewRankedList(serviceEntries, 'job(s)')}
+                        </div>
+                    </div>
+                    <div class="admin-ov-row-2col">
+                        <div class="admin-ov-card">
+                            <h3>Trending Services</h3>
+                            ${buildAdminOverviewRankedList(serviceEntries, 'job(s)')}
+                        </div>
+                        <div class="admin-ov-card">
+                            <h3>Trending Plans</h3>
+                            ${buildAdminOverviewRankedList(planEntries, 'user(s)')}
+                        </div>
+                    </div>`;
+            }
+
             function buildAdminFilesBody() {
                 return `
                     <div class="admin-files-card" id="adminFilesCard">
@@ -7946,6 +8087,11 @@
                     //     return;
                     // }
 
+                    // Admin Overview stays Admin/Developer-only regardless of
+                    // the generic (currently disabled) check above - this one
+                    // was a specific, explicit ask.
+                    if (item.id === 'admin-overview' && !isAdminOrDeveloper()) return;
+
                     const btn = document.createElement('button');
                     btn.className = 'dropdown-item';
                     if (item.isLogout) btn.classList.add('logout');
@@ -7995,6 +8141,8 @@
                         data = { body: buildProfileBody() };
                     } else if (action === 'Admin') {
                         data = { body: buildAdminFilesBody() };
+                    } else if (action === 'AdminOverview') {
+                        data = { body: buildAdminOverviewBody() };
                     } else if (action === 'Notification') {
                         data = { body: buildNotificationBody() };
                     }
@@ -9525,9 +9673,38 @@
             // ============================================================
             // 39. INITIALIZE (loads all data from /json/*.json files)
             // ============================================================
-            async function fetchJSON(path) {
-                const res = await authFetch(path);
-                if (!res.ok) throw new Error('Failed to load ' + path);
+            async function fetchJSON(path, _attempt) {
+                const attempt = _attempt || 1;
+                let res;
+                try {
+                    res = await authFetch(path);
+                } catch (networkErr) {
+                    // Real network-level failure (server unreachable, DNS,
+                    // connection dropped mid-request) - most of these are
+                    // transient (e.g. a brief DB/hosting blip), so retry a
+                    // couple of times with backoff before giving up. This is
+                    // what actually fixes the "works on refresh" pattern,
+                    // instead of just making the user do that refresh by hand.
+                    if (attempt < 3) {
+                        await new Promise(r => setTimeout(r, attempt * 500));
+                        return fetchJSON(path, attempt + 1);
+                    }
+                    throw new Error(`Could not reach the server for ${path} (${networkErr.message || 'network error'}).`);
+                }
+                if (res.status === 401) {
+                    // authFetch already triggered the session-expired flow -
+                    // nothing more useful to retry or report here.
+                    throw new Error('Session expired.');
+                }
+                if (!res.ok) {
+                    if (res.status >= 500 && attempt < 3) {
+                        await new Promise(r => setTimeout(r, attempt * 500));
+                        return fetchJSON(path, attempt + 1);
+                    }
+                    let detail = '';
+                    try { const j = await res.json(); detail = j.error || ''; } catch (e) { /* body wasn't JSON */ }
+                    throw new Error(`Failed to load ${path} (HTTP ${res.status})${detail ? ': ' + detail : ''}.`);
+                }
                 return res.json();
             }
 
@@ -10582,6 +10759,12 @@
                 }
                 showAuthScreen();
             }
+            window.retryInitializeApp = function() {
+                document.getElementById('contentBody').innerHTML =
+                    '<div class="content-section" style="text-align:center;padding:40px 0;color:rgba(0,0,0,0.5);">Retrying…</div>';
+                initializeApp();
+            };
+
             async function initializeApp() {
                 try {
                     await loadAppData();
@@ -10591,10 +10774,11 @@
                     document.getElementById('appShell').style.display = '';
                     document.getElementById('contentBody').innerHTML =
                         '<div class="content-section"><h3>⚠️ Unable to load data</h3>' +
-                        '<p>Could not load JSON data files. Browsers block local file fetches when you open index.html ' +
-                        'directly (file://) or use a plain static server. Run ' +
-                        '<code>python3 py/server.py</code> in the project folder, and open ' +
-                        '<code>http://localhost:8000/</code>.</p></div>';
+                        '<p>' + escapeHtml((err && err.message) || 'The server could not be reached.') + '</p>' +
+                        '<p style="color:rgba(0,0,0,0.55);font-size:0.85rem;">This is usually a brief, one-off ' +
+                        'connectivity hiccup (already retried automatically) rather than a browser file-access issue - ' +
+                        'if it keeps happening, check that the server (and its database, if configured) is reachable.</p>' +
+                        '<button class="submit-btn" onclick="retryInitializeApp()">🔄 Retry</button></div>';
                     return;
                 }
 

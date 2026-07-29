@@ -146,7 +146,7 @@
           <div class="service-card">
             <h3>⚙️ Setup</h3>
             <div class="card-body">
-              ${setup}
+              <div id="srSetup_${id}">${setup}</div>
               <div class="setup-group" style="margin-top:8px;">
                 <div class="process-controls">
                   <button class="process-btn start-btn" ${st.running || !st.files.length ? 'disabled' : ''}
@@ -209,11 +209,50 @@
         </div>`;
   }
 
+  // Every refresh() re-renders the WHOLE page (file table, log, Setup card,
+  // all of it) from scratch, because setupHtml() only knows the service's
+  // *file* state (st), not whatever the user has typed/picked in the Setup
+  // card's own inputs - those live only in the DOM. Left alone, that means
+  // adding a file or checking a checkbox (both call refresh()) silently
+  // resets any "Pages to keep" range, compression level, output-mode radio,
+  // etc. back to the HTML's hardcoded defaults right before Start runs -
+  // exactly the "my setup choice changed itself" bug. Fix: snapshot every
+  // input/select/textarea inside #srSetup_<id> immediately before the
+  // innerHTML swap, then write those same values back in afterwards. Works
+  // for any field in any service's setupHtml() with zero per-service code.
+  function _captureSetupValues(id) {
+    const container = document.getElementById('srSetup_' + id);
+    const values = {};
+    if (!container) return values;
+    container.querySelectorAll('input, select, textarea').forEach(function (el) {
+      const key = el.name || el.id;
+      if (!key) return;
+      if (el.type === 'checkbox') values[key] = el.checked;
+      else if (el.type === 'radio') { if (el.checked) values[key] = el.value; }
+      else values[key] = el.value;
+    });
+    return values;
+  }
+
+  function _restoreSetupValues(id, values) {
+    const container = document.getElementById('srSetup_' + id);
+    if (!container || !values) return;
+    container.querySelectorAll('input, select, textarea').forEach(function (el) {
+      const key = el.name || el.id;
+      if (!key || !(key in values)) return;
+      if (el.type === 'checkbox') el.checked = !!values[key];
+      else if (el.type === 'radio') el.checked = (el.value === values[key]);
+      else el.value = values[key];
+    });
+  }
+
   function refresh(id) {
     const host = document.getElementById('contentBody');
     if (!host) return;
     if (!document.getElementById('srIn_' + id)) return;
+    const savedSetup = _captureSetupValues(id);
     host.innerHTML = render(id);
+    _restoreSetupValues(id, savedSetup);
     if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
   }
 

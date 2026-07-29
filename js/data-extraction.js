@@ -608,6 +608,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
           <div class="service-card">
             <h3>⚙️ Setup</h3>
             <div class="card-body">
+              <div id="deSetup">
               <div class="setup-group">
                 <div style="display:flex;gap:12px;align-items:flex-start;">
                   <div style="flex:1;">
@@ -627,6 +628,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
                     <span>With OCR</span>
                   </label>
                 </div>
+              </div>
               </div>
               <div class="setup-group" style="margin-top:8px;">
                 <div class="process-controls">
@@ -707,10 +709,41 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
 `;
   }
 
+  // Same fix as service-runner.js/bai2.js - rerender() replaces the whole
+  // page on every progress tick/log line, which was silently resetting
+  // Output Format and With OCR back to their hardcoded defaults mid-run.
+  function _captureSetupValues() {
+    const container = document.getElementById('deSetup');
+    const values = {};
+    if (!container) return values;
+    container.querySelectorAll('input, select, textarea').forEach(function (el) {
+      const key = el.name || el.id;
+      if (!key) return;
+      if (el.type === 'checkbox') values[key] = el.checked;
+      else if (el.type === 'radio') { if (el.checked) values[key] = el.value; }
+      else values[key] = el.value;
+    });
+    return values;
+  }
+
+  function _restoreSetupValues(values) {
+    const container = document.getElementById('deSetup');
+    if (!container || !values) return;
+    container.querySelectorAll('input, select, textarea').forEach(function (el) {
+      const key = el.name || el.id;
+      if (!key || !(key in values)) return;
+      if (el.type === 'checkbox') el.checked = !!values[key];
+      else if (el.type === 'radio') el.checked = (el.value === values[key]);
+      else el.value = values[key];
+    });
+  }
+
   function rerender() {
     const host = document.getElementById('contentBody');
     if (!host || !document.getElementById('deInput')) return;
+    const savedSetup = _captureSetupValues();
     host.innerHTML = render();
+    _restoreSetupValues(savedSetup);
     if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
   }
 

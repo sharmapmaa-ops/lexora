@@ -3213,3 +3213,105 @@ body, .center-content { background: #fff; }
 .db-table-row:last-child { border-bottom: none; }
 .db-table-row code { flex: 1; font-family: 'SFMono-Regular', Consolas, monospace; font-size: .8rem; color: var(--ds-blue); }
 .db-table-row .admin-btn { padding: 5px 12px; font-size: .76rem; }
+
+/* ---- Admin Overview (Profile > Overview) ---- */
+.admin-ov-header { padding: 4px 2px 20px; }
+.admin-ov-header h2 { margin: 0 0 4px; font-size: 1.35rem; font-weight: 800; color: var(--ds-navy); }
+.admin-ov-header p { margin: 0; font-size: .88rem; color: var(--ds-blue); }
+
+.admin-ov-stat-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.admin-ov-stat-card {
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 14px;
+    padding: 18px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+.admin-ov-stat-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.15rem;
+    flex-shrink: 0;
+    background: #eef1fb;
+    color: var(--ds-navy);
+}
+
+.admin-ov-stat-icon-revenue { background: #e3f8ef; color: #15803d; }
+.admin-ov-stat-icon-tickets { background: #fde8e8; color: #c0392b; }
+.admin-ov-stat-icon-newusers { background: #eef1fb; color: var(--ds-navy); }
+
+.admin-ov-stat-value { font-size: 1.3rem; font-weight: 800; color: var(--ds-navy); line-height: 1.2; }
+.admin-ov-stat-value.is-revenue { color: #15803d; }
+.admin-ov-stat-value.is-tickets { color: #c0392b; }
+.admin-ov-stat-label { font-size: .82rem; color: var(--ds-blue); margin-top: 2px; }
+
+.admin-ov-row-2col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.admin-ov-card {
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 14px;
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+    min-height: 220px;
+}
+
+.admin-ov-card h3 { margin: 0 0 14px; font-size: 1rem; font-weight: 700; color: var(--ds-navy); }
+
+.admin-ov-donut-wrap { display: flex; align-items: center; justify-content: center; padding: 10px 0; }
+
+.admin-ov-empty { color: var(--ds-blue); font-size: .88rem; margin: 0; }
+
+.admin-ov-ranked-list { list-style: none; margin: 0; padding: 0; }
+
+.admin-ov-ranked-list li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--ds-line);
+    font-size: .9rem;
+}
+
+.admin-ov-ranked-list li:last-child { border-bottom: none; }
+
+.admin-ov-rank-badge {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #eef1fb;
+    color: var(--ds-navy);
+    font-size: .78rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.admin-ov-rank-name { flex: 1; color: var(--ds-ink); font-weight: 600; }
+.admin-ov-rank-value { color: var(--ds-blue); font-size: .85rem; font-weight: 600; }
+
+@media (max-width: 900px) {
+    .admin-ov-stat-row { grid-template-columns: repeat(2, 1fr); }
+    .admin-ov-row-2col { grid-template-columns: 1fr; }
+}

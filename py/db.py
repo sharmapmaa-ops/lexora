@@ -38,6 +38,7 @@ import decimal
 import json
 import os
 import threading
+import time
 
 # psycopg optional hai: requirements me hai, par agar install na ho (ya
 # DATABASE_URL na ho) to app JSON par chalta rehna chahiye, crash nahi.
@@ -80,10 +81,25 @@ def connect():
     Render ka Postgres SSL maangta hai; agar URL me sslmode nahi hai to
     hum add nahi karte - Render apne URL me pehle se deta hai. Local dev
     me sslmode ki zaroorat nahi hoti.
+
+    Ek retry (short backoff ke baad) hai kyunki managed Postgres
+    (Render/etc) kabhi-kabhi ek connection attempt ko transiently reset/
+    refuse kar deta hai (idle wake-up, brief network blip) - agla attempt
+    usually turant successful hota hai. Bina isके, ye ek real intermittent
+    connection hiccup poore page load ko "Unable to load data" dikha deta
+    tha jab asal me sirf ek retry chahiye tha.
     """
     if not is_enabled():
         raise RuntimeError("Database is not configured: " + why_disabled())
-    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    last_err = None
+    for attempt in range(2):
+        try:
+            return psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=8)
+        except Exception as err:  # noqa: BLE001 - retry once, then let the real error surface
+            last_err = err
+            if attempt == 0:
+                time.sleep(0.4)
+    raise last_err
 
 
 # ============================================================
