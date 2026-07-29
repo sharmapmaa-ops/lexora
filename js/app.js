@@ -5527,14 +5527,14 @@
                                             </div>
                                             <div class="form-group">
                                                 <label>&nbsp;</label>
-                                                <label class="checkbox-label">
-                                                    <input type="checkbox" id="profileTwoFactorAuth" ${profileData.twoFactorAuth === 'Yes' ? 'checked' : ''} />
-                                                    Two-Factor Authentication (2FA)
-                                                </label>
+                                                <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+                                                    <label class="checkbox-label">
+                                                        <input type="checkbox" id="profileTwoFactorAuth" ${profileData.twoFactorAuth === 'Yes' ? 'checked' : ''} />
+                                                        Enable 2FA
+                                                    </label>
+                                                    <button class="submit-btn" onclick="saveProfile()">Submit</button>
+                                                </div>
                                             </div>
-                                        </div>
-                                        <div class="form-group" style="margin-top:4px;text-align:right;">
-                                            <button class="submit-btn" onclick="saveProfile()">💾 Save Changes</button>
                                         </div>
                                     </div>
                                 </div>
@@ -9922,6 +9922,15 @@
                                     </div>`;
                                 }).join('')}
                             </div>
+
+                            <div class="auth-check-grid">
+                                ${AUTH_CHECKS.map(function (c) {
+                                    return `<div class="auth-check">
+                                        <span class="auth-check-mark">\u2713</span>
+                                        <span>${escapeHtml(c)}</span>
+                                    </div>`;
+                                }).join('')}
+                            </div>
                         </div>
                     </div>
                 `;
@@ -10000,17 +10009,6 @@
                     card.style.display = (filter === 'all' || card.dataset.type === filter) ? '' : 'none';
                 });
             };
-
-            // Item 4 - "All Services" (default, sabse zyada cards) ki
-            // natural height ko hi grid ki min-height bana dete hain,
-            // taaki Free/Paid select karne par card ki height kam na ho
-            // jaye - teeno filters me hamesha same height dikhti hai.
-            function lockAuthThumbGridHeight() {
-                const grid = document.getElementById('authThumbGrid');
-                if (!grid) return;
-                grid.style.minHeight = '';
-                grid.style.minHeight = grid.scrollHeight + 'px';
-            }
 
             // "Remember me" sirf email yaad rakhta hai (password kabhi
             // nahi - wo browser ke password manager ka kaam hai). Session
@@ -10240,7 +10238,6 @@
                     wireOtpBoxes();
                     startAuthCountdown();
                 }
-                lockAuthThumbGridHeight();
             }
 
             function wireOtpBoxes() {

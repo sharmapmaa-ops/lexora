@@ -2759,6 +2759,9 @@ label { font-size: .76rem; }
     padding: 1.1em 1.15em;
     background: #fff;
     transition: 0.15s;
+    height: 180px;
+    overflow: hidden;
+    box-sizing: border-box;
 }
 
 .auth-thumb-card:hover {
@@ -3043,7 +3046,7 @@ body, .center-content { background: #fff; }
 
 /* ---- 7. login: hero image aur checklist gaye, tools card designed ---- */
 .auth-hero { grid-template-columns: 1fr; }
-.auth-hero-art, .auth-check-grid { display: none; }
+.auth-hero-art { display: none; }
 .auth-hero-copy { max-width: 62em; }
 
 .auth-tools-card {

@@ -1,19 +1,19 @@
-"""Database ke andar kya hai - dekhne ke liye.
+"""Inspect what's actually in the database - a read-only diagnostic.
 
-Ye kuch badalta nahi, sirf padhta hai. Jab shak ho ki data DB me ja raha
-hai ya nahi, ye chalayein:
+This never changes anything, it only reads. Run it whenever you want to
+confirm data is actually landing in Postgres:
 
     DATABASE_URL="<External URL>" python3 py/db_check.py
 
-    # kisi ek user ka:
+    # for a single user:
     DATABASE_URL="..." python3 py/db_check.py U0000001
 
-Ye batata hai:
-  * connection ban rahi hai ya nahi
-  * transactions table hai ya nahi, usme kitni rows hain
-  * aakhri 10 transactions
-  * har user ka balance
-  * JSON file aur DB ka farak (migration ke baad match hona chahiye)
+It reports:
+  * whether the connection succeeds
+  * whether the transactions table exists, and how many rows it has
+  * the last 10 transactions
+  * each user's balance
+  * the difference between the JSON file and the DB (should match after migration)
 """
 
 import json
@@ -48,8 +48,8 @@ def main():
 
     if not db.is_enabled():
         print("\nPostgres OFF:", db.why_disabled())
-        print("App JSON files par chal rahi hai (ye theek hai, bas DB use nahi ho raha).")
-        print(f"\njson/payment-history.json me {len(json_rows())} row(s).")
+        print("The app is running on JSON files (that's fine - the DB just isn't in use).")
+        print(f"\njson/payment-history.json has {len(json_rows())} row(s).")
         return 0
 
     masked = db.DATABASE_URL
@@ -67,24 +67,24 @@ def main():
                 )
                 has_table = cur.fetchone()["present"]
     except Exception as err:  # noqa: BLE001
-        print(f"\n! Connect nahi ho paya: {err}")
-        print("  URL, network aur SSL settings check karein.")
+        print(f"\n! Could not connect: {err}")
+        print("  Check the URL, network, and SSL settings.")
         return 1
 
     print("connected   : yes")
     print("server      :", version.split(",")[0])
 
     if not has_table:
-        print("\n! 'transactions' table abhi bani nahi hai.")
-        print("  py/migrate_json_to_pg.py chalayein, ya app ko ek baar")
-        print("  DATABASE_URL ke saath start karein (schema apne aap ban jata hai).")
+        print("\n! The 'transactions' table does not exist yet.")
+        print("  Run db.migrate_from_json() (Admin > Database > Run Migration in the app),")
+        print("  or just start the app with DATABASE_URL set - the schema is created automatically.")
         return 1
 
     rows = db.list_transactions(only_user)
     print(f"\ntransactions: {len(rows)} row(s)" + (f" (user {only_user})" if only_user else ""))
 
     if rows:
-        print("\nAakhri 10:")
+        print("\nLast 10:")
         print(f"  {'txn id':<26} {'date':<12} {'user':<10} {'credit':>10} {'debit':>10}")
         print("  " + "-" * 70)
         for r in rows[:10]:
@@ -97,19 +97,19 @@ def main():
         for u in users:
             print(f"  {u:<12} {db.get_balance(u):>12.2f}")
 
-    # JSON se milaan - migration ke baad dono barabar hone chahiye
+    # Cross-check against the JSON file - both should match after migration.
     jrows = json_rows()
     print(f"\njson/payment-history.json : {len(jrows)} row(s)")
     if jrows:
         db_ids = {r["id"] for r in db.list_transactions()}
         missing = [r.get("id") for r in jrows if r.get("id") and r.get("id") not in db_ids]
         if missing:
-            print(f"! {len(missing)} row(s) JSON me hain par DB me nahi:")
+            print(f"! {len(missing)} row(s) are in the JSON file but not in the DB:")
             for t in missing[:5]:
                 print("   ", t)
-            print("  py/migrate_json_to_pg.py dobara chalayein (duplicate nahi banenge).")
+            print("  Run db.migrate_from_json() again (it's safe - no duplicates are created).")
         else:
-            print("  JSON ki saari rows DB me maujood hain.")
+            print("  All rows from the JSON file are present in the DB.")
 
     return 0
 
