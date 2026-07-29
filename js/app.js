@@ -44,26 +44,6 @@
                         "label": "🛠️ Services",
                         "subItems": [
                             {
-                                "id": "lease-abstraction",
-                                "label": "Lease Abstraction"
-                            },
-                            {
-                                "id": "translation",
-                                "label": "Translation"
-                            },
-                            {
-                                "id": "ocr",
-                                "label": "OCR"
-                            },
-                            {
-                                "id": "data-extraction",
-                                "label": "Data Extraction"
-                            },
-                            {
-                                "id": "bai2",
-                                "label": "BAI2"
-                            },
-                            {
                                 "id": "paid-services",
                                 "label": "Paid Services"
                             },
@@ -84,14 +64,9 @@
                         "subItems": []
                     },
                     {
-                        "id": "help",
-                        "label": "❓ Help",
-                        "subItems": [
-                            {
-                                "id": "contact-us",
-                                "label": "Contact Us"
-                            }
-                        ]
+                        "id": "contact-us",
+                        "label": "📞 Contact Us",
+                        "subItems": []
                     }
                 ],
                 "profileMenu": [
@@ -5550,12 +5525,15 @@
                                                     </label>
                                                 </div>
                                             </div>
+                                            <div class="form-group">
+                                                <label>&nbsp;</label>
+                                                <label class="checkbox-label">
+                                                    <input type="checkbox" id="profileTwoFactorAuth" ${profileData.twoFactorAuth === 'Yes' ? 'checked' : ''} />
+                                                    Two-Factor Authentication (2FA)
+                                                </label>
+                                            </div>
                                         </div>
-                                        <div class="form-group profile-2fa-save-row" style="margin-top:4px;">
-                                            <label class="checkbox-label">
-                                                <input type="checkbox" id="profileTwoFactorAuth" ${profileData.twoFactorAuth === 'Yes' ? 'checked' : ''} />
-                                                Two-Factor Authentication (2FA)
-                                            </label>
+                                        <div class="form-group" style="margin-top:4px;text-align:right;">
                                             <button class="submit-btn" onclick="saveProfile()">💾 Save Changes</button>
                                         </div>
                                     </div>
@@ -8679,7 +8657,7 @@
                 'services':     '<path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 1 5.4-5.4l-2.6 2.6"/>',
                 'plans-offers': '<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4"/>',
                 'payment':      '<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19"/>',
-                'help':         '<circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .9-1 1.6v.3"/><path d="M12 17.2h.01"/>',
+                'contact-us':   '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>',
                 'admin':        '<path d="M12 3l7.5 3v5.5c0 4.4-3 8.2-7.5 9.5-4.5-1.3-7.5-5.1-7.5-9.5V6z"/>'
             };
 
@@ -8857,13 +8835,24 @@
                     let dataKey = parentId;
                     let breadcrumb = parent.label;
 
+                    // Labels for content pages that are still valid
+                    // navigation targets but are no longer listed in any
+                    // menu's subItems (e.g. the individual paid services -
+                    // reachable via the Paid Services landing page instead
+                    // of a Services submenu entry now).
+                    const UNLISTED_LABELS = {
+                        'lease-abstraction': 'Lease Abstraction',
+                        translation: 'Translation',
+                        ocr: 'OCR',
+                        'data-extraction': 'Data Extraction',
+                        bai2: 'BAI2',
+                    };
+
                     if (subId) {
                         const sub = parent.subItems.find(item => item.id === subId);
-                        if (sub) {
-                            dataKey = subId;
-                            breadcrumb = parent.label + ' / ' + sub.label;
-                            activeSubItemId = subId;
-                        }
+                        dataKey = subId;
+                        breadcrumb = parent.label + ' / ' + (sub ? sub.label : (UNLISTED_LABELS[subId] || subId));
+                        activeSubItemId = subId;
                     } else {
                         activeSubItemId = null;
                     }
@@ -9468,51 +9457,7 @@
                                 <div class="contact-hero-copy">
                                     <h2>We're here to help! <span class="dash-wave">\u{1F44B}</span></h2>
                                     <p>Have a question or need support? Our team is ready to assist you.</p>
-
-                                    <div class="contact-channels">
-                                        <div class="contact-channel is-chat">
-                                            <span class="contact-channel-icon">${svg('<path d="M20 15a2.5 2.5 0 0 1-2.5 2.5H8L4 21V5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5z"/>')}</span>
-                                            <div>
-                                                <b>Raise a Ticket</b>
-                                                <span>Our team replies by email</span>
-                                            </div>
-                                            <button onclick="handleUserAction('Support')">Open Support <em>\u2192</em></button>
-                                        </div>
-                                        <div class="contact-channel is-wa">
-                                            <span class="contact-channel-icon">${svg('<path d="M4 20l1.4-4A8 8 0 1 1 8 18.6z"/><path d="M9 9.5c.6 2.4 3.1 4.9 5.5 5.5"/>')}</span>
-                                            <div>
-                                                <b>WhatsApp</b>
-                                                <span>Chat on WhatsApp</span>
-                                            </div>
-                                            <button ${waNumber ? `onclick="window.open('https://wa.me/${waNumber}', '_blank')"` : 'disabled'}>Chat Now <em>\u2192</em></button>
-                                        </div>
-                                        <div class="contact-channel is-mail">
-                                            <span class="contact-channel-icon">${svg(ICON.mail)}</span>
-                                            <div>
-                                                <b>Email Us</b>
-                                                <span>Send us an email</span>
-                                            </div>
-                                            <button ${c.email ? `onclick="window.location.href='mailto:${c.email}'"` : 'disabled'}>Send Email <em>\u2192</em></button>
-                                        </div>
-                                    </div>
                                 </div>
-
-                                <svg class="contact-hero-art" viewBox="0 0 420 300" fill="none" aria-hidden="true">
-                                    <ellipse cx="210" cy="255" rx="170" ry="20" fill="#dbe8fe"/>
-                                    <path d="M60 120a70 70 0 0 1 120-55 70 70 0 0 1 105 60 60 60 0 0 1-40 105H110a60 60 0 0 1-50-110z" fill="#eaf2fe"/>
-                                    <rect x="120" y="196" width="180" height="14" rx="7" fill="#b9d0f3"/>
-                                    <path d="M130 196l14-52h132l14 52z" fill="#dbe8fe"/>
-                                    <rect x="150" y="96" width="120" height="52" rx="6" fill="#fff" stroke="#c5daf9"/>
-                                    <circle cx="196" cy="72" r="26" fill="#f6c9a8"/>
-                                    <path d="M170 68a26 26 0 0 1 52 0v-6a26 26 0 0 0-52 0z" fill="#1d4ed8"/>
-                                    <path d="M168 66a6 6 0 0 1 0 14M224 66a6 6 0 0 1 0 14" stroke="#1d4ed8" stroke-width="5"/>
-                                    <path d="M168 66h56" stroke="#1d4ed8" stroke-width="5"/>
-                                    <path d="M204 90c8 4 14 14 14 24h-44c0-10 6-20 14-24z" fill="#2f7bf6"/>
-                                    <circle cx="300" cy="60" r="26" fill="#dbe8fe"/>
-                                    <circle cx="291" cy="60" r="3" fill="#7fb0f4"/><circle cx="300" cy="60" r="3" fill="#7fb0f4"/><circle cx="309" cy="60" r="3" fill="#7fb0f4"/>
-                                    <rect x="330" y="120" width="56" height="38" rx="6" fill="#2f7bf6"/>
-                                    <path d="M330 126l28 18 28-18" stroke="#fff" stroke-width="3" fill="none"/>
-                                </svg>
                             </div>
 
                             <div class="contact-grid">

@@ -1411,6 +1411,12 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
 .notif-card .card-body,
 .notif-card .history-table-wrapper { min-height: 0; }
 
+/* Explicit, not inherited - the notification card must always be a fixed
+   height (never "auto"/content-sized), same principle as the Support log
+   card fix, so it doesn't visibly resize between All/Read/Unread or as
+   notifications are added/removed. */
+.history-card.notif-card { height: 450px; }
+
 .notif-table { table-layout: fixed; width: 100%; }
 .notif-table td { vertical-align: middle; }
 
@@ -2204,7 +2210,7 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
 
 .contact-hero {
     display: grid;
-    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    grid-template-columns: 1fr;
     gap: 24px;
     align-items: center;
 }
@@ -2732,8 +2738,8 @@ label { font-size: .76rem; }
 }
 
 .auth-filter-btn.active {
-    background: #0b1533;
-    border-color: #0b1533;
+    background: #1257f5;
+    border-color: #1257f5;
     color: #fff;
 }
 
