@@ -76,11 +76,26 @@
           <div style="font-size:0.78rem;color:rgba(0,0,0,0.5);margin-top:4px;">
             Leave empty to split every page into its own separate PDF (delivered as a ZIP).
           </div>
+        </div>
+        <div class="setup-group">
+          <label>When specific pages are entered above, output as</label>
+          <div style="display:flex;gap:18px;margin-top:6px;">
+            <label style="display:flex;align-items:center;gap:6px;font-weight:normal;cursor:pointer;">
+              <input type="radio" name="fsSplitMode" value="merge" checked style="width:auto;margin:0;" />
+              <span>One merged PDF</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-weight:normal;cursor:pointer;">
+              <input type="radio" name="fsSplitMode" value="separate" style="width:auto;margin:0;" />
+              <span>Separate PDF per page (ZIP)</span>
+            </label>
+          </div>
         </div>`;
     },
     process: async function (files, ctx, label) {
       requireLibs(true);
       const spec = ((document.getElementById('fsSplitRange') || {}).value || '').trim();
+      const modeEl = document.querySelector('input[name="fsSplitMode"]:checked');
+      const mode = modeEl ? modeEl.value : 'merge';
       const f = files[0];
       const src = await PDFLib.PDFDocument.load(await f.arrayBuffer(), { ignoreEncryption: true });
       const total = src.getPageCount();
@@ -104,6 +119,27 @@
       }
 
       const idx = parsePageRanges(spec, total);
+
+      // Same "specific pages" selection, two different outputs: either
+      // extract them as one combined PDF (default, unchanged from before),
+      // or - the new option - keep each selected page as its own separate
+      // PDF file (ZIP), same as the "leave empty" path above but limited
+      // to just the pages the user picked.
+      if (mode === 'separate') {
+        if (typeof JSZip === 'undefined') throw new Error('JSZip failed to load - please refresh the page.');
+        const zip = new JSZip();
+        for (let i = 0; i < idx.length; i++) {
+          const out = await PDFLib.PDFDocument.create();
+          const [pg] = await out.copyPages(src, [idx[i]]);
+          out.addPage(pg);
+          zip.file(`${stem}_page_${idx[i] + 1}.pdf`, await out.save());
+          if (ctx.progress) ctx.progress(((i + 1) / idx.length) * 100);
+        }
+        ctx.download(await zip.generateAsync({ type: 'blob' }), `${stem}_split_pages.zip`);
+        ctx.log(`${label} > Generate Output > ${stem}_split_pages.zip (${idx.length} file(s))`, 'Success');
+        return;
+      }
+
       const out = await PDFLib.PDFDocument.create();
       (await out.copyPages(src, idx)).forEach(function (p) { out.addPage(p); });
       ctx.download(new Blob([await out.save()], { type: 'application/pdf' }), `${stem}_split.pdf`);

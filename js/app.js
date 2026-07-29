@@ -491,7 +491,8 @@
                     `${serviceName} completed - ${currencySymbol()}${charge.toFixed(2)} deducted`,
                     `Your ${serviceName.toLowerCase()} request has finished processing. The table below shows what was charged to your wallet.`,
                     [[serviceName, fileName, `${currencySymbol()}${charge.toFixed(2)}`, `Completed (${txnId})`]],
-                    ['Service', 'File', 'Charge', 'Action/Status']
+                    ['Service', 'File', 'Charge', 'Action/Status'],
+                    CURRENT_USER_ID
                 );
             }
 
@@ -3497,7 +3498,8 @@
                             profileData.email, `${profileData.firstName} ${profileData.lastName}`,
                             `You're now on the ${plan.name} plan`,
                             `Your plan is now ${plan.name}. It's valid from ${profileData.planStartDate} to ${profileData.planEndDate}. ` +
-                            `Translation is billed at ${currencySymbol()}${plan.pricePerTranslation}/page.`
+                            `Translation is billed at ${currencySymbol()}${plan.pricePerTranslation}/page.`,
+                            null, null, CURRENT_USER_ID
                         );
                     }
                 };
@@ -3784,7 +3786,8 @@
                                             `${currencySymbol()}${txn.credit.toFixed(2)} added to your balance`,
                                             `Your payment was received and added to your wallet balance.`,
                                             [[txn.paymentMode, description, `${currencySymbol()}${txn.credit.toFixed(2)}`, `Completed (${txn.id})`]],
-                                            ['Payment Method', 'Description', 'Amount', 'Status']
+                                            ['Payment Method', 'Description', 'Amount', 'Status'],
+                                            CURRENT_USER_ID
                                         );
                                     }
                                     addNotification(`${currencySymbol()}${txn.credit.toFixed(2)} was added to your balance (Transaction ID: ${txn.id}).`);
@@ -3840,6 +3843,10 @@
                 const amount = parseFloat(amountInput.value);
                 const description = descInput.value.trim();
 
+                if (!(profileData && profileData.mobileVerified && profileData.mobileVerifiedNumber === (profileData.mobile || '').trim())) {
+                    showWarning('Please verify your Mobile No first (Profile > Mobile No > Verify) before adding balance.');
+                    return;
+                }
                 if (!amount || amount <= 0) { showWarning('Please enter a valid amount.'); return; }
                 if (!description) { showWarning('Please enter a description.'); return; }
                 if (typeof Razorpay === 'undefined') {
@@ -3891,7 +3898,8 @@
                 if (dirEntry && dirEntry.email) {
                     sendGenericNotificationEmail(dirEntry.email, `${dirEntry.firstName} ${dirEntry.lastName}`,
                         'Your balance request was approved',
-                        `Your request to add ${currencySymbol()}${txn.credit.toFixed(2)} to your wallet (Transaction ${txnId}) has been approved and is now reflected in your balance.`);
+                        `Your request to add ${currencySymbol()}${txn.credit.toFixed(2)} to your wallet (Transaction ${txnId}) has been approved and is now reflected in your balance.`,
+                        null, null, txn.userId);
                 }
                 if (txn.userId === CURRENT_USER_ID) updateBalanceDisplay();
                 renderNotificationTable();
@@ -3910,7 +3918,8 @@
                 if (dirEntry && dirEntry.email) {
                     sendGenericNotificationEmail(dirEntry.email, `${dirEntry.firstName} ${dirEntry.lastName}`,
                         'Your balance request was cancelled',
-                        `Your request to add ${currencySymbol()}${txn.credit.toFixed(2)} to your wallet (Transaction ${txnId}) was cancelled. Please contact Support if you believe this is a mistake.`);
+                        `Your request to add ${currencySymbol()}${txn.credit.toFixed(2)} to your wallet (Transaction ${txnId}) was cancelled. Please contact Support if you believe this is a mistake.`,
+                        null, null, txn.userId);
                 }
                 renderNotificationTable();
                 showMessage('❌ Cancelled', `The balance request has been cancelled.`, ['OK']);
@@ -4061,7 +4070,8 @@
                         `${profileData.firstName} ${profileData.lastName}`,
                         'New API key generated',
                         `A new API key was generated for your account just now (${createdAt}). ` +
-                        `If you didn't do this, please revoke it immediately from your Profile and contact support.`
+                        `If you didn't do this, please revoke it immediately from your Profile and contact support.`,
+                        null, null, CURRENT_USER_ID
                     );
                 }
                 showMessage('✅ API Key Generated',
@@ -4102,7 +4112,8 @@
                                     `${profileData.firstName} ${profileData.lastName}`,
                                     'API key revoked',
                                     `Your API key was revoked just now (${revokedAt}). It can no longer be used to access the API. ` +
-                                    `If you didn't do this, please contact support right away.`
+                                    `If you didn't do this, please contact support right away.`,
+                                    null, null, CURRENT_USER_ID
                                 );
                             }
                             showMessage('🚫 Revoked', 'The API key has been revoked and can no longer be used.', ['OK']);
@@ -4528,7 +4539,8 @@
                                 dirEntry.email,
                                 `${dirEntry.firstName} ${dirEntry.lastName}`,
                                 `Support ticket ${item.id} deleted`,
-                                `Your support ticket ${item.id} ("${item.subject}") has been deleted by our support team.`
+                                `Your support ticket ${item.id} ("${item.subject}") has been deleted by our support team.`,
+                                null, null, item.userId
                             );
                         }
                     });
@@ -4918,13 +4930,14 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         toEmail: recipient,
+                        userId: CURRENT_USER_ID || null,
                         userName: profileData ? `${profileData.firstName} ${profileData.lastName}` : 'there',
                         ticketId: ticketId,
                         type: type,
                         subject: subject,
                         message: message
                     })
-                }).catch(e => console.warn('Acknowledgement email could not be sent:', e));
+                }).catch(e => console.warn('Acknowledgement could not be sent:', e));
             }
 
             // Notifies the ticket's original owner by email once an admin/
@@ -4939,13 +4952,14 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         toEmail: recipient,
+                        userId: item.userId || null,
                         userName: dirEntry ? `${dirEntry.firstName} ${dirEntry.lastName}` : 'there',
                         ticketId: item.id,
                         status: item.status,
                         response: item.response,
                         subject: item.subject
                     })
-                }).catch(e => console.warn('Ticket update email could not be sent:', e));
+                }).catch(e => console.warn('Ticket update could not be sent:', e));
             }
 
             // ============================================================
@@ -5290,7 +5304,7 @@
             // ============================================================
             // 28. PROFILE FUNCTIONS
             // ============================================================
-            // Mobile No verification (Profile > Verification Code Delivery).
+            // Mobile No verification (Profile > Notify On).
             // A number only counts as "verified" for as long as it exactly
             // matches profileData.mobile - editing the field invalidates the
             // old verification (see onProfileMobileInput below and the
@@ -5403,7 +5417,7 @@
                     if (data.user) profileData = data.user;
                     closeMobileVerifyModal();
                     onProfileMobileInput();
-                    showMessage('✅ Mobile Verified', 'Your Mobile No has been verified. You can now choose Text Message (SMS) for verification codes.', ['OK']);
+                    showMessage('✅ Mobile Verified', 'Your Mobile No has been verified. You can now choose Mobile SMS for Notify On.', ['OK']);
                 } catch (err) {
                     if (errBox) { errBox.textContent = err.message || 'Incorrect verification code.'; errBox.style.display = 'block'; }
                 }
@@ -5515,7 +5529,7 @@
                                         </div>
                                         <div class="form-row">
                                             <div class="form-group">
-                                                <label>Verification Code Delivery</label>
+                                                <label>Notify On</label>
                                                 <div class="profile-vcd-radio-group" id="profileVcdRadioGroup">
                                                     <label class="profile-vcd-radio">
                                                         <input type="radio" name="profileVerificationMethod" value="email"
@@ -5527,10 +5541,9 @@
                                                         <input type="radio" name="profileVerificationMethod" value="sms"
                                                                ${profileData.verificationMethod === 'sms' ? 'checked' : ''}
                                                                ${_isMobileVerifiedForCurrentInput() ? '' : 'disabled'} />
-                                                        <span>📱 Text Message (SMS)</span>
+                                                        <span>📱 Mobile SMS</span>
                                                     </label>
                                                 </div>
-                                                <small style="color:rgba(0,0,0,0.5);font-size:0.72rem;">Where your login/2FA verification code is sent. Email is used by default; switch to Text Message to send it to your Mobile No above instead.</small>
                                             </div>
                                         </div>
                                         <div class="form-group profile-2fa-save-row" style="margin-top:4px;">
@@ -5672,11 +5685,11 @@
                 const verificationMethodInput = document.querySelector('input[name="profileVerificationMethod"]:checked');
                 const newVerificationMethod = verificationMethodInput ? verificationMethodInput.value : 'email';
                 if (newVerificationMethod === 'sms' && !newMobile) {
-                    showWarning('Please enter a Mobile No before choosing Text Message for verification codes.');
+                    showWarning('Please enter a Mobile No before choosing Mobile SMS for Notify On.');
                     return;
                 }
                 if (newVerificationMethod === 'sms' && !(profileData.mobileVerified && profileData.mobileVerifiedNumber === newMobile)) {
-                    showWarning('Please verify your Mobile No first (click "Verify" next to the field) before choosing Text Message for verification codes.');
+                    showWarning('Please verify your Mobile No first (click "Verify" next to the field) before choosing Mobile SMS for Notify On.');
                     return;
                 }
 
@@ -5707,7 +5720,8 @@
                             `${profileData.firstName} ${profileData.lastName}`,
                             'Your profile was updated',
                             `The following field(s) on your profile were just changed: ${changeList.join(', ')}.\n\n` +
-                            `If you didn't make this change, please contact support right away.`
+                            `If you didn't make this change, please contact support right away.`,
+                            null, null, CURRENT_USER_ID
                         );
                     }
                 }
@@ -5719,7 +5733,7 @@
                 const labels = {
                     firstName: 'First Name', lastName: 'Last Name', gender: 'Gender',
                     birthdate: 'Birthdate', mobile: 'Mobile', twoFactorAuth: '2-Step Verification',
-                    verificationMethod: 'Verification Code Delivery'
+                    verificationMethod: 'Notify On'
                 };
                 return labels[key] || key;
             }
@@ -5788,20 +5802,21 @@
             // are logged quietly, same pattern as the other email helpers -
             // a missing/unreachable SMTP server should never block the
             // action itself.
-            function sendGenericNotificationEmail(toEmail, userName, title, message, tableRows, tableHeaders) {
-                if (!toEmail) return;
+            function sendGenericNotificationEmail(toEmail, userName, title, message, tableRows, tableHeaders, userId) {
+                if (!toEmail && !userId) return;
                 authFetch('/api/send-notification', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         toEmail: toEmail,
+                        userId: userId || null,
                         userName: userName || 'there',
                         title: title,
                         message: message,
                         tableRows: tableRows || null,
                         tableHeaders: tableHeaders || null
                     })
-                }).catch(e => console.warn('Notification email could not be sent:', e));
+                }).catch(e => console.warn('Notification could not be sent:', e));
             }
 
             function updateNotificationBadge() {

@@ -837,7 +837,7 @@ def _send_email(to_email, subject, body, html_body=None):
 def _primary_twilio_account():
     """Twilio credentials come from environment variables (.env), same
     pattern as _primary_smtp_account() above. Used by the SMS option in
-    Profile > Verification Code Delivery - the account owner sets these up
+    Profile > Notify On - the account owner sets these up
     themselves at https://console.twilio.com (Account SID + Auth Token are
     on the console dashboard; the From number comes from Phone Numbers, or
     Twilio's own trial number)."""
@@ -923,7 +923,7 @@ def _send_verification_sms_async(user_id, to_mobile, code, purpose, expiry_minut
 def _send_verification_code_async(user, code, purpose, expiry_minutes, base_url=""):
     """Single dispatch point used by register/login/forgot-password/resend
     - sends the OTP by whichever channel this user picked in Profile >
-    Verification Code Delivery. Defaults to email, and also falls back to
+    Notify On. Defaults to email, and also falls back to
     email if SMS was chosen but there's no mobile number on file, so a code
     is never silently dropped."""
     if user.get("verificationMethod") == "sms" and (user.get("mobile") or "").strip():
@@ -1076,6 +1076,60 @@ def _send_notification_email_async(to_email, user_name, title, message, table_ro
             print(f"Notification email to {to_email} ({title}) could not be sent: {err}")
 
     threading.Thread(target=_worker, daemon=True).start()
+
+
+def _send_notification_sms(to_mobile, title, message):
+    """Plain-text SMS counterpart to _send_notification_email() above -
+    used when the recipient's Profile > Notify On is set to Mobile SMS.
+    Tables aren't representable over SMS, so callers just get a short
+    text summary instead."""
+    company_name = _load_company_name()
+    cleaned = re.sub(r"[^0-9+]", "", to_mobile or "")
+    if cleaned and not cleaned.startswith("+"):
+        cleaned = "+91" + cleaned
+    if not cleaned:
+        raise ValueError("No verified mobile number on file to notify.")
+    text = f"{company_name}: {title}. {message}".strip()
+    if len(text) > 300:
+        text = text[:297] + "..."
+    _send_sms(cleaned, text)
+
+
+def _send_notification_sms_async(to_mobile, title, message):
+    def _worker():
+        try:
+            _send_notification_sms(to_mobile, title, message)
+        except Exception as err:
+            print(f"Notification SMS to {to_mobile} ({title}) could not be sent: {err}")
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _dispatch_user_notification(user_id, fallback_email, user_name, title, message, table_rows=None, table_headers=None):
+    """Single routing point for every account notification (ticket
+    updates, API key changes, profile-change alerts, balance/plan
+    changes, login alerts): sends by Mobile SMS if that's the recipient's
+    Profile > Notify On choice AND their mobile is actually OTP-verified,
+    otherwise falls back to email exactly as before. user_id is looked up
+    fresh so this always reflects their current preference, not whatever
+    the caller happened to have cached."""
+    user = None
+    if user_id:
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+
+    mobile_verified = bool(
+        user and user.get("mobileVerified")
+        and user.get("mobileVerifiedNumber") == (user.get("mobile") or "").strip()
+    )
+    if user and user.get("verificationMethod") == "sms" and mobile_verified:
+        _send_notification_sms_async(user["mobile"], title, message)
+        return
+
+    email = (user.get("email") if user else None) or fallback_email
+    if not email:
+        return
+    _send_notification_email_async(email, user_name, title, message, table_rows, table_headers)
 
 
 _VERIFICATION_PURPOSE_LABELS = {
@@ -2216,6 +2270,13 @@ class Handler(SimpleHTTPRequestHandler):
         mein, signature check ke baad hota hai."""
         user_id = _safe_id(self._resolve_user_id(body))
 
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            raise ValueError("Account not found.")
+        if not (user.get("mobileVerified") and user.get("mobileVerifiedNumber") == (user.get("mobile") or "").strip()):
+            raise ValueError("Please verify your Mobile No first (Profile > Mobile No > Verify) before adding balance.")
+
         try:
             amount = float(body.get("amount"))
         except (TypeError, ValueError):
@@ -2377,49 +2438,81 @@ class Handler(SimpleHTTPRequestHandler):
     # ---- Section 9: contact-us acknowledgement email ----
     def _handle_send_acknowledgement(self, body):
         to_email = body.get("toEmail")
-        if not to_email:
+        user_id = body.get("userId")
+        if not to_email and not user_id:
             raise ValueError("toEmail is required")
-        _send_acknowledgement_email(
-            to_email,
-            body.get("userName") or "there",
-            body.get("ticketId") or "-",
-            body.get("type") or "Query",
-            body.get("subject") or "(no subject)",
-            body.get("message") or "",
+        ticket_id = body.get("ticketId") or "-"
+        msg_type = body.get("type") or "Query"
+        subject = body.get("subject") or "(no subject)"
+        user_name = body.get("userName") or "there"
+
+        user = None
+        if user_id:
+            users = auth_store.load_users()
+            user = auth_store.find_user_by_id(users, user_id)
+        mobile_verified = bool(
+            user and user.get("mobileVerified")
+            and user.get("mobileVerifiedNumber") == (user.get("mobile") or "").strip()
         )
+        if user and user.get("verificationMethod") == "sms" and mobile_verified:
+            _send_notification_sms_async(
+                user["mobile"], f"Ticket {ticket_id} received",
+                f"We've received your {msg_type.lower()} (\"{subject}\"). Our team will respond soon.",
+            )
+            return 200, {"ok": True}
+
+        email = (user.get("email") if user else None) or to_email
+        if not email:
+            return 200, {"ok": True}
+        _send_acknowledgement_email(email, user_name, ticket_id, msg_type, subject, body.get("message") or "")
         return 200, {"ok": True}
 
     # ---- generic notification email (tickets, api keys, profile, login alerts) ----
     def _handle_send_notification(self, body):
         to_email = body.get("toEmail")
-        if not to_email:
+        user_id = body.get("userId")
+        if not to_email and not user_id:
             raise ValueError("toEmail is required")
         title = body.get("title") or "Account notification"
         message = body.get("message") or ""
         table_rows = body.get("tableRows")
         table_headers = body.get("tableHeaders")
-        _send_notification_email_async(
-            to_email,
-            body.get("userName") or "there",
-            title,
-            message,
-            table_rows=table_rows,
-            table_headers=table_headers,
+        _dispatch_user_notification(
+            user_id, to_email, body.get("userName") or "there", title, message,
+            table_rows=table_rows, table_headers=table_headers,
         )
         return 200, {"ok": True}
 
     def _handle_send_ticket_update(self, body):
         to_email = body.get("toEmail")
-        if not to_email:
+        user_id = body.get("userId")
+        if not to_email and not user_id:
             raise ValueError("toEmail is required")
-        _send_ticket_update_email(
-            to_email,
-            body.get("userName") or "there",
-            body.get("ticketId") or "-",
-            body.get("status") or "Pending",
-            body.get("response") or "",
-            body.get("subject") or "(no subject)",
+        ticket_id = body.get("ticketId") or "-"
+        status = body.get("status") or "Pending"
+        response = body.get("response") or ""
+        subject = body.get("subject") or "(no subject)"
+        user_name = body.get("userName") or "there"
+
+        user = None
+        if user_id:
+            users = auth_store.load_users()
+            user = auth_store.find_user_by_id(users, user_id)
+        mobile_verified = bool(
+            user and user.get("mobileVerified")
+            and user.get("mobileVerifiedNumber") == (user.get("mobile") or "").strip()
         )
+        if user and user.get("verificationMethod") == "sms" and mobile_verified:
+            text = f'Your support ticket "{subject}" status is now {status}.'
+            if response and response != "-":
+                text += f" Response: {response}"
+            _send_notification_sms_async(user["mobile"], f"Ticket {ticket_id} updated", text)
+            return 200, {"ok": True}
+
+        email = (user.get("email") if user else None) or to_email
+        if not email:
+            return 200, {"ok": True}
+        _send_ticket_update_email(email, user_name, ticket_id, status, response, subject)
         return 200, {"ok": True}
 
     # ---- Section 14.1: output template scan (batch-level, not per file) ----
@@ -4311,10 +4404,12 @@ class Handler(SimpleHTTPRequestHandler):
         token = _create_session(user["id"])
         # 2FA is off for this account, so there's no verification-code
         # email in this path at all - send a lightweight "you just logged
-        # in" alert instead, so the user still has *some* email trail of
-        # account access even without 2FA turned on.
-        _send_notification_email_async(
-            user["email"], user["firstName"],
+        # in" alert instead, so the user still has *some* trail of
+        # account access even without 2FA turned on. Routed through
+        # _dispatch_user_notification so it honours Notify On (SMS) same
+        # as every other account alert.
+        _dispatch_user_notification(
+            user["id"], user["email"], user["firstName"],
             "New login to your account",
             f"We noticed a new login to your {_load_company_name()} account just now. "
             f"If this was you, no action is needed.\n\n"
@@ -4497,7 +4592,7 @@ class Handler(SimpleHTTPRequestHandler):
     # Mobile No verification - separate from the Profile save above and
     # from the login/register/reset verification-code flow. This confirms
     # the user actually controls the mobile number before "Text Message
-    # (SMS)" becomes selectable as their Verification Code Delivery method.
+    # (SMS)" becomes selectable as their Notify On method.
     # ------------------------------------------------------------------
     def _handle_profile_send_mobile_otp(self, body):
         user_id = self._resolve_user_id(body)
