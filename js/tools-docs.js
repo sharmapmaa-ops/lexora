@@ -952,6 +952,92 @@
     canvas.toBlob(function (b) { if (b) { download(b, 'barcode.png'); say('tBcStatus', 'Downloaded.', 'ok'); } });
   }
 
+  // ══════════════════════════════════════════════════════════════════
+  // SIGNATURE MAKER
+  // ══════════════════════════════════════════════════════════════════
+  let sigDrawing = false, sigHasStrokes = false;
+
+  function renderSignatureMaker() {
+    setTimeout(function () { wireSignatureCanvas(); }, 0);
+    return card('✍️', 'Signature Maker', `
+      <div class="setup-group">
+        <label>Draw your signature below</label>
+        <canvas id="tSigCanvas" width="600" height="220"
+                style="width:100%;max-width:600px;height:220px;border:1px dashed rgba(0,0,0,0.25);border-radius:8px;background:#fff;touch-action:none;cursor:crosshair;"></canvas>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;">
+        ${fld('Pen color', `<input type="color" id="tSigColor" value="#0b1533" style="width:100%;height:38px;" />`)}
+        ${fld('Pen size', `<input type="range" id="tSigWidth" min="1" max="10" value="3" style="width:100%;" />`)}
+      </div>
+      <div class="process-controls" style="margin-top:12px;">
+        <button class="process-btn clear-btn" onclick="ToolsDocs.clearSignature()">🗑️ Clear</button>
+        <button class="process-btn start-btn" onclick="ToolsDocs.downloadSignature()">⬇️ Download PNG</button>
+      </div>
+      <div id="tSigStatus" style="margin-top:8px;font-size:0.86rem;min-height:1.1em;"></div>
+      <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:10px;">
+        Downloaded as a transparent PNG, so it drops cleanly onto documents without a white box around it.
+      </p>`);
+  }
+
+  function wireSignatureCanvas() {
+    const canvas = document.getElementById('tSigCanvas');
+    if (!canvas || canvas.dataset.wired) return;
+    canvas.dataset.wired = '1';
+    const ctx2d = canvas.getContext('2d');
+
+    const posFromEvent = function (ev) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height;
+      const point = ev.touches ? ev.touches[0] : ev;
+      return { x: (point.clientX - rect.left) * scaleX, y: (point.clientY - rect.top) * scaleY };
+    };
+    const start = function (ev) {
+      ev.preventDefault();
+      sigDrawing = true;
+      const p = posFromEvent(ev);
+      ctx2d.beginPath();
+      ctx2d.moveTo(p.x, p.y);
+    };
+    const move = function (ev) {
+      if (!sigDrawing) return;
+      ev.preventDefault();
+      const p = posFromEvent(ev);
+      ctx2d.strokeStyle = val('tSigColor') || '#0b1533';
+      ctx2d.lineWidth = parseFloat(val('tSigWidth')) || 3;
+      ctx2d.lineCap = 'round';
+      ctx2d.lineJoin = 'round';
+      ctx2d.lineTo(p.x, p.y);
+      ctx2d.stroke();
+      sigHasStrokes = true;
+    };
+    const end = function () { sigDrawing = false; };
+
+    canvas.addEventListener('mousedown', start);
+    canvas.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', end);
+    canvas.addEventListener('touchstart', start, { passive: false });
+    canvas.addEventListener('touchmove', move, { passive: false });
+    canvas.addEventListener('touchend', end);
+  }
+
+  function clearSignature() {
+    const canvas = document.getElementById('tSigCanvas');
+    if (!canvas) return;
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    sigHasStrokes = false;
+    say('tSigStatus', '', 'ok');
+  }
+
+  function downloadSignature() {
+    const canvas = document.getElementById('tSigCanvas');
+    if (!canvas || !sigHasStrokes) return say('tSigStatus', 'Draw a signature first.', 'error');
+    canvas.toBlob(function (blob) {
+      if (!blob) return say('tSigStatus', 'Could not export the signature.', 'error');
+      download(blob, 'signature.png');
+      say('tSigStatus', 'Downloaded.', 'ok');
+    }, 'image/png');
+  }
+
   // ── card registry ──────────────────────────────────────────────────
   const CARDS = {
     'invoice-generator':   { label: 'Invoice Generator',   icon: '🧾', desc: 'Build an invoice and download it as a PDF.',   render: function () { return renderDoc('invoice-generator'); } },
@@ -966,7 +1052,8 @@
     'json-to-csv':         { label: 'JSON to CSV',         icon: '🔄', desc: 'Upload JSON, get a CSV file.',                render: renderJsonToCsv },
     'csv-to-json':         { label: 'CSV/Excel to JSON',   icon: '🔄', desc: 'Upload CSV or Excel, get JSON.',             render: renderCsvToJson },
     'qr-generator':        { label: 'QR Code Generator',   icon: '🔳', desc: 'Make a QR code from any text or link.',       render: renderQr },
-    'barcode-generator':   { label: 'Barcode Generator',   icon: '▮',  desc: 'CODE128, EAN, UPC and more.',                 render: renderBarcode }
+    'barcode-generator':   { label: 'Barcode Generator',   icon: '▮',  desc: 'CODE128, EAN, UPC and more.',                 render: renderBarcode },
+    'signature-maker':     { label: 'Signature Maker',     icon: '✍️', desc: 'Draw a signature, download as a transparent PNG.', render: renderSignatureMaker }
   };
 
   window.ToolsDocs = {
@@ -995,6 +1082,8 @@
     runQr: runQr,
     downloadQr: downloadQr,
     runBarcode: runBarcode,
+    clearSignature: clearSignature,
+    downloadSignature: downloadSignature,
     downloadBarcode: downloadBarcode,
     parseCsv: parseCsv,
     applyTemplate: applyTemplate

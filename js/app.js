@@ -8986,6 +8986,10 @@
                         ocr: 'OCR',
                         'data-extraction': 'Data Extraction',
                         bai2: 'BAI2',
+                        'sip-calculator': 'SIP Calculator',
+                        'income-tax-calculator': 'Income Tax Calculator',
+                        'compound-interest-calculator': 'Compound Interest Calculator',
+                        'loan-eligibility-calculator': 'Loan Eligibility Calculator',
                     };
 
                     if (subId) {
@@ -9228,6 +9232,10 @@
                         return buildServiceUploadHTML('translation', 'Translation', '🌐');
                     }
                 },
+                'sip-calculator': { body: function() { return window.PaidCalculators.render('sip-calculator'); } },
+                'income-tax-calculator': { body: function() { return window.PaidCalculators.render('income-tax-calculator'); } },
+                'compound-interest-calculator': { body: function() { return window.PaidCalculators.render('compound-interest-calculator'); } },
+                'loan-eligibility-calculator': { body: function() { return window.PaidCalculators.render('loan-eligibility-calculator'); } },
                 'paid-services': {
                     body: function() {
                         const items = [
@@ -9236,6 +9244,10 @@
                             { id: 'ocr', icon: '🔍', label: 'OCR', desc: 'Turn scanned or photographed pages into editable Word.' },
                             { id: 'data-extraction', icon: '📊', label: 'Data Extraction', desc: 'Define your own fields and get a clean structured table.' },
                             { id: 'bai2', icon: '🏦', label: 'BAI2', desc: 'Convert bank statements into BAI2, CSV, or JSON.' },
+                            { id: 'sip-calculator', icon: '📈', label: 'SIP Calculator', desc: 'Estimate the maturity value of a monthly SIP investment.' },
+                            { id: 'income-tax-calculator', icon: '🧾', label: 'Income Tax Calculator', desc: 'India new-regime slabs, cess, and Section 87A rebate.' },
+                            { id: 'compound-interest-calculator', icon: '💹', label: 'Compound Interest Calculator', desc: 'Maturity value at any compounding frequency.' },
+                            { id: 'loan-eligibility-calculator', icon: '🏦', label: 'Loan Eligibility Calculator', desc: 'Estimate the maximum loan you could qualify for.' },
                         ];
                         return `
                             <div class="tool-group-title">💼 Paid Services</div>

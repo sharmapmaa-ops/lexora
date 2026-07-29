@@ -685,6 +685,244 @@
     }
   });
 
+  // ══════════════════════════════════════════════════════════════════
+  // CREATE ZIP
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'create-zip',
+    title: 'Create ZIP',
+    icon: '🗜️',
+    accept: '*',
+    backTo: BACK,
+    description: 'Combine any files into a single ZIP archive.',
+    setupHtml: function () { return ''; },
+    process: async function (files, ctx, label) {
+      need(typeof JSZip !== 'undefined' ? JSZip : undefined, 'JSZip');
+      const zip = new JSZip();
+      for (const f of files) {
+        zip.file(f.name, await f.arrayBuffer());
+      }
+      const blob = await zip.generateAsync({ type: 'blob' });
+      ctx.download(blob, 'archive.zip');
+      ctx.log(`${label} > Generate Output > archive.zip (${files.length} file(s))`, 'Success');
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // EXCEL TO CSV
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'excel-to-csv',
+    title: 'Excel to CSV',
+    icon: '📊',
+    accept: '.xlsx,.xls',
+    backTo: BACK,
+    description: 'Convert the first sheet of an Excel file into a CSV.',
+    setupHtml: function () { return ''; },
+    process: async function (files, ctx, label) {
+      need(typeof XLSX !== 'undefined' ? XLSX : undefined, 'SheetJS');
+      const f = files[0];
+      const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+      const sheetName = wb.SheetNames[0];
+      const csv = XLSX.utils.sheet_to_csv(wb.Sheets[sheetName]);
+      ctx.download(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' }), `${stem(f.name)}.csv`);
+      ctx.log(`${label} > Sheet = ${sheetName}`, 'Info');
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}.csv`, 'Success');
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // CSV TO EXCEL
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'csv-to-excel',
+    title: 'CSV to Excel',
+    icon: '📈',
+    accept: '.csv,text/csv',
+    backTo: BACK,
+    description: 'Convert a CSV file into an Excel workbook.',
+    setupHtml: function () { return ''; },
+    process: async function (files, ctx, label) {
+      need(typeof XLSX !== 'undefined' ? XLSX : undefined, 'SheetJS');
+      const f = files[0];
+      const text = await f.text();
+      const wb = XLSX.read(text, { type: 'string' });
+      const bytes = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      ctx.download(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `${stem(f.name)}.xlsx`);
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}.xlsx`, 'Success');
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // SPLIT EXCEL (one file per sheet, delivered as a ZIP)
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'split-excel',
+    title: 'Split Excel',
+    icon: '✂️',
+    accept: '.xlsx,.xls',
+    backTo: BACK,
+    multiple: false,
+    description: 'Split a multi-sheet workbook into one Excel file per sheet.',
+    setupHtml: function () { return ''; },
+    process: async function (files, ctx, label) {
+      need(typeof XLSX !== 'undefined' ? XLSX : undefined, 'SheetJS');
+      need(typeof JSZip !== 'undefined' ? JSZip : undefined, 'JSZip');
+      const f = files[0];
+      const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+      if (wb.SheetNames.length < 2) throw new Error('This workbook only has one sheet - nothing to split.');
+
+      const zip = new JSZip();
+      wb.SheetNames.forEach(function (name) {
+        const outWb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(outWb, wb.Sheets[name], name);
+        const bytes = XLSX.write(outWb, { bookType: 'xlsx', type: 'array' });
+        zip.file(`${name}.xlsx`, bytes);
+      });
+      const blob = await zip.generateAsync({ type: 'blob' });
+      ctx.download(blob, `${stem(f.name)}_split.zip`);
+      ctx.log(`${label} > Sheets found = ${wb.SheetNames.length}`, 'Info');
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}_split.zip (${wb.SheetNames.length} file(s))`, 'Success');
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // IMAGE FORMAT CONVERTER
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'image-format-converter',
+    title: 'Image Format Converter',
+    icon: '🔄',
+    accept: 'image/*',
+    backTo: BACK,
+    description: 'Convert images between JPG, PNG, and WEBP.',
+    setupHtml: function () {
+      return `
+        <div class="setup-group">
+          <label>Convert to</label>
+          <select id="tIfcFormat" style="width:100%;">
+            <option value="image/png">PNG</option>
+            <option value="image/jpeg" selected>JPG</option>
+            <option value="image/webp">WEBP</option>
+          </select>
+        </div>`;
+    },
+    process: async function (files, ctx, label) {
+      const mime = (document.getElementById('tIfcFormat') || {}).value || 'image/jpeg';
+      const ext = mime === 'image/png' ? 'png' : (mime === 'image/webp' ? 'webp' : 'jpg');
+      const f = files[0];
+      const img = await new Promise(function (resolve, reject) {
+        const el = new Image();
+        el.onload = function () { resolve(el); };
+        el.onerror = function () { reject(new Error('Could not read that image.')); };
+        el.src = URL.createObjectURL(f);
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const cctx = canvas.getContext('2d');
+      // JPG has no transparency - fill white behind the image first so a
+      // PNG with a transparent background doesn't turn black.
+      if (mime === 'image/jpeg') { cctx.fillStyle = '#fff'; cctx.fillRect(0, 0, canvas.width, canvas.height); }
+      cctx.drawImage(img, 0, 0);
+      const blob = await new Promise(function (resolve) { canvas.toBlob(resolve, mime, 0.92); });
+      ctx.download(blob, `${stem(f.name)}.${ext}`);
+      ctx.log(`${label} > Source = ${img.naturalWidth}x${img.naturalHeight}`, 'Info');
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}.${ext}`, 'Success');
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // COLOR PALETTE EXTRACTOR
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'color-palette-extractor',
+    title: 'Color Palette Extractor',
+    icon: '🎨',
+    accept: 'image/*',
+    backTo: BACK,
+    description: 'Pull the dominant colors out of an image as a swatch strip + hex codes.',
+    setupHtml: function () {
+      return `
+        <div class="setup-group">
+          <label>Number of colors</label>
+          <select id="tCpeCount" style="width:100%;">
+            <option value="5">5</option>
+            <option value="6" selected>6</option>
+            <option value="8">8</option>
+            <option value="10">10</option>
+          </select>
+        </div>`;
+    },
+    process: async function (files, ctx, label) {
+      const count = parseInt((document.getElementById('tCpeCount') || {}).value, 10) || 6;
+      const f = files[0];
+      const img = await new Promise(function (resolve, reject) {
+        const el = new Image();
+        el.onload = function () { resolve(el); };
+        el.onerror = function () { reject(new Error('Could not read that image.')); };
+        el.src = URL.createObjectURL(f);
+      });
+
+      // Sample down to a small canvas first - reading every pixel of a
+      // full-size photo is slow and unnecessary for finding dominant
+      // colors; 100x100 is plenty of signal.
+      const sampleSize = 100;
+      const sampleCanvas = document.createElement('canvas');
+      sampleCanvas.width = sampleSize;
+      sampleCanvas.height = sampleSize;
+      const sctx = sampleCanvas.getContext('2d');
+      sctx.drawImage(img, 0, 0, sampleSize, sampleSize);
+      const data = sctx.getImageData(0, 0, sampleSize, sampleSize).data;
+
+      // Quantize each channel into 8 buckets (0-255 -> 0-7) and count
+      // which bucket combination appears most often - simple, fast, and
+      // good enough to find the genuinely dominant colors rather than
+      // noise from anti-aliased edges.
+      const buckets = {};
+      for (let i = 0; i < data.length; i += 4) {
+        const a = data[i + 3];
+        if (a < 40) continue; // skip near-transparent pixels
+        const r = Math.floor(data[i] / 32) * 32;
+        const g = Math.floor(data[i + 1] / 32) * 32;
+        const b = Math.floor(data[i + 2] / 32) * 32;
+        const key = r + ',' + g + ',' + b;
+        buckets[key] = (buckets[key] || 0) + 1;
+      }
+      const sorted = Object.keys(buckets).sort(function (a, b) { return buckets[b] - buckets[a]; });
+      const top = sorted.slice(0, count).map(function (key) {
+        const [r, g, b] = key.split(',').map(Number);
+        return { r: r, g: g, b: b };
+      });
+      if (!top.length) throw new Error('Could not find any colors - is this a blank/transparent image?');
+
+      const hex = (n) => n.toString(16).padStart(2, '0');
+      const hexCodes = top.map(function (c) { return '#' + hex(c.r) + hex(c.g) + hex(c.b); });
+
+      // Build a swatch strip image as the downloadable output.
+      const swW = 120, swH = 120;
+      const outCanvas = document.createElement('canvas');
+      outCanvas.width = swW * top.length;
+      outCanvas.height = swH + 30;
+      const octx = outCanvas.getContext('2d');
+      octx.fillStyle = '#fff';
+      octx.fillRect(0, 0, outCanvas.width, outCanvas.height);
+      top.forEach(function (c, i) {
+        octx.fillStyle = `rgb(${c.r},${c.g},${c.b})`;
+        octx.fillRect(i * swW, 0, swW, swH);
+        octx.fillStyle = '#111';
+        octx.font = '13px monospace';
+        octx.textAlign = 'center';
+        octx.fillText(hexCodes[i], i * swW + swW / 2, swH + 20);
+      });
+
+      const blob = await new Promise(function (resolve) { outCanvas.toBlob(resolve, 'image/png'); });
+      ctx.download(blob, `${stem(f.name)}_palette.png`);
+      ctx.log(`${label} > Colors found = ${hexCodes.join(', ')}`, 'Info');
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}_palette.png`, 'Success');
+    }
+  });
+
   window.ToolsFiles = {
     onPreset: onPreset,
     fillForm: fillForm,
