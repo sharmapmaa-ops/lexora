@@ -834,6 +834,106 @@ def _send_email(to_email, subject, body, html_body=None):
             server.sendmail(sender, [to_email], mime_msg.as_string())
 
 
+def _primary_twilio_account():
+    """Twilio credentials come from environment variables (.env), same
+    pattern as _primary_smtp_account() above. Used by the SMS option in
+    Profile > Verification Code Delivery - the account owner sets these up
+    themselves at https://console.twilio.com (Account SID + Auth Token are
+    on the console dashboard; the From number comes from Phone Numbers, or
+    Twilio's own trial number)."""
+    sid = os.environ.get("TWILIO_ACCOUNT_SID")
+    if not sid:
+        raise ValueError(
+            "Twilio is not configured - set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and "
+            "TWILIO_FROM_NUMBER in your .env file (see .env.example)."
+        )
+    return {
+        "sid": sid,
+        "auth_token": os.environ.get("TWILIO_AUTH_TOKEN"),
+        "from_number": os.environ.get("TWILIO_FROM_NUMBER"),
+    }
+
+
+def _send_sms(to_number, body):
+    """Generic Twilio SMS sender (Programmable Messaging REST API), the SMS
+    counterpart to _send_email() above. Raises on failure - callers decide
+    how to react (the async wrapper below just logs it, same as email)."""
+    account = _primary_twilio_account()
+    sid = account["sid"]
+    auth_token = account["auth_token"]
+    from_number = account["from_number"]
+    if not auth_token or not from_number:
+        raise ValueError(
+            "Twilio is not fully configured - TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER "
+            "are also required (see .env.example)."
+        )
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
+    payload = urlencode({"To": to_number, "From": from_number, "Body": body}).encode("utf-8")
+    credentials = base64.b64encode(f"{sid}:{auth_token}".encode("utf-8")).decode("ascii")
+    req = urllib.request.Request(url, data=payload, method="POST", headers={
+        "Authorization": f"Basic {credentials}",
+        "Content-Type": "application/x-www-form-urlencoded",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp.read()
+    except urllib.error.HTTPError as err:
+        detail = err.read().decode("utf-8", errors="ignore")
+        raise ValueError(f"Twilio SMS failed ({err.code}): {detail}") from err
+
+
+def _send_verification_sms(to_mobile, purpose, code, expiry_minutes):
+    company_name = _load_company_name()
+    label = _VERIFICATION_PURPOSE_LABELS.get(purpose, "verify your account")
+    # Same free-text "Mobile No" field the Profile page already has - not
+    # guaranteed to include a country code, so a bare number is assumed to
+    # be Indian (+91), matching the rest of this app's India-first
+    # defaults. Update this if deploying somewhere else.
+    cleaned = re.sub(r"[^0-9+]", "", to_mobile or "")
+    if cleaned and not cleaned.startswith("+"):
+        cleaned = "+91" + cleaned
+    if not cleaned:
+        raise ValueError("No mobile number on file to send an SMS code to.")
+    body = (
+        f"{company_name}: your code to {label} is {code}. "
+        f"It expires in {expiry_minutes} min. Don't share this code with anyone."
+    )
+    _send_sms(cleaned, body)
+
+
+def _send_verification_sms_async(user_id, to_mobile, code, purpose, expiry_minutes):
+    """Fire-and-forget wrapper mirroring _send_verification_email_async() -
+    reuses the exact same _email_jobs store so the frontend's existing
+    /api/auth/email-status polling works unchanged regardless of which
+    channel (email or SMS) the code actually went out on."""
+    _set_email_job(user_id, status="sending")
+    print(f"🔑 Verification code for {to_mobile} ({purpose}): {code}  (expires in {expiry_minutes} min)")
+
+    def _worker():
+        try:
+            _send_verification_sms(to_mobile, purpose, code, expiry_minutes)
+            _set_email_job(user_id, status="sent")
+        except Exception as err:
+            print(f"Verification SMS to {to_mobile} could not be sent (code is still valid - see above): {err}")
+            _set_email_job(user_id, status="failed", code=code)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _send_verification_code_async(user, code, purpose, expiry_minutes, base_url=""):
+    """Single dispatch point used by register/login/forgot-password/resend
+    - sends the OTP by whichever channel this user picked in Profile >
+    Verification Code Delivery. Defaults to email, and also falls back to
+    email if SMS was chosen but there's no mobile number on file, so a code
+    is never silently dropped."""
+    if user.get("verificationMethod") == "sms" and (user.get("mobile") or "").strip():
+        _send_verification_sms_async(user["id"], user["mobile"], code, purpose, expiry_minutes)
+    else:
+        _send_verification_email_async(
+            user["id"], user["email"], user.get("firstName") or "", code, purpose, expiry_minutes, base_url=base_url
+        )
+
+
 def _html_email_wrapper(company_name, preheader, body_html):
     """Shared branded HTML shell (dark navy header matching the app's own
     theme, card body, muted footer) - both email types below drop their
@@ -4108,7 +4208,7 @@ class Handler(SimpleHTTPRequestHandler):
             auth_store.save_users(users)
 
             resp = {"ok": True, "userId": existing["id"], "email": email, "expiresInMinutes": expiry_minutes}
-            _send_verification_email_async(existing["id"], email, existing["firstName"], code, "register", expiry_minutes, base_url=_base_url_from_headers(self.headers))
+            _send_verification_code_async(existing, code, "register", expiry_minutes, base_url=_base_url_from_headers(self.headers))
             return 200, resp
 
         issues = auth_store.password_policy_issues(password)
@@ -4133,7 +4233,7 @@ class Handler(SimpleHTTPRequestHandler):
             "verificationPurpose": "register",
             "sessionStatus": "Offline", "role": "User", "lock": "No",
             "twoFactorAuth": "Yes", "emailVerified": "No", "mobileVerified": "No",
-            "sysConfig": "Desktop",
+            "verificationMethod": "email", "sysConfig": "Desktop",
             "plan": "Free", "planStartDate": today.isoformat(),
             "planEndDate": (today + datetime.timedelta(days=7)).isoformat(), "planStatus": "Active",
         }
@@ -4141,7 +4241,7 @@ class Handler(SimpleHTTPRequestHandler):
         auth_store.save_users(users)
 
         resp = {"ok": True, "userId": user_id, "email": email, "expiresInMinutes": expiry_minutes}
-        _send_verification_email_async(user_id, email, first, code, "register", expiry_minutes, base_url=_base_url_from_headers(self.headers))
+        _send_verification_code_async(new_user, code, "register", expiry_minutes, base_url=_base_url_from_headers(self.headers))
         return 200, resp
 
     def _handle_auth_verify_register(self, body):
@@ -4200,7 +4300,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "ok": True, "requires2FA": True, "userId": user["id"],
                 "email": user["email"], "expiresInMinutes": expiry_minutes,
             }
-            _send_verification_email_async(user["id"], user["email"], user["firstName"], code, "login", expiry_minutes, base_url=_base_url_from_headers(self.headers))
+            _send_verification_code_async(user, code, "login", expiry_minutes, base_url=_base_url_from_headers(self.headers))
             return 200, resp
 
         user["sessionStatus"] = "Online"
@@ -4272,7 +4372,7 @@ class Handler(SimpleHTTPRequestHandler):
             "ok": True, "userId": user["id"], "email": user["email"],
             "expiresInMinutes": expiry_minutes,
         }
-        _send_verification_email_async(user["id"], user["email"], user["firstName"], code, "reset", expiry_minutes, base_url=_base_url_from_headers(self.headers))
+        _send_verification_code_async(user, code, "reset", expiry_minutes, base_url=_base_url_from_headers(self.headers))
         return 200, resp
 
     def _handle_auth_verify_reset_code(self, body):
@@ -4338,7 +4438,7 @@ class Handler(SimpleHTTPRequestHandler):
         auth_store.save_users(users)
 
         resp = {"ok": True, "expiresInMinutes": expiry_minutes}
-        _send_verification_email_async(user["id"], user["email"], user["firstName"], code, purpose, expiry_minutes, base_url=_base_url_from_headers(self.headers))
+        _send_verification_code_async(user, code, purpose, expiry_minutes, base_url=_base_url_from_headers(self.headers))
         return 200, resp
 
     # ------------------------------------------------------------------

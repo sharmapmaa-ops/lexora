@@ -5375,6 +5375,16 @@
                                                 <small style="color:rgba(0,0,0,0.5);font-size:0.72rem;">Min 8 characters, with 1 uppercase, 1 lowercase, 1 number and 1 special character.</small>
                                             </div>
                                         </div>
+                                        <div class="form-row">
+                                            <div class="form-group">
+                                                <label>Verification Code Delivery</label>
+                                                <select id="profileVerificationMethod">
+                                                    <option value="email" ${(profileData.verificationMethod || 'email') === 'email' ? 'selected' : ''}>📧 Email</option>
+                                                    <option value="sms" ${profileData.verificationMethod === 'sms' ? 'selected' : ''}>📱 Text Message (SMS)</option>
+                                                </select>
+                                                <small style="color:rgba(0,0,0,0.5);font-size:0.72rem;">Where your login/2FA verification code is sent. Email is used by default; switch to Text Message to send it to your Mobile No above instead.</small>
+                                            </div>
+                                        </div>
                                         <div class="form-group profile-2fa-save-row" style="margin-top:4px;">
                                             <label class="checkbox-label">
                                                 <input type="checkbox" id="profileTwoFactorAuth" ${profileData.twoFactorAuth === 'Yes' ? 'checked' : ''} />
@@ -5506,14 +5516,23 @@
                 const before = {
                     firstName: profileData.firstName, lastName: profileData.lastName,
                     gender: profileData.gender, birthdate: profileData.birthdate,
-                    mobile: profileData.mobile, twoFactorAuth: profileData.twoFactorAuth
+                    mobile: profileData.mobile, twoFactorAuth: profileData.twoFactorAuth,
+                    verificationMethod: profileData.verificationMethod || 'email'
                 };
+
+                const newMobile = document.getElementById('profileMobile').value.trim();
+                const newVerificationMethod = document.getElementById('profileVerificationMethod').value;
+                if (newVerificationMethod === 'sms' && !newMobile) {
+                    showWarning('Please enter a Mobile No before choosing Text Message for verification codes.');
+                    return;
+                }
 
                 profileData.firstName = document.getElementById('profileFirstName').value.trim();
                 profileData.lastName = document.getElementById('profileLastName').value.trim();
                 profileData.gender = document.getElementById('profileGender').value;
                 profileData.birthdate = document.getElementById('profileBirthdate').value;
-                profileData.mobile = document.getElementById('profileMobile').value.trim();
+                profileData.mobile = newMobile;
+                profileData.verificationMethod = newVerificationMethod;
                 profileData.twoFactorAuth = document.getElementById('profileTwoFactorAuth').checked ? 'Yes' : 'No';
 
                 const changedFields = Object.keys(before).filter(k => before[k] !== profileData[k]);
@@ -5546,7 +5565,8 @@
             function _humanizeProfileField(key) {
                 const labels = {
                     firstName: 'First Name', lastName: 'Last Name', gender: 'Gender',
-                    birthdate: 'Birthdate', mobile: 'Mobile', twoFactorAuth: '2-Step Verification'
+                    birthdate: 'Birthdate', mobile: 'Mobile', twoFactorAuth: '2-Step Verification',
+                    verificationMethod: 'Verification Code Delivery'
                 };
                 return labels[key] || key;
             }
