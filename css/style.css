@@ -1767,10 +1767,11 @@
             margin-bottom: 0;
         }
 
-        /* Both scrollbars, columns sized to their content (autofit) */
+        /* Both scrollbars, columns sized to their content (autofit).
+           Explicit fixed height (not flex:1/auto) - this must not grow
+           or shrink based on available space in the card. */
         .support-table-scroll {
-            flex: 1;
-            min-height: 320px;
+            height: 272px;
             overflow: auto;
             border: 1px solid rgba(0,0,139,0.1);
             border-radius: 4px;
@@ -4060,7 +4061,7 @@
 /* ---- two-column shell ---- */
 .auth-main {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 34em;
+    grid-template-columns: minmax(0, 1fr) 39em;
     gap: 2.2em;
     align-items: start;
 }

@@ -6725,6 +6725,20 @@
                 const host = document.getElementById('dbActiveTableBody');
                 if (!host) return;
                 host.innerHTML = '<p class="ds-card-sub" style="padding:14px;">Loading\u2026</p>';
+
+                // "rules" is stored as ONE row (a single JSONB blob holding
+                // { approved: [...], pending: [...] }) - that's the right
+                // storage shape for it (same singleton pattern as
+                // company/card-layout), but the generic per-record grid
+                // below expects one row per record, so it was dumping the
+                // entire ruleset's JSON into a single "data" cell instead
+                // of showing one row per rule. Read it via the same
+                // /api/rules/list the rest of the app already uses, and
+                // flatten approved+pending into real rows here instead.
+                if (name === 'rules') {
+                    return dbTableLoadRules(host);
+                }
+
                 try {
                     const res = await authFetch('/api/admin/db-table?name=' + encodeURIComponent(name));
                     const d = await res.json();
@@ -6771,6 +6785,47 @@
                             <button class="admin-btn admin-btn-add-folder" onclick="adminOpenPricingEditor()">\u{1F4B2} Plan Pricing</button>
                         </div>`;
                     host.dataset.rows = JSON.stringify(rows);
+                } catch (err) {
+                    host.innerHTML = `<p class="db-note is-bad" style="padding:14px;">${escapeHtml(err.message)}</p>`;
+                }
+            };
+
+            // One row per rule (approved + pending combined, with a Status
+            // column), real column headers - read-only here since rule
+            // approve/reject/delete already have their own dedicated flows
+            // in the Lease Abstraction rules review UI; this view is just
+            // for seeing the data correctly, not editing it.
+            const RULES_TABLE_COLUMNS = [
+                'id', 'status', 'fieldId', 'ruleType', 'ruleText', 'confidence',
+                'usageCount', 'successCount', 'appliedCount', 'createdAt', 'approvedAt', 'userId'
+            ];
+
+            window.dbTableLoadRules = async function(host) {
+                try {
+                    const res = await authFetch('/api/rules/list');
+                    const d = await res.json();
+                    if (!res.ok) throw new Error(d.error || 'Could not read rules.');
+                    const rows = [
+                        ...(d.approved || []).map(r => ({ ...r, status: 'Approved' })),
+                        ...(d.pending || []).map(r => ({ ...r, status: 'Pending' })),
+                    ];
+                    host.innerHTML = `
+                        <div class="db-edit-table-wrapper">
+                        <table class="admin-json-table db-txn-table">
+                            <thead>
+                                <tr>
+                                    ${RULES_TABLE_COLUMNS.map(c => `<th>${escapeHtml(_dbTableLabel(c))}</th>`).join('')}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${rows.map(r => `
+                                    <tr>
+                                        ${RULES_TABLE_COLUMNS.map(c => `<td>${escapeHtml(r[c] === undefined || r[c] === null ? '' : String(r[c]))}</td>`).join('')}
+                                    </tr>`).join('')}
+                            </tbody>
+                        </table>
+                        </div>
+                        <div class="db-table-caption">${rows.length} rule(s) - ${(d.approved || []).length} approved, ${(d.pending || []).length} pending. Approve/reject/delete from the Lease Abstraction rules review screen.</div>`;
                 } catch (err) {
                     host.innerHTML = `<p class="db-note is-bad" style="padding:14px;">${escapeHtml(err.message)}</p>`;
                 }
@@ -9846,7 +9901,13 @@
                 'Extract data with high accuracy',
                 'Smart OCR & data extraction',
                 'Convert to Word, Excel, CSV, JSON or PDF',
-                'Fast, reliable & privacy focused'
+                'Fast, reliable & privacy focused',
+                'Translate documents into 60+ languages',
+                'Convert bank statements to BAI2, CSV or JSON',
+                'Define your own fields for data extraction',
+                'Track usage and billing in one wallet',
+                'Free tools included - no plan required',
+                '24/7 support for every paid service'
             ];
 
             const AUTH_PAID_TOOLS = [
@@ -10009,6 +10070,22 @@
                     card.style.display = (filter === 'all' || card.dataset.type === filter) ? '' : 'none';
                 });
             };
+
+            // All Services (default, has the most cards) sets the grid's
+            // natural height once, right after the first render (when
+            // every card is still visible) - Free/Paid Services then keep
+            // that exact same height instead of shrinking to however many
+            // cards they happen to show, so the panel doesn't resize when
+            // switching tabs. Each card itself stays a fixed, un-stretched
+            // size either way (.auth-thumb-card height + .auth-thumb-grid's
+            // align-items:start - see design-system.css) - only the extra
+            // blank space below a shorter list grows, never the cards.
+            function lockAuthThumbGridHeight() {
+                const grid = document.getElementById('authThumbGrid');
+                if (!grid) return;
+                grid.style.minHeight = '';
+                grid.style.minHeight = grid.scrollHeight + 'px';
+            }
 
             // "Remember me" sirf email yaad rakhta hai (password kabhi
             // nahi - wo browser ke password manager ka kaam hai). Session
@@ -10238,6 +10315,7 @@
                     wireOtpBoxes();
                     startAuthCountdown();
                 }
+                lockAuthThumbGridHeight();
             }
 
             function wireOtpBoxes() {

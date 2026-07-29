@@ -1781,17 +1781,7 @@ class Handler(SimpleHTTPRequestHandler):
             with open(file_path, "r", encoding="utf-8") as f:
                 raw = f.read()
         except OSError:
-            # json/ me sirf sessions.json + extraction_prompt.txt bache
-            # hain - baaki files json_backup_pre_postgres/ me hain. Migration
-            # abhi tak na chali ho (ya table khaali ho) to yahan bhi dhoondh lo,
-            # warna company/menu-config jaisi cheezein first-load par hi
-            # 404 de kar poora app tod deti hain.
-            fallback_path = os.path.join(ROOT_DIR, "json_backup_pre_postgres", f"{name}.json")
-            try:
-                with open(fallback_path, "r", encoding="utf-8") as f:
-                    raw = f.read()
-            except OSError:
-                return self._send_json(404, {"error": "Not found"})
+            return self._send_json(404, {"error": "Not found"})
 
         body = raw.encode("utf-8")
         self.send_response(200)
@@ -1813,14 +1803,7 @@ class Handler(SimpleHTTPRequestHandler):
         if db is None or not db.is_enabled():
             return 400, {"error": "Database is not configured (DATABASE_URL missing)."}
         try:
-            # json/ me ab sirf sessions.json + extraction_prompt.txt bache
-            # hain - baaki resource files json_backup_pre_postgres/ me hain,
-            # isliye wahan bhi dhoondh lo agar json/ me na milein.
-            fallback_dir = os.path.join(ROOT_DIR, "json_backup_pre_postgres")
-            report = db.migrate_from_json(
-                JSON_DIR,
-                fallback_dir=fallback_dir if os.path.isdir(fallback_dir) else None,
-            )
+            report = db.migrate_from_json(JSON_DIR)
         except Exception as err:  # noqa: BLE001
             return 500, {"error": str(err)}
         return 200, {"ok": True, "report": report}
@@ -3971,11 +3954,11 @@ class Handler(SimpleHTTPRequestHandler):
     # Any user can propose a new extraction rule - it lands in "pending"
     # tagged with their own userId. Only an approved rule (userId defaults
     # to whichever account originally owns it - the Developer, for the
-    # built-in rule set) actually affects extraction; approving/rejecting
-    # is meant for the Developer role, though - consistent with the rest
-    # of this app's trust model - that's enforced by the UI only hiding
-    # the buttons from non-Developer users, not by a real server-side
-    # permission check.
+    # built-in rule set) actually affects extraction; approving/rejecting/
+    # editing an already-approved rule is Admin/Developer only, enforced
+    # server-side via _require_role() in each of those handlers below
+    # (not just hidden buttons in the UI). A regular user can delete their
+    # own still-pending proposal, but not anyone else's.
     # ------------------------------------------------------------------
     def _rules_path(self):
         return os.path.join(JSON_DIR, "rules.json")

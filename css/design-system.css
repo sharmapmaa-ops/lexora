@@ -2751,6 +2751,8 @@ label { font-size: .76rem; }
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 1em;
+    align-items: start;
+    align-content: start;
 }
 
 .auth-thumb-card {

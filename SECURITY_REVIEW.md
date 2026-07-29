@@ -93,21 +93,19 @@ refreshed on each authenticated request) and a periodic sweep that
 deletes expired ones - similar in spirit to the OTP `is_expired()` check
 that already exists for verification codes.
 
-## 4. MEDIUM - Rules approve/reject has no server-side role check
+## 4. CORRECTED - Rules approve/reject (this was checked more carefully after the initial write-up)
 
-Documented candidly in the code's own comment
-(`py/server.py`, near `_rules_path`):
-
-> "approving/rejecting is meant for the Developer role, though...
-> that's enforced by the UI only hiding the buttons from non-Developer
-> users, not by a real server-side permission check."
-
-Any authenticated user could call the approve/reject endpoint directly
-and approve their own proposed extraction rule, bypassing the intended
-review step.
-
-**Fix:** add the same `_require_role(("Developer",))` check already used
-consistently for `/api/admin/*` routes.
+An earlier version of this review flagged rules approve/reject as having
+no server-side role check, based on a code comment near `_rules_path`
+that reads as if it isn't enforced. On actually reading
+`_handle_rules_approve`, `_handle_rules_reject`,
+`_handle_rules_delete_approved`, and `_handle_rules_update_approved`,
+all four call `self._require_role(("Admin", "Developer"))` before doing
+anything - the comment was stale/describing an earlier state, not the
+current code. `_handle_rules_delete_pending` correctly allows a regular
+user to delete only their *own* pending proposal, and requires the
+Admin/Developer role to delete someone else's. No fix needed here -
+noted only so this document doesn't carry a false alarm forward.
 
 ## 5. MEDIUM - Third-party credentials/tokens stored in plaintext
 

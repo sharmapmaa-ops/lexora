@@ -1230,9 +1230,10 @@ def table_rows(name, limit=500):
 def migrate_from_json(json_dir, fallback_dir=None):
     """json/ se Postgres - CLI script aur Admin Panel dono isi ko call karte hain.
 
-    fallback_dir: agar file json_dir me na mile, wahan dhoondhta hai
-    (json_backup_pre_postgres/ jaisi jagah, jahan pehle se-migrate ho
-    chuki resources move ki gayi thi).
+    fallback_dir: agar file json_dir me na mile, wahan bhi dhoondhta hai -
+    koi extra pre-migration backup folder ho to us par point kar sakte hain.
+    Aaj kal kisi caller ko iski zaroorat nahi (Postgres hi authoritative
+    hai), parameter sirf backward-compatible/reusable rakha hai.
 
     Dobara chalane par duplicate nahi bante (sab upsert hai), isliye
     adhoori migration bina dar ke phir se chalayi ja sakti hai.

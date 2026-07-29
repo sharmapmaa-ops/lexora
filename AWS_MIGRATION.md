@@ -41,9 +41,13 @@ Both `pg_dump`/`pg_restore` ship with the `postgresql-client` package
 
 If you'd rather start clean on AWS instead of copying data: just point
 `DATABASE_URL` at the new instance and deploy - `init_schema()` creates
-every table automatically on first use, and `db.migrate_from_json()` (the
-same one-time importer used for the original JSON -> Postgres move) can
-seed it from your `json_backup_pre_postgres/` files if you still have them.
+every table automatically on first use. Postgres itself is the
+authoritative data source now (the original one-time
+`json_backup_pre_postgres/` backup used during the initial JSON ->
+Postgres migration has since been deleted, since Postgres has been the
+live source of truth for a while) - a fresh `pg_dump`/`pg_restore` from
+the existing Render database (step 2 above) is the way to carry data
+over, not the old JSON backup.
 
 ## 3. Swap the connection string
 
