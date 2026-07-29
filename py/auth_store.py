@@ -193,7 +193,8 @@ def password_policy_issues(password):
 
 # Fields that must NEVER be sent to the browser for anyone other than the
 # account owner looking at their own record right after authenticating.
-SENSITIVE_FIELDS = ("password", "verificationCode", "verificationCodeExpiresAt", "verificationPurpose")
+SENSITIVE_FIELDS = ("password", "verificationCode", "verificationCodeExpiresAt", "verificationPurpose",
+                    "mobileOtpCode", "mobileOtpExpiresAt", "mobileOtpPendingNumber")
 
 
 def public_user_view(user):

@@ -1082,6 +1082,7 @@ _VERIFICATION_PURPOSE_LABELS = {
     "register": "complete your registration",
     "login": "complete your login",
     "reset": "reset your password",
+    "mobile-verify": "verify your mobile number",
 }
 
 
@@ -2176,6 +2177,8 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/auth/reset-password": self._handle_auth_reset_password,
             "/api/auth/resend-code": self._handle_auth_resend_code,
             "/api/profile/update": self._handle_profile_update,
+            "/api/profile/send-mobile-otp": self._handle_profile_send_mobile_otp,
+            "/api/profile/verify-mobile-otp": self._handle_profile_verify_mobile_otp,
             "/api/auth/logout": self._handle_auth_logout,
             "/api/payment/create-order": self._handle_payment_create_order,
             "/api/payment/verify-payment": self._handle_payment_verify,
@@ -4469,10 +4472,85 @@ class Handler(SimpleHTTPRequestHandler):
         # Never let a profile-update request touch auth/security bookkeeping
         # fields - those are only ever written by the auth handlers above.
         for blocked in ("id", "role", "lock", "verificationCode", "verificationCodeExpiresAt",
-                         "verificationPurpose", "emailVerified", "status"):
+                         "verificationPurpose", "emailVerified", "status",
+                         "mobileVerified", "mobileVerifiedNumber",
+                         "mobileOtpCode", "mobileOtpExpiresAt", "mobileOtpPendingNumber"):
             fields.pop(blocked, None)
 
+        # If the Mobile No is being changed away from whatever number was
+        # last OTP-verified, the verified badge/SMS option no longer applies
+        # to the new number - drop it rather than let a stale verification
+        # silently carry over to a number that was never actually confirmed.
+        if "mobile" in fields and (fields.get("mobile") or "").strip() != (user.get("mobileVerifiedNumber") or ""):
+            user["mobileVerified"] = False
+            user["mobileVerifiedNumber"] = None
+            # SMS delivery requires a verified mobile - fall back to email
+            # rather than leaving 2FA/verification codes stranded.
+            if user.get("verificationMethod") == "sms":
+                fields["verificationMethod"] = "email"
+
         user.update(fields)
+        auth_store.save_users(users)
+        return 200, {"ok": True, "user": auth_store.public_user_view(user)}
+
+    # ------------------------------------------------------------------
+    # Mobile No verification - separate from the Profile save above and
+    # from the login/register/reset verification-code flow. This confirms
+    # the user actually controls the mobile number before "Text Message
+    # (SMS)" becomes selectable as their Verification Code Delivery method.
+    # ------------------------------------------------------------------
+    def _handle_profile_send_mobile_otp(self, body):
+        user_id = self._resolve_user_id(body)
+        mobile = (body.get("mobile") or "").strip()
+        if not user_id:
+            raise ValueError("userId is required")
+        if not mobile:
+            raise ValueError("Please enter a Mobile No first.")
+        _check_rate_limit(f"mobile-otp:{user_id}")
+
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            raise ValueError("Account not found.")
+
+        code = auth_store.generate_code()
+        expiry_minutes = _load_smtp_expiry_minutes()
+        expires_at = auth_store.make_expiry(expiry_minutes)
+        user["mobileOtpCode"] = code
+        user["mobileOtpExpiresAt"] = expires_at
+        user["mobileOtpPendingNumber"] = mobile
+        auth_store.save_users(users)
+
+        # Reuses the same Twilio sender as the login/2FA SMS path
+        # (_send_sms) - only the message text/purpose differs.
+        _send_verification_sms_async(user_id, mobile, code, "mobile-verify", expiry_minutes)
+        return 200, {"ok": True, "expiresInMinutes": expiry_minutes}
+
+    def _handle_profile_verify_mobile_otp(self, body):
+        user_id = self._resolve_user_id(body)
+        code = (body.get("code") or "").strip()
+        if not user_id:
+            raise ValueError("userId is required")
+        _check_rate_limit(f"mobile-otp-check:{user_id}")
+
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            raise ValueError("Account not found.")
+        if not user.get("mobileOtpPendingNumber"):
+            raise ValueError("No pending mobile verification - please click Verify again.")
+        if auth_store.is_expired(user.get("mobileOtpExpiresAt")):
+            raise ValueError("This code has expired. Please request a new one.")
+        if not code or code != str(user.get("mobileOtpCode") or ""):
+            raise ValueError("Incorrect verification code.")
+
+        verified_number = user["mobileOtpPendingNumber"]
+        user["mobile"] = verified_number
+        user["mobileVerified"] = True
+        user["mobileVerifiedNumber"] = verified_number
+        user["mobileOtpCode"] = None
+        user["mobileOtpExpiresAt"] = None
+        user["mobileOtpPendingNumber"] = None
         auth_store.save_users(users)
         return 200, {"ok": True, "user": auth_store.public_user_view(user)}
 

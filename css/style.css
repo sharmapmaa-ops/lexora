@@ -2930,6 +2930,66 @@
             cursor: pointer;
         }
 
+        .profile-mobile-verify-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .profile-mobile-verify-row input { flex: 1; }
+
+        .profile-mobile-verify-link {
+            flex-shrink: 0;
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: darkblue;
+            cursor: pointer;
+            white-space: nowrap;
+            text-decoration: underline;
+        }
+
+        .profile-mobile-verify-link:hover { opacity: 0.8; }
+
+        .profile-mobile-verified-badge {
+            flex-shrink: 0;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #15803d;
+            white-space: nowrap;
+        }
+
+        .profile-vcd-radio-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 4px;
+        }
+
+        .profile-vcd-radio {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: black;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .profile-vcd-radio input[type="radio"] {
+            width: 16px;
+            height: 16px;
+            accent-color: darkblue;
+            cursor: pointer;
+        }
+
+        .profile-vcd-radio.is-disabled {
+            color: rgba(0,0,0,0.4);
+            cursor: not-allowed;
+        }
+
+        .profile-vcd-radio.is-disabled input[type="radio"] { cursor: not-allowed; }
+
         .msg-overlay {
             position: fixed;
             top: 0;

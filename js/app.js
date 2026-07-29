@@ -5290,6 +5290,141 @@
             // ============================================================
             // 28. PROFILE FUNCTIONS
             // ============================================================
+            // Mobile No verification (Profile > Verification Code Delivery).
+            // A number only counts as "verified" for as long as it exactly
+            // matches profileData.mobile - editing the field invalidates the
+            // old verification (see onProfileMobileInput below and the
+            // matching server-side check in _handle_profile_update).
+            function _isMobileVerifiedForCurrentInput() {
+                return !!(profileData && profileData.mobileVerified && profileData.mobileVerifiedNumber &&
+                    profileData.mobileVerifiedNumber === (profileData.mobile || '').trim());
+            }
+
+            function _mobileVerifyBadgeHtml() {
+                return _isMobileVerifiedForCurrentInput()
+                    ? '<span class="profile-mobile-verified-badge" id="profileMobileVerifyBadge">✅ Verified</span>'
+                    : '<a class="profile-mobile-verify-link" id="profileMobileVerifyBadge" onclick="startMobileVerify()">Verify</a>';
+            }
+
+            // Live update (no full re-render, so the input never loses focus
+            // mid-keystroke) - keeps the Verify/Verified badge and the SMS
+            // radio's enabled state in sync with whatever's currently typed.
+            window.onProfileMobileInput = function() {
+                const input = document.getElementById('profileMobile');
+                const badge = document.getElementById('profileMobileVerifyBadge');
+                if (!input || !badge) return;
+                const current = input.value.trim();
+                const isVerified = !!(profileData && profileData.mobileVerified && profileData.mobileVerifiedNumber === current);
+
+                badge.outerHTML = isVerified
+                    ? '<span class="profile-mobile-verified-badge" id="profileMobileVerifyBadge">✅ Verified</span>'
+                    : '<a class="profile-mobile-verify-link" id="profileMobileVerifyBadge" onclick="startMobileVerify()">Verify</a>';
+
+                const smsRadio = document.querySelector('input[name="profileVerificationMethod"][value="sms"]');
+                const smsLabel = smsRadio ? smsRadio.closest('.profile-vcd-radio') : null;
+                if (smsRadio) {
+                    smsRadio.disabled = !isVerified;
+                    if (smsLabel) {
+                        smsLabel.classList.toggle('is-disabled', !isVerified);
+                        smsLabel.title = isVerified ? '' : 'Verify your Mobile No above first to enable this option.';
+                    }
+                    if (!isVerified && smsRadio.checked) {
+                        const emailRadio = document.querySelector('input[name="profileVerificationMethod"][value="email"]');
+                        if (emailRadio) emailRadio.checked = true;
+                    }
+                }
+            };
+
+            window.startMobileVerify = async function() {
+                const input = document.getElementById('profileMobile');
+                const mobile = input ? input.value.trim() : '';
+                if (!mobile) { showWarning('Please enter a Mobile No first.'); return; }
+                if (!/^[0-9+\-\s()]{6,}$/.test(mobile)) { showWarning('Please enter a valid Mobile No.'); return; }
+                try {
+                    const res = await authFetch('/api/profile/send-mobile-otp', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId: CURRENT_USER_ID, mobile: mobile })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not send verification code.');
+                    _openMobileVerifyModal(mobile);
+                } catch (err) {
+                    showWarning(err.message || 'Could not send verification code.');
+                }
+            };
+
+            function _openMobileVerifyModal(mobile) {
+                const existing = document.getElementById('mobileVerifyOverlay');
+                if (existing) existing.remove();
+                const html = `
+                    <div class="admin-modal-overlay" id="mobileVerifyOverlay">
+                        <div class="admin-modal-card message-popup-card" style="max-width:380px;">
+                            <button class="admin-modal-close" onclick="closeMobileVerifyModal()">✕</button>
+                            <h3 class="admin-modal-title">📱 Verify Mobile No</h3>
+                            <p style="font-size:0.86rem;color:rgba(0,0,0,0.65);margin:0 0 14px;">
+                                Enter the 6-digit code sent to <strong>${escapeHtml(mobile)}</strong>.
+                            </p>
+                            <div class="auth-otp-row" id="mobileOtpRow">
+                                ${[0, 1, 2, 3, 4, 5].map(i => `<input type="text" maxlength="1" class="auth-otp-box" data-otp-index="${i}" inputmode="numeric" autocomplete="one-time-code" />`).join('')}
+                            </div>
+                            <div id="mobileVerifyError" class="auth-error-box" style="display:none;margin-top:10px;"></div>
+                            <div class="admin-modal-actions" style="margin-top:16px;">
+                                <button class="admin-modal-save" onclick="confirmMobileOtp('${mobile.replace(/'/g, "\\'")}')">Verify</button>
+                                <button class="admin-modal-cancel" onclick="resendMobileOtp('${mobile.replace(/'/g, "\\'")}')">Resend</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                document.body.insertAdjacentHTML('beforeend', html);
+                wireOtpBoxes();
+            }
+
+            window.closeMobileVerifyModal = function() {
+                const overlay = document.getElementById('mobileVerifyOverlay');
+                if (overlay) overlay.remove();
+            };
+
+            window.confirmMobileOtp = async function(mobile) {
+                const code = getOtpValue();
+                const errBox = document.getElementById('mobileVerifyError');
+                if (code.length !== 6) {
+                    if (errBox) { errBox.textContent = 'Please enter the full 6-digit code.'; errBox.style.display = 'block'; }
+                    return;
+                }
+                try {
+                    const res = await authFetch('/api/profile/verify-mobile-otp', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId: CURRENT_USER_ID, code: code })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Incorrect verification code.');
+                    if (data.user) profileData = data.user;
+                    closeMobileVerifyModal();
+                    onProfileMobileInput();
+                    showMessage('✅ Mobile Verified', 'Your Mobile No has been verified. You can now choose Text Message (SMS) for verification codes.', ['OK']);
+                } catch (err) {
+                    if (errBox) { errBox.textContent = err.message || 'Incorrect verification code.'; errBox.style.display = 'block'; }
+                }
+            };
+
+            window.resendMobileOtp = async function(mobile) {
+                try {
+                    const res = await authFetch('/api/profile/send-mobile-otp', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId: CURRENT_USER_ID, mobile: mobile })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not resend code.');
+                    const errBox = document.getElementById('mobileVerifyError');
+                    if (errBox) { errBox.style.display = 'none'; }
+                } catch (err) {
+                    showWarning(err.message || 'Could not resend code.');
+                }
+            };
+
             function buildProfileBody() {
                 return `
                     <div class="payment-layout">
@@ -5347,7 +5482,10 @@
                                         <div class="form-row">
                                             <div class="form-group">
                                                 <label>Mobile No</label>
-                                                <input type="text" id="profileMobile" value="${profileData.mobile}" />
+                                                <div class="profile-mobile-verify-row">
+                                                    <input type="text" id="profileMobile" value="${profileData.mobile}" oninput="onProfileMobileInput()" />
+                                                    ${_mobileVerifyBadgeHtml()}
+                                                </div>
                                             </div>
                                             <div class="form-group">
                                                 <label>Email Address</label>
@@ -5378,10 +5516,20 @@
                                         <div class="form-row">
                                             <div class="form-group">
                                                 <label>Verification Code Delivery</label>
-                                                <select id="profileVerificationMethod">
-                                                    <option value="email" ${(profileData.verificationMethod || 'email') === 'email' ? 'selected' : ''}>📧 Email</option>
-                                                    <option value="sms" ${profileData.verificationMethod === 'sms' ? 'selected' : ''}>📱 Text Message (SMS)</option>
-                                                </select>
+                                                <div class="profile-vcd-radio-group" id="profileVcdRadioGroup">
+                                                    <label class="profile-vcd-radio">
+                                                        <input type="radio" name="profileVerificationMethod" value="email"
+                                                               ${(profileData.verificationMethod || 'email') === 'email' ? 'checked' : ''} />
+                                                        <span>📧 Email</span>
+                                                    </label>
+                                                    <label class="profile-vcd-radio ${_isMobileVerifiedForCurrentInput() ? '' : 'is-disabled'}"
+                                                           title="${_isMobileVerifiedForCurrentInput() ? '' : 'Verify your Mobile No above first to enable this option.'}">
+                                                        <input type="radio" name="profileVerificationMethod" value="sms"
+                                                               ${profileData.verificationMethod === 'sms' ? 'checked' : ''}
+                                                               ${_isMobileVerifiedForCurrentInput() ? '' : 'disabled'} />
+                                                        <span>📱 Text Message (SMS)</span>
+                                                    </label>
+                                                </div>
                                                 <small style="color:rgba(0,0,0,0.5);font-size:0.72rem;">Where your login/2FA verification code is sent. Email is used by default; switch to Text Message to send it to your Mobile No above instead.</small>
                                             </div>
                                         </div>
@@ -5521,9 +5669,14 @@
                 };
 
                 const newMobile = document.getElementById('profileMobile').value.trim();
-                const newVerificationMethod = document.getElementById('profileVerificationMethod').value;
+                const verificationMethodInput = document.querySelector('input[name="profileVerificationMethod"]:checked');
+                const newVerificationMethod = verificationMethodInput ? verificationMethodInput.value : 'email';
                 if (newVerificationMethod === 'sms' && !newMobile) {
                     showWarning('Please enter a Mobile No before choosing Text Message for verification codes.');
+                    return;
+                }
+                if (newVerificationMethod === 'sms' && !(profileData.mobileVerified && profileData.mobileVerifiedNumber === newMobile)) {
+                    showWarning('Please verify your Mobile No first (click "Verify" next to the field) before choosing Text Message for verification codes.');
                     return;
                 }
 
@@ -8816,19 +8969,10 @@
                                     <div class="plan-name">${escapeHtml(plan.name)}</div>
                                     <div class="plan-price">\u20b9${plan.monthlyPrice}<span>/month</span></div>
                                     <ul class="plan-features">
-                                        <li>${tick}\u20b9${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / page (Translation)</li>
-                                        <li>${tick}\u20b9${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / page (OCR)</li>
-                                        <li>${tick}\u20b9${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / page (Data Extraction)</li>
-                                        <li>${tick}\u20b9${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / page (BAI2)</li>
+                                        <li>${tick}\u20b9${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / ${escapeHtml(plan.billingUnit || 'document')}</li>
                                         ${(plan.features || []).map(f => `<li>${tick}${escapeHtml(f)}</li>`).join('')}
+                                        ${freeServiceNames.length ? `<li>${tick}All Free Services</li>` : ''}
                                     </ul>
-                                    ${freeServiceNames.length ? `
-                                    <div class="plan-free-services">
-                                        <div class="plan-free-services-title">+ Free Services</div>
-                                        <ul class="plan-features plan-free-features">
-                                            ${freeServiceNames.map(n => `<li>${tick}${escapeHtml(n)}</li>`).join('')}
-                                        </ul>
-                                    </div>` : ''}
                                     <button class="plan-cta-btn ${isMine ? 'is-current' : ''}" ${isMine ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
                                         ${ctaLabel}
                                     </button>

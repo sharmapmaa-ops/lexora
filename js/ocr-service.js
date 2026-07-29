@@ -60,8 +60,9 @@
       return setStatus('The document engine failed to load - please reload the page.', 'error');
     }
 
-    const ocrEl = document.getElementById('ocrUseOcr');
-    const useOcr = ocrEl ? !!ocrEl.checked : true;
+    // OCR service is always vision-based OCR now - no toggle, no
+    // text-layer fallback (that's what Translation/Data Extraction are for).
+    const useOcr = true;
 
     const rate = billing.perPageRate();
     const minNeeded = rate * selected.length;
@@ -263,13 +264,6 @@
                 <div style="font-size:0.84rem;color:rgba(0,0,0,0.6);">
                   Rebuilds your PDF as an editable Word document with the original
                   layout kept - text sits in positioned boxes over the page background.
-                </div>
-                <div style="display:flex;align-items:center;gap:20px;margin-top:12px;">
-                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
-                         title="Checked (With OCR): each page is read by the vision model - required for scanned or photographed pages. Unchecked: faster local text read, for text-based PDFs only.">
-                    <input type="checkbox" id="ocrUseOcr" style="width:auto;margin:0;" checked ${STATE.running ? 'disabled' : ''} />
-                    <span>With OCR</span>
-                  </label>
                 </div>
               </div>
               <div class="setup-group" style="margin-top:8px;">

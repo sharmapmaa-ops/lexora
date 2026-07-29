@@ -1112,23 +1112,27 @@ body, input, select, textarea, button {
     justify-content: center;
     padding: 12px;
     font-size: .88rem;
-    background: #fff;
-    color: var(--tier);
-    border: 1px solid var(--tier);
+    font-weight: 700;
+    background: var(--ds-navy);
+    color: #fff;
+    border: 1px solid var(--ds-navy);
     box-shadow: none;
 }
 
-.plan-cta-btn:hover { background: var(--tier-soft); filter: none; }
+.plan-cta-btn:hover { background: var(--ds-navy); filter: brightness(1.15); }
 
-/* Jo plan chal raha hai wo filled dikhta hai. */
+/* Jo plan chal raha hai uska button greyed-out/disabled dikhta hai. */
 .plan-cta-btn.is-current,
 .plan-cta-btn:disabled {
-    background: var(--tier);
-    border-color: var(--tier);
-    color: #fff;
+    background: #eef0f4;
+    border-color: #e2e5ec;
+    color: #97a0b3;
     opacity: 1;
     cursor: default;
 }
+
+.plan-cta-btn.is-current:hover,
+.plan-cta-btn:disabled:hover { background: #eef0f4; filter: none; }
 
 /* ---- plan history ---- */
 .plan-history-card { margin-top: 20px; }
