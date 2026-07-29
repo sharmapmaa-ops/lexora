@@ -55,16 +55,29 @@
 
   let docItems = [{ desc: '', qty: 1, rate: 0 }];
   let docKind = 'invoice-generator';
+  const docLogos = {}; // keyed by docKind: { bytes, ext }
 
   function renderDoc(kind) {
     docKind = kind;
     const k = DOC_KINDS[kind];
     const today = new Date().toISOString().slice(0, 10);
+    const logo = docLogos[kind];
     return card(k.icon, k.title, `
-      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
         ${fld('Your business name', `<input type="text" id="tDvFrom" placeholder="Acme Pvt Ltd" style="width:100%;" />`)}
         ${fld(k.numLabel, `<input type="text" id="tDvNo" value="001" style="width:100%;" />`)}
         ${fld(k.dateLabel, `<input type="date" id="tDvDate" value="${today}" style="width:100%;" />`)}
+        <div class="setup-group" style="flex:1;min-width:180px;">
+          <label>Logo</label>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <button class="process-btn clear-btn" onclick="document.getElementById('tDvLogoFile').click()">
+              ${logo ? '🖼️ Change Logo' : '🖼️ Add Logo'}
+            </button>
+            ${logo ? `<img src="${logo.dataUrl}" alt="Logo" style="height:32px;max-width:70px;object-fit:contain;border:1px solid rgba(0,0,0,0.1);border-radius:4px;" />
+              <button class="process-btn clear-btn" onclick="ToolsDocs.removeLogo()" title="Remove logo">✕</button>` : ''}
+          </div>
+          <input type="file" id="tDvLogoFile" accept="image/png,image/jpeg" style="display:none;" onchange="ToolsDocs.onLogoPick(this.files[0])" />
+        </div>
       </div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;">
         ${fld('Bill to', `<textarea id="tDvTo" rows="3" placeholder="Customer name&#10;Address" style="width:100%;"></textarea>`, 2)}
@@ -108,6 +121,33 @@
         <button class="process-btn start-btn" onclick="ToolsDocs.buildDocPdf()">⬇️ Download PDF</button>
       </div>
       <div id="tDvStatus" style="margin-top:8px;font-size:0.86rem;min-height:1.1em;"></div>`);
+  }
+
+  // Reads the picked image as both raw bytes (for pdf-lib to embed) and a
+  // data URL (for the small on-page preview) - stored per docKind so
+  // switching between Invoice/Quotation/Receipt doesn't mix logos up.
+  function onLogoPick(file) {
+    if (!file) return;
+    const ext = /png/i.test(file.type) ? 'png' : 'jpg';
+    const reader = new FileReader();
+    reader.onload = function () {
+      docLogos[docKind] = { bytes: new Uint8Array(reader.result), ext: ext, dataUrl: null };
+      // Data URL for the preview thumbnail (separate quick read, cheap for
+      // a small logo image).
+      const reader2 = new FileReader();
+      reader2.onload = function () {
+        if (docLogos[docKind]) docLogos[docKind].dataUrl = String(reader2.result || '');
+        if (window.FreeServices) FreeServices.open(docKind);
+      };
+      reader2.readAsDataURL(file);
+    };
+    reader.onerror = function () { say('tDvStatus', 'Could not read that image.', 'error'); };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function removeLogo() {
+    delete docLogos[docKind];
+    if (window.FreeServices) FreeServices.open(docKind);
   }
 
   function readItems() {
@@ -186,6 +226,22 @@
     text(k.heading, M, y, 22, bold); y -= 30;
     text(val('tDvFrom') || '', M, y, 12, bold); y -= 15;
     String(val('tDvFromAddr') || '').split('\n').forEach(function (l) { text(l, M, y, 9); y -= 12; });
+
+    // Logo, top-right corner - scaled to fit within a fixed box so a huge
+    // source image doesn't blow past the page margins or overlap the
+    // invoice number/date block below it.
+    const logo = docLogos[docKind];
+    if (logo && logo.bytes) {
+      try {
+        const img = logo.ext === 'png' ? await doc.embedPng(logo.bytes) : await doc.embedJpg(logo.bytes);
+        const maxW = 110, maxH = 55;
+        const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+        const w = img.width * scale, h = img.height * scale;
+        page.drawImage(img, { x: 595 - M - w, y: 842 - M - h, width: w, height: h });
+      } catch (e) {
+        // A bad/corrupt image shouldn't stop the whole PDF from building.
+      }
+    }
 
     let ry = 842 - M - 30;
     text(`${k.numLabel}: ${val('tDvNo')}`, 380, ry, 10); ry -= 14;
@@ -498,7 +554,11 @@
       <div class="setup-group">
         <label>Input</label>
         <textarea id="tJcIn" rows="8" style="width:100%;font-family:monospace;font-size:12px;"
-                  placeholder='Paste JSON (array of objects) or CSV here…'></textarea>
+                  placeholder='Paste JSON (array or object) or CSV here, or upload a CSV file below…'></textarea>
+        <div style="margin-top:6px;">
+          <button class="process-btn clear-btn" onclick="document.getElementById('tJcFile').click()">📁 Upload CSV file</button>
+          <input type="file" id="tJcFile" accept=".csv,text/csv" style="display:none;" onchange="ToolsDocs.loadCsvFile(this.files[0])" />
+        </div>
       </div>
       <div class="process-controls" style="margin-top:12px;">
         <button class="process-btn start-btn" onclick="ToolsDocs.convert('j2c')">JSON → CSV</button>
@@ -516,13 +576,33 @@
 
   let convertedAs = 'csv';
 
+  // Lets the person pick a .csv file instead of only being able to paste
+  // text - reads it straight into the same Input box the paste path uses,
+  // so CSV -> JSON works identically either way.
+  function loadCsvFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function () {
+      const el = document.getElementById('tJcIn');
+      if (el) el.value = String(reader.result || '');
+      say('tJcStatus', `Loaded "${file.name}" - click CSV → JSON to convert.`, 'ok');
+    };
+    reader.onerror = function () { say('tJcStatus', 'Could not read that file.', 'error'); };
+    reader.readAsText(file);
+  }
+
   function convert(dir) {
     const input = val('tJcIn');
     const set = (v) => { const el = document.getElementById('tJcOut'); if (el) el.value = v; };
     try {
       if (dir === 'j2c') {
-        const data = JSON.parse(input);
-        if (!Array.isArray(data)) throw new Error('Expected a JSON array of objects.');
+        let data = JSON.parse(input);
+        // A single JSON object (not wrapped in an array) is a perfectly
+        // reasonable thing to paste - convert it to a one-row CSV instead
+        // of rejecting it. Only genuinely non-object input (a bare string/
+        // number, or an array that isn't full of objects) is an error.
+        if (data && typeof data === 'object' && !Array.isArray(data)) data = [data];
+        if (!Array.isArray(data)) throw new Error('Expected a JSON object or an array of objects.');
         if (!data.length) throw new Error('That array is empty.');
         // Union of all keys, so rows with extra/missing fields still line up.
         const heads = [];
@@ -690,8 +770,6 @@
     'invoice-generator':   { label: 'Invoice Generator',   icon: '🧾', desc: 'Build an invoice and download it as a PDF.',   render: function () { return renderDoc('invoice-generator'); } },
     'quotation-generator': { label: 'Quotation Generator', icon: '📋', desc: 'Build a quotation and download it as a PDF.',  render: function () { return renderDoc('quotation-generator'); } },
     'receipt-generator':   { label: 'Receipt Generator',   icon: '🧾', desc: 'Build a receipt and download it as a PDF.',    render: function () { return renderDoc('receipt-generator'); } },
-    'email-template':      { label: 'Email Template',      icon: '📧', desc: 'Mail-merge a template with CSV data.',        render: function () { return renderMerge('email-template'); } },
-    'create-letters':      { label: 'Create Letters',      icon: '✉️', desc: 'Generate letters from a template plus data.',  render: function () { return renderMerge('create-letters'); } },
     'etl':                 { label: 'ETL',                 icon: '🔀', desc: 'Pick, rename and re-export columns.',         render: renderEtl },
     'word-counter':        { label: 'Word Counter',        icon: '🔢', desc: 'Words, characters, sentences, reading time.', render: renderWordCount },
     'json-csv':            { label: 'JSON ↔ CSV',          icon: '🔄', desc: 'Convert between JSON and CSV.',               render: renderJsonCsv },
@@ -704,6 +782,8 @@
     recalcDoc: recalcDoc,
     addItem: addItem,
     removeItem: removeItem,
+    onLogoPick: onLogoPick,
+    removeLogo: removeLogo,
     buildDocPdf: buildDocPdf,
     runMerge: runMerge,
     downloadMerge: downloadMerge,
@@ -711,6 +791,7 @@
     runEtl: runEtl,
     runWordCount: runWordCount,
     convert: convert,
+    loadCsvFile: loadCsvFile,
     downloadConverted: downloadConverted,
     runQr: runQr,
     downloadQr: downloadQr,

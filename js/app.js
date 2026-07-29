@@ -269,16 +269,27 @@
 
             function getServicePrice(serviceId, pageCount) {
                 const plan = getMyPlan();
+                const unit = plan.billingUnit || 'document';
                 if (serviceId === 'translation') {
-                    // Translation: flat per-page rate for the plan,
-                    // regardless of With OCR / With Image / language chosen.
+                    // Translation/OCR/BAI2/Data Extraction all share this
+                    // same rate field and billing unit - flat per-document
+                    // (the default/current setting) unless the plan is
+                    // explicitly configured as per-page.
                     const perUnit = plan.pricePerTranslation != null ? plan.pricePerTranslation : 1;
-                    return perUnit * Math.max(1, pageCount || 1);
+                    return unit === 'page' ? perUnit * Math.max(1, pageCount || 1) : perUnit;
                 }
                 // Lease Abstraction: flat per-document pricing.
                 const perUnit = plan.pricePerLeaseAbstraction != null ? plan.pricePerLeaseAbstraction : 1;
-                const unit = plan.billingUnit || 'document';
                 return unit === 'page' ? perUnit * Math.max(1, pageCount || 1) : perUnit;
+            }
+
+            // True when the current plan bills these services as one flat
+            // charge per finished file, rather than multiplying by how many
+            // pages it has. This is what actually decides whether the
+            // per-page accumulation loops below should charge once per page
+            // or just once per file - the rate alone doesn't tell you that.
+            function isPerDocumentBilling() {
+                return (getMyPlan().billingUnit || 'document') !== 'page';
             }
 
             // Est. charge shown on the Uploaded Files card - only when at
@@ -2110,6 +2121,7 @@
                             refreshServicePage('translation');
 
                             const perPageRate = getServicePrice('translation', 1);
+                            const perDocument = isPerDocumentBilling();
                             let totalJsonCalls = 0, totalImageCalls = 0;
                             let totalCharged = 0, pagesCharged = 0;
 
@@ -2132,9 +2144,13 @@
                                         // file finishes successfully (see the single
                                         // charge after the try/catch below). If the
                                         // file fails partway, none of this is charged.
+                                        // Per-document plans charge perPageRate exactly
+                                        // ONCE regardless of page count (set after the
+                                        // loop, not accumulated here) - per-page plans
+                                        // accumulate one charge per successful page.
                                         if (ev.ok) {
-                                            totalCharged += perPageRate;
                                             pagesCharged++;
+                                            if (!perDocument) totalCharged += perPageRate;
                                         }
                                         addActivity('translation', `${fl}${lbl} > Text Data = ${ev.textData}`, 'Info');
 
@@ -2215,6 +2231,12 @@
                             translationBlobStore[file.id] = { blob: offlineBlob, name: docName + outExt };
                             file.progress = '95';
 
+                            // Per-document plans: the whole file is one flat
+                            // charge regardless of how many pages it had,
+                            // applied once here now that it's actually done -
+                            // per-page plans already accumulated this above.
+                            if (perDocument && pagesCharged > 0) totalCharged = perPageRate;
+
                             // FULL-FILE BILLING: the file finished successfully -
                             // this is the one and only wallet charge for it, for
                             // every page combined (previously this deducted once
@@ -2238,7 +2260,8 @@
                             addActivity('translation',
                                 `${fl}Page(All) > API Call(s) > JSON=${totalJsonCalls}, IMAGE=${totalImageCalls}`, 'Info');
                             addActivity('translation',
-                                `${fl}Page(All) > Amount Deducted from Wallet=${currencySymbol()}${totalCharged.toFixed(2)} (${pagesCharged} page(s), charged once on completion)`, 'Info');
+                                `${fl}Page(All) > Amount Deducted from Wallet=${currencySymbol()}${totalCharged.toFixed(2)}` +
+                                (perDocument ? ` (flat per-document rate, ${pagesCharged} page(s))` : ` (${pagesCharged} page(s) @ ${currencySymbol()}${perPageRate.toFixed(2)}/page)`), 'Info');
 
                             file.docName = docName;
                             file.outputFormat = 'docx';
@@ -3478,7 +3501,7 @@
                             profileData.email, `${profileData.firstName} ${profileData.lastName}`,
                             `You're now on the ${plan.name} plan`,
                             `Your plan is now ${plan.name}. It's valid from ${profileData.planStartDate} to ${profileData.planEndDate}. ` +
-                            `Translation is billed at ${currencySymbol()}${plan.pricePerTranslation}/page.`,
+                            `Translation is billed at ${currencySymbol()}${plan.pricePerTranslation}/${plan.billingUnit || 'document'}.`,
                             null, null, CURRENT_USER_ID
                         );
                     }
@@ -7132,7 +7155,7 @@
                     return `<div class="content-section"><h3>🔒 Access restricted</h3><p>This page is only available to Admin and Developer accounts.</p></div>`;
                 }
                 const totalUsers = USER_DIRECTORY.length;
-                const activeUsers = USER_DIRECTORY.filter(function (u) { return u.status === 'Active'; }).length;
+                const activeUsers = USER_DIRECTORY.filter(function (u) { return u.lock !== 'Yes'; }).length;
 
                 const cutoff = new Date();
                 cutoff.setDate(cutoff.getDate() - 30);
@@ -7146,8 +7169,11 @@
                     return !isNaN(d.getTime()) && d >= cutoff;
                 }).length;
 
+                const developerUserId = getDeveloperUserId();
                 const totalRevenue = paymentHistory
-                    .filter(function (t) { return t.paymentType === 'Balance Received' && t.status !== 'cancelled'; })
+                    .filter(function (t) {
+                        return t.paymentType === 'Balance Received' && t.status !== 'cancelled' && t.userId === developerUserId;
+                    })
                     .reduce(function (sum, t) { return sum + (Number(t.credit) || 0); }, 0);
 
                 const openTickets = contactSubmissions.filter(function (t) { return t.status !== 'Resolved'; }).length;
@@ -7261,7 +7287,7 @@
                                        value="${Number(plan.monthlyPrice || 0)}" style="width:100%;" />
                             </div>
                             <div style="margin-bottom:8px;">
-                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Translation / OCR / Data Extraction / BAI2 (${currencySymbol()} / page)</label>
+                                <label style="font-size:0.76rem;font-weight:600;display:block;margin-bottom:3px;">Translation / OCR / Data Extraction / BAI2 (${currencySymbol()} / ${plan.billingUnit || 'document'})</label>
                                 <input type="number" step="0.01" min="0" class="admin-price-input"
                                        data-plan-idx="${pIdx}" data-field="pricePerTranslation"
                                        value="${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)}" style="width:100%;" />
@@ -7283,7 +7309,8 @@
                             <button class="admin-modal-close" onclick="adminCloseFileModal()">✕</button>
                             <h3 class="admin-modal-title">💲 Plan Pricing</h3>
                             <p style="font-size:0.8rem;color:rgba(0,0,0,0.55);margin:-4px 0 12px 0;">
-                                Translation is billed per page. Lease Abstraction is billed per document.
+                                Translation, OCR, Data Extraction and BAI2 share one rate; Lease Abstraction has its own.
+                                Both bill per the plan's Billing Unit setting (currently per document, not per page).
                             </p>
                             <div style="overflow:auto;max-height:60vh;display:flex;gap:14px;flex-wrap:wrap;padding:2px;">
                                 ${planColumns}
@@ -8868,6 +8895,64 @@
                     .catch(() => showWarning('Could not copy \u2014 please select and copy manually.'));
             };
 
+            // Footer Share button - lets a visitor share the site/link on
+            // their own social profile, distinct from "Follow us" (which
+            // links to the COMPANY's own social profiles).
+            window.openShareModal = function() {
+                const existing = document.getElementById('shareModalOverlay');
+                if (existing) existing.remove();
+                const name = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora';
+                const shareUrl = window.location.origin + window.location.pathname;
+                const encodedUrl = encodeURIComponent(shareUrl);
+                const encodedText = encodeURIComponent(`Check out ${name}`);
+                const links = [
+                    ['pinterest', `https://pinterest.com/pin/create/button/?url=${encodedUrl}&description=${encodedText}`,
+                     '<path d="M12 2a10 10 0 0 0-3.64 19.31c-.05-.82-.09-2.08.02-2.98.1-.8.65-5.1.65-5.1s-.17-.33-.17-.82c0-.77.45-1.34 1-1.34.48 0 .7.36.7.79 0 .48-.3 1.2-.46 1.87-.13.55.28 1 .82 1 .98 0 1.74-1.04 1.74-2.53 0-1.32-.95-2.25-2.31-2.25-1.57 0-2.5 1.18-2.5 2.4 0 .48.18.99.42 1.27a.17.17 0 0 1 .04.16c-.04.18-.14.55-.16.63-.03.1-.09.13-.2.08-.75-.35-1.22-1.45-1.22-2.33 0-1.9 1.38-3.64 3.98-3.64 2.09 0 3.71 1.49 3.71 3.48 0 2.08-1.31 3.75-3.13 3.75-.61 0-1.19-.32-1.38-.7l-.38 1.43c-.13.53-.5 1.19-.74 1.6A10 10 0 1 0 12 2z"/>'],
+                    ['tumblr', `https://tumblr.com/widgets/share/tool?canonicalUrl=${encodedUrl}&title=${encodedText}`,
+                     '<path d="M14.5 21c-3 0-4.9-1.6-4.9-4.7V10.9H8V8.3c2.3-.6 3.2-2.6 3.4-4.5h2.5V8h3v2.9h-3v5c0 1.2.6 1.8 1.7 1.8.5 0 1-.1 1.4-.3l.7 2.7c-.8.6-2 .9-3.2.9z"/>'],
+                    ['twitter', `https://twitter.com/intent/tweet?url=${encodedUrl}&text=${encodedText}`,
+                     '<path d="M22 5.9c-.7.3-1.5.6-2.3.7.8-.5 1.5-1.3 1.8-2.3-.8.5-1.7.8-2.6 1a4.1 4.1 0 0 0-7 3.7A11.6 11.6 0 0 1 3.4 4.7a4.1 4.1 0 0 0 1.3 5.5c-.7 0-1.3-.2-1.9-.5v.1c0 2 1.4 3.6 3.3 4a4.1 4.1 0 0 1-1.9.1c.5 1.6 2.1 2.8 3.9 2.9A8.2 8.2 0 0 1 2 18.6a11.6 11.6 0 0 0 6.3 1.8c7.5 0 11.7-6.3 11.7-11.7v-.5c.8-.6 1.5-1.3 2-2.1z"/>'],
+                    ['facebook', `https://www.facebook.com/sharer/sharer.php?u=${encodedUrl}`,
+                     '<path d="M22 12a10 10 0 1 0-11.56 9.88v-6.99H7.9V12h2.54V9.8c0-2.5 1.49-3.89 3.77-3.89 1.09 0 2.24.2 2.24.2v2.46h-1.26c-1.24 0-1.63.77-1.63 1.56V12h2.78l-.45 2.89h-2.33v6.99A10 10 0 0 0 22 12z"/>'],
+                    ['linkedin', `https://www.linkedin.com/sharing/share-offsite/?url=${encodedUrl}`,
+                     '<path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.35V9h3.41v1.56h.05a3.74 3.74 0 0 1 3.37-1.85c3.6 0 4.27 2.37 4.27 5.46zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.55V9h3.57z"/>'],
+                ];
+                const html = `
+                    <div class="admin-modal-overlay" id="shareModalOverlay">
+                        <div class="admin-modal-card message-popup-card" style="max-width:420px;">
+                            <button class="admin-modal-close" onclick="closeShareModal()">\u2715</button>
+                            <h3 class="admin-modal-title">Show Us Some Love</h3>
+                            <p style="font-size:0.86rem;color:rgba(0,0,0,0.55);margin:0 0 18px;">Tell the world about ${escapeHtml(name)}</p>
+                            <div class="share-modal-icons">
+                                ${links.map(([id, url, path]) => `
+                                    <a class="share-modal-icon is-${id}" href="${url}" target="_blank" rel="noopener noreferrer" title="Share on ${id.charAt(0).toUpperCase() + id.slice(1)}">
+                                        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">${path}</svg>
+                                    </a>`).join('')}
+                            </div>
+                            <div class="share-modal-link-row">
+                                <span class="share-modal-link-text">${escapeHtml(shareUrl)}</span>
+                                <a onclick="copyShareLink(this, '${shareUrl.replace(/'/g, "\\'")}')">Copy Link</a>
+                            </div>
+                        </div>
+                    </div>`;
+                document.body.insertAdjacentHTML('beforeend', html);
+            };
+
+            window.closeShareModal = function() {
+                const overlay = document.getElementById('shareModalOverlay');
+                if (overlay) overlay.remove();
+            };
+
+            window.copyShareLink = function(el, url) {
+                navigator.clipboard.writeText(url)
+                    .then(() => {
+                        const original = el.textContent;
+                        el.textContent = '\u2713 Copied';
+                        setTimeout(() => { el.textContent = original; }, 1400);
+                    })
+                    .catch(() => showWarning('Could not copy \u2014 please select and copy manually.'));
+            };
+
             window.lexoraNavigate = function(parentId, subId) {
                 loadContent(parentId, subId || null);
             };
@@ -9491,7 +9576,7 @@
                         ].filter(r => r[2]);
 
                         const faqs = [
-                            ['Billing & Payments', 'Wallet top-ups are charged per page or per document, and every transaction shows up in Payment History with its receipt.'],
+                            ['Billing & Payments', 'Wallet top-ups are charged per document, and every transaction shows up in Payment History with its receipt.'],
                             ['Account & Access', 'Use Forgot Password on the login screen to reset access. Two-factor authentication can be switched on from your Profile.'],
                             ['Data & Security', "Files are processed for your job and are not used to train models. Only you and your account's admins can see your documents."],
                             ['OCR & Data Extraction', 'OCR rebuilds scanned or photographed pages into editable Word. Data Extraction lets you define your own fields and returns a clean table.'],
@@ -9530,10 +9615,6 @@
                                                     ? `<a class="contact-row-value is-link" href="${r[3]}">${escapeHtml(r[2])}</a>`
                                                     : `<span class="contact-row-value">${escapeHtml(r[2])}</span>`}
                                             </div>
-                                            <button class="contact-copy-btn" onclick="copyContactValue(this, ${JSON.stringify(String(r[2])).replace(/"/g, '&quot;')})">
-                                                ${svg('<rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>')}
-                                                Copy
-                                            </button>
                                         </div>`).join('')}
                                     <div class="contact-follow">
                                         <span>Follow us</span>
@@ -9629,6 +9710,7 @@
 
             window.LexoraBilling = {
                 perPageRate: function () { return getServicePrice('translation', 1); },
+                isPerDocument: function () { return isPerDocumentBilling(); },
                 planName: function () { return getMyPlan().name; },
                 balance: function () { return getCurrentBalance(); },
                 charge: function (description, amount) {
@@ -10306,6 +10388,9 @@
                             <div class="footer-inner">
                                 <span class="footer-spacer"></span>
                                 <span class="footer-copy">&copy; ${new Date().getFullYear()} ${escapeHtml(name)}. All rights reserved. | Version 1.0.0</span>
+                                <button class="footer-share-btn" onclick="openShareModal()" title="Share ${escapeHtml(name)}">
+                                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 10.5 15.4 6.5M8.6 13.5 15.4 17.5"/></svg>
+                                </button>
                                 <span id="authFooterSocial">${social || ''}</span>
                             </div>
                         </div>

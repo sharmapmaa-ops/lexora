@@ -73,20 +73,16 @@
         <div class="setup-group">
           <label>Pages to keep</label>
           <input type="text" id="fsSplitRange" placeholder="e.g. 1-3, 5, 8-10" />
-          <div style="font-size:0.78rem;color:rgba(0,0,0,0.5);margin-top:4px;">
-            Leave empty to split every page into its own separate PDF (delivered as a ZIP).
-          </div>
         </div>
         <div class="setup-group">
-          <label>When specific pages are entered above, output as</label>
           <div style="display:flex;gap:18px;margin-top:6px;">
             <label style="display:flex;align-items:center;gap:6px;font-weight:normal;cursor:pointer;">
               <input type="radio" name="fsSplitMode" value="merge" checked style="width:auto;margin:0;" />
-              <span>One merged PDF</span>
+              <span>Merged PDF</span>
             </label>
             <label style="display:flex;align-items:center;gap:6px;font-weight:normal;cursor:pointer;">
               <input type="radio" name="fsSplitMode" value="separate" style="width:auto;margin:0;" />
-              <span>Separate PDF per page (ZIP)</span>
+              <span>Sepreate PDF</span>
             </label>
           </div>
         </div>`;
@@ -419,7 +415,7 @@
     { title: 'Image Tools', icon: '🖼️', ids: ['size-photo', 'image-compressor', 'image-cropper', 'image-to-pdf'] },
     { title: 'Calculators', icon: '🧮', ids: ['emi-calculator', 'gratuity-calculator', 'age-calculator', 'unit-converter', 'currency-converter'] },
     { title: 'Data Tools', icon: '📊', ids: ['data-comparison', 'etl', 'json-csv', 'word-counter'] },
-    { title: 'Document Builders', icon: '📝', ids: ['invoice-generator', 'quotation-generator', 'receipt-generator', 'email-template', 'create-letters'] },
+    { title: 'Document Builders', icon: '📝', ids: ['invoice-generator', 'quotation-generator', 'receipt-generator'] },
     { title: 'Utilities', icon: '🔧', ids: ['timezone', 'password-generator', 'qr-generator', 'barcode-generator'] }
   ];
 

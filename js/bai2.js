@@ -5,8 +5,10 @@
  * management format banks and treasury systems exchange - as well as plain
  * CSV/JSON for anything that can't read BAI2.
  *
- * Billing mirrors Translation and Data Extraction: per page, charged as
- * each page completes, through window.LexoraBilling.
+ * Billing mirrors Translation and Data Extraction: one flat charge per
+ * finished file when the plan bills per document (the current default),
+ * or per-page if the plan is ever configured that way - always through
+ * window.LexoraBilling, and only once the whole file has succeeded.
  */
 (function () {
   'use strict';
@@ -302,8 +304,9 @@ Return ONLY this JSON, nothing else:
     const useOcr = ocrEl ? !!ocrEl.checked : true;
 
     const rate = billing.perPageRate();
+    const perDocument = billing.isPerDocument();
     const minNeeded = rate * selected.length;
-    log(`System > Checking Wallet Balance > ${CURRENCY_SYMBOL}${minNeeded.toFixed(2)} required for ${selected.length} file(s) (${billing.planName()} plan: BAI2 ${CURRENCY_SYMBOL}${rate}/Per Page)`, 'Info');
+    log(`System > Checking Wallet Balance > ${CURRENCY_SYMBOL}${minNeeded.toFixed(2)} required for ${selected.length} file(s) (${billing.planName()} plan: BAI2 ${CURRENCY_SYMBOL}${rate}${perDocument ? '/document' : '/page'})`, 'Info');
     if (minNeeded > 0 && billing.balance() < minNeeded) {
       log(`System > Process Aborted > Insufficient balance - you have ${CURRENCY_SYMBOL}${billing.balance().toFixed(2)}`, 'Failed');
       rerender();
@@ -325,15 +328,18 @@ Return ONLY this JSON, nothing else:
       log(`${label} > File Processing > ${entry.file.name}`, 'Info');
       rerender();
 
-      let charged = 0, jsonCalls = 0;
+      let charged = 0, pagesDone = 0, jsonCalls = 0;
       try {
         const pages = await pagesFromFile(entry.file, useOcr, function (p, total, calls) {
           jsonCalls += calls;
           // FULL-FILE BILLING: accrue the running total only - nothing is
           // actually charged to the wallet until the whole file finishes
           // (see billing.charge() call after this try block). If the file
-          // fails partway, none of this is charged.
-          charged += rate;
+          // fails partway, none of this is charged. Per-document plans
+          // charge the flat rate once (set below, not accumulated here);
+          // per-page plans add rate for every page that comes through.
+          pagesDone++;
+          if (!perDocument) charged += rate;
           entry.pageCount = total;
           entry.progress = Math.round((p / total) * 70);
           log(`${label} > Page(${p}/${total}) > API Call(s) > JSON=${calls}, IMAGE=0`, 'Success');
@@ -353,10 +359,15 @@ Return ONLY this JSON, nothing else:
         entry.status = 'Success';
         entry.progress = 100;
 
+        // Per-document plans: one flat charge for the whole file now
+        // that it's done, regardless of page count.
+        if (perDocument && pagesDone > 0) charged = rate;
+
         // Charge once, only now that the file has fully succeeded.
         const txnId = billing.charge(`BAI2 - ${entry.file.name}`, charged);
         log(`${label} > Page(All) > API Call(s) > JSON=${jsonCalls}, IMAGE=0`, 'Info');
-        log(`${label} > Page(All) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${charged.toFixed(2)}`, 'Info');
+        log(`${label} > Page(All) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${charged.toFixed(2)}` +
+            (perDocument ? ' (flat per-document rate)' : ` (${pagesDone} page(s) @ ${CURRENCY_SYMBOL}${rate}/page)`), 'Info');
         if (charged > 0 && window.notifyProcessCompletion) {
           window.notifyProcessCompletion('BAI2', entry.file.name, charged, txnId);
         }
@@ -407,8 +418,9 @@ Return ONLY this JSON, nothing else:
     const sel = STATE.files.filter(function (f) { return f.selected !== false; });
     if (!sel.length) return '';
     const rate = b.perPageRate();
-    const total = sel.reduce(function (s, f) { return s + rate * Math.max(1, f.pageCount || 1); }, 0);
-    return `💰 Rate: ${CURRENCY_SYMBOL}${rate.toFixed(2)}/page · Est. total: ${CURRENCY_SYMBOL}${total.toFixed(2)} for ${sel.length} selected file(s)`;
+    const perDocument = b.isPerDocument();
+    const total = perDocument ? rate * sel.length : sel.reduce(function (s, f) { return s + rate * Math.max(1, f.pageCount || 1); }, 0);
+    return `💰 Rate: ${CURRENCY_SYMBOL}${rate.toFixed(2)}${perDocument ? '/document' : '/page'} · Est. total: ${CURRENCY_SYMBOL}${total.toFixed(2)} for ${sel.length} selected file(s)`;
   }
 
   function fileRows() {

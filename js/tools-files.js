@@ -70,14 +70,14 @@
             <label>Height (px)</label>
             <input type="number" id="tSpH" value="531" min="1" max="10000" style="width:100%;" />
           </div>
-        </div>
-        <div class="setup-group" style="margin-top:10px;">
-          <label>Fit</label>
-          <select id="tSpFit" style="width:100%;">
-            <option value="cover">Cover - fill the frame, crop the overflow</option>
-            <option value="contain">Contain - fit inside, pad with white</option>
-            <option value="stretch">Stretch - ignore aspect ratio</option>
-          </select>
+          <div class="setup-group" style="flex:1;">
+            <label>Fit</label>
+            <select id="tSpFit" style="width:100%;">
+              <option value="cover">Cover - fill the frame, crop the overflow</option>
+              <option value="contain">Contain - fit inside, pad with white</option>
+              <option value="stretch">Stretch - ignore aspect ratio</option>
+            </select>
+          </div>
         </div>`;
     },
     process: async function (files, ctx, label) {
@@ -143,7 +143,7 @@
           </select>
         </div>
         <div class="setup-group" style="margin-top:10px;">
-          <label>Max dimension (px, 0 = keep original)</label>
+          <label>Max dimension (px)</label>
           <input type="number" id="tIcMax" value="1920" min="0" max="10000" style="width:100%;" />
         </div>`;
     },
@@ -239,10 +239,6 @@
             <option value="0.6|1.5" selected>Balanced</option>
             <option value="0.45|1.2">Strong - smallest file</option>
           </select>
-        </div>
-        <div style="margin-top:10px;padding:8px 10px;border:1px solid #e0a800;background:#fff8e1;border-radius:6px;font-size:0.8rem;color:#7a5c00;">
-          Pages are rebuilt as images, so the text in the output is no longer
-          selectable or searchable. Use this for sharing, not for archiving.
         </div>`;
     },
     process: async function (files, ctx, label) {
@@ -297,12 +293,7 @@
     description: 'Read a fillable PDF\'s form fields, type the values, and download the completed file.',
     setupHtml: function () {
       if (!formFields.length) {
-        return `<div class="setup-group">
-          <label>&nbsp;</label>
-          <div style="font-size:0.84rem;color:rgba(0,0,0,0.55);">
-            Upload a fillable PDF and press <b>Start</b> - its form fields will be listed here.
-          </div>
-        </div>`;
+        return '';
       }
       return `
         <div class="setup-group">
@@ -395,10 +386,6 @@
             <option value="a4l">A4 (landscape)</option>
             <option value="letter">Letter (portrait)</option>
           </select>
-        </div>
-        <div style="margin-top:10px;padding:8px 10px;border:1px solid #7aa7cc;background:#eef5fb;border-radius:6px;font-size:0.8rem;color:#2c5777;">
-          Word (.docx) is not supported here - its layout can't be reproduced
-          faithfully in the browser. Excel, CSV and plain text convert cleanly.
         </div>`;
     },
     process: async function (files, ctx, label) {
@@ -555,12 +542,7 @@
     backTo: BACK,
     description: 'Pull the text out of a PDF into an editable Word document.',
     setupHtml: function () {
-      return `<div style="padding:8px 10px;border:1px solid #e0a800;background:#fff8e1;border-radius:6px;font-size:0.8rem;color:#7a5c00;">
-        This extracts the <b>text</b>, not the layout - columns, tables and
-        images are not reproduced. For a layout-faithful conversion of a
-        scanned document, use the paid <b>Translation</b> service with
-        "With OCR", which rebuilds the page properly.
-      </div>`;
+      return '';
     },
     process: async function (files, ctx, label) {
       need(typeof pdfjsLib !== 'undefined' ? pdfjsLib : undefined, 'pdf.js');

@@ -2026,6 +2026,73 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
 
 #footerSocial { display: inline-flex; gap: 10px; }
 
+.footer-share-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 1px solid rgba(18,87,245,.25);
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    transition: 0.15s;
+}
+.footer-share-btn:hover { background: rgba(18,87,245,.08); border-color: #1257f5; color: #1257f5; }
+
+/* ---- Footer Share modal ("Show Us Some Love") ---- */
+.share-modal-icons {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.share-modal-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: 1px solid var(--ds-line);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(0,0,0,0.55);
+    transition: 0.15s;
+}
+
+.share-modal-icon:hover { border-color: currentColor; transform: translateY(-2px); }
+.share-modal-icon.is-pinterest:hover { color: #e60023; }
+.share-modal-icon.is-tumblr:hover { color: #35465c; }
+.share-modal-icon.is-twitter:hover { color: #1d9bf0; }
+.share-modal-icon.is-facebook:hover { color: #1877f2; }
+.share-modal-icon.is-linkedin:hover { color: #0a66c2; }
+
+.share-modal-link-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border: 1px solid var(--ds-line);
+    border-radius: 10px;
+    padding: 10px 14px;
+}
+
+.share-modal-link-text {
+    font-size: 0.86rem;
+    color: var(--ds-ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.share-modal-link-row a {
+    flex-shrink: 0;
+    font-size: 0.86rem;
+    font-weight: 700;
+    color: #1257f5;
+    cursor: pointer;
+}
+
 /* ---- 7. login ka apna bottom bar, menu jaisa ---- */
 .auth-footer {
     display: flex;
