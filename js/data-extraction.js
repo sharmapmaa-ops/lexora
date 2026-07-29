@@ -595,7 +595,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
         <div class="service-page-grid">
           <div class="service-col">
           <div class="service-card">
-            <h3>📤 Upload File(s)</h3>
+            <h3 class="card-head-row"><span>📤 Upload File(s)</span><button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','paid-services')">← Back to Paid Services</button></h3>
             <div class="card-body">
               <div class="drop-zone" onclick="${STATE.running ? 'void(0)' : "document.getElementById('deInput').click()"}"
                    style="${STATE.running ? 'opacity:0.5;pointer-events:none;' : ''}">

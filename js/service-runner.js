@@ -121,7 +121,7 @@
     const browseHint = svc.browseHint || (accept.indexOf('image') !== -1 ? 'or click to browse (JPG / PNG)' : 'or click to browse (PDF only)');
 
     const backBtn = svc.backTo
-      ? `<button class="process-btn clear-btn card-back-btn" onclick="${svc.backTo}">← Back to Other Services</button>`
+      ? `<button class="process-btn clear-btn card-back-btn" onclick="${svc.backTo}">← Back to Free Services</button>`
       : '';
 
     return `

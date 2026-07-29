@@ -64,8 +64,12 @@
                                 "label": "BAI2"
                             },
                             {
+                                "id": "paid-services",
+                                "label": "Paid Services"
+                            },
+                            {
                                 "id": "other-services",
-                                "label": "Other Services"
+                                "label": "Free Services"
                             }
                         ]
                     },
@@ -823,7 +827,7 @@
                         <div class="service-col">
                             <!-- Left: Upload Card -->
                             <div class="service-card">
-                                <h3>📤 Upload File(s)</h3>
+                                <h3 class="card-head-row"><span>📤 Upload File(s)</span><button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','paid-services')">← Back to Paid Services</button></h3>
                                 <div class="card-body">
                                     <div class="drop-zone" id="dropZone" onclick="${processState.running ? 'void(0)' : "document.getElementById('fileInput').click()"}" style="${processState.running ? 'opacity:0.5;pointer-events:none;' : ''}">
                                         <svg class="drop-art" viewBox="0 0 120 78" fill="none" aria-hidden="true">
@@ -9095,6 +9099,27 @@
                         return buildServiceUploadHTML('translation', 'Translation', '🌐');
                     }
                 },
+                'paid-services': {
+                    body: function() {
+                        const items = [
+                            { id: 'lease-abstraction', icon: '📄', label: 'Lease Abstraction', desc: 'Extract key terms and clauses from lease documents.' },
+                            { id: 'translation', icon: '🌐', label: 'Translation', desc: 'Translate documents into 60+ languages, layout preserved.' },
+                            { id: 'ocr', icon: '🔍', label: 'OCR', desc: 'Turn scanned or photographed pages into editable Word.' },
+                            { id: 'data-extraction', icon: '📊', label: 'Data Extraction', desc: 'Define your own fields and get a clean structured table.' },
+                            { id: 'bai2', icon: '🏦', label: 'BAI2', desc: 'Convert bank statements into BAI2, CSV, or JSON.' },
+                        ];
+                        return `
+                            <div class="tool-group-title">💼 Paid Services</div>
+                            <div class="tools-grid">
+                                ${items.map(t => `
+                                    <div class="tool-card" onclick="lexoraNavigate('services','${t.id}')">
+                                        <div class="tool-card-icon">${t.icon}</div>
+                                        <div class="tool-card-name">${escapeHtml(t.label)}</div>
+                                        <div class="tool-card-desc">${escapeHtml(t.desc)}</div>
+                                    </div>`).join('')}
+                            </div>`;
+                    }
+                },
                 'plans-offers': {
                     body: function() {
                         const myPlan = getMyPlan();
@@ -9331,7 +9356,7 @@
                                 </div>
                                 <button class="support-back-btn" onclick="lexoraNavigate('services','other-services')">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
-                                    Back to Other Services
+                                    Back to Free Services
                                 </button>
                             </div>
                             <div class="history-filter-bar">

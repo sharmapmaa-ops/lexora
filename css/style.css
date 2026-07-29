@@ -1701,7 +1701,7 @@
                fixed height. overflow-y:auto safety net hai (Admin Panel
                ke fix jaisa hi) - agar kabhi kuch fit na ho to poora card
                scroll hoga, kuch gayab ya bahar nahi jayega. */
-            height: 700px;
+            height: 600px;
             max-height: 88vh;
             overflow-y: auto;
         }

@@ -248,7 +248,7 @@
   // Injected into a card's own <h3> so the button sits inside the first
   // card (right-aligned) rather than floating above the page.
   function withBackButton(html) {
-    const btn = '<button class="process-btn clear-btn card-back-btn" onclick="FreeServices.open(\'other-services\')">← Back to Other Services</button>';
+    const btn = '<button class="process-btn clear-btn card-back-btn" onclick="FreeServices.open(\'other-services\')">← Back to Free Services</button>';
     return html.replace(/<h3>([\s\S]*?)<\/h3>/, '<h3 class="card-head-row"><span>$1</span>' + btn + '</h3>');
   }
 
@@ -525,7 +525,7 @@
     if (host) host.innerHTML = render(id);
     if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
     if (window.setLexoraBreadcrumb) {
-      const base = window.__lexoraBreadcrumb || '\ud83d\udee0\ufe0f Services / Other Services';
+      const base = window.__lexoraBreadcrumb || '\ud83d\udee0\ufe0f Services / Free Services';
       const name = id === 'other-services' ? '' : titleOf(id);
       window.setLexoraBreadcrumb(name ? base + ' / ' + name : base);
     }
