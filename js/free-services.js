@@ -411,10 +411,11 @@
   // small catalogue rather than one long undifferentiated grid. Anything
   // registered but not listed here still shows up under "More".
   const GROUPS = [
-    { title: 'PDF Tools', icon: '📄', ids: ['pdf-split', 'pdf-merge', 'pdf-compress', 'pdf-to-image', 'pdf-to-word', 'pdf-form-filler', 'create-pdf'] },
+    { title: 'PDF Tools', icon: '📄', ids: ['pdf-split', 'pdf-merge', 'pdf-compress', 'pdf-to-image', 'pdf-to-word', 'pdf-form-filler', 'create-pdf', 'unlock-pdf', 'pdf-rotate-reorder'] },
     { title: 'Image Tools', icon: '🖼️', ids: ['size-photo', 'image-compressor', 'image-cropper', 'image-to-pdf'] },
     { title: 'Calculators', icon: '🧮', ids: ['emi-calculator', 'gratuity-calculator', 'age-calculator', 'unit-converter', 'currency-converter'] },
-    { title: 'Data Tools', icon: '📊', ids: ['data-comparison', 'etl', 'json-csv', 'word-counter'] },
+    { title: 'Data Tools', icon: '📊', ids: ['data-comparison', 'etl', 'json-to-csv', 'csv-to-json', 'word-counter'] },
+    { title: 'Calculators', icon: '🧮', ids: ['bmi-calculator', 'percentage-calculator', 'date-diff-calculator', 'discount-gst-calculator'] },
     { title: 'Document Builders', icon: '📝', ids: ['invoice-generator', 'quotation-generator', 'receipt-generator'] },
     { title: 'Utilities', icon: '🔧', ids: ['timezone', 'password-generator', 'qr-generator', 'barcode-generator'] }
   ];

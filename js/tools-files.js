@@ -592,6 +592,99 @@
     }
   });
 
+  // ══════════════════════════════════════════════════════════════════
+  // UNLOCK PDF
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'unlock-pdf',
+    title: 'Unlock PDF',
+    icon: '🔓',
+    accept: 'application/pdf',
+    backTo: BACK,
+    description: 'Remove owner-password restrictions (printing, copying, editing) from a PDF.',
+    setupHtml: function () { return ''; },
+    process: async function (files, ctx, label) {
+      need(typeof PDFLib !== 'undefined' ? PDFLib : undefined, 'pdf-lib');
+      const f = files[0];
+      // ignoreEncryption loads the PDF even with owner-password
+      // restrictions in place, and re-saving it (pdf-lib doesn't carry
+      // encryption/permission flags forward) produces an unrestricted
+      // copy. This only removes PERMISSION restrictions - a PDF that
+      // needs a password just to OPEN it needs that password entered
+      // elsewhere first; there's nothing to "crack" here.
+      const src = await PDFLib.PDFDocument.load(await f.arrayBuffer(), { ignoreEncryption: true });
+      const bytes = await src.save();
+      ctx.download(new Blob([bytes], { type: 'application/pdf' }), `${stem(f.name)}_unlocked.pdf`);
+      ctx.log(`${label} > Pages = ${src.getPageCount()}`, 'Info');
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}_unlocked.pdf`, 'Success');
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // PDF ROTATE / REORDER
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'pdf-rotate-reorder',
+    title: 'PDF Rotate/Reorder',
+    icon: '🔃',
+    accept: 'application/pdf',
+    backTo: BACK,
+    multiple: false,
+    description: 'Rotate pages and/or put them in a new order.',
+    setupHtml: function () {
+      return `
+        <div class="setup-group">
+          <label>Rotate every page by</label>
+          <select id="tRrAngle" style="width:100%;">
+            <option value="0">No rotation</option>
+            <option value="90">90° clockwise</option>
+            <option value="180">180°</option>
+            <option value="270">270° clockwise (90° counter-clockwise)</option>
+          </select>
+        </div>
+        <div class="setup-group" style="margin-top:10px;">
+          <label>New page order (optional)</label>
+          <input type="text" id="tRrOrder" placeholder="e.g. 3,1,2,4 - leave empty to keep current order" />
+        </div>`;
+    },
+    process: async function (files, ctx, label) {
+      need(typeof PDFLib !== 'undefined' ? PDFLib : undefined, 'pdf-lib');
+      const angle = parseInt((document.getElementById('tRrAngle') || {}).value, 10) || 0;
+      const orderSpec = ((document.getElementById('tRrOrder') || {}).value || '').trim();
+
+      const f = files[0];
+      const src = await PDFLib.PDFDocument.load(await f.arrayBuffer(), { ignoreEncryption: true });
+      const total = src.getPageCount();
+      ctx.log(`${label} > Pages found = ${total}`, 'Info');
+
+      // Parse "3,1,2,4" into zero-based indices, 1-indexed from the user's
+      // point of view. An empty box keeps the current order - only
+      // rotation gets applied in that case.
+      let order = Array.from({ length: total }, function (_, i) { return i; });
+      if (orderSpec) {
+        const picked = orderSpec.split(',').map(function (s) { return parseInt(s.trim(), 10) - 1; });
+        if (picked.some(function (n) { return isNaN(n) || n < 0 || n >= total; })) {
+          throw new Error(`Page order must list numbers between 1 and ${total} (e.g. "3,1,2,4").`);
+        }
+        if (picked.length !== total) {
+          throw new Error(`Page order must include all ${total} page(s) exactly once.`);
+        }
+        order = picked;
+      }
+
+      const out = await PDFLib.PDFDocument.create();
+      const copied = await out.copyPages(src, order);
+      copied.forEach(function (p) {
+        if (angle) p.setRotation(PDFLib.degrees((p.getRotation().angle + angle) % 360));
+        out.addPage(p);
+      });
+
+      const bytes = await out.save();
+      ctx.download(new Blob([bytes], { type: 'application/pdf' }), `${stem(f.name)}_reordered.pdf`);
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}_reordered.pdf (${order.length} page(s))`, 'Success');
+    }
+  });
+
   window.ToolsFiles = {
     onPreset: onPreset,
     fillForm: fillForm,
