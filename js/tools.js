@@ -21,12 +21,13 @@
 
   function card(icon, title, bodyHtml, note) {
     const slug = slugifyTitle(title);
-    const displayTitle = (window.SERVICES_CATALOG && window.SERVICES_CATALOG[slug] && window.SERVICES_CATALOG[slug].name && window.SERVICES_CATALOG[slug].name.trim())
-      || title;
+    const catalogEntry = window.SERVICES_CATALOG && window.SERVICES_CATALOG[slug];
+    const displayTitle = (catalogEntry && catalogEntry.name && catalogEntry.name.trim()) || title;
+    const imgSrc = (catalogEntry && catalogEntry.image && catalogEntry.image.trim()) || `Pictures/service-images/${slug}.jpg`;
     return `
       <div class="service-split-layout">
         <div class="service-visual-panel" aria-hidden="true">
-          <img class="service-visual-img" src="Pictures/service-images/${slug}.jpg" alt=""
+          <img class="service-visual-img" src="${esc(imgSrc)}" alt=""
                onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" />
           <span class="service-visual-icon">${icon}</span>
         </div>

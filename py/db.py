@@ -894,7 +894,7 @@ VIRTUAL_TABLES = {
         "resource": "company",
         "fields": [
             "name", "address", "workingHours", "workingDays", "location",
-            "email", "phone", "whatsapp", "logo",
+            "email", "phone", "logo",
             "youtube", "facebook", "linkedin", "instagram",
             "shareEnabled", "currency",
         ],
@@ -966,7 +966,7 @@ VIRTUAL_TABLES = {
         "fields": ["id", "name", "type", "billingUnit", "apiAccess", "visibility", "image"],
         "types": {},
         "jsonb_defaults": {},
-        "field_defaults": {"type": "Free", "billingUnit": "document", "apiAccess": "Yes", "visibility": "Visible"},
+        "field_defaults": {"type": "Free", "billingUnit": "document", "apiAccess": "No", "visibility": "Visible"},
         "select_options": {
             "type": ["Paid", "Free"],
             "billingUnit": [["page", "Per Page"], ["document", "Per Document"], ["process", "Per Process"]],

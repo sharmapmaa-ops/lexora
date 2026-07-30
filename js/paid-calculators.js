@@ -16,10 +16,18 @@
       .replace(/&/g, '&amp;').replace(/</g, '&lt;')
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
+  // Item 16 - Services Catalog "Image" column can hold a full path;
+  // falls back to the naming-convention path when not set.
+  function catalogImageSrc(id, fallbackPath) {
+    const entry = window.SERVICES_CATALOG && window.SERVICES_CATALOG[id];
+    return (entry && entry.image && entry.image.trim()) || fallbackPath;
+  }
   const val = (id) => (document.getElementById(id) || {}).value || '';
   const num = (id) => parseFloat(val(id));
   const chk = (id) => !!(document.getElementById(id) || {}).checked;
-  const AMT = (v) => '\u20b9' + Math.round(v).toLocaleString('en-IN');
+  const AMT = (v) => (
+    (window.LexoraBilling && window.LexoraBilling.currencySymbol()) || '\u20b9'
+  ) + Math.round(v).toLocaleString('en-IN');
 
   function fld(label, inner) {
     return `<div class="setup-group" style="flex:1;min-width:200px;"><label>${esc(label)}</label>${inner}</div>`;
@@ -108,7 +116,7 @@
   function renderSip() {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/sip-calculator.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">\ud83d\udcc8</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="${esc(catalogImageSrc('sip-calculator', 'Pictures/service-images/sip-calculator.jpg'))}" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">\ud83d\udcc8</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>\ud83d\udcc8 SIP Calculator</span>${backButtonFree()}</h3>
         <div class="card-body">
@@ -164,7 +172,7 @@
   function renderIncomeTax() {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/income-tax-calculator.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">\ud83e\uddfe</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="${esc(catalogImageSrc('income-tax-calculator', 'Pictures/service-images/income-tax-calculator.jpg'))}" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">\ud83e\uddfe</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>\ud83e\uddfe Income Tax Calculator (India)</span>${backButtonFree()}</h3>
         <div class="card-body">
@@ -235,7 +243,7 @@
   function renderCompoundInterest() {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/compound-interest-calculator.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">\ud83d\udcb9</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="${esc(catalogImageSrc('compound-interest-calculator', 'Pictures/service-images/compound-interest-calculator.jpg'))}" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">\ud83d\udcb9</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>\ud83d\udcb9 Compound Interest Calculator</span>${backButtonFree()}</h3>
         <div class="card-body">
@@ -284,7 +292,7 @@
   function renderLoanEligibility() {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/loan-eligibility-calculator.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">\ud83c\udfe6</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="${esc(catalogImageSrc('loan-eligibility-calculator', 'Pictures/service-images/loan-eligibility-calculator.jpg'))}" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">\ud83c\udfe6</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>\ud83c\udfe6 Loan Eligibility Calculator</span>${backButtonFree()}</h3>
         <div class="card-body">
@@ -343,7 +351,7 @@
   function renderContentWriting() {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/content-writing-tool.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">✍️</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="${esc(catalogImageSrc('content-writing-tool', 'Pictures/service-images/content-writing-tool.jpg'))}" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">✍️</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>✍️ Content Writing Tool</span>${backButton()}</h3>
         <div class="card-body">
@@ -415,7 +423,7 @@
   function renderHumanize() {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/humanize-document-tool.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">🧑</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="${esc(catalogImageSrc('humanize-document-tool', 'Pictures/service-images/humanize-document-tool.jpg'))}" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">🧑</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>🧑 Humanize Document Tool</span>${backButton()}</h3>
         <div class="card-body">
@@ -522,7 +530,7 @@
   function renderBackgroundRemover() {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/background-remover.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">🪄</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="${esc(catalogImageSrc('background-remover', 'Pictures/service-images/background-remover.jpg'))}" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">🪄</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>🪄 Background Remover</span>${backButtonFree()}</h3>
         <div class="card-body">
@@ -564,6 +572,12 @@
     runFreeAsync('tBg', async function () {
       const statusEl = document.getElementById('tBgStatus');
       if (!bgRemoveFile) { say2('tBgStatus', 'Upload an image first.', 'error'); return false; }
+
+      if (window.FreeServices && window.FreeServices.isPaidInCatalog('background-remover')) {
+        const okToProceed = await window.FreeServices.confirmPaidAccess('background-remover');
+        if (!okToProceed) return false; // insufficient balance or cancelled - nothing charged
+      }
+
       if (statusEl) say2('tBgStatus', 'Loading model (first use can take a moment)…', 'ok');
 
       let removeBackground;
@@ -583,6 +597,10 @@
         say2('tBgStatus', 'Background removal failed for this image - please try a different one.', 'error');
         return false;
       }
+
+      // Only now that the image has genuinely finished processing -
+      // charges nothing at all if this is still a free service.
+      if (window.FreeServices) window.FreeServices.chargeForPaidAccess('background-remover');
 
       const box = document.getElementById('tBgPreview');
       if (box) {
@@ -614,7 +632,7 @@
     setTimeout(populateVoiceList, 0);
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/text-to-speech.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">🔊</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="${esc(catalogImageSrc('text-to-speech', 'Pictures/service-images/text-to-speech.jpg'))}" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">🔊</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>🔊 Text-to-Speech</span>${backButtonFree()}</h3>
         <div class="card-body">

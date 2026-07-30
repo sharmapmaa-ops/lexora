@@ -300,12 +300,19 @@
     </div>`;
   }
 
+  // Item 16 - Services Catalog "Image" column can hold a full path;
+  // falls back to the naming-convention path when not set.
+  function catalogImageSrc(id, fallbackPath) {
+    const entry = window.SERVICES_CATALOG && window.SERVICES_CATALOG[id];
+    return (entry && entry.image && entry.image.trim()) || fallbackPath;
+  }
+
   function renderEmi() {
     setTimeout(runEmi, 0);   // first paint of the result, after insertion
     return `
       <div class="service-split-layout">
         <div class="service-visual-panel" aria-hidden="true">
-          <img class="service-visual-img" src="Pictures/service-images/emi-calculator.jpg" alt=""
+          <img class="service-visual-img" src="${esc(catalogImageSrc('emi-calculator', 'Pictures/service-images/emi-calculator.jpg'))}" alt=""
                onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" />
           <span class="service-visual-icon">🏦</span>
         </div>
@@ -352,7 +359,7 @@
     return `
       <div class="service-split-layout">
         <div class="service-visual-panel" aria-hidden="true">
-          <img class="service-visual-img" src="Pictures/service-images/gratuity-calculator.jpg" alt=""
+          <img class="service-visual-img" src="${esc(catalogImageSrc('gratuity-calculator', 'Pictures/service-images/gratuity-calculator.jpg'))}" alt=""
                onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" />
           <span class="service-visual-icon">💼</span>
         </div>
@@ -613,34 +620,50 @@
   // services have a Start button) - same rate/balance machinery every
   // other paid service already uses (window.LexoraBilling), just
   // triggered here instead of from inside the tool itself.
-  function chargeForPaidAccess(id, onProceed) {
+  // Two-step by design: NEVER charge before we know the work actually
+  // succeeded. Call confirmPaidAccess() before starting work (checks
+  // balance, asks for confirmation, but charges nothing yet) - if it
+  // resolves true, do the work; only call chargeForPaidAccess() from
+  // inside your OWN success path afterwards. A failure anywhere in
+  // between costs the person nothing.
+  function isPaidInCatalog(id) {
+    return catalogType(id) === 'Paid' && !NATIVE_PAID_SERVICES.some(s => s.id === id);
+  }
+
+  function confirmPaidAccess(id) {
+    return new Promise(function (resolve) {
+      if (!isPaidInCatalog(id)) { resolve(true); return; }
+      const billing = window.LexoraBilling;
+      if (!billing) { resolve(true); return; } // billing not ready - fail open rather than block the tool entirely
+      const rate = billing.perPageRate(id);
+      if (!rate || rate <= 0) { resolve(true); return; }
+      if (billing.balance() < rate) {
+        if (window.showWarning) showWarning(`This is a paid feature. \u20b9${rate.toFixed(2)} is needed but your wallet balance is too low - please add balance first.`);
+        resolve(false);
+        return;
+      }
+      if (window.showConfirm) {
+        showConfirm('\ud83d\udcb0 Paid Feature', `This is a paid feature. \u20b9${rate.toFixed(2)} will be charged only if it completes successfully. Continue?`, function (confirmed) {
+          resolve(!!confirmed);
+        });
+      } else {
+        resolve(true);
+      }
+    });
+  }
+
+  function chargeForPaidAccess(id) {
+    if (!isPaidInCatalog(id)) return null;
     const billing = window.LexoraBilling;
-    if (!billing) { onProceed(); return; } // billing not ready - fail open rather than block the tool entirely
+    if (!billing) return null;
     const rate = billing.perPageRate(id);
-    if (!rate || rate <= 0) { onProceed(); return; }
-    if (billing.balance() < rate) {
-      if (window.showWarning) showWarning(`This is now a paid feature. ₹${rate.toFixed(2)} is needed but your wallet balance is too low - please add balance first.`);
-      return;
-    }
-    if (window.showConfirm) {
-      showConfirm('💰 Paid Feature', `This is now a paid feature. ₹${rate.toFixed(2)} will be charged from your wallet. Continue?`, function (confirmed) {
-        if (!confirmed) return;
-        billing.charge(titleOf(id) + ' - access', rate);
-        onProceed();
-      });
-    } else {
-      billing.charge(titleOf(id) + ' - access', rate);
-      onProceed();
-    }
+    if (!rate || rate <= 0) return null;
+    const txnId = billing.charge(titleOf(id) + ' - access', rate);
+    if (txnId && window.notifyProcessCompletion) window.notifyProcessCompletion(titleOf(id), 'Use', rate, txnId);
+    return txnId;
   }
 
   function open(id) {
-    const isNowPaid = id !== 'other-services' && catalogType(id) === 'Paid'
-      && !NATIVE_PAID_SERVICES.some(s => s.id === id);
-    if (isNowPaid) {
-      chargeForPaidAccess(id, function () { openNow(id); });
-      return;
-    }
     openNow(id);
   }
 
@@ -663,6 +686,9 @@
     allToolsRaw: allToolsRaw,
     nativePaidServices: NATIVE_PAID_SERVICES,
     isHidden: isHidden,
+    isPaidInCatalog: isPaidInCatalog,
+    confirmPaidAccess: confirmPaidAccess,
+    chargeForPaidAccess: chargeForPaidAccess,
     syncFromBox: syncFromBox,
     syncFromSlider: syncFromSlider,
     runEmi: runEmi,

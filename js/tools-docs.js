@@ -36,9 +36,16 @@
 
   function visualPanelHtml(icon, title) {
     const slug = slugifyTitle(title);
+    const catalogEntry = window.SERVICES_CATALOG && window.SERVICES_CATALOG[slug];
+    // Services Catalog "Image" column holds a full path (e.g.
+    // Pictures/service-images/xyz.jpg) when actually set - falls back to
+    // the naming-convention path (Pictures/service-images/<slug>.jpg)
+    // for services that haven't had a custom path configured yet.
+    const imgSrc = (catalogEntry && catalogEntry.image && catalogEntry.image.trim())
+      || `Pictures/service-images/${slug}.jpg`;
     return `
       <div class="service-visual-panel" aria-hidden="true">
-        <img class="service-visual-img" src="Pictures/service-images/${slug}.jpg" alt=""
+        <img class="service-visual-img" src="${esc(imgSrc)}" alt=""
              onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" />
         <span class="service-visual-icon">${icon}</span>
       </div>`;

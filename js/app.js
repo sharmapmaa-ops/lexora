@@ -271,7 +271,14 @@
             // wale users ke liye hai. Free plan wale menu me dekh sakte
             // hain, lekin click par ek upgrade message dikhta hai.
             function canAccessApiDocs() {
-                return ['Standard', 'Professional'].includes(getMyPlan().name);
+                return getMyPlan().apiFeature === 'Yes';
+            }
+
+            // Item 4 - same idea as canAccessApiDocs(), driven by the
+            // Plans table's Support Feature toggle instead of a
+            // hardcoded plan-name check.
+            function canAccessSupport() {
+                return getMyPlan().supportFeature === 'Yes';
             }
 
             // Services Catalog (Plans & Offers admin) can override a
@@ -2928,8 +2935,10 @@
             // Symbol company.json (ab Postgres cfg_company) se aata hai.
             // Wahan badalne par poore app me badal jayega - koi aur jagah
             // hardcode nahi hai.
+            const CURRENCY_CODE_TO_SYMBOL = { INR: '\u20b9', USD: '$', AED: '\u062f.\u0625' };
             function currencySymbol() {
-                return (COMPANY_INFO && COMPANY_INFO.currency) || '';
+                const code = (COMPANY_INFO && COMPANY_INFO.currency) || '';
+                return CURRENCY_CODE_TO_SYMBOL[code] || code || '\u20b9';
             }
             Object.defineProperty(window, 'CURRENCY_SYMBOL', { get: currencySymbol });
 
@@ -3186,6 +3195,8 @@
                         descriptionText = `<span class="txn-status-tag pending">In Process</span> : ${descriptionText}`;
                     } else if (transaction.status === 'cancelled') {
                         descriptionText = `<span class="txn-status-tag cancelled">Cancelled</span> : ${descriptionText}`;
+                    } else if (transaction.status === 'failed') {
+                        descriptionText = `<span class="txn-status-tag cancelled">Failed</span> : ${descriptionText}`;
                     }
                     tr.innerHTML = `
                         ${includeCheckbox ? `<td><input type="checkbox" class="txn-select-checkbox" data-txn-id="${transaction.id}" ${selectedTransactionIds.has(transaction.id) ? 'checked' : ''} onchange="toggleSelectTransaction('${transaction.id}', this.checked)" /></td>` : ''}
@@ -3523,20 +3534,48 @@
                 if (!plan) { showWarning('That plan could not be found.'); return; }
                 if (plan.name === getMyPlan().name) return;
 
-                // Item - show exactly what will be deducted and require an
-                // explicit Confirm before charging anything, instead of
-                // switching immediately on click. Downgrade never charges
-                // anything, chahe target plan ka monthlyPrice > 0 ho.
                 const isDowngrade = plan.monthlyPrice < getMyPlan().monthlyPrice;
-                const confirmMsg = (plan.monthlyPrice > 0 && !isDowngrade) ?
-                    `Switching to the ${plan.name} plan will deduct ${currencySymbol()}${plan.monthlyPrice.toFixed(2)} from your wallet balance right now. Do you want to continue?` :
-                    isDowngrade
-                        ? `Downgrade to the ${plan.name} plan? This is free - no charge will be made.`
-                        : `Switch to the ${plan.name} plan? This plan has no monthly charge.`;
+
+                // Item 7 - an upgrade is real money, so it goes through
+                // the actual Payment/Razorpay flow (pre-filled with this
+                // plan's price and name) instead of silently deducting
+                // from whatever wallet balance happens to already be
+                // there. The plan only actually switches once that
+                // payment genuinely succeeds - see pendingPlanUpgrade
+                // below, checked from the Razorpay success handler.
+                if (!isDowngrade && plan.monthlyPrice > 0) {
+                    pendingPlanUpgrade = plan;
+                    lexoraNavigate('payment');
+                    let tries = 0;
+                    const prefillAndPay = function () {
+                        const amountInput = document.getElementById('balanceAmount');
+                        const descInput = document.getElementById('balanceDescription');
+                        if (!amountInput || !descInput) {
+                            if (++tries < 20) { setTimeout(prefillAndPay, 50); }
+                            return;
+                        }
+                        amountInput.value = plan.monthlyPrice;
+                        descInput.value = `Upgrade to ${plan.name} plan`;
+                        syncPayPanelAmount();
+                        if (window.payWithRazorpay) payWithRazorpay();
+                    };
+                    setTimeout(prefillAndPay, 0);
+                    return;
+                }
+
+                const confirmMsg = isDowngrade
+                    ? `Downgrade to the ${plan.name} plan? This is free - no charge will be made.`
+                    : `Switch to the ${plan.name} plan? This plan has no monthly charge.`;
                 showConfirm('Confirm Plan Change', confirmMsg, (confirmed) => {
                     if (confirmed) _doSwitchPlan(plan);
                 });
             };
+
+            // Set the moment "Upgrade Now" is clicked, cleared once the
+            // resulting payment either succeeds (plan actually switches)
+            // or the person navigates away/cancels - never switches the
+            // plan on its own, only ever alongside a real successful charge.
+            let pendingPlanUpgrade = null;
 
             function _doSwitchPlan(plan) {
                 const finalizeSwitch = () => {
@@ -3544,7 +3583,8 @@
                     const endDate = new Date(now);
                     // Item 3 - Free is a 7-day trial-style period; every
                     // paid plan renews monthly (30 days).
-                    endDate.setDate(endDate.getDate() + (plan.name === 'Free' ? 7 : 30));
+                    const periodDays = plan.frequency === 'Daily' ? 1 : (plan.frequency === 'Yearly' ? 365 : (plan.name === 'Free' ? 7 : 30));
+                    endDate.setDate(endDate.getDate() + periodDays);
                     const startDateStr = localDateStr(now);
                     const endDateStr = localDateStr(endDate);
                     profileData.plan = plan.name;
@@ -3747,7 +3787,24 @@
                 const rzp = new Razorpay(options);
                 rzp.on('payment.failed', function(response) {
                     resetPayPanel();
+                    pendingPlanUpgrade = null;
                     showWarning('Payment failed: ' + ((response.error && response.error.description) || 'please try again.'));
+                    const now = new Date();
+                    paymentHistory.push({
+                        id: 'TXN' + String(nextTransactionId++).padStart(3, '0'),
+                        date: localDateStr(now),
+                        time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                        userId: CURRENT_USER_ID,
+                        paymentType: 'Razorpay',
+                        paymentMode: 'Razorpay',
+                        status: 'failed',
+                        description: (options.description || 'Balance top-up')
+                            + ((response.error && response.error.description) ? ` \u2014 ${response.error.description}` : ''),
+                        credit: 0,
+                        debit: 0
+                    });
+                    persistPaymentHistory();
+                    renderPaymentHistory();
                 });
                 rzp.open();
 
@@ -3845,7 +3902,6 @@
                                 }).then(result => {
                                     const txn = result.transaction;
                                     paymentHistory.push(txn);
-                                    _creditDeveloperRevenueRecord(txn, description);
                                     persistPaymentHistory();
 
                                     amountInput.value = '';
@@ -3867,7 +3923,15 @@
                                         );
                                     }
                                     addNotification(`${currencySymbol()}${txn.credit.toFixed(2)} was added to your balance (Transaction ID: ${txn.id}).`);
-                                    showMessage('✅ Success', `${currencySymbol()}${txn.credit.toFixed(2)} added successfully! Transaction ID: ${txn.id}`, ['OK']);
+
+                                    if (pendingPlanUpgrade) {
+                                        const upgradePlan = pendingPlanUpgrade;
+                                        pendingPlanUpgrade = null;
+                                        _doSwitchPlan(upgradePlan);
+                                        showMessage('✅ Upgraded', `Payment received and your plan is now ${upgradePlan.name}.`, ['OK']);
+                                    } else {
+                                        showMessage('✅ Success', `${currencySymbol()}${txn.credit.toFixed(2)} added successfully! Transaction ID: ${txn.id}`, ['OK']);
+                                    }
                                 }).catch(err => {
                                     resetPayPanel();
                                     showWarning('Payment could not be verified: ' + err.message +
@@ -3879,6 +3943,7 @@
                                     // User closed the widget - nothing was
                                     // charged, just put the panel back.
                                     resetPayPanel();
+                                    pendingPlanUpgrade = null;
                                 }
                             }
                         };
@@ -3932,40 +3997,12 @@
                 payWithRazorpay();
             };
 
-            function _creditDeveloperRevenueRecord(newTransaction, description) {
-                // Whoever adds balance, the real "money received" also
-                // shows up in the Developer's own Payment History as
-                // revenue - the entry above is what makes the ADDING
-                // user's own spendable balance go up; this one just
-                // records that the Developer's primary account is who
-                // actually received it. Only runs once a request is
-                // actually approved (or immediately, for a self-approved
-                // Admin/Developer top-up).
-                const developerId = getDeveloperUserId();
-                if (developerId && developerId !== newTransaction.userId) {
-                    const dirEntry = getUserDirectoryEntry(newTransaction.userId);
-                    const whoAdded = dirEntry ? `${dirEntry.firstName} ${dirEntry.lastName} (${newTransaction.userId})` : newTransaction.userId;
-                    paymentHistory.push({
-                        id: 'TXN' + String(nextTransactionId++).padStart(3, '0'),
-                        date: newTransaction.date,
-                        time: newTransaction.time,
-                        userId: developerId,
-                        paymentType: 'Balance Received',
-                        paymentMode: newTransaction.paymentMode,
-                        description: `Balance added by ${whoAdded}: ${description}`,
-                        credit: newTransaction.credit,
-                        debit: 0
-                    });
-                }
-            }
-
             // Item 2 - called from the Approve/Cancel buttons rendered
             // directly in a balance_approval notification row.
             window.approveBalanceRequest = function(txnId, notificationId) {
                 const txn = paymentHistory.find(t => t.id === txnId);
                 if (!txn) { showWarning('That transaction could not be found - it may have already been handled.'); return; }
                 txn.status = 'approved';
-                _creditDeveloperRevenueRecord(txn, txn.description);
                 persistPaymentHistory();
                 markNotificationHandled(notificationId, 'Approved');
 
@@ -4401,7 +4438,7 @@
 
                 const entry = services.find(s => s.id === apiRefActive) || {};
                 if (entry.kind === 'browser') {
-                    const usage = `// ${entry.label} browser me chalta hai - koi upload nahi hota.\n`
+                    const usage = `// ${entry.label} runs in the browser - nothing is uploaded.\n`
                         + `FreeServices.open('${entry.toolId}');`;
                     const samples = {
                         request: usage,
@@ -6877,7 +6914,8 @@
                             <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Row(s)</button>
                             <button class="admin-btn admin-btn-save" onclick="dbTableSaveAll('${escapeHtml(name)}')">\u{1F4BE} Save</button>
                             <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
-                            ${name === 'doc_services_catalog' ? `<button class="admin-btn" onclick="seedServicesCatalog()">\u{1F331} Seed Missing Services</button>` : ''}
+                            ${name === 'doc_services_catalog' ? `<button class="admin-btn" onclick="seedServicesCatalog()">\u{1F331} Seed Missing Services</button>
+                            <button class="admin-btn" onclick="resetServicesApiAccess()">\u{1F511} Reset API Access (Translation only)</button>` : ''}
                             `}
                             <span class="admin-toolbar-spacer"></span>
                             <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
@@ -7186,8 +7224,8 @@
                     const cb = tr.querySelector('.db-row-select');
                     return cb && cb.checked;
                 });
-                if (!trs.length) { showWarning('Koi row select nahi ki.'); return; }
-                showConfirm('Delete rows', `${trs.length} row(s) Postgres se hamesha ke liye hat jayengi. Pakka?`,
+                if (!trs.length) { showWarning('No row selected.'); return; }
+                showConfirm('Delete rows', `${trs.length} row(s) will be permanently deleted from Postgres. Are you sure?`,
                     async function(yes) {
                         if (!yes) return;
                         for (const tr of trs) {
@@ -7230,7 +7268,7 @@
                     });
                     const d = await res.json();
                     if (!res.ok) throw new Error(d.error || 'Save failed.');
-                    showSuccess('Row save ho gaya.');
+                    showSuccess('Row saved.');
                     await dbTableLoad(name);
                     renderDbTables();
                 } catch (err) {
@@ -7242,7 +7280,7 @@
                 const scroll = document.getElementById('dbActiveTableBody');
                 const originalRows = JSON.parse((scroll && scroll.dataset.rows) || '[]');
                 const originalRow = originalRows[index] || {};
-                showConfirm('Delete row', 'Ye row Postgres se hamesha ke liye hat jayegi. Pakka?',
+                showConfirm('Delete row', 'This row will be permanently deleted from Postgres. Are you sure?',
                     async function(yes) {
                         if (!yes) return;
                         try {
@@ -7253,7 +7291,7 @@
                             });
                             const d = await res.json();
                             if (!res.ok) throw new Error(d.error || 'Delete failed.');
-                            showSuccess('Row delete ho gaya.');
+                            showSuccess('Row deleted.');
                             await dbTableLoad(name);
                             renderDbTables();
                         } catch (err) {
@@ -7266,15 +7304,27 @@
                 const scroll = document.getElementById('dbActiveTableBody');
                 if (!scroll) return;
                 const cols = _dbTableColumns.filter(c => c.editable);
-                if (!cols.length) { showWarning('Is table me koi editable column nahi mila.'); return; }
+                if (!cols.length && name !== 'doc_plans') { showWarning('This table has no editable columns.'); return; }
                 const tbody = document.getElementById('dbTableBody');
                 if (!tbody) return;
                 window._dbNewRowSeq = (window._dbNewRowSeq || 0) + 1;
                 const tempIndex = 'new-' + window._dbNewRowSeq;
+                // A brand-new row's primary key genuinely doesn't exist
+                // yet - "readonly" only makes sense once a row is already
+                // saved (renaming it later would break references
+                // elsewhere in the app). For Plans specifically, suggest
+                // a ready-to-use id so this isn't left blank by mistake
+                // (a blank primary key is why new plan rows wouldn't save).
+                const suggestedId = name === 'doc_plans' ? ('plan-' + Date.now().toString(36)) : '';
                 const rowHtml = `
                     <tr data-row-index="${tempIndex}" class="db-new-row">
                         <td><a onclick="this.closest('tr').remove()" style="cursor:pointer;color:#b3261e;" title="Remove this unsaved row">\u2715</a></td>
-                        ${_dbTableColumns.map(c => `<td>${_dbCellToInput(c, '')}</td>`).join('')}
+                        ${_dbTableColumns.map(c => {
+                            if (name === 'doc_plans' && c.primaryKey) {
+                                return `<td><input type="text" class="db-cell-input" data-col="${escapeHtml(c.name)}" value="${escapeHtml(suggestedId)}" title="Unique plan id - edit if you want a specific one" /></td>`;
+                            }
+                            return `<td>${_dbCellToInput(c, '')}</td>`;
+                        }).join('')}
                     </tr>`;
                 tbody.insertAdjacentHTML('beforeend', rowHtml);
                 tbody.lastElementChild.scrollIntoView({ block: 'nearest' });
@@ -7291,7 +7341,7 @@
                     });
                     const d = await res.json();
                     if (!res.ok) throw new Error(d.error || 'Insert failed.');
-                    showSuccess('Naya row ban gaya.');
+                    showSuccess('New row created.');
                     await dbTableLoad(name);
                     renderDbTables();
                 } catch (err) {
@@ -7310,7 +7360,7 @@
                 if (!scroll) return;
                 const originalRows = JSON.parse(scroll.dataset.rows || '[]');
                 const trs = Array.from(document.querySelectorAll('#dbTableBody tr'));
-                if (!trs.length) { showWarning('Save karne ke liye koi row nahi hai.'); return; }
+                if (!trs.length) { showWarning('There is nothing to save.'); return; }
 
                 let inserted = 0, updated = 0, failed = 0;
                 for (const tr of trs) {
@@ -7364,7 +7414,7 @@
                             const lines = (d.report || []).map(r => r.ok
                                 ? `${r.resource}: ${r.rows} row(s)`
                                 : `${r.resource}: FAILED - ${r.error}`).join('\n');
-                            showSuccess(lines || 'Migrate karne ko kuch nahi mila.');
+                            showSuccess(lines || 'Nothing to migrate.');
                             refreshDbStatus();
                         } catch (err) {
                             showWarning(err.message);
@@ -7601,22 +7651,35 @@
 
             function buildAdminFilesBody() {
                 return `
-                    <div class="admin-files-card history-card admin-db-card" id="adminFilesCard">
-                        <div class="admin-files-header">
-                            <h3>\u{1F5C4} PostgreSQL</h3>
+                    <div class="svc-strip">
+                        <div class="svc-tabs">
+                            <button type="button" class="svc-tab is-active" onclick="switchAdminTab(0, this)">\u{1F5C4} PostgreSQL</button>
+                            <button type="button" class="svc-tab" onclick="switchAdminTab(1, this)">\u{1F6E0}\uFE0F Maintenance Mode</button>
                         </div>
-                        ${buildDbStatusPanel()}
-                    </div>
-                    <div class="admin-files-card" id="maintenanceCard">
-                        <div class="admin-files-header">
-                            <h3>🛠️ Maintenance Mode</h3>
-                        </div>
-                        <div class="card-body" id="maintenanceCardBody">
-                            <p class="ds-card-sub">Loading…</p>
+                        <div class="svc-panes">
+                            <div class="svc-pane is-active">
+                                <div class="admin-files-card history-card admin-db-card svc-card-inner" id="adminFilesCard">
+                                    ${buildDbStatusPanel()}
+                                </div>
+                            </div>
+                            <div class="svc-pane">
+                                <div class="admin-files-card svc-card-inner" id="maintenanceCard">
+                                    <div class="card-body" id="maintenanceCardBody">
+                                        <p class="ds-card-sub">Loading\u2026</p>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 `;
             }
+
+            window.switchAdminTab = function(index, btn) {
+                const strip = btn.closest('.svc-strip');
+                if (!strip) return;
+                strip.querySelectorAll('.svc-tab').forEach((x, i) => x.classList.toggle('is-active', i === index));
+                strip.querySelectorAll('.svc-pane').forEach((x, i) => x.classList.toggle('is-active', i === index));
+            };
 
             // Gathers every currently-registered service (both free tools
             // and the fixed set of paid ones) and asks the backend to add
@@ -7655,6 +7718,21 @@
                 } catch (err) {
                     showWarning(err.message || 'Could not seed the Services Catalog.');
                 }
+            };
+
+            window.resetServicesApiAccess = async function() {
+                showConfirm('\ud83d\udd11 Reset API Access', 'Set API Access to "No" for every service except Translation? This only touches this one column.', async function(confirmed) {
+                    if (!confirmed) return;
+                    try {
+                        const res = await authFetch('/api/admin/services-catalog-reset-api-access', { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error || 'Could not update API Access.');
+                        showMessage('✅ Done', `Updated ${data.changed} of ${data.total} service(s).`, ['OK']);
+                        dbTableLoad('doc_services_catalog');
+                    } catch (err) {
+                        showWarning(err.message || 'Could not update API Access.');
+                    }
+                });
             };
 
             async function loadMaintenanceCard() {
@@ -9770,10 +9848,9 @@
                                     ${tier === 'is-free' ? '<div class="plan-free-tag">FREE</div>' : ''}
                                     <div class="plan-icon">${plan.icon || ''}</div>
                                     <div class="plan-name">${escapeHtml(plan.name)}</div>
-                                    <div class="plan-price">\u20b9${plan.monthlyPrice}<span>/${planFrequencySuffix(plan.frequency)}</span></div>
+                                    <div class="plan-price">${currencySymbol()}${plan.monthlyPrice}<span>/${planFrequencySuffix(plan.frequency)}</span></div>
                                     <ul class="plan-features">
-                                        <li>${tick}\u20b9${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / ${escapeHtml(plan.billingUnit || 'document')}</li>
-                                        ${plan.paidFeature === 'Yes' ? `<li>${tick}All Paid Services</li>` : ''}
+                                        ${plan.paidFeature === 'Yes' ? `<li>${tick}All Paid Services (${currencySymbol()}${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / ${escapeHtml(plan.billingUnit || 'document')})</li>` : ''}
                                         ${plan.freeFeature === 'Yes' ? `<li>${tick}All Free Services</li>` : (freeServiceNames.length ? `<li>${tick}All Free Services</li>` : '')}
                                         ${plan.supportFeature === 'Yes' ? `<li>${tick}Email Support</li>` : ''}
                                         ${plan.apiFeature === 'Yes' ? `<li>${tick}API Documentation Access</li>` : ''}
@@ -9955,6 +10032,23 @@
                 },
                 support: {
                     body: function() {
+                    if (!canAccessSupport()) {
+                        return `
+                        <div class="api-key-card api-doc-locked">
+                            <div class="ds-card-head">
+                                <span class="ds-card-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                                        <rect x="5" y="4" width="14" height="17" rx="2"/><rect x="9" y="2.5" width="6" height="3.5" rx="1.2"/><path d="M9 11h6M9 15h4"/>
+                                    </svg>
+                                </span>
+                                <div>
+                                    <h3>Support is not included in your plan</h3>
+                                    <p class="ds-card-sub">Your current plan (${escapeHtml(getMyPlan().name)}) doesn't include email support tickets. Upgrade to a plan with Support included to create and track tickets here.</p>
+                                </div>
+                            </div>
+                            <button class="plan-cta-btn" onclick="lexoraNavigate('plans-offers')">View Plans &amp; Upgrade</button>
+                        </div>`;
+                    }
                     return `
                         <div class="history-card support-log-card support-log-full">
                             <div class="support-log-header-row">
@@ -10033,11 +10127,9 @@
                     // se aata hai - yahan kuch hardcode nahi hai.
                     body: function() {
                         const c = COMPANY_INFO || {};
-                        const mapQuery = encodeURIComponent(c.location || c.address || c.name || '');
+                        const mapQuery = c.address ? encodeURIComponent(c.address) : '';
                         const mapEmbedSrc = mapQuery ? `https://www.google.com/maps?q=${mapQuery}&output=embed` : '';
                         const mapsLink = mapQuery ? `https://www.google.com/maps/search/?api=1&query=${mapQuery}` : '#';
-                        const waNumber = String(c.whatsapp || c.phone || '').replace(/[^\d]/g, '');
-                        const phoneWhatsapp = [c.phone, c.whatsapp].filter((v, i, arr) => v && arr.indexOf(v) === i).join(' / ');
 
                         const ICON = {
                             pin:   '<path d="M12 21s7-5.7 7-11a7 7 0 1 0-14 0c0 5.3 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/>',
@@ -10053,7 +10145,7 @@
                             ['clock', 'Working Hours',  c.workingHours],
                             ['cal',   'Working Days',   c.workingDays],
                             ['mail',  'Email',          c.email,        c.email ? `mailto:${c.email}` : null],
-                            ['phone', 'Phone / Mobile / WhatsApp', phoneWhatsapp, c.phone ? `tel:${String(c.phone).replace(/[^+\d]/g, '')}` : null]
+                            ['phone', 'Phone',          c.phone,        c.phone ? `tel:${String(c.phone).replace(/[^+\d]/g, '')}` : null]
                         ].filter(r => r[2]);
 
                         const faqs = [
@@ -10193,6 +10285,7 @@
                 perPageRate: function (serviceId) { return getServicePrice(serviceId || 'translation', 1); },
                 isPerDocument: function (serviceId) { return isPerDocumentBilling(serviceId); },
                 planName: function () { return getMyPlan().name; },
+                currencySymbol: function () { return currencySymbol(); },
                 balance: function () { return getCurrentBalance(); },
                 charge: function (description, amount) {
                     if (!amount || amount <= 0) return null; // Free-override or already-zero rate - nothing to record
@@ -10764,7 +10857,7 @@
                     </div>
                     <div class="auth-form-row">
                         <select id="regGender" class="auth-input">
-                            <option value="">Select Gender *</option>
+                            <option value="">Select Gender</option>
                             <option value="Male">Male</option>
                             <option value="Female">Female</option>
                             <option value="Other">Other</option>
@@ -10772,7 +10865,7 @@
                         <input type="date" id="regBirthdate" class="auth-input" />
                     </div>
                     <div class="auth-form-row">
-                        <input type="text" id="regMobile" class="auth-input" placeholder="Mobile No *" />
+                        <input type="text" id="regMobile" class="auth-input" placeholder="Mobile No" />
                         <input type="email" id="regEmail" class="auth-input" placeholder="Email Address *" />
                     </div>
                     <div class="auth-form-row">
@@ -11556,6 +11649,14 @@
                     const mRes = await fetch('/api/maintenance-status');
                     MAINTENANCE_INFO = await mRes.json();
                 } catch (e) { /* fail open - if the check itself fails, don't lock everyone out */ }
+
+                try {
+                    const catalogRows = await fetchJSON('/api/data/services-catalog');
+                    const catalogMap = {};
+                    (catalogRows || []).forEach(function (s) { if (s && s.id) catalogMap[s.id] = s; });
+                    window.SERVICES_CATALOG = catalogMap;
+                    SERVICES_CATALOG = catalogMap;
+                } catch (e) { /* login page's tools catalogue just falls back to its built-in defaults */ }
 
                 if (await tryHandleOAuthRedirect()) return;
                 if (tryHandleMagicVerifyLink()) return;

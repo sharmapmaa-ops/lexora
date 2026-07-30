@@ -551,7 +551,7 @@ def _find_or_create_oauth_user(email, first_name, last_name):
         "password": auth_store.hash_password(secrets.token_urlsafe(24)),
         "status": "Active", "apiKey": None,
         "sessionStatus": "Offline", "role": "User", "lock": "No",
-        "twoFactorAuth": "No", "emailVerified": "Yes", "mobileVerified": "No",
+        "twoFactorAuth": "Yes", "emailVerified": "Yes", "mobileVerified": "No",
         "verificationMethod": "email", "sysConfig": "Desktop",
         "plan": "Free", "planStartDate": today.isoformat(),
         "planEndDate": (today + datetime.timedelta(days=7)).isoformat(), "planStatus": "Active",
@@ -2063,11 +2063,12 @@ class Handler(SimpleHTTPRequestHandler):
         if name not in ALLOWED_RESOURCES:
             return self._send_json(404, {"error": f'Unknown resource "{name}"'})
 
-        # "company" branding aur "card-layout" (login screen card sizes)
-        # pehle public static files the (auth screen inhe login se pehle
-        # padhta hai) - Postgres me move hone ke baad bhi same exposure
-        # level rakha hai, koi user data inme nahi hai.
-        if name not in ("company", "card-layout"):
+        # "company" branding, "card-layout" (login screen card sizes),
+        # aur "services-catalog" (Paid/Free/Hidden classification) pehle
+        # public static files the (auth screen inhe login se pehle padhta
+        # hai) - Postgres me move hone ke baad bhi same exposure level
+        # rakha hai, koi user data inme nahi hai.
+        if name not in ("company", "card-layout", "services-catalog"):
             try:
                 self._authenticated_user_id()
             except AuthError as err:
@@ -2526,6 +2527,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/rules/delete-approved": self._handle_rules_delete_approved,
             "/api/rules/add-blank": self._handle_rules_add_blank,
             "/api/admin/services-catalog-seed": self._handle_services_catalog_seed,
+            "/api/admin/services-catalog-reset-api-access": self._handle_services_catalog_reset_api_access,
             "/api/rules/update-approved": self._handle_rules_update_approved,
             "/api/lease/generate-pdf": self._handle_lease_generate_pdf,
             "/api/translation/upload": self._handle_translation_upload,
@@ -4540,13 +4542,32 @@ class Handler(SimpleHTTPRequestHandler):
                 "name": svc.get("name") or sid,
                 "type": svc.get("type") or "Free",
                 "billingUnit": svc.get("billingUnit") or "document",
-                "image": svc.get("image") or (sid + ".jpg"),
+                "image": svc.get("image") or "",
             })
             existing_ids.add(sid)
             added += 1
         if added:
             db.replace_documents("services-catalog", existing)
         return 200, {"ok": True, "added": added, "total": len(existing)}
+
+    def _handle_services_catalog_reset_api_access(self, body):
+        """One-time bulk action (Admin table button) - sets API Access to
+        No for every service except Translation, matching the new
+        default going forward. Only touches this one field on each row,
+        nothing else (Paid/Free, billing unit, name, etc. are untouched)."""
+        self._require_role(("Admin", "Developer"))
+        if db is None or not db.is_enabled():
+            raise ValueError("Database is not configured.")
+        rows = db.list_documents("services-catalog")
+        changed = 0
+        for row in rows:
+            desired = "Yes" if row.get("id") == "translation" else "No"
+            if row.get("apiAccess") != desired:
+                row["apiAccess"] = desired
+                changed += 1
+        if changed:
+            db.replace_documents("services-catalog", rows)
+        return 200, {"ok": True, "changed": changed, "total": len(rows)}
 
     def _handle_rules_add_blank(self, body):
         """Admin table's "+ Add Row" - creates a blank pending rule ready
