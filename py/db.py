@@ -806,7 +806,7 @@ DB_BACKED_RESOURCES = ("payment-history", "notifications") + DOCUMENT_RESOURCES
 # hain (items 1.05 / 1.06 / 1.10) - ab teeno seedhe project me (app.js
 # ke andar constants ke roop me) hardcoded hain, DB/JSON resource nahi.
 SETTINGS_RESOURCES = (
-    "card-layout", "agents", "company", "rules",
+    "card-layout", "agents", "company", "rules", "maintenance",
 )
 
 
@@ -866,9 +866,9 @@ ADMIN_HIDDEN_TABLES = {
     _doc_table("payment-methods"),
     _doc_table("translation-files"),
     _doc_table("lease-files"),
-    _doc_table("contact-submissions"),
     _settings_table("card-layout"),
     _settings_table("agents"),
+    _settings_table("maintenance"),
 }
 
 # Company aur Plans (items 1.02 / 1.03) ka poora record ek hi JSONB

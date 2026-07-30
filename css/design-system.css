@@ -2043,8 +2043,9 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
+    width: 18px;
+    height: 18px;
+    box-sizing: border-box;
     border-radius: 50%;
     border: 1px solid rgba(18,87,245,.25);
     background: transparent;
@@ -2053,7 +2054,7 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
     transition: 0.15s;
     flex-shrink: 0;
 }
-.footer-share-btn svg { width: 13px; height: 13px; }
+.footer-share-btn svg { width: 11px; height: 11px; }
 .footer-share-btn:hover { background: rgba(18,87,245,.08); border-color: #1257f5; color: #1257f5; }
 
 /* ---- Card-based services (no file upload) get an illustrative left

@@ -1435,18 +1435,21 @@
                 // per page for it.)
                 const billable = files.filter(f => f.selected !== false);
                 const myPlan = getMyPlan();
-                const isPerPage = serviceId === 'translation' || myPlan.billingUnit === 'page';
+                const isPerPage = myPlan.billingUnit === 'page';
                 // Item 7 - a per-page plan can't know the EXACT charge for a
                 // not-yet-scanned file up front (page count isn't known
                 // until OCR runs) - this uses each file's already-known
                 // page count if it has one (e.g. a retry) and assumes 1
                 // page otherwise, clearly labeled as an estimate so nobody
                 // is surprised if the real per-file charge (shown next to
-                // each row once scanning finishes) comes out higher.
+                // each row once scanning finishes) comes out higher. A
+                // per-document plan has no such uncertainty - the total is
+                // exactly known regardless of page count, so no "estimate"
+                // label and no per-page rate shown.
                 const totalNeeded = billable.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
                 const estimateNote = isPerPage ? ' (estimate - final charge depends on each file\'s actual page count)' : '';
                 const rateLabel = serviceId === 'translation'
-                    ? `${myPlan.name} plan: Translation ${currencySymbol()}${(myPlan.pricePerTranslation != null ? myPlan.pricePerTranslation : 0)}/Per Page`
+                    ? `${myPlan.name} plan: Translation ${currencySymbol()}${(myPlan.pricePerTranslation != null ? myPlan.pricePerTranslation : 0)}/${isPerPage ? 'Page' : 'Document'}`
                     : `${myPlan.name} plan`;
                 const balanceCheckId = addActivity(serviceId,
                     `System > Checking Wallet Balance > ${currencySymbol()}${totalNeeded.toFixed(2)} required for ${billable.length} file(s) (${rateLabel})`, 'Processing');
@@ -6844,44 +6847,96 @@
                 }
             };
 
-            // One row per rule (approved + pending combined, with a Status
-            // column), real column headers - read-only here since rule
-            // approve/reject/delete already have their own dedicated flows
-            // in the Lease Abstraction rules review UI; this view is just
-            // for seeing the data correctly, not editing it.
+            // One row per rule (approved + pending combined) - approved
+            // rules are editable (fieldId/ruleType/ruleText, saved via the
+            // existing /api/rules/update-approved) since that's the only
+            // endpoint that supports editing rule content; status changes
+            // still go through the dedicated approve/reject flow in the
+            // Lease Abstraction rules review screen, not a free-edit field
+            // here, since that transition needs its own audit trail.
             const RULES_TABLE_COLUMNS = [
-                'id', 'status', 'fieldId', 'ruleType', 'ruleText', 'confidence',
-                'usageCount', 'successCount', 'appliedCount', 'createdAt', 'approvedAt', 'userId'
+                'fieldId', 'ruleType', 'ruleText', 'status', 'createdAt', 'approvedAt',
+                'userId', 'id', 'auditLog', 'appliedCount', 'usageCount', 'successCount', 'confidence', 'builtin'
             ];
+            const RULE_TYPE_OPTIONS = [['validation', 'Validation'], ['logic', 'Logic'], ['mapping', 'Mapping']];
+            let _rulesTableRows = [];
 
             window.dbTableLoadRules = async function(host) {
                 try {
                     const res = await authFetch('/api/rules/list');
                     const d = await res.json();
                     if (!res.ok) throw new Error(d.error || 'Could not read rules.');
-                    const rows = [
-                        ...(d.approved || []).map(r => ({ ...r, status: 'Approved' })),
-                        ...(d.pending || []).map(r => ({ ...r, status: 'Pending' })),
+                    _rulesTableRows = [
+                        ...(d.approved || []).map(r => ({ ...r, status: 'Approved', _editable: true })),
+                        ...(d.pending || []).map(r => ({ ...r, status: 'Pending for Approval', _editable: false })),
                     ];
-                    host.innerHTML = `
-                        <div class="db-edit-table-wrapper">
-                        <table class="admin-json-table db-txn-table">
-                            <thead>
-                                <tr>
-                                    ${RULES_TABLE_COLUMNS.map(c => `<th>${escapeHtml(_dbTableLabel(c))}</th>`).join('')}
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${rows.map(r => `
-                                    <tr>
-                                        ${RULES_TABLE_COLUMNS.map(c => `<td>${escapeHtml(r[c] === undefined || r[c] === null ? '' : String(r[c]))}</td>`).join('')}
-                                    </tr>`).join('')}
-                            </tbody>
-                        </table>
-                        </div>
-                        <div class="db-table-caption">${rows.length} rule(s) - ${(d.approved || []).length} approved, ${(d.pending || []).length} pending. Approve/reject/delete from the Lease Abstraction rules review screen.</div>`;
+                    _renderRulesTable(host);
                 } catch (err) {
                     host.innerHTML = `<p class="db-note is-bad" style="padding:14px;">${escapeHtml(err.message)}</p>`;
+                }
+            };
+
+            function _rulesTableCell(row, col, rowIndex) {
+                const v = row[col];
+                if (col === 'ruleType') {
+                    if (!row._editable) return escapeHtml(v || '');
+                    return `<select id="ruleTypeSel_${rowIndex}" style="width:100%;">
+                        ${RULE_TYPE_OPTIONS.map(([val, label]) => `<option value="${val}" ${v === val ? 'selected' : ''}>${label}</option>`).join('')}
+                    </select>`;
+                }
+                if (col === 'fieldId' || col === 'ruleText') {
+                    if (!row._editable) return escapeHtml(v || '');
+                    return `<input type="text" id="${col}Inp_${rowIndex}" value="${escapeHtml(v || '')}" style="width:100%;" />`;
+                }
+                if (col === 'auditLog') {
+                    return Array.isArray(v) ? `${v.length} entr${v.length === 1 ? 'y' : 'ies'}` : '';
+                }
+                if (v === undefined || v === null) return '';
+                if (typeof v === 'boolean') return v ? 'Yes' : 'No';
+                return escapeHtml(String(v));
+            }
+
+            function _renderRulesTable(host) {
+                const rows = _rulesTableRows;
+                host.innerHTML = `
+                    <div class="db-edit-table-wrapper">
+                    <table class="admin-json-table db-txn-table">
+                        <thead>
+                            <tr>
+                                ${RULES_TABLE_COLUMNS.map(c => `<th>${escapeHtml(_dbTableLabel(c))}</th>`).join('')}
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rows.map((r, i) => `
+                                <tr>
+                                    ${RULES_TABLE_COLUMNS.map(c => `<td>${_rulesTableCell(r, c, i)}</td>`).join('')}
+                                    <td>${r._editable ? `<button class="admin-btn admin-btn-save" onclick="saveRuleRow(${i})">💾 Save</button>` : ''}</td>
+                                </tr>`).join('')}
+                        </tbody>
+                    </table>
+                    </div>
+                    <div class="db-table-caption">${rows.length} rule(s) - ${rows.filter(r => r._editable).length} approved (editable), ${rows.filter(r => !r._editable).length} pending. Approve/reject/delete from the Lease Abstraction rules review screen.</div>`;
+            }
+
+            window.saveRuleRow = async function(rowIndex) {
+                const row = _rulesTableRows[rowIndex];
+                if (!row || !row._editable) return;
+                const fieldId = (document.getElementById(`fieldIdInp_${rowIndex}`) || {}).value;
+                const ruleType = (document.getElementById(`ruleTypeSel_${rowIndex}`) || {}).value;
+                const ruleText = (document.getElementById(`ruleTextInp_${rowIndex}`) || {}).value;
+                try {
+                    const res = await authFetch('/api/rules/update-approved', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ updates: [{ id: row.id, fieldId, ruleType, ruleText }] })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not save that rule.');
+                    row.fieldId = fieldId; row.ruleType = ruleType; row.ruleText = ruleText;
+                    showMessage('✅ Saved', 'Rule updated.', ['OK']);
+                } catch (err) {
+                    showWarning(err.message || 'Could not save that rule.');
                 }
             };
 
@@ -7290,6 +7345,14 @@
 
             function buildAdminFilesBody() {
                 return `
+                    <div class="admin-files-card" id="maintenanceCard">
+                        <div class="admin-files-header">
+                            <h3>🛠️ Maintenance Mode</h3>
+                        </div>
+                        <div class="card-body" id="maintenanceCardBody">
+                            <p class="ds-card-sub">Loading…</p>
+                        </div>
+                    </div>
                     <div class="admin-files-card" id="adminFilesCard">
                         <div class="admin-files-header">
                             <h3>\u{1F5C4} PostgreSQL</h3>
@@ -7298,6 +7361,51 @@
                     </div>
                 `;
             }
+
+            async function loadMaintenanceCard() {
+                const body = document.getElementById('maintenanceCardBody');
+                if (!body) return;
+                try {
+                    const res = await fetch('/api/maintenance-status');
+                    const data = await res.json();
+                    body.innerHTML = `
+                        <p style="font-size:0.86rem;color:rgba(0,0,0,0.6);margin:0 0 12px;">
+                            When ON, only Admin/Developer accounts can use the site - everyone else sees a maintenance message.
+                        </p>
+                        <div class="setup-group">
+                            <label>Message shown to users (optional)</label>
+                            <textarea id="maintenanceMessage" rows="2" style="width:100%;" placeholder="We're making some improvements and will be back shortly.">${escapeHtml(data.message || '')}</textarea>
+                        </div>
+                        <div class="process-controls" style="margin-top:10px;">
+                            <button class="submit-btn" style="${data.enabled ? 'background:#b3261e;border-color:#b3261e;' : ''}" onclick="toggleMaintenanceMode(${!data.enabled})">
+                                ${data.enabled ? '🟢 Turn OFF Maintenance Mode' : '🔴 Turn ON Maintenance Mode'}
+                            </button>
+                        </div>
+                        <p style="font-size:0.8rem;margin-top:8px;color:${data.enabled ? '#b3261e' : '#1b5e20'};font-weight:600;">
+                            Currently: ${data.enabled ? 'ON - site is in maintenance' : 'OFF - site is live'}
+                        </p>`;
+                } catch (e) {
+                    body.innerHTML = '<p class="db-note is-bad">Could not load maintenance status.</p>';
+                }
+            }
+
+            window.toggleMaintenanceMode = async function(enable) {
+                const message = (document.getElementById('maintenanceMessage') || {}).value || '';
+                try {
+                    const res = await authFetch('/api/admin/maintenance-toggle', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ enabled: enable, message: message })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not update maintenance mode.');
+                    loadMaintenanceCard();
+                    showMessage(enable ? '🔴 Maintenance Mode ON' : '🟢 Maintenance Mode OFF',
+                        enable ? 'Only Admin/Developer accounts can use the site now.' : 'The site is live again for everyone.', ['OK']);
+                } catch (err) {
+                    showWarning(err.message || 'Could not update maintenance mode.');
+                }
+            };
 
             function buildAdminBreadcrumb(path) {
                 const parts = path ? path.split('/') : [];
@@ -8255,7 +8363,7 @@
                     }
                     updateContent(data, pagePath);
                     contentArea.classList.remove('loading');
-                    if (action === 'Admin') refreshDbStatus();
+                    if (action === 'Admin') { refreshDbStatus(); loadMaintenanceCard(); }
                     if (action === 'Notification') renderNotificationTable();
                 }, 300);
 
@@ -10056,7 +10164,11 @@
                 ['BAI2 Conversion', 'Bank statements converted to BAI2, CSV or JSON',
                  '<path d="M3 9.5 12 4l9 5.5"/><path d="M5 10.5v8M9.5 10.5v8M14.5 10.5v8M19 10.5v8M3 20h18"/>'],
                 ['Lease Abstraction', 'Structured lease fields with source citations',
-                 '<path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4M8.5 12h7M8.5 16h4"/>']
+                 '<path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4M8.5 12h7M8.5 16h4"/>'],
+                ['Content Writing Tool', 'Blog posts, captions, product descriptions and more',
+                 '<path d="M4 19.5V17l10-10 2.5 2.5-10 10H4z"/><path d="M14 6.5 17.5 10"/>'],
+                ['Humanize Document Tool', 'Rewrite stiff or AI-sounding text to read more naturally',
+                 '<circle cx="12" cy="8" r="3.2"/><path d="M5 20c0-3.9 3.1-7 7-7s7 3.1 7 7"/>']
             ];
 
             // Category ke hisab se icon - free tools ki list registry se
@@ -11090,10 +11202,34 @@
                 return true;
             }
 
+            let MAINTENANCE_INFO = { enabled: false, message: '' };
+
+            function showMaintenanceScreen(message) {
+                document.getElementById('appShell').style.display = 'none';
+                const authScreen = document.getElementById('authScreen');
+                authScreen.style.display = '';
+                authScreen.innerHTML = `
+                    <div class="auth-page" style="display:flex;align-items:center;justify-content:center;min-height:100vh;">
+                        <div class="auth-card" style="max-width:460px;text-align:center;">
+                            <div style="font-size:2.6rem;margin-bottom:10px;">🛠️</div>
+                            <h2 class="auth-card-title">Under Maintenance</h2>
+                            <p class="auth-card-note">${escapeHtml(message || "We're making some improvements and will be back shortly. Thanks for your patience!")}</p>
+                            <div style="margin-top:22px;">
+                                <a onclick="showAuthScreen()" style="font-size:0.86em;color:var(--lx-muted);cursor:pointer;">Admin or Developer? Sign in</a>
+                            </div>
+                        </div>
+                    </div>`;
+            }
+
             async function boot() {
                 try {
                     COMPANY_INFO = await fetchJSON('/api/data/company');
                 } catch (e) { /* auth screen falls back to a default name */ }
+
+                try {
+                    const mRes = await fetch('/api/maintenance-status');
+                    MAINTENANCE_INFO = await mRes.json();
+                } catch (e) { /* fail open - if the check itself fails, don't lock everyone out */ }
 
                 if (await tryHandleOAuthRedirect()) return;
                 if (tryHandleMagicVerifyLink()) return;
@@ -11125,6 +11261,10 @@
                     AUTH_TOKEN = null;
                     localStorage.removeItem(AUTH_SESSION_KEY);
                     localStorage.removeItem(AUTH_TOKEN_KEY);
+                }
+                if (MAINTENANCE_INFO.enabled) {
+                    showMaintenanceScreen(MAINTENANCE_INFO.message);
+                    return;
                 }
                 showAuthScreen();
             }
@@ -11234,6 +11374,13 @@
                 setupUserProfile();
                 applyCompanyBranding();
                 checkPlanExpiryAndNotify();
+
+                if (MAINTENANCE_INFO.enabled && !(profileData && (profileData.role === 'Admin' || profileData.role === 'Developer'))) {
+                    performLogout();
+                    showMaintenanceScreen(MAINTENANCE_INFO.message);
+                    return;
+                }
+
                 // Real company/user name is in place now - safe to reveal
                 // the shell (see boot()/completeLogin() notes).
                 document.getElementById('appShell').style.display = '';

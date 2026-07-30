@@ -205,7 +205,7 @@ def _persist_sessions_locked():
         rows = []
         for token, s in _sessions.items():
             rows.append({
-                "sessionId": hashlib.sha256(token.encode("utf-8")).hexdigest()[:16],
+                "token": token,
                 "userId": s["userId"],
                 "createdAt": s["createdAt"].isoformat(timespec="seconds"),
                 "lastActiveAt": s["lastActiveAt"].isoformat(timespec="seconds"),
@@ -215,6 +215,43 @@ def _persist_sessions_locked():
             json.dump(rows, f, indent=2)
     except OSError as err:
         print(f"Could not persist sessions.json (non-fatal): {err}")
+
+
+def _load_sessions_at_startup():
+    """The other half of _persist_sessions_locked() - without this,
+    sessions.json was being written on every login but never read back,
+    so _sessions (in-memory) started empty on every process restart -
+    meaning every logged-in user got silently logged out on every deploy
+    (a new container = a fresh process = an empty _sessions dict), even
+    though their session was still technically unexpired. Called once at
+    server startup, before any requests are served."""
+    try:
+        with open(_sessions_json_path(), "r", encoding="utf-8") as f:
+            rows = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return
+    now = datetime.datetime.now()
+    restored = 0
+    with _sessions_lock:
+        for row in rows:
+            token = row.get("token")
+            if not token:
+                continue  # older sessions.json (hash-only) rows can't be restored - they just age out
+            try:
+                expires_at = datetime.datetime.fromisoformat(row["expiresAt"])
+            except (KeyError, ValueError):
+                continue
+            if now > expires_at:
+                continue
+            _sessions[token] = {
+                "userId": row["userId"],
+                "createdAt": datetime.datetime.fromisoformat(row["createdAt"]),
+                "lastActiveAt": datetime.datetime.fromisoformat(row["lastActiveAt"]),
+                "expiresAt": expires_at,
+            }
+            restored += 1
+    if restored:
+        print(f"Restored {restored} active session(s) from sessions.json.")
 
 
 def _create_session(user_id):
@@ -291,6 +328,71 @@ def _check_rate_limit(key, max_attempts=8, window_seconds=300):
         _rate_limit_hits[key] = hits
         if len(hits) > max_attempts:
             raise ValueError("Too many attempts. Please wait a few minutes and try again.")
+
+
+def _maintenance_json_path():
+    return os.path.join(JSON_DIR, "maintenance.json")
+
+
+_maintenance_cache = {"data": None, "checked_at": 0.0}
+_maintenance_cache_lock = threading.Lock()
+MAINTENANCE_CACHE_SECONDS = 5
+
+
+def _get_maintenance_status():
+    """{"enabled": bool, "message": str}. Cached briefly since this is
+    checked on essentially every request while enabled - a few seconds of
+    staleness on the flag itself is a fine trade for not hitting the DB
+    on every single page load/API call."""
+    with _maintenance_cache_lock:
+        if _maintenance_cache["data"] is not None and time.time() - _maintenance_cache["checked_at"] < MAINTENANCE_CACHE_SECONDS:
+            return _maintenance_cache["data"]
+
+    data = None
+    if db is not None and db.is_enabled():
+        try:
+            data = db.get_setting("maintenance")
+        except Exception as err:  # noqa: BLE001
+            print(f"[db] maintenance read failed, falling back to JSON: {err}")
+    if not data:
+        try:
+            with open(_maintenance_json_path(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            data = {"enabled": False, "message": ""}
+
+    with _maintenance_cache_lock:
+        _maintenance_cache["data"] = data
+        _maintenance_cache["checked_at"] = time.time()
+    return data
+
+
+def _save_maintenance_status(data):
+    if db is not None and db.is_enabled():
+        try:
+            db.save_setting("maintenance", data)
+        except Exception as err:  # noqa: BLE001
+            print(f"[db] maintenance save failed, falling back to JSON: {err}")
+            with open(_maintenance_json_path(), "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+    else:
+        with open(_maintenance_json_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    with _maintenance_cache_lock:
+        _maintenance_cache["data"] = data
+        _maintenance_cache["checked_at"] = time.time()
+
+
+# Paths that must keep working even while maintenance mode is on -
+# otherwise nobody (including Admin/Developer) could ever log in to turn
+# it back off again.
+MAINTENANCE_ALLOWED_API_PATHS = {
+    "/api/maintenance-status",
+    "/api/auth/login", "/api/auth/verify-login", "/api/auth/me", "/api/auth/logout",
+    "/api/auth/resend-code", "/api/data/company",
+    "/api/auth/oauth/google/start", "/api/auth/oauth/google/callback",
+    "/api/auth/oauth/facebook/start", "/api/auth/oauth/facebook/callback",
+}
 
 
 def _destroy_session(token):
@@ -663,7 +765,7 @@ ALLOWED_RESOURCES = {
 # smtp-config.json / llm-config.json no longer exist (real secrets moved
 # to .env - see _load_dotenv above) - only users.json (plaintext
 # passwords) still needs this.
-PROTECTED_JSON_FILES = {"users.json"}
+PROTECTED_JSON_FILES = {"users.json", "sessions.json"}
 
 # Relative paths (from ROOT_DIR, forward slashes) the Admin File Manager
 # will never let you *view, edit, or download* the raw contents of, even
@@ -1769,6 +1871,32 @@ class Handler(SimpleHTTPRequestHandler):
     # the logged-in user has to be Admin/Developer (who legitimately act
     # across users in a few places - Admin File Manager, rules approval).
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    def _maintenance_block_if_needed(self, path):
+        """True (and a 503 already sent) if this request should be
+        blocked because maintenance mode is on and the caller isn't
+        Admin/Developer. Only applies to /api/ paths - static files still
+        load normally so the maintenance screen itself (and the login
+        form, for an admin to sign back in) can render."""
+        if not path.startswith("/api/") or path in MAINTENANCE_ALLOWED_API_PATHS:
+            return False
+        status = _get_maintenance_status()
+        if not status.get("enabled"):
+            return False
+        try:
+            user_id = self._authenticated_user_id()
+            users = auth_store.load_users()
+            user = auth_store.find_user_by_id(users, user_id)
+            if user and user.get("role") in ("Admin", "Developer"):
+                return False
+        except Exception:  # noqa: BLE001 - not logged in / bad token -> still blocked
+            pass
+        self._send_json(503, {
+            "error": status.get("message") or "This site is temporarily down for maintenance. Please check back soon.",
+            "maintenance": True,
+        })
+        return True
+
     def _authenticated_user_id(self):
         auth_header = self.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
@@ -1853,6 +1981,9 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        if self._maintenance_block_if_needed(path):
+            return None
+
         # No custom redirect needed here anymore - the file is named
         # index.html (see Section 3 notes above), and SimpleHTTPRequestHandler
         # already serves index.html automatically for "/" on its own.
@@ -1862,6 +1993,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/admin/download": self._handle_admin_download,
             "/api/admin/read": self._handle_admin_read,
             "/api/auth/me": self._handle_auth_me,
+            "/api/maintenance-status": self._handle_maintenance_status,
             "/api/auth/directory": self._handle_auth_directory,
             "/api/auth/oauth/google/start": lambda q: self._handle_oauth_start("google", q),
             "/api/auth/oauth/google/callback": lambda q: self._handle_oauth_callback("google", q),
@@ -2038,6 +2170,20 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send_json(500, {"error": "Failed to save"})
 
         self._send_json(200, {"ok": True})
+
+    def _handle_maintenance_status(self, query):
+        # Deliberately public/unauthenticated - the login screen itself
+        # needs to know whether to show the maintenance page before
+        # anyone has signed in.
+        return self._send_json(200, _get_maintenance_status())
+
+    def _handle_maintenance_toggle(self, body):
+        self._require_role(("Admin", "Developer"))
+        enabled = bool(body.get("enabled"))
+        message = (body.get("message") or "").strip()
+        data = {"enabled": enabled, "message": message}
+        _save_maintenance_status(data)
+        return 200, {"ok": True, **data}
 
     def _handle_admin_db_status(self, query):
         """Admin panel ka Database card. Sirf Admin/Developer ke liye,
@@ -2343,8 +2489,12 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
 
+        if self._maintenance_block_if_needed(path):
+            return None
+
         routes = {
             "/api/admin/db-migrate": self._handle_admin_db_migrate,
+            "/api/admin/maintenance-toggle": self._handle_maintenance_toggle,
             "/api/admin/db-table-insert": self._handle_admin_db_table_insert,
             "/api/admin/db-table-update": self._handle_admin_db_table_update,
             "/api/admin/db-table-delete": self._handle_admin_db_table_delete,
@@ -4955,6 +5105,7 @@ def main():
     os.makedirs(TEMPLATE_DIR, exist_ok=True)
     if not os.path.isfile(DEFAULT_TEMPLATE_PATH) and lease_engine.REPORTLAB_OK:
         lease_engine.build_default_template_pdf(DEFAULT_TEMPLATE_PATH)
+    _load_sessions_at_startup()
 
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"✅ Server running — open http://localhost:{PORT}/  (serves index.html)")
