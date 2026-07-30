@@ -2390,6 +2390,8 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/auth/reset-password": self._handle_auth_reset_password,
             "/api/auth/resend-code": self._handle_auth_resend_code,
             "/api/profile/update": self._handle_profile_update,
+            "/api/profile/generate-api-key": self._handle_profile_generate_api_key,
+            "/api/profile/revoke-api-key": self._handle_profile_revoke_api_key,
             "/api/profile/send-mobile-otp": self._handle_profile_send_mobile_otp,
             "/api/profile/verify-mobile-otp": self._handle_profile_verify_mobile_otp,
             "/api/auth/logout": self._handle_auth_logout,
@@ -4821,7 +4823,8 @@ class Handler(SimpleHTTPRequestHandler):
         for blocked in ("id", "role", "lock", "verificationCode", "verificationCodeExpiresAt",
                          "verificationPurpose", "emailVerified", "status",
                          "mobileVerified", "mobileVerifiedNumber",
-                         "mobileOtpCode", "mobileOtpExpiresAt", "mobileOtpPendingNumber"):
+                         "mobileOtpCode", "mobileOtpExpiresAt", "mobileOtpPendingNumber",
+                         "apiKey", "apiKeyHash", "apiKeyCreatedAt", "apiKeyStatus"):
             fields.pop(blocked, None)
 
         # If the Mobile No is being changed away from whatever number was
@@ -4837,6 +4840,51 @@ class Handler(SimpleHTTPRequestHandler):
                 fields["verificationMethod"] = "email"
 
         user.update(fields)
+        auth_store.save_users(users)
+        return 200, {"ok": True, "user": auth_store.public_user_view(user)}
+
+    # ------------------------------------------------------------------
+    # API key generate/revoke - separate from the generic profile update
+    # above (which now blocks these fields entirely). The raw key is
+    # generated here with secrets.token_urlsafe (not client-side
+    # Math.random(), which isn't a secure source of randomness for a
+    # credential), and only a SHA-256 hash of it is ever stored - same
+    # principle as password hashing, just a faster hash since this
+    # secret already has far more entropy than a human-chosen password.
+    # The real key is returned in this one response and never persisted
+    # anywhere in plaintext - if it's lost, the only option is generating
+    # a new one.
+    # ------------------------------------------------------------------
+    def _handle_profile_generate_api_key(self, body):
+        user_id = self._resolve_user_id(body)
+        if not user_id:
+            raise ValueError("userId is required")
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            raise ValueError("Account not found.")
+
+        raw_key = "tc_live_" + secrets.token_urlsafe(32)
+        key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+        created_at = datetime.datetime.now().strftime("%m/%d/%Y, %I:%M:%S %p")
+
+        user["apiKeyHash"] = key_hash
+        user["apiKeyCreatedAt"] = created_at
+        user["apiKeyStatus"] = "active"
+        user.pop("apiKey", None)  # drop any legacy plaintext key from before this fix
+        auth_store.save_users(users)
+        return 200, {"ok": True, "apiKey": raw_key, "apiKeyCreatedAt": created_at, "user": auth_store.public_user_view(user)}
+
+    def _handle_profile_revoke_api_key(self, body):
+        user_id = self._resolve_user_id(body)
+        if not user_id:
+            raise ValueError("userId is required")
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            raise ValueError("Account not found.")
+
+        user["apiKeyStatus"] = "revoked"
         auth_store.save_users(users)
         return 200, {"ok": True, "user": auth_store.public_user_view(user)}
 

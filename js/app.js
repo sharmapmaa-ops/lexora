@@ -4042,58 +4042,68 @@
             // /api/profile/update par bhej deta hai). Purani key history
             // ab track nahi hoti - ek waqt me ek hi active key.
             // ============================================================
-            function generateRandomKey() {
-                const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-                let key = 'tc_live_';
-                for (let i = 0; i < 32; i++) { key += chars.charAt(Math.floor(Math.random() * chars.length)); }
-                return key;
-            }
+            // The raw key only ever exists here, in memory, for the
+            // current page session, right after generating it - it's
+            // never stored in profileData/localStorage, and the server
+            // never stores or returns it again after this one response.
+            let _justGeneratedApiKey = null;
 
             function getActiveApiKey() {
-                if (!profileData || !profileData.apiKey || profileData.apiKeyStatus === 'revoked') return null;
+                if (!profileData || !profileData.apiKeyCreatedAt || profileData.apiKeyStatus === 'revoked') return null;
                 return {
-                    key: profileData.apiKey,
                     createdAt: profileData.apiKeyCreatedAt || '',
                     status: profileData.apiKeyStatus || 'active'
                 };
             }
 
-            window.generateApiKey = function() {
+            window.generateApiKey = async function() {
                 if (!profileData) return;
-                const newKey = generateRandomKey();
-                const createdAt = new Date().toLocaleString();
-                profileData.apiKey = newKey;
-                profileData.apiKeyCreatedAt = createdAt;
-                profileData.apiKeyStatus = 'active';
-                renderApiKeyDisplay();
-                persistProfile();
-                addNotification('A new API key was generated for your account.');
-                if (profileData.email) {
-                    sendGenericNotificationEmail(
-                        profileData.email,
-                        `${profileData.firstName} ${profileData.lastName}`,
-                        'New API key generated',
-                        `A new API key was generated for your account just now (${createdAt}). ` +
-                        `If you didn't do this, please revoke it immediately from your Profile and contact support.`,
-                        null, null, CURRENT_USER_ID
-                    );
+                try {
+                    const res = await authFetch('/api/profile/generate-api-key', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId: CURRENT_USER_ID })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not generate an API key.');
+                    _justGeneratedApiKey = data.apiKey;
+                    apiKeyVisible = true;
+                    profileData = data.user;
+                    renderApiKeyDisplay();
+                    addNotification('A new API key was generated for your account.');
+                    if (profileData.email) {
+                        sendGenericNotificationEmail(
+                            profileData.email,
+                            `${profileData.firstName} ${profileData.lastName}`,
+                            'New API key generated',
+                            `A new API key was generated for your account just now (${data.apiKeyCreatedAt}). ` +
+                            `If you didn't do this, please revoke it immediately from your Profile and contact support.`,
+                            null, null, CURRENT_USER_ID
+                        );
+                    }
+                    showMessage('✅ API Key Generated',
+                        'Copy your new API key now - for security, it will not be shown again after you leave or refresh this page.', ['OK']);
+                } catch (err) {
+                    showWarning(err.message || 'Could not generate an API key.');
                 }
-                showMessage('✅ API Key Generated',
-                    'Your new API key has been generated successfully. Please copy and store it securely.', ['OK']);
             };
 
             window.copyApiKey = function() {
                 const activeKey = getActiveApiKey();
                 if (!activeKey) { showWarning('No active API key to copy. Generate one first.'); return; }
+                if (!_justGeneratedApiKey) {
+                    showWarning('For security, an API key can only be copied right after it\'s generated - it is never stored in a retrievable form. Generate a new one if you\'ve lost this one.');
+                    return;
+                }
 
                 if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(activeKey.key).then(() => {
+                    navigator.clipboard.writeText(_justGeneratedApiKey).then(() => {
                         showMessage('📋 Copied', 'API key copied to clipboard.', ['OK']);
                     }).catch(() => {
-                        showMessage('📋 API Key', `Copy failed automatically — here is your key:\n${activeKey.key}`, ['OK']);
+                        showMessage('📋 API Key', `Copy failed automatically — here is your key:\n${_justGeneratedApiKey}`, ['OK']);
                     });
                 } else {
-                    showMessage('📋 API Key', `Your API key:\n${activeKey.key}`, ['OK']);
+                    showMessage('📋 API Key', `Your API key:\n${_justGeneratedApiKey}`, ['OK']);
                 }
             };
 
@@ -4103,12 +4113,20 @@
 
                 showConfirm('🚫 Revoke API Key',
                     'Are you sure you want to revoke this API key? Any application using it will stop working immediately.',
-                    function(confirmed) {
-                        if (confirmed) {
+                    async function(confirmed) {
+                        if (!confirmed) return;
+                        try {
+                            const res = await authFetch('/api/profile/revoke-api-key', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ userId: CURRENT_USER_ID })
+                            });
+                            const data = await res.json();
+                            if (!res.ok) throw new Error(data.error || 'Could not revoke the API key.');
                             const revokedAt = new Date().toLocaleString();
-                            profileData.apiKeyStatus = 'revoked';
+                            profileData = data.user;
+                            _justGeneratedApiKey = null;
                             renderApiKeyDisplay();
-                            persistProfile();
                             addNotification('Your API key was revoked.');
                             if (profileData && profileData.email) {
                                 sendGenericNotificationEmail(
@@ -4121,6 +4139,8 @@
                                 );
                             }
                             showMessage('🚫 Revoked', 'The API key has been revoked and can no longer be used.', ['OK']);
+                        } catch (err) {
+                            showWarning(err.message || 'Could not revoke the API key.');
                         }
                     });
             };
@@ -4134,12 +4154,13 @@
 
                 if (!activeKey) {
                     display.textContent = 'No active API key. Click "Generate New API Key" to create one.';
-                } else {
+                } else if (_justGeneratedApiKey) {
                     // Key default me masked rehti hai - eye button se dikhti
-                    // hai. Asli value data attribute me, taaki Copy kaam kare.
-                    activeApiKeyValue = activeKey.key;
-                    display.dataset.key = activeKey.key;
-                    display.innerHTML = `<span class="api-key-text">${apiKeyVisible ? escapeHtml(activeKey.key) : '\u2022'.repeat(Math.min(44, activeKey.key.length))}</span>`;
+                    // hai. Asli value ek in-memory variable me, taaki Copy
+                    // kaam kare - kabhi bhi disk/profileData me save nahi hoti.
+                    display.innerHTML = `<span class="api-key-text">${apiKeyVisible ? escapeHtml(_justGeneratedApiKey) : '\u2022'.repeat(Math.min(44, _justGeneratedApiKey.length))}</span>`;
+                } else {
+                    display.innerHTML = `<span class="api-key-text" style="color:rgba(0,0,0,0.4);">${'\u2022'.repeat(24)} (hidden - regenerate to get a new one)</span>`;
                 }
 
                 if (actionsEl) {
@@ -4270,7 +4291,6 @@
             window.setApiRefTab = function(tab) { apiRefTab = tab; renderServicesApiList(); };
 
             let apiKeyVisible = false;
-            let activeApiKeyValue = '';
 
             window.toggleApiKeyVisible = function() {
                 apiKeyVisible = !apiKeyVisible;
