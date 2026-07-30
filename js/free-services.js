@@ -395,6 +395,7 @@
   function cardModule(id) {
     if (window.Tools && Tools.cards && Tools.cards[id]) return Tools.cards[id];
     if (window.ToolsDocs && ToolsDocs.cards && ToolsDocs.cards[id]) return ToolsDocs.cards[id];
+    if (window.PaidCalculators && PaidCalculators.freeCards && PaidCalculators.freeCards[id]) return PaidCalculators.freeCards[id];
     return null;
   }
 
@@ -412,13 +413,13 @@
   // registered but not listed here still shows up under "More".
   const GROUPS = [
     { title: 'PDF Tools', icon: '📄', ids: ['pdf-split', 'pdf-merge', 'pdf-compress', 'pdf-to-image', 'pdf-to-word', 'pdf-form-filler', 'create-pdf', 'unlock-pdf', 'pdf-rotate-reorder', 'word-to-pdf', 'excel-to-pdf'] },
-    { title: 'Image Tools', icon: '🖼️', ids: ['size-photo', 'image-compressor', 'image-cropper', 'image-to-pdf', 'image-format-converter', 'color-palette-extractor', 'passport-photo-maker', 'meme-generator'] },
-    { title: 'Calculators', icon: '🧮', ids: ['emi-calculator', 'gratuity-calculator', 'age-calculator', 'unit-converter', 'currency-converter', 'bmi-calculator', 'percentage-calculator', 'date-diff-calculator', 'discount-gst-calculator'] },
+    { title: 'Image Tools', icon: '🖼️', ids: ['size-photo', 'image-compressor', 'image-cropper', 'image-to-pdf', 'image-format-converter', 'color-palette-extractor', 'passport-photo-maker', 'meme-generator', 'background-remover'] },
+    { title: 'Calculators', icon: '🧮', ids: ['emi-calculator', 'gratuity-calculator', 'age-calculator', 'unit-converter', 'currency-converter', 'bmi-calculator', 'percentage-calculator', 'date-diff-calculator', 'discount-gst-calculator', 'sip-calculator', 'income-tax-calculator', 'compound-interest-calculator', 'loan-eligibility-calculator'] },
     { title: 'Data Tools', icon: '📊', ids: ['data-comparison', 'etl', 'json-to-csv', 'csv-to-json', 'word-counter', 'excel-to-csv', 'csv-to-excel', 'split-excel', 'grammar-check'] },
     { title: 'Document Builders', icon: '📝', ids: ['invoice-generator', 'quotation-generator', 'receipt-generator', 'certificate-generator', 'business-card-maker'] },
     { title: 'Generators', icon: '✨', ids: ['business-name-generator', 'logo-builder'] },
     { title: 'Video Tools', icon: '🎬', ids: ['video-to-audio', 'trim-video-audio'] },
-    { title: 'Utilities', icon: '🔧', ids: ['timezone', 'password-generator', 'qr-generator', 'barcode-generator', 'create-zip', 'signature-maker', 'check-ip', 'speed-test'] }
+    { title: 'Utilities', icon: '🔧', ids: ['timezone', 'password-generator', 'qr-generator', 'barcode-generator', 'create-zip', 'signature-maker', 'check-ip', 'speed-test', 'text-to-speech'] }
   ];
 
   // Everything that can be opened, whichever module registered it:

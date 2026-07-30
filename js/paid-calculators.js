@@ -36,6 +36,10 @@
     return `<button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','paid-services')">\u2190 Back to Paid Services</button>`;
   }
 
+  function backButtonFree() {
+    return `<button class="process-btn clear-btn card-back-btn" onclick="FreeServices.open('other-services')">\u2190 Back to Free Services</button>`;
+  }
+
   function billingRow(calcId) {
     const b = window.LexoraBilling;
     const rate = b ? b.perPageRate() : 0;
@@ -45,6 +49,11 @@
         \ud83d\udcb0 Rate: ${AMT(rate)} ${unit} - charged when you press Calculate.
       </div>
       <div id="${calcId}Status" style="margin-top:6px;font-size:0.86rem;min-height:1.1em;"></div>`;
+  }
+
+  // No wallet involved at all - just a status line for validation errors.
+  function freeStatusRow(calcId) {
+    return `<div id="${calcId}Status" style="margin-top:6px;font-size:0.86rem;min-height:1.1em;"></div>`;
   }
 
   // Every calculator's Calculate button routes through this - checks
@@ -69,13 +78,37 @@
     if (statusEl) { statusEl.style.color = '#1b5e20'; statusEl.textContent = rate > 0 ? `${AMT(rate)} charged.` : 'Done.'; }
   }
 
+  // No API key, no server cost - these tools run entirely client-side, so
+  // there's nothing to charge for. Still routes through the same
+  // status-line UI/error-handling shape as chargeAndRun, just without the
+  // balance check/charge step.
+  function runFree(calcId, compute) {
+    const statusEl = document.getElementById(calcId + 'Status');
+    const ok = compute();
+    if (ok === false) return;
+    if (statusEl) { statusEl.style.color = '#1b5e20'; statusEl.textContent = 'Done.'; }
+  }
+
+  async function runFreeAsync(calcId, computeAsync) {
+    const statusEl = document.getElementById(calcId + 'Status');
+    let ok;
+    try {
+      ok = await computeAsync();
+    } catch (e) {
+      if (statusEl) { statusEl.style.color = '#b3261e'; statusEl.textContent = e.message || 'Something went wrong - please try again.'; }
+      return;
+    }
+    if (ok === false) return;
+    if (statusEl) { statusEl.style.color = '#1b5e20'; statusEl.textContent = 'Done.'; }
+  }
+
   // ══════════════════════════════════════════════════════════════════
   // SIP CALCULATOR
   // ══════════════════════════════════════════════════════════════════
   function renderSip() {
     return `
       <div class="service-card">
-        <h3 class="card-head-row"><span>\ud83d\udcc8 SIP Calculator</span>${backButton()}</h3>
+        <h3 class="card-head-row"><span>\ud83d\udcc8 SIP Calculator</span>${backButtonFree()}</h3>
         <div class="card-body">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             ${fld('Monthly investment', `<input type="number" id="tSipAmt" value="10000" min="100" style="width:100%;" />`)}
@@ -85,7 +118,7 @@
           <div class="process-controls" style="margin-top:14px;">
             <button class="process-btn start-btn" onclick="PaidCalculators.runSip()">Calculate</button>
           </div>
-          ${billingRow('tSip')}
+          ${freeStatusRow('tSip')}
           <div id="tSipResult" style="margin-top:10px;"></div>
           <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:12px;">
             Estimate assuming a constant monthly return - actual mutual fund/SIP returns vary and are not guaranteed.
@@ -95,7 +128,7 @@
   }
 
   function runSip() {
-    chargeAndRun('tSip', 'SIP Calculator', function () {
+    runFree('tSip', function () {
       const P = num('tSipAmt'), annual = num('tSipRate'), years = num('tSipYears');
       const res = document.getElementById('tSipResult');
       if (!Number.isFinite(P) || P <= 0 || !Number.isFinite(annual) || annual < 0 || !Number.isFinite(years) || years < 1) {
@@ -128,7 +161,7 @@
   function renderIncomeTax() {
     return `
       <div class="service-card">
-        <h3 class="card-head-row"><span>\ud83e\uddfe Income Tax Calculator (India)</span>${backButton()}</h3>
+        <h3 class="card-head-row"><span>\ud83e\uddfe Income Tax Calculator (India)</span>${backButtonFree()}</h3>
         <div class="card-body">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             ${fld('Annual income (gross)', `<input type="number" id="tTaxIncome" value="1200000" min="0" style="width:100%;" />`)}
@@ -141,7 +174,7 @@
           <div class="process-controls" style="margin-top:14px;">
             <button class="process-btn start-btn" onclick="PaidCalculators.runIncomeTax()">Calculate</button>
           </div>
-          ${billingRow('tTax')}
+          ${freeStatusRow('tTax')}
           <div id="tTaxResult" style="margin-top:10px;"></div>
           <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:12px;">
             New tax regime slabs, plus 4% health & education cess. Includes the Section 87A rebate
@@ -154,7 +187,7 @@
   }
 
   function runIncomeTax() {
-    chargeAndRun('tTax', 'Income Tax Calculator', function () {
+    runFree('tTax', function () {
       const gross = num('tTaxIncome'), deduct = num('tTaxDeduct') || 0;
       const salaried = chk('tTaxSalaried');
       const res = document.getElementById('tTaxResult');
@@ -196,7 +229,7 @@
   function renderCompoundInterest() {
     return `
       <div class="service-card">
-        <h3 class="card-head-row"><span>\ud83d\udcb9 Compound Interest Calculator</span>${backButton()}</h3>
+        <h3 class="card-head-row"><span>\ud83d\udcb9 Compound Interest Calculator</span>${backButtonFree()}</h3>
         <div class="card-body">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             ${fld('Principal amount', `<input type="number" id="tCiPrincipal" value="100000" min="0" style="width:100%;" />`)}
@@ -212,14 +245,14 @@
           <div class="process-controls" style="margin-top:14px;">
             <button class="process-btn start-btn" onclick="PaidCalculators.runCompoundInterest()">Calculate</button>
           </div>
-          ${billingRow('tCi')}
+          ${freeStatusRow('tCi')}
           <div id="tCiResult" style="margin-top:10px;"></div>
         </div>
       </div>`;
   }
 
   function runCompoundInterest() {
-    chargeAndRun('tCi', 'Compound Interest Calculator', function () {
+    runFree('tCi', function () {
       const P = num('tCiPrincipal'), annual = num('tCiRate'), years = num('tCiYears');
       const n = parseInt(val('tCiFreq'), 10) || 1;
       const res = document.getElementById('tCiResult');
@@ -242,7 +275,7 @@
   function renderLoanEligibility() {
     return `
       <div class="service-card">
-        <h3 class="card-head-row"><span>\ud83c\udfe6 Loan Eligibility Calculator</span>${backButton()}</h3>
+        <h3 class="card-head-row"><span>\ud83c\udfe6 Loan Eligibility Calculator</span>${backButtonFree()}</h3>
         <div class="card-body">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             ${fld('Monthly net income', `<input type="number" id="tLeIncome" value="80000" min="0" style="width:100%;" />`)}
@@ -254,7 +287,7 @@
           <div class="process-controls" style="margin-top:14px;">
             <button class="process-btn start-btn" onclick="PaidCalculators.runLoanEligibility()">Calculate</button>
           </div>
-          ${billingRow('tLe')}
+          ${freeStatusRow('tLe')}
           <div id="tLeResult" style="margin-top:10px;"></div>
           <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:12px;">
             Estimate based on a simple EMI-to-income ratio - actual eligibility also depends on your
@@ -265,7 +298,7 @@
   }
 
   function runLoanEligibility() {
-    chargeAndRun('tLe', 'Loan Eligibility Calculator', function () {
+    runFree('tLe', function () {
       const income = num('tLeIncome'), existing = num('tLeExisting') || 0;
       const annual = num('tLeRate'), years = num('tLeYears'), ratio = num('tLeRatio');
       const res = document.getElementById('tLeResult');
@@ -471,7 +504,7 @@
   function renderBackgroundRemover() {
     return `
       <div class="service-card">
-        <h3 class="card-head-row"><span>🪄 Background Remover</span>${backButton()}</h3>
+        <h3 class="card-head-row"><span>🪄 Background Remover</span>${backButtonFree()}</h3>
         <div class="card-body">
           <div class="setup-group">
             <label>Upload an image</label>
@@ -481,7 +514,7 @@
           <div class="process-controls" style="margin-top:12px;">
             <button class="process-btn start-btn" onclick="PaidCalculators.runBackgroundRemover()">Remove Background</button>
           </div>
-          ${billingRow('tBg')}
+          ${freeStatusRow('tBg')}
           <div class="process-controls" style="margin-top:10px;" id="tBgDownloadRow"></div>
           <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:12px;">
             First use on this device downloads a one-time ~40MB model (cached afterwards) -
@@ -507,7 +540,7 @@
   }
 
   function runBackgroundRemover() {
-    chargeAndRunAsync('tBg', 'Background Remover', async function () {
+    runFreeAsync('tBg', async function () {
       const statusEl = document.getElementById('tBgStatus');
       if (!bgRemoveFile) { say2('tBgStatus', 'Upload an image first.', 'error'); return false; }
       if (statusEl) say2('tBgStatus', 'Loading model (first use can take a moment)…', 'ok');
@@ -560,7 +593,7 @@
     setTimeout(populateVoiceList, 0);
     return `
       <div class="service-card">
-        <h3 class="card-head-row"><span>🔊 Text-to-Speech</span>${backButton()}</h3>
+        <h3 class="card-head-row"><span>🔊 Text-to-Speech</span>${backButtonFree()}</h3>
         <div class="card-body">
           <div class="setup-group">
             <label>Text to read aloud</label>
@@ -574,7 +607,7 @@
             <button class="process-btn start-btn" onclick="PaidCalculators.playTts()">▶️ Play</button>
             <button class="process-btn clear-btn" onclick="PaidCalculators.stopTts()">⏹️ Stop</button>
           </div>
-          ${billingRow('tTts')}
+          ${freeStatusRow('tTts')}
           <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:12px;">
             Uses your browser/device's built-in voices - available voices and quality vary by
             browser and operating system. Playback only (no file download in this version).
@@ -598,7 +631,7 @@
   }
 
   function playTts() {
-    chargeAndRun('tTts', 'Text-to-Speech', function () {
+    runFree('tTts', function () {
       const text = val('tTtsIn').trim();
       const statusEl = document.getElementById('tTtsStatus');
       if (typeof speechSynthesis === 'undefined') {
@@ -625,15 +658,19 @@
 
   window.PaidCalculators = {
     render: function (id) {
-      if (id === 'sip-calculator') return renderSip();
-      if (id === 'income-tax-calculator') return renderIncomeTax();
-      if (id === 'compound-interest-calculator') return renderCompoundInterest();
-      if (id === 'loan-eligibility-calculator') return renderLoanEligibility();
       if (id === 'content-writing-tool') return renderContentWriting();
       if (id === 'humanize-document-tool') return renderHumanize();
-      if (id === 'background-remover') return renderBackgroundRemover();
-      if (id === 'text-to-speech') return renderTextToSpeech();
       return '<div class="content-section"><p>This calculator is not available.</p></div>';
+    },
+    // Client-side, no API key needed - shown in Free Services (via
+    // cardModule() in free-services.js), not the Paid Services page.
+    freeCards: {
+      'sip-calculator': { label: 'SIP Calculator', icon: '📈', desc: 'Estimate the maturity value of a monthly SIP investment.', render: renderSip },
+      'income-tax-calculator': { label: 'Income Tax Calculator', icon: '🧾', desc: 'India new-regime slabs, cess, and Section 87A rebate.', render: renderIncomeTax },
+      'compound-interest-calculator': { label: 'Compound Interest Calculator', icon: '💹', desc: 'Maturity value at any compounding frequency.', render: renderCompoundInterest },
+      'loan-eligibility-calculator': { label: 'Loan Eligibility Calculator', icon: '🏦', desc: 'Estimate the maximum loan you could qualify for.', render: renderLoanEligibility },
+      'background-remover': { label: 'Background Remover', icon: '🪄', desc: 'Remove the background from a photo, right in your browser.', render: renderBackgroundRemover },
+      'text-to-speech': { label: 'Text-to-Speech', icon: '🔊', desc: 'Have any text read aloud in a natural voice.', render: renderTextToSpeech }
     },
     runSip: runSip,
     runIncomeTax: runIncomeTax,
