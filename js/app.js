@@ -4254,28 +4254,22 @@
             }
 
             function apiRefServices() {
-                const menu = MENU_CONFIG && MENU_CONFIG.mainMenu
-                    ? MENU_CONFIG.mainMenu.find(m => m.id === 'services') : null;
                 const data = apiDocsData();
 
-                // "Other Services" khud koi service nahi - wo free tools ka
-                // container hai. Usko list se hata kar uske andar ke saare
-                // tools alag-alag dikhaye jaate hain.
-                const paid = (menu && menu.subItems ? menu.subItems : [])
-                    .filter(s => s.id !== 'other-services')
-                    .map(s => ({
-                        id: s.id,
-                        kind: 'rest',
-                        group: 'Paid Services',
-                        label: (data[s.id] && data[s.id].label)
-                            || String(s.label || s.id).replace(/^[^A-Za-z0-9]+/, '').trim()
-                    }));
-
-                const known = paid.length ? paid : Object.keys(data).map(id => ({
+                // Used to read individual paid services (Translation, OCR,
+                // ...) from the Services menu's subItems - but that menu
+                // was restructured to just two landing links (Free
+                // Services / Paid Services), so this ended up with only
+                // "paid-services" itself (no REST docs of its own) and
+                // every real service's documentation silently vanished.
+                // SERVICES_API_DATA's own keys are the actual source of
+                // truth for which services have REST documentation, so
+                // read the list directly from there instead.
+                const paid = Object.keys(data).map(id => ({
                     id: id, kind: 'rest', group: 'Paid Services', label: data[id].label || id
                 }));
 
-                return known.concat(freeToolDocs());
+                return paid.concat(freeToolDocs());
             }
 
             function firstDocumentedService(services) {
@@ -6812,7 +6806,10 @@
                 }
                 if (Array.isArray(col.options) && col.options.length) {
                     return `<select class="db-cell-input" data-col="${escapeHtml(col.name)}">
-                        ${col.options.map(opt => `<option value="${escapeHtml(opt)}" ${opt === raw ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                        ${col.options.map(opt => {
+                            const [val, label] = Array.isArray(opt) ? opt : [opt, opt];
+                            return `<option value="${escapeHtml(val)}" ${val === raw ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+                        }).join('')}
                     </select>`;
                 }
                 if (col.type === 'jsonb' || col.type === 'json') {

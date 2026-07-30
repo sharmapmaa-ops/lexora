@@ -904,15 +904,31 @@ VIRTUAL_TABLES = {
         "fields": [
             "id", "name", "icon", "frequency", "monthlyPrice",
             "pricePerTranslation", "billingUnit",
-            "paidFeature", "freeFeature", "supportFeature",
+            "paidFeature", "freeFeature", "supportFeature", "apiFeature",
         ],
         "types": {},
         "jsonb_defaults": {},
+        # A brand-new field with no value yet on an EXISTING record reads
+        # back as "" (missing key) - a <select> with no matching option
+        # then just shows whatever option happens to be listed first,
+        # which looks like a real (wrong) value even though nothing was
+        # ever actually set. These give every plan a sensible real
+        # default instead of that cosmetic accident, the first time this
+        # runs after the fields were added.
+        "field_defaults": {
+            "frequency": "Monthly",
+            "paidFeature": "Yes", "freeFeature": "Yes", "supportFeature": "Yes", "apiFeature": "No",
+        },
         "select_options": {
             "frequency": ["Daily", "Monthly", "Yearly"],
+            # (value, label) pairs - the billing logic elsewhere in the
+            # app checks the lowercase VALUE ('page'/'document'), so only
+            # the DISPLAY label changes here, not what's actually stored.
+            "billingUnit": [["page", "Per Page"], ["document", "Per Document"], ["process", "Per Process"]],
             "paidFeature": ["Yes", "No"],
             "freeFeature": ["Yes", "No"],
             "supportFeature": ["Yes", "No"],
+            "apiFeature": ["Yes", "No"],
         },
         # 'id' rename allow nahi karte - baaki app me plan id se hi
         # lookup hota hai (billing, plan switch, waghera); rename se
@@ -949,7 +965,8 @@ VIRTUAL_TABLE_LABELS = {
     "doc_plans": {"id": "Plan ID", "name": "Plan Name", "icon": "Plan Icon",
                   "monthlyPrice": "Plan Price", "pricePerTranslation": "Paid Services Price",
                   "billingUnit": "Paid Billing Unit", "paidFeature": "Paid Feature",
-                  "freeFeature": "Free Feature", "supportFeature": "Support Feature"},
+                  "freeFeature": "Free Feature", "supportFeature": "Support Feature",
+                  "apiFeature": "API Feature"},
     "doc_contact_submissions": {"userId": "User ID", "id": "Ticket ID",
                                  "date": "Created At", "updatedAt": "Updated At"},
 }
@@ -1248,9 +1265,10 @@ def table_rows(name, limit=500):
     if name in VIRTUAL_TABLES:
         spec = VIRTUAL_TABLES[name]
         fields = spec["fields"]
+        defaults = spec.get("field_defaults", {})
         if spec["kind"] == "settings":
             data = get_setting(spec["resource"]) or {}
-            return [{f: data.get(f, "") for f in fields}]
+            return [{f: (data[f] if f in data and data[f] not in (None, "") else defaults.get(f, "")) for f in fields}]
         # kind == "document": har row ka apna data JSONB, plus - agar
         # fields me "updatedAt" mangi gayi ho - real updated_at column bhi
         # (list_documents() sirf data column deta hai, isliye yahan seedha
@@ -1265,7 +1283,7 @@ def table_rows(name, limit=500):
         out = []
         for r in db_rows:
             d = r["data"] or {}
-            row = {f: d.get(f, "") for f in fields if f != "updatedAt"}
+            row = {f: (d[f] if f in d and d[f] not in (None, "") else defaults.get(f, "")) for f in fields if f != "updatedAt"}
             if needs_updated_at:
                 ua = r.get("updated_at")
                 row["updatedAt"] = ua.isoformat(sep=" ", timespec="seconds") if ua else ""
