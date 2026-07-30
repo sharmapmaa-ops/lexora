@@ -4301,7 +4301,15 @@
                     id: id, kind: 'rest', group: 'Paid Services', label: data[id].label || id
                 }));
 
-                return paid.concat(freeToolDocs());
+                // Services Catalog > API Access column - "No" hides a
+                // service from this list entirely. Defaults to shown
+                // (missing/not-yet-seeded entries don't disappear).
+                const apiAllowed = (id) => {
+                    const catalogId = id.indexOf('free:') === 0 ? id.slice(5) : id;
+                    return !(SERVICES_CATALOG[catalogId] && SERVICES_CATALOG[catalogId].apiAccess === 'No');
+                };
+
+                return paid.concat(freeToolDocs()).filter(s => apiAllowed(s.id));
             }
 
             function firstDocumentedService(services) {
@@ -9690,7 +9698,6 @@
                                         ${plan.freeFeature === 'Yes' ? `<li>${tick}All Free Services</li>` : (freeServiceNames.length ? `<li>${tick}All Free Services</li>` : '')}
                                         ${plan.supportFeature === 'Yes' ? `<li>${tick}Email Support</li>` : ''}
                                         ${plan.apiFeature === 'Yes' ? `<li>${tick}API Documentation Access</li>` : ''}
-                                        ${(plan.features || []).map(f => `<li>${tick}${escapeHtml(f)}</li>`).join('')}
                                     </ul>
                                     <button class="plan-cta-btn ${isMine ? 'is-current' : ''}" ${isMine ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
                                         ${ctaLabel}

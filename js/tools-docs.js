@@ -45,11 +45,14 @@
   }
 
   function card(icon, title, body, note) {
+    const id = slugifyTitle(title);
+    const displayTitle = (window.SERVICES_CATALOG && window.SERVICES_CATALOG[id] && window.SERVICES_CATALOG[id].name && window.SERVICES_CATALOG[id].name.trim())
+      || title;
     return `
       <div class="service-split-layout">
         ${visualPanelHtml(icon, title)}
         <div class="service-card">
-          <h3>${icon} ${esc(title)}</h3>
+          <h3>${icon} ${esc(displayTitle)}</h3>
           <div class="card-body">
             ${body}
             ${note ? `<p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:14px;">${note}</p>` : ''}

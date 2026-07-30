@@ -963,17 +963,20 @@ VIRTUAL_TABLES = {
     "doc_services_catalog": {
         "kind": "document",
         "resource": "services-catalog",
-        "fields": ["id", "name", "type", "billingUnit", "image"],
+        "fields": ["id", "name", "type", "billingUnit", "apiAccess", "image"],
         "types": {},
         "jsonb_defaults": {},
-        "field_defaults": {"type": "Free", "billingUnit": "document"},
+        "field_defaults": {"type": "Free", "billingUnit": "document", "apiAccess": "Yes"},
         "select_options": {
             "type": ["Paid", "Free"],
             "billingUnit": [["page", "Per Page"], ["document", "Per Document"], ["process", "Per Process"]],
+            "apiAccess": ["Yes", "No"],
         },
         # 'id' rename allow nahi - baaki app isi id se service ko
         # dhoondhta/render karta hai (catalogue placement, billing
-        # lookup); rename se wo service "gayab" ho jayegi.
+        # lookup); rename se wo service "gayab" ho jayegi. 'name' rename
+        # IS allowed (item 2 ka poora point yehi hai) - display label
+        # frontend me is field se override hoti hai, id se nahi.
         "readonly_fields": {"id"},
     },
 }
@@ -994,7 +997,7 @@ VIRTUAL_TABLE_LABELS = {
     "doc_contact_submissions": {"userId": "User ID", "id": "Ticket ID",
                                  "date": "Created At", "updatedAt": "Updated At"},
     "doc_services_catalog": {"id": "Service ID", "name": "Name", "type": "Paid/Free",
-                              "billingUnit": "Paid Billing Unit", "image": "Image"},
+                              "billingUnit": "Paid Billing Unit", "apiAccess": "API Access", "image": "Image"},
 }
 
 

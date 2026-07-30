@@ -21,6 +21,8 @@
 
   function card(icon, title, bodyHtml, note) {
     const slug = slugifyTitle(title);
+    const displayTitle = (window.SERVICES_CATALOG && window.SERVICES_CATALOG[slug] && window.SERVICES_CATALOG[slug].name && window.SERVICES_CATALOG[slug].name.trim())
+      || title;
     return `
       <div class="service-split-layout">
         <div class="service-visual-panel" aria-hidden="true">
@@ -29,7 +31,7 @@
           <span class="service-visual-icon">${icon}</span>
         </div>
         <div class="service-card">
-          <h3>${icon} ${esc(title)}</h3>
+          <h3>${icon} ${esc(displayTitle)}</h3>
           <div class="card-body">
             ${bodyHtml}
             ${note ? `<p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:14px;">${note}</p>` : ''}

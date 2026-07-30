@@ -472,6 +472,15 @@
     return entry ? entry.type : null;
   }
 
+  // Services Catalog "Name" column overrides a service's display label
+  // everywhere it's shown as a tile - the id (and everything id-based,
+  // like the service-image lookup) never changes, only what's printed
+  // on screen.
+  function catalogName(id, fallback) {
+    const entry = window.SERVICES_CATALOG && window.SERVICES_CATALOG[id];
+    return (entry && entry.name && entry.name.trim()) ? entry.name.trim() : fallback;
+  }
+
   function allToolsRaw() {
     const seen = {};
     const list = [];
@@ -488,12 +497,15 @@
     // A normally-free tool marked "Paid" in the catalog moves OUT of
     // this list (the Paid Services page picks it up instead - see
     // app.js's paid-services landing body).
-    const filtered = list.filter(t => catalogType(t.id) !== 'Paid');
+    const filtered = list.filter(t => catalogType(t.id) !== 'Paid')
+      .map(t => Object.assign({}, t, { label: catalogName(t.id, t.label) }));
 
     // A native paid service marked "Free" moves IN, as an external tile
     // (its own real page, not rendered by this module).
     NATIVE_PAID_SERVICES.forEach(function (svc) {
-      if (catalogType(svc.id) === 'Free') filtered.push(Object.assign({ external: true }, svc));
+      if (catalogType(svc.id) === 'Free') {
+        filtered.push(Object.assign({ external: true }, svc, { label: catalogName(svc.id, svc.label) }));
+      }
     });
 
     return filtered;
@@ -580,8 +592,8 @@
   // into a tool.
   function titleOf(id) {
     const t = TOOLS.concat(extraCards()).find(function (x) { return x.id === id; });
-    if (t) return t.label;
-    if (window.ServiceRunner && ServiceRunner.has(id)) return id;
+    if (t) return catalogName(id, t.label);
+    if (window.ServiceRunner && ServiceRunner.has(id)) return catalogName(id, id);
     return '';
   }
 
