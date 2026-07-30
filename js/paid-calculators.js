@@ -108,7 +108,7 @@
   function renderSip() {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">\ud83d\udcc8</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/sip-calculator.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">\ud83d\udcc8</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>\ud83d\udcc8 SIP Calculator</span>${backButtonFree()}</h3>
         <div class="card-body">
@@ -164,7 +164,7 @@
   function renderIncomeTax() {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">\ud83e\uddfe</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/income-tax-calculator.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">\ud83e\uddfe</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>\ud83e\uddfe Income Tax Calculator (India)</span>${backButtonFree()}</h3>
         <div class="card-body">
@@ -235,7 +235,7 @@
   function renderCompoundInterest() {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">\ud83d\udcb9</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/compound-interest-calculator.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">\ud83d\udcb9</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>\ud83d\udcb9 Compound Interest Calculator</span>${backButtonFree()}</h3>
         <div class="card-body">
@@ -284,7 +284,7 @@
   function renderLoanEligibility() {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">\ud83c\udfe6</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/loan-eligibility-calculator.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">\ud83c\udfe6</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>\ud83c\udfe6 Loan Eligibility Calculator</span>${backButtonFree()}</h3>
         <div class="card-body">
@@ -343,7 +343,7 @@
   function renderContentWriting() {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">✍️</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/content-writing-tool.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">✍️</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>✍️ Content Writing Tool</span>${backButton()}</h3>
         <div class="card-body">
@@ -415,7 +415,7 @@
   function renderHumanize() {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">🧑</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/humanize-document-tool.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">🧑</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>🧑 Humanize Document Tool</span>${backButton()}</h3>
         <div class="card-body">
@@ -522,7 +522,7 @@
   function renderBackgroundRemover() {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">🪄</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/background-remover.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">🪄</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>🪄 Background Remover</span>${backButtonFree()}</h3>
         <div class="card-body">
@@ -614,7 +614,7 @@
     setTimeout(populateVoiceList, 0);
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">🔊</span></div>
+        <div class="service-visual-panel" aria-hidden="true"><img class="service-visual-img" src="Pictures/service-images/text-to-speech.jpg" alt="" onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" /><span class="service-visual-icon">🔊</span></div>
         <div class="service-card">
         <h3 class="card-head-row"><span>🔊 Text-to-Speech</span>${backButtonFree()}</h3>
         <div class="card-body">

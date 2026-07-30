@@ -2310,7 +2310,11 @@ class Handler(SimpleHTTPRequestHandler):
 
     @staticmethod
     def check_resource_routes(get_routes):
-        """Har DB-backed resource ka GET route hona chahiye.
+        """Har DB-backed resource ka GET route hona chahiye - ya to apna
+        explicit handler (jab per-user filtering jaisi extra logic chahiye,
+        jaise payment-history), ya generic ALLOWED_RESOURCES fallback
+        (jab data har user ke liye same/public ho, jaise "plans" - sabhi
+        users ke liye same pricing list, koi filtering ki zaroorat nahi).
 
         Aadhi migration hi sabse bada khatra hai: write Postgres me jaye
         par read purani JSON file se aaye - tab naya data screen par aakar
@@ -2320,7 +2324,7 @@ class Handler(SimpleHTTPRequestHandler):
         if db is None:
             return []
         missing = [n for n in db.DB_BACKED_RESOURCES
-                   if f"/api/data/{n}" not in get_routes]
+                   if f"/api/data/{n}" not in get_routes and n not in ALLOWED_RESOURCES]
         for name in missing:
             print(f"[db] WARNING: '{name}' Postgres par hai par uska GET route "
                   f"registered nahi hai - browser purani json/{name}.json "

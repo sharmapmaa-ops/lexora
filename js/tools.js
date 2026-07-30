@@ -15,10 +15,17 @@
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
+  function slugifyTitle(title) {
+    return String(title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  }
+
   function card(icon, title, bodyHtml, note) {
+    const slug = slugifyTitle(title);
     return `
       <div class="service-split-layout">
         <div class="service-visual-panel" aria-hidden="true">
+          <img class="service-visual-img" src="Pictures/service-images/${slug}.jpg" alt=""
+               onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" />
           <span class="service-visual-icon">${icon}</span>
         </div>
         <div class="service-card">

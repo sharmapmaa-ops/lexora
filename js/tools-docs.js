@@ -27,12 +27,27 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
   }
 
+  // "EMI Calculator" -> "emi-calculator" - matches this app's own id
+  // naming convention, so the expected image filename is predictable
+  // without threading a separate id through every card() call.
+  function slugifyTitle(title) {
+    return String(title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  }
+
+  function visualPanelHtml(icon, title) {
+    const slug = slugifyTitle(title);
+    return `
+      <div class="service-visual-panel" aria-hidden="true">
+        <img class="service-visual-img" src="Pictures/service-images/${slug}.jpg" alt=""
+             onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" />
+        <span class="service-visual-icon">${icon}</span>
+      </div>`;
+  }
+
   function card(icon, title, body, note) {
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true">
-          <span class="service-visual-icon">${icon}</span>
-        </div>
+        ${visualPanelHtml(icon, title)}
         <div class="service-card">
           <h3>${icon} ${esc(title)}</h3>
           <div class="card-body">

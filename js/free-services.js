@@ -304,7 +304,11 @@
     setTimeout(runEmi, 0);   // first paint of the result, after insertion
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">🏦</span></div>
+        <div class="service-visual-panel" aria-hidden="true">
+          <img class="service-visual-img" src="Pictures/service-images/emi-calculator.jpg" alt=""
+               onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" />
+          <span class="service-visual-icon">🏦</span>
+        </div>
         <div class="service-card">
         <h3>🏦 EMI Calculator</h3>
         <div class="card-body">
@@ -347,7 +351,11 @@
     setTimeout(runGratuity, 0);
     return `
       <div class="service-split-layout">
-        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">💼</span></div>
+        <div class="service-visual-panel" aria-hidden="true">
+          <img class="service-visual-img" src="Pictures/service-images/gratuity-calculator.jpg" alt=""
+               onerror="this.style.display='none'; this.parentElement.classList.add('is-fallback');" />
+          <span class="service-visual-icon">💼</span>
+        </div>
         <div class="service-card">
         <h3>💼 Gratuity Calculator</h3>
         <div class="card-body">
