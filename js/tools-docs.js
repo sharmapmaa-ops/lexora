@@ -833,6 +833,161 @@
   // ══════════════════════════════════════════════════════════════════
   // QR CODE GENERATOR
   // ══════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════
+  // BUSINESS NAME GENERATOR
+  // ══════════════════════════════════════════════════════════════════
+  const BIZ_PREFIXES = ['Prime', 'Nova', 'Apex', 'Bright', 'Blue', 'Silver', 'Golden', 'Swift', 'Peak', 'Urban', 'True', 'Vivid', 'Bold', 'Clear', 'North', 'Summit', 'Core', 'Pure', 'Rapid', 'Elevate'];
+  const BIZ_SUFFIXES = ['Hub', 'Works', 'Labs', 'Group', 'Studio', 'Solutions', 'Collective', 'Co', 'Ventures', 'Partners', 'Network', 'House', 'Point', 'Craft', 'Forge'];
+
+  function renderBusinessName() {
+    setTimeout(runBusinessName, 0);
+    return card('🏷️', 'Business Name Generator', `
+      <div class="setup-group">
+        <label>A word describing your business (industry, product, or theme)</label>
+        <input type="text" id="tBnKeyword" value="Coffee" oninput="ToolsDocs.runBusinessName()" style="width:100%;" />
+      </div>
+      <div class="process-controls" style="margin-top:12px;">
+        <button class="process-btn start-btn" onclick="ToolsDocs.runBusinessName()">🔄 Generate More</button>
+      </div>
+      <div id="tBnOut" style="margin-top:14px;display:flex;flex-wrap:wrap;gap:10px;"></div>
+      <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:12px;">
+        Ideas to get you started - always check trademark/domain availability before committing to one.
+      </p>`);
+  }
+
+  function runBusinessName() {
+    const keyword = (val('tBnKeyword') || '').trim();
+    const box = document.getElementById('tBnOut');
+    if (!box) return;
+    if (!keyword) { box.innerHTML = '<div style="color:#b3261e;font-size:0.86rem;">Enter a keyword first.</div>'; return; }
+    const cap = keyword.charAt(0).toUpperCase() + keyword.slice(1);
+    const shuffle = function (arr) { return arr.slice().sort(function () { return Math.random() - 0.5; }); };
+    const prefixes = shuffle(BIZ_PREFIXES).slice(0, 4);
+    const suffixes = shuffle(BIZ_SUFFIXES).slice(0, 4);
+    const names = [];
+    prefixes.forEach(function (p) { names.push(`${p} ${cap}`); });
+    suffixes.forEach(function (s) { names.push(`${cap} ${s}`); });
+    names.push(`The ${cap} Co`);
+    names.push(`${cap}ify`);
+    box.innerHTML = names.map(function (n) {
+      return `<span style="background:#eef2fb;border-radius:20px;padding:8px 16px;font-weight:600;color:#1257f5;">${esc(n)}</span>`;
+    }).join('');
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // CERTIFICATE GENERATOR
+  // ══════════════════════════════════════════════════════════════════
+  function renderCertificate() {
+    return card('🎓', 'Certificate Generator', `
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        ${fld('Recipient name', `<input type="text" id="tCertName" value="Jane Doe" style="width:100%;" />`)}
+        ${fld('Awarded for / course', `<input type="text" id="tCertFor" value="Completing the Advanced Excel Workshop" style="width:100%;" />`)}
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        ${fld('Issued by', `<input type="text" id="tCertIssuer" value="Acme Training Institute" style="width:100%;" />`)}
+        ${fld('Date', `<input type="date" id="tCertDate" value="${new Date().toISOString().slice(0, 10)}" style="width:100%;" />`)}
+      </div>
+      <div class="process-controls" style="margin-top:12px;">
+        <button class="process-btn start-btn" onclick="ToolsDocs.buildCertificate()">⬇️ Download PDF</button>
+      </div>
+      <div id="tCertStatus" style="margin-top:8px;font-size:0.86rem;min-height:1.1em;"></div>`);
+  }
+
+  async function buildCertificate() {
+    if (typeof PDFLib === 'undefined') return say('tCertStatus', 'pdf-lib failed to load - please refresh.', 'error');
+    const name = val('tCertName') || 'Recipient Name';
+    const forText = val('tCertFor') || '';
+    const issuer = val('tCertIssuer') || '';
+    const date = val('tCertDate') || '';
+
+    const doc = await PDFLib.PDFDocument.create();
+    const font = await doc.embedFont(PDFLib.StandardFonts.Helvetica);
+    const bold = await doc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+    const italic = await doc.embedFont(PDFLib.StandardFonts.HelveticaOblique);
+    const page = doc.addPage([842, 595]); // landscape A4-ish
+    const safe = (s) => String(s == null ? '' : s).replace(/[^\x20-\xFF]/g, '');
+    const centered = (text, y, size, f, color) => {
+      const w = f.widthOfTextAtSize(safe(text), size);
+      page.drawText(safe(text), { x: (842 - w) / 2, y: y, size: size, font: f, color: color || PDFLib.rgb(0.1, 0.1, 0.15) });
+    };
+
+    page.drawRectangle({ x: 20, y: 20, width: 802, height: 555, borderColor: PDFLib.rgb(0.07, 0.09, 0.2), borderWidth: 3 });
+    page.drawRectangle({ x: 32, y: 32, width: 778, height: 531, borderColor: PDFLib.rgb(0.4, 0.5, 0.7), borderWidth: 1 });
+
+    centered('CERTIFICATE OF ACHIEVEMENT', 470, 26, bold);
+    centered('This certificate is proudly presented to', 400, 13, italic, PDFLib.rgb(0.35, 0.35, 0.4));
+    centered(name, 340, 34, bold);
+    centered('for', 300, 12, italic, PDFLib.rgb(0.35, 0.35, 0.4));
+    centered(forText, 260, 15, font);
+    if (issuer) centered(issuer, 130, 12, bold);
+    if (date) centered(date, 105, 10, font, PDFLib.rgb(0.4, 0.4, 0.45));
+
+    const bytes = await doc.save();
+    download(new Blob([bytes], { type: 'application/pdf' }), `certificate_${(name || 'recipient').replace(/\s+/g, '_')}.pdf`);
+    say('tCertStatus', 'PDF downloaded.', 'ok');
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // BUSINESS CARD MAKER
+  // ══════════════════════════════════════════════════════════════════
+  function renderBusinessCard() {
+    return card('💳', 'Business Card Maker', `
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        ${fld('Full name', `<input type="text" id="tBcName" value="Jane Doe" style="width:100%;" />`)}
+        ${fld('Job title', `<input type="text" id="tBcTitle" value="Founder" style="width:100%;" />`)}
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        ${fld('Company name', `<input type="text" id="tBcCompany" value="Acme Pvt Ltd" style="width:100%;" />`)}
+        ${fld('Accent color', `<input type="color" id="tBcColor" value="#1257f5" style="width:100%;height:38px;" />`)}
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        ${fld('Phone', `<input type="text" id="tBcPhone" value="+91 98765 43210" style="width:100%;" />`)}
+        ${fld('Email', `<input type="text" id="tBcEmail" value="jane@acme.com" style="width:100%;" />`)}
+      </div>
+      <div class="process-controls" style="margin-top:12px;">
+        <button class="process-btn start-btn" onclick="ToolsDocs.buildBusinessCard()">⬇️ Download PDF</button>
+      </div>
+      <div id="tBcStatus" style="margin-top:8px;font-size:0.86rem;min-height:1.1em;"></div>
+      <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:12px;">Standard card size (3.5 x 2 inch), one card per page.</p>`);
+  }
+
+  function hexToRgb(hex) {
+    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || '#1257f5') || [];
+    const n = (h) => parseInt(h || '00', 16) / 255;
+    return { r: n(m[1]), g: n(m[2]), b: n(m[3]) };
+  }
+
+  async function buildBusinessCard() {
+    if (typeof PDFLib === 'undefined') return say('tBcStatus', 'pdf-lib failed to load - please refresh.', 'error');
+    const name = val('tBcName') || '';
+    const title = val('tBcTitle') || '';
+    const company = val('tBcCompany') || '';
+    const phone = val('tBcPhone') || '';
+    const email = val('tBcEmail') || '';
+    const accent = hexToRgb(val('tBcColor'));
+
+    const doc = await PDFLib.PDFDocument.create();
+    const font = await doc.embedFont(PDFLib.StandardFonts.Helvetica);
+    const bold = await doc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+    // 3.5in x 2in at 72pt/inch = 252 x 144
+    const page = doc.addPage([252, 144]);
+    const safe = (s) => String(s == null ? '' : s).replace(/[^\x20-\xFF]/g, '');
+    const color = PDFLib.rgb(accent.r, accent.g, accent.b);
+
+    page.drawRectangle({ x: 0, y: 0, width: 252, height: 144, color: PDFLib.rgb(1, 1, 1) });
+    page.drawRectangle({ x: 0, y: 0, width: 8, height: 144, color: color });
+    page.drawText(safe(name), { x: 22, y: 100, size: 15, font: bold, color: PDFLib.rgb(0.1, 0.1, 0.15) });
+    page.drawText(safe(title), { x: 22, y: 84, size: 9, font: font, color: color });
+    page.drawText(safe(company), { x: 22, y: 68, size: 9, font: bold, color: PDFLib.rgb(0.3, 0.3, 0.35) });
+    page.drawLine({ start: { x: 22, y: 56 }, end: { x: 230, y: 56 }, thickness: 0.5, color: PDFLib.rgb(0.85, 0.85, 0.85) });
+    if (phone) page.drawText(safe(phone), { x: 22, y: 40, size: 8, font: font });
+    if (email) page.drawText(safe(email), { x: 22, y: 26, size: 8, font: font });
+
+    const bytes = await doc.save();
+    download(new Blob([bytes], { type: 'application/pdf' }), `business_card_${(name || 'card').replace(/\s+/g, '_')}.pdf`);
+    say('tBcStatus', 'PDF downloaded.', 'ok');
+  }
+
   function renderQr() {
     setTimeout(runQr, 0);
     return card('🔳', 'QR Code Generator', `
@@ -1038,6 +1193,173 @@
     }, 'image/png');
   }
 
+  // ══════════════════════════════════════════════════════════════════
+  // LOGO BUILDER
+  // ══════════════════════════════════════════════════════════════════
+  function renderLogoBuilder() {
+    setTimeout(runLogoBuilder, 0);
+    return card('🎯', 'Logo Builder', `
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        ${fld('Initials or short text', `<input type="text" id="tLbText" value="AB" maxlength="3" oninput="ToolsDocs.runLogoBuilder()" style="width:100%;" />`)}
+        ${fld('Shape', `<select id="tLbShape" onchange="ToolsDocs.runLogoBuilder()" style="width:100%;">
+            <option value="circle">Circle</option>
+            <option value="square">Rounded square</option>
+            <option value="hexagon">Hexagon</option>
+          </select>`)}
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        ${fld('Background color', `<input type="color" id="tLbBg" value="#1257f5" oninput="ToolsDocs.runLogoBuilder()" style="width:100%;height:38px;" />`)}
+        ${fld('Text color', `<input type="color" id="tLbFg" value="#ffffff" oninput="ToolsDocs.runLogoBuilder()" style="width:100%;height:38px;" />`)}
+      </div>
+      <div style="margin-top:14px;display:flex;justify-content:center;">
+        <canvas id="tLbCanvas" width="300" height="300" style="width:200px;height:200px;"></canvas>
+      </div>
+      <div class="process-controls" style="margin-top:12px;justify-content:center;">
+        <button class="process-btn start-btn" onclick="ToolsDocs.downloadLogo()">⬇️ Download PNG</button>
+      </div>
+      <div id="tLbStatus" style="margin-top:8px;font-size:0.86rem;min-height:1.1em;text-align:center;"></div>`);
+  }
+
+  function drawLogoShape(cctx, shape, size, color) {
+    cctx.fillStyle = color;
+    cctx.beginPath();
+    if (shape === 'circle') {
+      cctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
+    } else if (shape === 'hexagon') {
+      const cx = size / 2, cy = size / 2, r = size / 2;
+      for (let i = 0; i < 6; i++) {
+        const angle = Math.PI / 3 * i - Math.PI / 2;
+        const x = cx + r * Math.cos(angle), y = cy + r * Math.sin(angle);
+        if (i === 0) cctx.moveTo(x, y); else cctx.lineTo(x, y);
+      }
+      cctx.closePath();
+    } else {
+      const r = size * 0.18;
+      cctx.moveTo(r, 0);
+      cctx.arcTo(size, 0, size, size, r);
+      cctx.arcTo(size, size, 0, size, r);
+      cctx.arcTo(0, size, 0, 0, r);
+      cctx.arcTo(0, 0, size, 0, r);
+      cctx.closePath();
+    }
+    cctx.fill();
+  }
+
+  function runLogoBuilder() {
+    const canvas = document.getElementById('tLbCanvas');
+    if (!canvas) return;
+    const size = canvas.width;
+    const cctx = canvas.getContext('2d');
+    cctx.clearRect(0, 0, size, size);
+    drawLogoShape(cctx, val('tLbShape') || 'circle', size, val('tLbBg') || '#1257f5');
+    const text = (val('tLbText') || '').toUpperCase();
+    if (text) {
+      cctx.fillStyle = val('tLbFg') || '#ffffff';
+      cctx.font = `bold ${Math.round(size * 0.36)}px Arial, sans-serif`;
+      cctx.textAlign = 'center';
+      cctx.textBaseline = 'middle';
+      cctx.fillText(text, size / 2, size / 2 + size * 0.02);
+    }
+  }
+
+  function downloadLogo() {
+    const canvas = document.getElementById('tLbCanvas');
+    if (!canvas) return;
+    canvas.toBlob(function (blob) {
+      download(blob, 'logo.png');
+      say('tLbStatus', 'Downloaded.', 'ok');
+    }, 'image/png');
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // CHECK IP ADDRESS
+  // ══════════════════════════════════════════════════════════════════
+  function renderCheckIp() {
+    setTimeout(runCheckIp, 0);
+    return card('🌐', 'Check IP Address', `
+      <div id="tIpOut" style="min-height:2em;">Looking up your IP address\u2026</div>
+      <div class="process-controls" style="margin-top:12px;">
+        <button class="process-btn start-btn" onclick="ToolsDocs.runCheckIp()">\ud83d\udd04 Refresh</button>
+      </div>`);
+  }
+
+  async function runCheckIp() {
+    const box = document.getElementById('tIpOut');
+    if (!box) return;
+    box.textContent = 'Looking up your IP address\u2026';
+    try {
+      const res = await fetch('https://ipapi.co/json/');
+      if (!res.ok) throw new Error('Lookup failed');
+      const d = await res.json();
+      box.innerHTML =
+        resultRowIp('IP Address', d.ip) +
+        resultRowIp('City', d.city) +
+        resultRowIp('Region', d.region) +
+        resultRowIp('Country', d.country_name) +
+        resultRowIp('ISP', d.org) +
+        resultRowIp('Timezone', d.timezone);
+    } catch (e) {
+      box.innerHTML = '<div style="color:#b3261e;font-size:0.86rem;">Could not look up your IP address. Please check your connection and try again.</div>';
+    }
+  }
+
+  function resultRowIp(label, value) {
+    return `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(0,0,0,0.06);">
+      <span style="color:#6b7280;">${esc(label)}</span><span style="font-weight:600;">${esc(value || '-')}</span></div>`;
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // CHECK INTERNET SPEED
+  // ══════════════════════════════════════════════════════════════════
+  function renderSpeedTest() {
+    return card('\u26a1', 'Check Internet Speed', `
+      <div style="text-align:center;">
+        <button class="process-btn start-btn" onclick="ToolsDocs.runSpeedTest()">\u25b6\ufe0f Start Test</button>
+      </div>
+      <div id="tStOut" style="margin-top:16px;"></div>
+      <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:12px;text-align:center;">
+        Uses Cloudflare's public speed-test endpoints. Results are an estimate and can vary with network conditions.
+      </p>`);
+  }
+
+  async function runSpeedTest() {
+    const box = document.getElementById('tStOut');
+    if (!box) return;
+    box.innerHTML = '<div style="text-align:center;color:#6b7280;">Testing latency\u2026</div>';
+    try {
+      // Latency: a handful of small no-store fetches, smallest round-trip wins.
+      let bestPing = Infinity;
+      for (let i = 0; i < 4; i++) {
+        const t0 = performance.now();
+        await fetch('https://speed.cloudflare.com/__down?bytes=1000', { cache: 'no-store' });
+        bestPing = Math.min(bestPing, performance.now() - t0);
+      }
+
+      box.innerHTML = '<div style="text-align:center;color:#6b7280;">Testing download speed\u2026</div>';
+      const dlBytes = 25 * 1000 * 1000;
+      const t1 = performance.now();
+      const dlRes = await fetch(`https://speed.cloudflare.com/__down?bytes=${dlBytes}`, { cache: 'no-store' });
+      await dlRes.arrayBuffer();
+      const dlSeconds = (performance.now() - t1) / 1000;
+      const dlMbps = (dlBytes * 8 / 1000000) / dlSeconds;
+
+      box.innerHTML = '<div style="text-align:center;color:#6b7280;">Testing upload speed\u2026</div>';
+      const upBytes = 5 * 1000 * 1000;
+      const upData = new Uint8Array(upBytes);
+      const t2 = performance.now();
+      await fetch('https://speed.cloudflare.com/__up', { method: 'POST', body: upData, cache: 'no-store' });
+      const upSeconds = (performance.now() - t2) / 1000;
+      const upMbps = (upBytes * 8 / 1000000) / upSeconds;
+
+      box.innerHTML =
+        resultRowIp('Ping', bestPing.toFixed(0) + ' ms') +
+        resultRowIp('Download', dlMbps.toFixed(1) + ' Mbps') +
+        resultRowIp('Upload', upMbps.toFixed(1) + ' Mbps');
+    } catch (e) {
+      box.innerHTML = '<div style="color:#b3261e;font-size:0.86rem;text-align:center;">Speed test failed - please check your connection and try again.</div>';
+    }
+  }
+
   // ── card registry ──────────────────────────────────────────────────
   const CARDS = {
     'invoice-generator':   { label: 'Invoice Generator',   icon: '🧾', desc: 'Build an invoice and download it as a PDF.',   render: function () { return renderDoc('invoice-generator'); } },
@@ -1053,7 +1375,13 @@
     'csv-to-json':         { label: 'CSV/Excel to JSON',   icon: '🔄', desc: 'Upload CSV or Excel, get JSON.',             render: renderCsvToJson },
     'qr-generator':        { label: 'QR Code Generator',   icon: '🔳', desc: 'Make a QR code from any text or link.',       render: renderQr },
     'barcode-generator':   { label: 'Barcode Generator',   icon: '▮',  desc: 'CODE128, EAN, UPC and more.',                 render: renderBarcode },
-    'signature-maker':     { label: 'Signature Maker',     icon: '✍️', desc: 'Draw a signature, download as a transparent PNG.', render: renderSignatureMaker }
+    'signature-maker':     { label: 'Signature Maker',     icon: '✍️', desc: 'Draw a signature, download as a transparent PNG.', render: renderSignatureMaker },
+    'business-name-generator': { label: 'Business Name Generator', icon: '🏷️', desc: 'Generate name ideas from a keyword.', render: renderBusinessName },
+    'certificate-generator': { label: 'Certificate Generator', icon: '🎓', desc: 'Build an achievement certificate PDF.',   render: renderCertificate },
+    'business-card-maker': { label: 'Business Card Maker', icon: '💳', desc: 'Build a business card PDF.',                render: renderBusinessCard },
+    'logo-builder':        { label: 'Logo Builder',        icon: '🎯', desc: 'Simple shape + initials logo, as a PNG.',  render: renderLogoBuilder },
+    'check-ip':            { label: 'Check IP Address',    icon: '🌐', desc: 'Your public IP address and rough location.', render: renderCheckIp },
+    'speed-test':          { label: 'Check Internet Speed', icon: '⚡', desc: 'Ping, download and upload speed.',         render: renderSpeedTest }
   };
 
   window.ToolsDocs = {
@@ -1084,6 +1412,13 @@
     runBarcode: runBarcode,
     clearSignature: clearSignature,
     downloadSignature: downloadSignature,
+    runBusinessName: runBusinessName,
+    buildCertificate: buildCertificate,
+    buildBusinessCard: buildBusinessCard,
+    runLogoBuilder: runLogoBuilder,
+    downloadLogo: downloadLogo,
+    runCheckIp: runCheckIp,
+    runSpeedTest: runSpeedTest,
     downloadBarcode: downloadBarcode,
     parseCsv: parseCsv,
     applyTemplate: applyTemplate

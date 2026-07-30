@@ -411,12 +411,13 @@
   // small catalogue rather than one long undifferentiated grid. Anything
   // registered but not listed here still shows up under "More".
   const GROUPS = [
-    { title: 'PDF Tools', icon: '📄', ids: ['pdf-split', 'pdf-merge', 'pdf-compress', 'pdf-to-image', 'pdf-to-word', 'pdf-form-filler', 'create-pdf', 'unlock-pdf', 'pdf-rotate-reorder'] },
-    { title: 'Image Tools', icon: '🖼️', ids: ['size-photo', 'image-compressor', 'image-cropper', 'image-to-pdf', 'image-format-converter', 'color-palette-extractor'] },
+    { title: 'PDF Tools', icon: '📄', ids: ['pdf-split', 'pdf-merge', 'pdf-compress', 'pdf-to-image', 'pdf-to-word', 'pdf-form-filler', 'create-pdf', 'unlock-pdf', 'pdf-rotate-reorder', 'word-to-pdf', 'excel-to-pdf'] },
+    { title: 'Image Tools', icon: '🖼️', ids: ['size-photo', 'image-compressor', 'image-cropper', 'image-to-pdf', 'image-format-converter', 'color-palette-extractor', 'passport-photo-maker', 'meme-generator'] },
     { title: 'Calculators', icon: '🧮', ids: ['emi-calculator', 'gratuity-calculator', 'age-calculator', 'unit-converter', 'currency-converter', 'bmi-calculator', 'percentage-calculator', 'date-diff-calculator', 'discount-gst-calculator'] },
     { title: 'Data Tools', icon: '📊', ids: ['data-comparison', 'etl', 'json-to-csv', 'csv-to-json', 'word-counter', 'excel-to-csv', 'csv-to-excel', 'split-excel'] },
-    { title: 'Document Builders', icon: '📝', ids: ['invoice-generator', 'quotation-generator', 'receipt-generator'] },
-    { title: 'Utilities', icon: '🔧', ids: ['timezone', 'password-generator', 'qr-generator', 'barcode-generator', 'create-zip', 'signature-maker'] }
+    { title: 'Document Builders', icon: '📝', ids: ['invoice-generator', 'quotation-generator', 'receipt-generator', 'certificate-generator', 'business-card-maker'] },
+    { title: 'Generators', icon: '✨', ids: ['business-name-generator', 'logo-builder'] },
+    { title: 'Utilities', icon: '🔧', ids: ['timezone', 'password-generator', 'qr-generator', 'barcode-generator', 'create-zip', 'signature-maker', 'check-ip', 'speed-test'] }
   ];
 
   // Everything that can be opened, whichever module registered it:

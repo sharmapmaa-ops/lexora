@@ -923,6 +923,307 @@
     }
   });
 
+  // Shared PDF page-size lookup and a simple word-wrapping text writer -
+  // used by both Word to PDF (long paragraphs) and Excel to PDF (reuses
+  // Create PDF's row/column table layout instead, see below).
+  const PDF_PAGE_SIZES = { a4: [595, 842], a4l: [842, 595], letter: [612, 792] };
+
+  function wrapTextToWidth(text, font, fontSize, maxWidth) {
+    const words = text.split(/\s+/).filter(Boolean);
+    const lines = [];
+    let line = '';
+    words.forEach(function (w) {
+      const test = line ? line + ' ' + w : w;
+      if (font.widthOfTextAtSize(test, fontSize) > maxWidth && line) {
+        lines.push(line);
+        line = w;
+      } else {
+        line = test;
+      }
+    });
+    if (line) lines.push(line);
+    return lines;
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // WORD TO PDF
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'word-to-pdf',
+    title: 'Word to PDF',
+    icon: '📄',
+    accept: '.docx',
+    backTo: BACK,
+    description: 'Turn a Word document into a PDF (text only - see note below).',
+    setupHtml: function () {
+      return `
+        <div class="setup-group">
+          <label>Page size</label>
+          <select id="tWpSize" style="width:100%;">
+            <option value="a4">A4 (portrait)</option>
+            <option value="letter">Letter (portrait)</option>
+          </select>
+        </div>
+        <div style="margin-top:10px;padding:8px 10px;border:1px solid #7aa7cc;background:#eef5fb;border-radius:6px;font-size:0.8rem;color:#2c5777;">
+          This extracts the <b>text</b>, not the layout - tables, images and
+          precise formatting are not reproduced. For a layout-faithful
+          conversion, use the paid Translation service instead.
+        </div>`;
+    },
+    process: async function (files, ctx, label) {
+      need(typeof mammoth !== 'undefined' ? mammoth : undefined, 'mammoth (Word reader)');
+      need(typeof PDFLib !== 'undefined' ? PDFLib : undefined, 'pdf-lib');
+      const f = files[0];
+      const sizeKey = (document.getElementById('tWpSize') || {}).value || 'a4';
+      const PAGE = PDF_PAGE_SIZES[sizeKey] || PDF_PAGE_SIZES.a4;
+
+      const result = await mammoth.extractRawText({ arrayBuffer: await f.arrayBuffer() });
+      const text = (result.value || '').trim();
+      if (!text) throw new Error('No readable text found in that document.');
+      ctx.log(`${label} > Text Data = ${text.length} character(s)`, 'Info');
+
+      const doc = await PDFLib.PDFDocument.create();
+      const font = await doc.embedFont(PDFLib.StandardFonts.Helvetica);
+      const fontSize = 11, lineH = 15, margin = 50;
+      const usableW = PAGE[0] - margin * 2;
+      let page = doc.addPage(PAGE);
+      let y = PAGE[1] - margin;
+
+      const paragraphs = text.split(/\r?\n/);
+      paragraphs.forEach(function (para, i) {
+        const safe = para.replace(/[^\x20-\xFF]/g, '?');
+        const lines = safe.trim() ? wrapTextToWidth(safe, font, fontSize, usableW) : [''];
+        lines.forEach(function (line) {
+          if (y < margin + lineH) { page = doc.addPage(PAGE); y = PAGE[1] - margin; }
+          try { page.drawText(line, { x: margin, y: y, size: fontSize, font: font }); } catch (e) { /* skip un-encodable line */ }
+          y -= lineH;
+        });
+        if (i % 20 === 0 && ctx.progress) ctx.progress((i / paragraphs.length) * 100);
+      });
+
+      const bytes = await doc.save();
+      ctx.download(new Blob([bytes], { type: 'application/pdf' }), `${stem(f.name)}.pdf`);
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}.pdf (${doc.getPageCount()} page(s))`, 'Success');
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // EXCEL TO PDF
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'excel-to-pdf',
+    title: 'Excel to PDF',
+    icon: '📄',
+    accept: '.xlsx,.xls',
+    backTo: BACK,
+    description: 'Turn a spreadsheet into a PDF, one row per line.',
+    setupHtml: function () {
+      return `
+        <div class="setup-group">
+          <label>Page size</label>
+          <select id="tEpSize" style="width:100%;">
+            <option value="a4">A4 (portrait)</option>
+            <option value="a4l">A4 (landscape)</option>
+            <option value="letter">Letter (portrait)</option>
+          </select>
+        </div>`;
+    },
+    process: async function (files, ctx, label) {
+      need(typeof XLSX !== 'undefined' ? XLSX : undefined, 'the spreadsheet library');
+      need(typeof PDFLib !== 'undefined' ? PDFLib : undefined, 'pdf-lib');
+      const f = files[0];
+      const sizeKey = (document.getElementById('tEpSize') || {}).value || 'a4';
+      const PAGE = PDF_PAGE_SIZES[sizeKey] || PDF_PAGE_SIZES.a4;
+
+      const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }).map(function (r) {
+        return r.map(function (c) { return String(c == null ? '' : c); });
+      });
+      if (!rows.length) throw new Error('That sheet appears to be empty.');
+      ctx.log(`${label} > Sheet = ${wb.SheetNames[0]}`, 'Info');
+      ctx.log(`${label} > Rows read = ${rows.length}`, 'Info');
+
+      const doc = await PDFLib.PDFDocument.create();
+      const font = await doc.embedFont(PDFLib.StandardFonts.Helvetica);
+      const fontSize = 9, lineH = 13, margin = 36;
+      const usableW = PAGE[0] - margin * 2;
+      let page = doc.addPage(PAGE);
+      let y = PAGE[1] - margin;
+
+      const colCount = rows.reduce(function (m, r) { return Math.max(m, r.length); }, 1);
+      const colW = usableW / colCount;
+
+      for (let i = 0; i < rows.length; i++) {
+        if (y < margin + lineH) { page = doc.addPage(PAGE); y = PAGE[1] - margin; }
+        rows[i].forEach(function (cell, c) {
+          let text = String(cell);
+          const maxChars = Math.max(1, Math.floor(colW / (fontSize * 0.5)));
+          if (text.length > maxChars) text = text.slice(0, maxChars - 1) + '…';
+          text = text.replace(/[^\x20-\xFF]/g, '?');
+          try { page.drawText(text, { x: margin + c * colW, y: y, size: fontSize, font: font }); } catch (e) { /* skip un-encodable cell */ }
+        });
+        y -= lineH;
+        if (i % 50 === 0 && ctx.progress) ctx.progress((i / rows.length) * 100);
+      }
+
+      const bytes = await doc.save();
+      ctx.download(new Blob([bytes], { type: 'application/pdf' }), `${stem(f.name)}.pdf`);
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}.pdf (${doc.getPageCount()} page(s))`, 'Success');
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // PASSPORT PHOTO MAKER
+  // ══════════════════════════════════════════════════════════════════
+  const PASSPORT_PRESETS = {
+    'us-2x2': { label: 'US Passport/Visa (2x2 in)', wIn: 2, hIn: 2 },
+    'in-35x45': { label: 'India Passport (35x45 mm)', wMm: 35, hMm: 45 },
+    'uk-35x45': { label: 'UK Passport/Visa (35x45 mm)', wMm: 35, hMm: 45 },
+    'schengen-35x45': { label: 'Schengen Visa (35x45 mm)', wMm: 35, hMm: 45 }
+  };
+
+  ServiceRunner.register({
+    id: 'passport-photo-maker',
+    title: 'Passport Photo Maker',
+    icon: '🪪',
+    accept: 'image/*',
+    backTo: BACK,
+    multiple: false,
+    description: 'Crop and resize a photo to a standard passport/visa size, tiled onto a printable sheet.',
+    setupHtml: function () {
+      return `
+        <div class="setup-group">
+          <label>Size</label>
+          <select id="tPpSize" style="width:100%;">
+            ${Object.keys(PASSPORT_PRESETS).map(function (k) { return `<option value="${k}">${PASSPORT_PRESETS[k].label}</option>`; }).join('')}
+          </select>
+        </div>
+        <div class="setup-group" style="margin-top:10px;">
+          <label>Copies on sheet</label>
+          <select id="tPpCopies" style="width:100%;">
+            <option value="1">1 (just the photo)</option>
+            <option value="4">4</option>
+            <option value="6" selected>6</option>
+            <option value="8">8</option>
+          </select>
+        </div>`;
+    },
+    process: async function (files, ctx, label) {
+      const key = (document.getElementById('tPpSize') || {}).value || 'us-2x2';
+      const copies = parseInt((document.getElementById('tPpCopies') || {}).value, 10) || 6;
+      const preset = PASSPORT_PRESETS[key];
+      const dpi = 300;
+      const pxW = Math.round((preset.wIn || preset.wMm / 25.4) * dpi);
+      const pxH = Math.round((preset.hIn || preset.hMm / 25.4) * dpi);
+
+      const f = files[0];
+      const img = await new Promise(function (resolve, reject) {
+        const el = new Image();
+        el.onload = function () { resolve(el); };
+        el.onerror = function () { reject(new Error('Could not read that image.')); };
+        el.src = URL.createObjectURL(f);
+      });
+
+      // Single cropped photo, centered "cover" crop to the target ratio.
+      const single = document.createElement('canvas');
+      single.width = pxW; single.height = pxH;
+      const sctx = single.getContext('2d');
+      const srcRatio = img.naturalWidth / img.naturalHeight;
+      const dstRatio = pxW / pxH;
+      let sx, sy, sw, sh;
+      if (srcRatio > dstRatio) { sh = img.naturalHeight; sw = sh * dstRatio; sy = 0; sx = (img.naturalWidth - sw) / 2; }
+      else { sw = img.naturalWidth; sh = sw / dstRatio; sx = 0; sy = (img.naturalHeight - sh) / 2; }
+      sctx.drawImage(img, sx, sy, sw, sh, 0, 0, pxW, pxH);
+
+      if (copies <= 1) {
+        const blob = await new Promise(function (resolve) { single.toBlob(resolve, 'image/jpeg', 0.95); });
+        ctx.download(blob, `${stem(f.name)}_passport.jpg`);
+      } else {
+        // Tile onto a 4x6in (300dpi) print-shop-style sheet with a small gap.
+        const gap = 10;
+        const cols = copies <= 4 ? 2 : (copies <= 6 ? 3 : 4);
+        const rows = Math.ceil(copies / cols);
+        const sheet = document.createElement('canvas');
+        sheet.width = cols * pxW + (cols + 1) * gap;
+        sheet.height = rows * pxH + (rows + 1) * gap;
+        const shctx = sheet.getContext('2d');
+        shctx.fillStyle = '#fff';
+        shctx.fillRect(0, 0, sheet.width, sheet.height);
+        for (let i = 0; i < copies; i++) {
+          const col = i % cols, row = Math.floor(i / cols);
+          shctx.drawImage(single, gap + col * (pxW + gap), gap + row * (pxH + gap));
+        }
+        const blob = await new Promise(function (resolve) { sheet.toBlob(resolve, 'image/jpeg', 0.95); });
+        ctx.download(blob, `${stem(f.name)}_passport_sheet.jpg`);
+      }
+      ctx.log(`${label} > Size = ${preset.label}, ${copies} copy/copies`, 'Info');
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}_passport${copies > 1 ? '_sheet' : ''}.jpg`, 'Success');
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // MEME GENERATOR
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'meme-generator',
+    title: 'Meme Generator',
+    icon: '😂',
+    accept: 'image/*',
+    backTo: BACK,
+    multiple: false,
+    description: 'Add top/bottom caption text to an image.',
+    setupHtml: function () {
+      return `
+        <div class="setup-group">
+          <label>Top text</label>
+          <input type="text" id="tMgTop" placeholder="TOP TEXT" style="width:100%;text-transform:uppercase;" />
+        </div>
+        <div class="setup-group" style="margin-top:10px;">
+          <label>Bottom text</label>
+          <input type="text" id="tMgBottom" placeholder="BOTTOM TEXT" style="width:100%;text-transform:uppercase;" />
+        </div>`;
+    },
+    process: async function (files, ctx, label) {
+      const top = ((document.getElementById('tMgTop') || {}).value || '').toUpperCase();
+      const bottom = ((document.getElementById('tMgBottom') || {}).value || '').toUpperCase();
+      if (!top && !bottom) throw new Error('Enter at least a top or bottom caption.');
+
+      const f = files[0];
+      const img = await new Promise(function (resolve, reject) {
+        const el = new Image();
+        el.onload = function () { resolve(el); };
+        el.onerror = function () { reject(new Error('Could not read that image.')); };
+        el.src = URL.createObjectURL(f);
+      });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const cctx = canvas.getContext('2d');
+      cctx.drawImage(img, 0, 0);
+
+      const fontSize = Math.round(canvas.width * 0.09);
+      cctx.font = `bold ${fontSize}px Impact, "Arial Black", sans-serif`;
+      cctx.textAlign = 'center';
+      cctx.fillStyle = '#fff';
+      cctx.strokeStyle = '#000';
+      cctx.lineWidth = Math.max(2, fontSize * 0.06);
+
+      const drawCaption = function (text, y) {
+        if (!text) return;
+        cctx.strokeText(text, canvas.width / 2, y);
+        cctx.fillText(text, canvas.width / 2, y);
+      };
+      drawCaption(top, fontSize * 1.1);
+      drawCaption(bottom, canvas.height - fontSize * 0.4);
+
+      const blob = await new Promise(function (resolve) { canvas.toBlob(resolve, 'image/png'); });
+      ctx.download(blob, `${stem(f.name)}_meme.png`);
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}_meme.png`, 'Success');
+    }
+  });
+
   window.ToolsFiles = {
     onPreset: onPreset,
     fillForm: fillForm,
