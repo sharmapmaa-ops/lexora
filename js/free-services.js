@@ -303,7 +303,9 @@
   function renderEmi() {
     setTimeout(runEmi, 0);   // first paint of the result, after insertion
     return `
-      <div class="service-card">
+      <div class="service-split-layout">
+        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">🏦</span></div>
+        <div class="service-card">
         <h3>🏦 EMI Calculator</h3>
         <div class="card-body">
           ${sliderRow('Loan amount', 'fsEmiAmount', 1000000, 10000, 20000000, 10000, '', '')}
@@ -314,6 +316,7 @@
             Reducing-balance basis. Your lender's figure can differ slightly depending on
             fees, rounding, and how the first instalment is counted.
           </p>
+        </div>
         </div>
       </div>`;
   }
@@ -343,7 +346,9 @@
   function renderGratuity() {
     setTimeout(runGratuity, 0);
     return `
-      <div class="service-card">
+      <div class="service-split-layout">
+        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">💼</span></div>
+        <div class="service-card">
         <h3>💼 Gratuity Calculator</h3>
         <div class="card-body">
           ${sliderRow('Monthly salary (Basic + DA)', 'fsGraSalary', 60000, 5000, 1000000, 1000, '', '')}
@@ -354,6 +359,7 @@
             caps and formulas vary by country and employer - check your own terms and
             treat this as a guide rather than a statement of what you are owed.
           </p>
+        </div>
         </div>
       </div>`;
   }

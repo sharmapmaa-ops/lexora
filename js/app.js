@@ -6792,7 +6792,14 @@
                 // of showing one row per rule. Read it via the same
                 // /api/rules/list the rest of the app already uses, and
                 // flatten approved+pending into real rows here instead.
-                if (name === 'rules') {
+                //
+                // IMPORTANT: the Table dropdown's <option value> is the
+                // real SQL table name (cfg_rules), not the plain resource
+                // name (rules) - this used to check against 'rules' and
+                // silently never matched, so this special case never
+                // actually ran and the generic Id/Data/Updated At view
+                // showed instead. Fixed to check the real table name.
+                if (name === 'cfg_rules') {
                     return dbTableLoadRules(host);
                 }
 
@@ -6858,6 +6865,12 @@
                 'fieldId', 'ruleType', 'ruleText', 'status', 'createdAt', 'approvedAt',
                 'userId', 'id', 'auditLog', 'appliedCount', 'usageCount', 'successCount', 'confidence', 'builtin'
             ];
+            const RULES_TABLE_LABELS = {
+                fieldId: 'fieldId', ruleType: 'ruleType', ruleText: 'ruleText', status: 'status',
+                createdAt: 'createdAt', approvedAt: 'approvedAt', userId: 'userId', id: 'id',
+                auditLog: 'auditLog', appliedCount: 'appliedCount', usageCount: 'usageCount',
+                successCount: 'successCount', confidence: 'confidence', builtin: 'builtin'
+            };
             const RULE_TYPE_OPTIONS = [['validation', 'Validation'], ['logic', 'Logic'], ['mapping', 'Mapping']];
             let _rulesTableRows = [];
 
@@ -6903,7 +6916,7 @@
                     <table class="admin-json-table db-txn-table">
                         <thead>
                             <tr>
-                                ${RULES_TABLE_COLUMNS.map(c => `<th>${escapeHtml(_dbTableLabel(c))}</th>`).join('')}
+                                ${RULES_TABLE_COLUMNS.map(c => `<th>${escapeHtml(RULES_TABLE_LABELS[c] || c)}</th>`).join('')}
                                 <th></th>
                             </tr>
                         </thead>
