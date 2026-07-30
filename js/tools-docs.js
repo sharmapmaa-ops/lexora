@@ -635,6 +635,62 @@
   }
 
   // ══════════════════════════════════════════════════════════════════
+  // CHECK SPELLING & GRAMMAR
+  // ══════════════════════════════════════════════════════════════════
+  function renderGrammarCheck() {
+    return card('✅', 'Check Spelling & Grammar', `
+      <div class="setup-group">
+        <label>Text to check</label>
+        <textarea id="tGcIn" rows="8" style="width:100%;" placeholder="Paste or type your text here…"></textarea>
+      </div>
+      <div class="process-controls" style="margin-top:12px;">
+        <button class="process-btn start-btn" onclick="ToolsDocs.runGrammarCheck()">Check</button>
+      </div>
+      <div id="tGcStatus" style="margin-top:8px;font-size:0.86rem;min-height:1.1em;"></div>
+      <div id="tGcOut" style="margin-top:10px;"></div>
+      <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:12px;">
+        Uses the free LanguageTool public API - suitable for occasional checks, not bulk/automated use.
+      </p>`);
+  }
+
+  async function runGrammarCheck() {
+    const text = val('tGcIn').trim();
+    const statusEl = document.getElementById('tGcStatus');
+    const outEl = document.getElementById('tGcOut');
+    if (!text) { say('tGcStatus', 'Enter some text first.', 'error'); return; }
+    say('tGcStatus', 'Checking…', 'ok');
+    outEl.innerHTML = '';
+    try {
+      const res = await fetch('https://api.languagetool.org/v2/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'text=' + encodeURIComponent(text) + '&language=en-US'
+      });
+      if (!res.ok) throw new Error('The grammar-check service is unavailable right now.');
+      const data = await res.json();
+      const matches = data.matches || [];
+      if (!matches.length) {
+        say('tGcStatus', 'No issues found. Looks good!', 'ok');
+        return;
+      }
+      say('tGcStatus', `${matches.length} issue(s) found.`, 'error');
+      outEl.innerHTML = matches.slice(0, 30).map(function (m) {
+        const snippet = text.slice(Math.max(0, m.offset - 20), m.offset) +
+          '<mark>' + text.slice(m.offset, m.offset + m.length) + '</mark>' +
+          text.slice(m.offset + m.length, m.offset + m.length + 20);
+        const suggestions = (m.replacements || []).slice(0, 3).map(function (r) { return esc(r.value); }).join(', ');
+        return `<div style="padding:10px 0;border-bottom:1px solid rgba(0,0,0,0.06);">
+          <div style="font-size:0.86rem;">${esc(m.message)}</div>
+          <div style="font-size:0.8rem;color:#6b7280;margin-top:4px;font-family:monospace;">…${snippet}…</div>
+          ${suggestions ? `<div style="font-size:0.8rem;color:#1257f5;margin-top:4px;">Suggestion(s): ${suggestions}</div>` : ''}
+        </div>`;
+      }).join('');
+    } catch (e) {
+      say('tGcStatus', e.message || 'Could not check that text.', 'error');
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
   // WORD COUNTER
   // ══════════════════════════════════════════════════════════════════
   function renderWordCount() {
@@ -1367,6 +1423,7 @@
     'receipt-generator':   { label: 'Receipt Generator',   icon: '🧾', desc: 'Build a receipt and download it as a PDF.',    render: function () { return renderDoc('receipt-generator'); } },
     'etl':                 { label: 'ETL',                 icon: '🔀', desc: 'Pick, rename and re-export columns.',         render: renderEtl },
     'word-counter':        { label: 'Word Counter',        icon: '🔢', desc: 'Words, characters, sentences, reading time.', render: renderWordCount },
+    'grammar-check':       { label: 'Check Spelling & Grammar', icon: '✅', desc: 'Find spelling and grammar issues in text.', render: renderGrammarCheck },
     'bmi-calculator':      { label: 'BMI Calculator',       icon: '⚖️', desc: 'Body mass index from height and weight.',     render: renderBmi },
     'percentage-calculator': { label: 'Percentage Calculator', icon: '💯', desc: 'What is X% of Y, and what % is X of Y.',  render: renderPercentage },
     'date-diff-calculator': { label: 'Date Difference Calculator', icon: '📅', desc: 'Days between two dates.',             render: renderDateDiff },
@@ -1397,6 +1454,7 @@
     loadEtl: loadEtl,
     runEtl: runEtl,
     runWordCount: runWordCount,
+    runGrammarCheck: runGrammarCheck,
     runBmi: runBmi,
     runPercentage: runPercentage,
     runDateDiff: runDateDiff,

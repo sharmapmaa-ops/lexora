@@ -290,17 +290,195 @@
     });
   }
 
+  // ══════════════════════════════════════════════════════════════════
+  // CONTENT WRITING TOOL
+  // ══════════════════════════════════════════════════════════════════
+  // Reuses window.lexoraProxyJson (js/translation-offline.js) - the same
+  // secure OpenRouter proxy Translation/OCR/Data Extraction already use.
+  // The endpoint is generic ({model, messages} -> OpenRouter chat
+  // completion), so a plain-text prompt works the same as a vision one.
+  const CONTENT_MODEL = 'openai/gpt-4o-mini';
+
+  function renderContentWriting() {
+    return `
+      <div class="service-card">
+        <h3 class="card-head-row"><span>✍️ Content Writing Tool</span></h3>
+        <div class="card-body">
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            ${fld('Content type', `<select id="tCwType" style="width:100%;">
+                <option value="blog post">Blog post</option>
+                <option value="social media caption">Social media caption</option>
+                <option value="product description">Product description</option>
+                <option value="marketing email">Marketing email</option>
+                <option value="ad copy">Ad copy</option>
+              </select>`)}
+            ${fld('Tone', `<select id="tCwTone" style="width:100%;">
+                <option value="professional">Professional</option>
+                <option value="casual">Casual</option>
+                <option value="persuasive">Persuasive</option>
+                <option value="friendly">Friendly</option>
+              </select>`)}
+            ${fld('Length', `<select id="tCwLength" style="width:100%;">
+                <option value="short (~100 words)">Short</option>
+                <option value="medium (~250 words)" selected>Medium</option>
+                <option value="long (~500 words)">Long</option>
+              </select>`)}
+          </div>
+          <div class="setup-group" style="margin-top:10px;">
+            <label>Topic / what it's about</label>
+            <textarea id="tCwTopic" rows="3" style="width:100%;" placeholder="e.g. Launching a new noise-cancelling headphone for remote workers"></textarea>
+          </div>
+          <div class="process-controls" style="margin-top:12px;">
+            <button class="process-btn start-btn" onclick="PaidCalculators.runContentWriting()">Generate</button>
+          </div>
+          ${billingRow('tCw')}
+          <div class="setup-group" style="margin-top:10px;">
+            <label>Generated content</label>
+            <textarea id="tCwOut" rows="12" style="width:100%;" readonly></textarea>
+          </div>
+          <div class="process-controls" style="margin-top:10px;">
+            <button class="process-btn clear-btn" onclick="PaidCalculators.downloadContent('tCwOut', 'content.txt')">⬇️ Download</button>
+          </div>
+          ${backButton()}
+        </div>
+      </div>`;
+  }
+
+  function runContentWriting() {
+    chargeAndRunAsync('tCw', 'Content Writing Tool', async function () {
+      const type = val('tCwType') || 'blog post';
+      const tone = val('tCwTone') || 'professional';
+      const length = val('tCwLength') || 'medium (~250 words)';
+      const topic = val('tCwTopic').trim();
+      const outEl = document.getElementById('tCwOut');
+      if (!topic) { outEl.value = ''; say2('tCwStatus', 'Describe the topic first.', 'error'); return false; }
+
+      const prompt = `Write a ${tone} ${type} about the following topic. Target length: ${length}. ` +
+        `Return only the finished content, no preamble or explanation.\n\nTopic: ${topic}`;
+
+      const data = await window.lexoraProxyJson({
+        model: CONTENT_MODEL,
+        messages: [{ role: 'user', content: prompt }]
+      });
+      const text = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+      if (!text.trim()) { outEl.value = ''; say2('tCwStatus', 'The model returned no content - please try again.', 'error'); return false; }
+      outEl.value = text.trim();
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // HUMANIZE DOCUMENT TOOL
+  // ══════════════════════════════════════════════════════════════════
+  function renderHumanize() {
+    return `
+      <div class="service-card">
+        <h3 class="card-head-row"><span>🧑 Humanize Document Tool</span></h3>
+        <div class="card-body">
+          <div class="setup-group">
+            <label>Text to humanize</label>
+            <textarea id="tHzIn" rows="8" style="width:100%;" placeholder="Paste AI-generated or stiff-sounding text here…"></textarea>
+          </div>
+          <div class="process-controls" style="margin-top:12px;">
+            <button class="process-btn start-btn" onclick="PaidCalculators.runHumanize()">Humanize</button>
+          </div>
+          ${billingRow('tHz')}
+          <div class="setup-group" style="margin-top:10px;">
+            <label>Humanized version</label>
+            <textarea id="tHzOut" rows="8" style="width:100%;" readonly></textarea>
+          </div>
+          <div class="process-controls" style="margin-top:10px;">
+            <button class="process-btn clear-btn" onclick="PaidCalculators.downloadContent('tHzOut', 'humanized.txt')">⬇️ Download</button>
+          </div>
+          <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:12px;">
+            Rewrites the text to read more naturally (varied sentence rhythm, less
+            repetitive phrasing) - it does not claim to defeat any specific AI-detection tool.
+          </p>
+          ${backButton()}
+        </div>
+      </div>`;
+  }
+
+  function runHumanize() {
+    chargeAndRunAsync('tHz', 'Humanize Document Tool', async function () {
+      const input = val('tHzIn').trim();
+      const outEl = document.getElementById('tHzOut');
+      if (!input) { outEl.value = ''; say2('tHzStatus', 'Paste some text first.', 'error'); return false; }
+
+      const prompt = `Rewrite the following text so it reads more naturally and conversationally - ` +
+        `vary sentence length and structure, avoid repetitive or overly formal AI-sounding phrasing, ` +
+        `but keep the same meaning, facts, and length roughly the same. ` +
+        `Return only the rewritten text, no preamble or explanation.\n\nTEXT:\n${input}`;
+
+      const data = await window.lexoraProxyJson({
+        model: CONTENT_MODEL,
+        messages: [{ role: 'user', content: prompt }]
+      });
+      const text = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+      if (!text.trim()) { outEl.value = ''; say2('tHzStatus', 'The model returned no content - please try again.', 'error'); return false; }
+      outEl.value = text.trim();
+    });
+  }
+
+  function downloadContent(id, filename) {
+    const text = (document.getElementById(id) || {}).value || '';
+    if (!text) return;
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+  }
+
+  // Async counterpart to chargeAndRun (the calculators are all synchronous
+  // math; these two need an awaited API call before deciding whether the
+  // result is good enough to actually charge for).
+  function say2(id, msg, kind) {
+    const el = document.getElementById(id);
+    if (el) { el.style.color = kind === 'error' ? '#b3261e' : '#1b5e20'; el.textContent = msg; }
+  }
+
+  async function chargeAndRunAsync(calcId, label, computeAsync) {
+    const b = window.LexoraBilling;
+    const statusEl = document.getElementById(calcId + 'Status');
+    if (!b) { if (statusEl) statusEl.textContent = 'Billing is unavailable - please reload the page.'; return; }
+    const rate = b.perPageRate();
+    if (rate > 0 && b.balance() < rate) {
+      if (statusEl) { statusEl.style.color = '#b3261e'; statusEl.textContent = `Insufficient balance. ${AMT(rate)} is needed.`; }
+      return;
+    }
+    if (statusEl) { statusEl.style.color = '#1b5e20'; statusEl.textContent = 'Generating…'; }
+    let ok;
+    try {
+      ok = await computeAsync();
+    } catch (e) {
+      if (statusEl) { statusEl.style.color = '#b3261e'; statusEl.textContent = e.message || 'Something went wrong - please try again.'; }
+      return;
+    }
+    if (ok === false) return; // computeAsync already showed its own message
+    if (rate > 0) {
+      b.charge(`${label} - generation`, rate);
+      if (window.notifyProcessCompletion) window.notifyProcessCompletion(label, 'Generation', rate, '');
+    }
+    if (statusEl) { statusEl.style.color = '#1b5e20'; statusEl.textContent = rate > 0 ? `${AMT(rate)} charged.` : 'Done.'; }
+  }
+
   window.PaidCalculators = {
     render: function (id) {
       if (id === 'sip-calculator') return renderSip();
       if (id === 'income-tax-calculator') return renderIncomeTax();
       if (id === 'compound-interest-calculator') return renderCompoundInterest();
       if (id === 'loan-eligibility-calculator') return renderLoanEligibility();
+      if (id === 'content-writing-tool') return renderContentWriting();
+      if (id === 'humanize-document-tool') return renderHumanize();
       return '<div class="content-section"><p>This calculator is not available.</p></div>';
     },
     runSip: runSip,
     runIncomeTax: runIncomeTax,
     runCompoundInterest: runCompoundInterest,
-    runLoanEligibility: runLoanEligibility
+    runLoanEligibility: runLoanEligibility,
+    runContentWriting: runContentWriting,
+    runHumanize: runHumanize,
+    downloadContent: downloadContent
   };
 })();

@@ -1224,6 +1224,175 @@
     }
   });
 
+  // Encodes a decoded AudioBuffer as a standard 16-bit PCM WAV file - no
+  // external library needed, this format is simple enough to write by
+  // hand. Used by both Video to Audio and the audio path of Trim.
+  function audioBufferToWav(buffer) {
+    const numChannels = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const numFrames = buffer.length;
+    const bytesPerSample = 2;
+    const blockAlign = numChannels * bytesPerSample;
+    const dataSize = numFrames * blockAlign;
+    const bufferOut = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(bufferOut);
+
+    const writeStr = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bytesPerSample * 8, true);
+    writeStr(36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    const channels = [];
+    for (let c = 0; c < numChannels; c++) channels.push(buffer.getChannelData(c));
+    let offset = 44;
+    for (let i = 0; i < numFrames; i++) {
+      for (let c = 0; c < numChannels; c++) {
+        const sample = Math.max(-1, Math.min(1, channels[c][i]));
+        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+        offset += 2;
+      }
+    }
+    return new Blob([bufferOut], { type: 'audio/wav' });
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // VIDEO TO AUDIO
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'video-to-audio',
+    title: 'Video to Audio',
+    icon: '🎵',
+    accept: 'video/*',
+    backTo: BACK,
+    multiple: false,
+    description: 'Pull the audio track out of a video as a WAV file.',
+    setupHtml: function () { return ''; },
+    process: async function (files, ctx, label) {
+      const f = files[0];
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) throw new Error('This browser does not support audio decoding.');
+      const actx = new AudioContextClass();
+      // decodeAudioData pulls just the audio track out of a video
+      // container directly - no playback, no ffmpeg needed - as long as
+      // the browser's media engine recognizes the audio codec inside it.
+      const audioBuffer = await actx.decodeAudioData(await f.arrayBuffer())
+        .catch(function () { throw new Error('Could not read an audio track from this video - the format/codec may not be supported.'); });
+      ctx.log(`${label} > Duration = ${audioBuffer.duration.toFixed(1)}s, ${audioBuffer.numberOfChannels} channel(s)`, 'Info');
+      const blob = audioBufferToWav(audioBuffer);
+      ctx.download(blob, `${stem(f.name)}.wav`);
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}.wav`, 'Success');
+      actx.close();
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // TRIM VIDEO/AUDIO
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'trim-video-audio',
+    title: 'Trim Video/Audio',
+    icon: '✂️',
+    accept: 'video/*,audio/*',
+    backTo: BACK,
+    multiple: false,
+    description: 'Cut a video or audio file down to a start/end time.',
+    setupHtml: function () {
+      return `
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <div class="setup-group" style="flex:1;"><label>Start (seconds)</label><input type="number" id="tTvStart" value="0" min="0" step="0.1" style="width:100%;" /></div>
+          <div class="setup-group" style="flex:1;"><label>End (seconds)</label><input type="number" id="tTvEnd" value="10" min="0" step="0.1" style="width:100%;" /></div>
+        </div>
+        <div style="font-size:0.78rem;color:rgba(0,0,0,0.5);margin-top:4px;">
+          For video files, trimming plays the clip in the background to re-record it - it takes about as long as the trimmed length itself.
+        </div>`;
+    },
+    process: async function (files, ctx, label) {
+      const start = Math.max(0, parseFloat((document.getElementById('tTvStart') || {}).value) || 0);
+      const end = parseFloat((document.getElementById('tTvEnd') || {}).value);
+      if (!Number.isFinite(end) || end <= start) throw new Error('End time must be after the start time.');
+      const f = files[0];
+      const isAudio = f.type.indexOf('audio') === 0 || /\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(f.name);
+
+      if (isAudio) {
+        // Audio: decode, slice the buffer directly, re-encode as WAV -
+        // fast, sample-accurate, no real-time playback needed.
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) throw new Error('This browser does not support audio decoding.');
+        const actx = new AudioContextClass();
+        const buffer = await actx.decodeAudioData(await f.arrayBuffer());
+        const clampedEnd = Math.min(end, buffer.duration);
+        if (start >= clampedEnd) throw new Error(`That file is only ${buffer.duration.toFixed(1)}s long - start must be before the end.`);
+        const startFrame = Math.floor(start * buffer.sampleRate);
+        const endFrame = Math.floor(clampedEnd * buffer.sampleRate);
+        const frameCount = endFrame - startFrame;
+        const trimmed = actx.createBuffer(buffer.numberOfChannels, frameCount, buffer.sampleRate);
+        for (let c = 0; c < buffer.numberOfChannels; c++) {
+          trimmed.copyToChannel(buffer.getChannelData(c).subarray(startFrame, endFrame), c);
+        }
+        const blob = audioBufferToWav(trimmed);
+        ctx.download(blob, `${stem(f.name)}_trimmed.wav`);
+        ctx.log(`${label} > Trimmed to ${start}s-${clampedEnd.toFixed(1)}s`, 'Info');
+        ctx.log(`${label} > Generate Output > ${stem(f.name)}_trimmed.wav`, 'Success');
+        actx.close();
+        return;
+      }
+
+      // Video: play the clip in a hidden <video> element and re-record
+      // it live via captureStream()+MediaRecorder between start and end -
+      // there's no way to cut video frames out of a file directly in the
+      // browser without a library like ffmpeg.wasm, so this is the
+      // browser-native alternative. Output is WebM (MediaRecorder's
+      // native format), and re-encodes the clip rather than being a
+      // lossless cut.
+      if (typeof MediaRecorder === 'undefined') throw new Error('This browser does not support video recording.');
+      const video = document.createElement('video');
+      video.src = URL.createObjectURL(f);
+      video.muted = false;
+      video.playsInline = true;
+      await new Promise(function (resolve, reject) {
+        video.onloadedmetadata = resolve;
+        video.onerror = function () { reject(new Error('Could not read that video file.')); };
+      });
+      const clampedEnd = Math.min(end, video.duration);
+      if (start >= clampedEnd) throw new Error(`That file is only ${video.duration.toFixed(1)}s long - start must be before the end.`);
+
+      const stream = video.captureStream ? video.captureStream() : video.mozCaptureStream();
+      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+      const chunks = [];
+      recorder.ondataavailable = function (e) { if (e.data.size) chunks.push(e.data); };
+
+      video.currentTime = start;
+      await new Promise(function (resolve) { video.onseeked = resolve; });
+
+      await new Promise(function (resolve, reject) {
+        recorder.onstop = resolve;
+        recorder.start();
+        video.play().catch(reject);
+        const checkEnd = function () {
+          if (video.currentTime >= clampedEnd || video.ended) { recorder.stop(); video.pause(); return; }
+          if (ctx.progress) ctx.progress(((video.currentTime - start) / (clampedEnd - start)) * 100);
+          requestAnimationFrame(checkEnd);
+        };
+        requestAnimationFrame(checkEnd);
+      });
+
+      const blob = new Blob(chunks, { type: 'video/webm' });
+      ctx.download(blob, `${stem(f.name)}_trimmed.webm`);
+      ctx.log(`${label} > Trimmed to ${start}s-${clampedEnd.toFixed(1)}s`, 'Info');
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}_trimmed.webm`, 'Success');
+    }
+  });
+
   window.ToolsFiles = {
     onPreset: onPreset,
     fillForm: fillForm,
