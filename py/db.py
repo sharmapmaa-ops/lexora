@@ -793,6 +793,14 @@ DOCUMENT_RESOURCES = (
     # Plans list (json/plans.json tha) - array of plan objects, id field
     # hi document pattern ke liye kaafi hai.
     "plans",
+    # Services catalog (item 3, Plans & Offers admin) - one row per
+    # service (paid + free, ~60 total), lets Admin move a service between
+    # Free/Paid and set its billing unit from the Admin table instead of
+    # that being hardcoded in js/free-services.js's GROUPS list. Frontend
+    # reads this at boot (js/app.js loadAppData -> SERVICES_CATALOG) and
+    # falls back to the old hardcoded classification for any service not
+    # yet present here, so an empty/partial table never hides a service.
+    "services-catalog",
 )
 
 DB_BACKED_RESOURCES = ("payment-history", "notifications") + DOCUMENT_RESOURCES
@@ -952,6 +960,22 @@ VIRTUAL_TABLES = {
         # edit karne layak nahi - wo apne aap update hoti hai.
         "readonly_fields": {"id", "updatedAt"},
     },
+    "doc_services_catalog": {
+        "kind": "document",
+        "resource": "services-catalog",
+        "fields": ["id", "name", "type", "billingUnit", "image"],
+        "types": {},
+        "jsonb_defaults": {},
+        "field_defaults": {"type": "Free", "billingUnit": "document"},
+        "select_options": {
+            "type": ["Paid", "Free"],
+            "billingUnit": [["page", "Per Page"], ["document", "Per Document"], ["process", "Per Process"]],
+        },
+        # 'id' rename allow nahi - baaki app isi id se service ko
+        # dhoondhta/render karta hai (catalogue placement, billing
+        # lookup); rename se wo service "gayab" ho jayegi.
+        "readonly_fields": {"id"},
+    },
 }
 
 # Human-readable column headers for the Admin Database table viewer -
@@ -969,6 +993,8 @@ VIRTUAL_TABLE_LABELS = {
                   "apiFeature": "API Feature"},
     "doc_contact_submissions": {"userId": "User ID", "id": "Ticket ID",
                                  "date": "Created At", "updatedAt": "Updated At"},
+    "doc_services_catalog": {"id": "Service ID", "name": "Name", "type": "Paid/Free",
+                              "billingUnit": "Paid Billing Unit", "image": "Image"},
 }
 
 

@@ -66,8 +66,8 @@
     // text-layer fallback (that's what Translation/Data Extraction are for).
     const useOcr = true;
 
-    const rate = billing.perPageRate();
-    const perDocument = billing.isPerDocument();
+    const rate = billing.perPageRate('ocr');
+    const perDocument = billing.isPerDocument('ocr');
     const minNeeded = rate * selected.length;
     log(`System > Checking Wallet Balance > ${CURRENCY_SYMBOL}${minNeeded.toFixed(2)} required for ${selected.length} file(s) (${billing.planName()} plan: OCR ${CURRENCY_SYMBOL}${rate}${perDocument ? '/document' : '/page'})`, 'Info');
     if (minNeeded > 0 && billing.balance() < minNeeded) {
@@ -223,8 +223,8 @@
     if (!b) return '';
     const sel = STATE.files.filter(function (f) { return f.selected !== false; });
     if (!sel.length) return '';
-    const rate = b.perPageRate();
-    const perDocument = b.isPerDocument();
+    const rate = b.perPageRate('ocr');
+    const perDocument = b.isPerDocument('ocr');
     const total = perDocument ? rate * sel.length : sel.reduce(function (s, f) { return s + rate * Math.max(1, f.pageCount || 1); }, 0);
     return `💰 Rate: ${CURRENCY_SYMBOL}${rate.toFixed(2)}${perDocument ? '/document' : '/page'} · Est. total: ${CURRENCY_SYMBOL}${total.toFixed(2)} for ${sel.length} selected file(s)`;
   }

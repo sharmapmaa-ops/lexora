@@ -314,8 +314,8 @@ Return ONLY this JSON, nothing else:
     const ocrEl = document.getElementById('baiOcr');
     const useOcr = ocrEl ? !!ocrEl.checked : true;
 
-    const rate = billing.perPageRate();
-    const perDocument = billing.isPerDocument();
+    const rate = billing.perPageRate('bai2');
+    const perDocument = billing.isPerDocument('bai2');
     const minNeeded = rate * selected.length;
     log(`System > Checking Wallet Balance > ${CURRENCY_SYMBOL}${minNeeded.toFixed(2)} required for ${selected.length} file(s) (${billing.planName()} plan: BAI2 ${CURRENCY_SYMBOL}${rate}${perDocument ? '/document' : '/page'})`, 'Info');
     if (minNeeded > 0 && billing.balance() < minNeeded) {
@@ -428,8 +428,8 @@ Return ONLY this JSON, nothing else:
     if (!b) return '';
     const sel = STATE.files.filter(function (f) { return f.selected !== false; });
     if (!sel.length) return '';
-    const rate = b.perPageRate();
-    const perDocument = b.isPerDocument();
+    const rate = b.perPageRate('bai2');
+    const perDocument = b.isPerDocument('bai2');
     const total = perDocument ? rate * sel.length : sel.reduce(function (s, f) { return s + rate * Math.max(1, f.pageCount || 1); }, 0);
     return `💰 Rate: ${CURRENCY_SYMBOL}${rate.toFixed(2)}${perDocument ? '/document' : '/page'} · Est. total: ${CURRENCY_SYMBOL}${total.toFixed(2)} for ${sel.length} selected file(s)`;
   }

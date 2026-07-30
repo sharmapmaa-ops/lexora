@@ -5068,7 +5068,7 @@
        than this just show blank space below their last row; tables
        taller than this scroll internally. This intentionally overrides
        the older "let it size to content" approach for this one element. */
-    height: 400px;
+    height: 200px;
     overflow: auto;
     border: 1px solid rgba(0,0,139,0.15);
     border-radius: 8px;

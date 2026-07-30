@@ -245,6 +245,12 @@
             // ============================================================
             let COMPANY_INFO = null;
             let PLANS_DATA = [];
+            // Admin-editable service registry (Plans & Offers > Services
+            // table) - keyed by service id. Empty/missing entries fall
+            // back to each service's existing hardcoded behavior, so a
+            // partially-seeded or not-yet-seeded catalog never hides or
+            // breaks anything.
+            let SERVICES_CATALOG = {};
             let planHistory = [];
 
             // Item 3 - looks up the current user's assigned plan (users.json
@@ -267,14 +273,37 @@
                 return ['Standard', 'Professional'].includes(getMyPlan().name);
             }
 
+            // Services Catalog (Plans & Offers admin) can override a
+            // specific service's billing unit independent of the plan's
+            // own setting - e.g. OCR billed Per Page while Translation
+            // stays Per Document, even on the same plan. Falls back to
+            // the plan's billingUnit when the service isn't in the
+            // catalog yet or has no override set.
+            function getServiceBillingUnit(serviceId) {
+                const override = SERVICES_CATALOG[serviceId] && SERVICES_CATALOG[serviceId].billingUnit;
+                if (override === 'page' || override === 'document') return override;
+                return getMyPlan().billingUnit || 'document';
+            }
+
+            // A normally-paid service marked "Free" in the Services
+            // Catalog charges nothing, regardless of plan - this is how
+            // Admin can make an individual paid service free without
+            // needing to move its whole page/UI into the Free Services
+            // catalogue (which would need separate work per service).
+            function isServiceFreeOverride(serviceId) {
+                const entry = SERVICES_CATALOG[serviceId];
+                return !!(entry && entry.type === 'Free');
+            }
+
             function getServicePrice(serviceId, pageCount) {
                 const plan = getMyPlan();
-                const unit = plan.billingUnit || 'document';
-                if (serviceId === 'translation') {
+                if (isServiceFreeOverride(serviceId)) return 0;
+                const unit = getServiceBillingUnit(serviceId);
+                if (serviceId === 'translation' || serviceId === 'ocr' || serviceId === 'bai2' || serviceId === 'data-extraction') {
                     // Translation/OCR/BAI2/Data Extraction all share this
-                    // same rate field and billing unit - flat per-document
-                    // (the default/current setting) unless the plan is
-                    // explicitly configured as per-page.
+                    // same rate field - flat per-document (the default/
+                    // current setting) unless this service (or, failing
+                    // that, the plan) is configured as per-page.
                     const perUnit = plan.pricePerTranslation != null ? plan.pricePerTranslation : 1;
                     return unit === 'page' ? perUnit * Math.max(1, pageCount || 1) : perUnit;
                 }
@@ -283,13 +312,15 @@
                 return unit === 'page' ? perUnit * Math.max(1, pageCount || 1) : perUnit;
             }
 
-            // True when the current plan bills these services as one flat
-            // charge per finished file, rather than multiplying by how many
-            // pages it has. This is what actually decides whether the
-            // per-page accumulation loops below should charge once per page
-            // or just once per file - the rate alone doesn't tell you that.
-            function isPerDocumentBilling() {
-                return (getMyPlan().billingUnit || 'document') !== 'page';
+            // True when this service bills as one flat charge per
+            // finished file, rather than multiplying by how many pages it
+            // has. This is what actually decides whether the per-page
+            // accumulation loops below should charge once per page or
+            // just once per file - the rate alone doesn't tell you that.
+            // Checks this specific service's Catalog override first, the
+            // plan's own setting otherwise.
+            function isPerDocumentBilling(serviceId) {
+                return getServiceBillingUnit(serviceId) !== 'page';
             }
 
             // Est. charge shown on the Uploaded Files card - only when at
@@ -2135,7 +2166,7 @@
                             refreshServicePage('translation');
 
                             const perPageRate = getServicePrice('translation', 1);
-                            const perDocument = isPerDocumentBilling();
+                            const perDocument = isPerDocumentBilling('translation');
                             let totalJsonCalls = 0, totalImageCalls = 0;
                             let totalCharged = 0, pagesCharged = 0;
 
@@ -6892,6 +6923,7 @@
                             <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${escapeHtml(name)}')">+ Add Row</button>
                             <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Selected</button>
                             <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
+                            ${name === 'doc_services_catalog' ? `<button class="admin-btn" onclick="seedServicesCatalog()">\u{1F331} Seed Missing Services</button>` : ''}
                             <span class="admin-toolbar-spacer"></span>
                             <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
                             <button class="admin-btn admin-btn-save" onclick="runDbMigration()">\u2934 Run migration</button>
@@ -7503,6 +7535,45 @@
                     </div>
                 `;
             }
+
+            // Gathers every currently-registered service (both free tools
+            // and the fixed set of paid ones) and asks the backend to add
+            // any not already a row in the Services Catalog - existing
+            // rows (possibly already edited by an Admin) are left alone.
+            window.seedServicesCatalog = async function() {
+                const services = [];
+                const PAID_SERVICE_IDS = [
+                    'lease-abstraction', 'translation', 'ocr', 'bai2', 'data-extraction',
+                    'content-writing-tool', 'humanize-document-tool',
+                ];
+                PAID_SERVICE_IDS.forEach(function (id) {
+                    services.push({ id: id, name: id, type: 'Paid', billingUnit: 'document' });
+                });
+                try {
+                    if (window.FreeServices && typeof FreeServices.catalogue === 'function') {
+                        FreeServices.catalogue().forEach(function (group) {
+                            (group.tools || []).forEach(function (t) {
+                                if (t && t.id) services.push({ id: t.id, name: t.label || t.id, type: 'Free', billingUnit: 'document' });
+                            });
+                        });
+                    }
+                } catch (e) { /* free catalogue not ready yet - paid services still get seeded */ }
+
+                try {
+                    const res = await authFetch('/api/admin/services-catalog-seed', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ services: services })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not seed the Services Catalog.');
+                    showMessage('✅ Seeded', `Added ${data.added} new service(s). Total in catalog: ${data.total}.`, ['OK']);
+                    const host = document.getElementById('dbActiveTableBody');
+                    if (host) dbTableLoad('doc_services_catalog');
+                } catch (err) {
+                    showWarning(err.message || 'Could not seed the Services Catalog.');
+                }
+            };
 
             async function loadMaintenanceCard() {
                 const body = document.getElementById('maintenanceCardBody');
@@ -9552,6 +9623,11 @@
                 },
                 'plans-offers': {
                     body: function() {
+                        const planFrequencySuffix = (freq) => {
+                            if (freq === 'Daily') return 'day';
+                            if (freq === 'Yearly') return 'year';
+                            return 'month'; // Monthly, or not set - matches the previous always-"/month" behavior
+                        };
                         const myPlan = getMyPlan();
                         const myPlanName = myPlan.name;
                         const isAdminOrDev = isAdminOrDeveloper();
@@ -9587,11 +9663,14 @@
                                     ${tier === 'is-free' ? '<div class="plan-free-tag">FREE</div>' : ''}
                                     <div class="plan-icon">${plan.icon || ''}</div>
                                     <div class="plan-name">${escapeHtml(plan.name)}</div>
-                                    <div class="plan-price">\u20b9${plan.monthlyPrice}<span>/month</span></div>
+                                    <div class="plan-price">\u20b9${plan.monthlyPrice}<span>/${planFrequencySuffix(plan.frequency)}</span></div>
                                     <ul class="plan-features">
                                         <li>${tick}\u20b9${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / ${escapeHtml(plan.billingUnit || 'document')}</li>
+                                        ${plan.paidFeature === 'Yes' ? `<li>${tick}All Paid Services</li>` : ''}
+                                        ${plan.freeFeature === 'Yes' ? `<li>${tick}All Free Services</li>` : (freeServiceNames.length ? `<li>${tick}All Free Services</li>` : '')}
+                                        ${plan.supportFeature === 'Yes' ? `<li>${tick}Email Support</li>` : ''}
+                                        ${plan.apiFeature === 'Yes' ? `<li>${tick}API Documentation Access</li>` : ''}
                                         ${(plan.features || []).map(f => `<li>${tick}${escapeHtml(f)}</li>`).join('')}
-                                        ${freeServiceNames.length ? `<li>${tick}All Free Services</li>` : ''}
                                     </ul>
                                     <button class="plan-cta-btn ${isMine ? 'is-current' : ''}" ${isMine ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
                                         ${ctaLabel}
@@ -10005,11 +10084,12 @@
             };
 
             window.LexoraBilling = {
-                perPageRate: function () { return getServicePrice('translation', 1); },
-                isPerDocument: function () { return isPerDocumentBilling(); },
+                perPageRate: function (serviceId) { return getServicePrice(serviceId || 'translation', 1); },
+                isPerDocument: function (serviceId) { return isPerDocumentBilling(serviceId); },
                 planName: function () { return getMyPlan().name; },
                 balance: function () { return getCurrentBalance(); },
                 charge: function (description, amount) {
+                    if (!amount || amount <= 0) return null; // Free-override or already-zero rate - nothing to record
                     const now = new Date();
                     const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
                     paymentHistory.push({
@@ -10128,7 +10208,8 @@
                     translationActivityLogData,
                     notificationsData,
                     plansData,
-                    planHistoryData
+                    planHistoryData,
+                    servicesCatalogData
                 ] = await Promise.all([
                     fetchJSON('/api/data/payment-methods'),
                     // Postgres chalu ho to ye route DB se deta hai,
@@ -10145,10 +10226,13 @@
                     fetchJSON('/api/data/translation-activity-log'),
                     fetchJSON('/api/data/notifications'),
                     fetchJSON('/api/data/plans'),
-                    fetchJSON('/api/data/plan-history')
+                    fetchJSON('/api/data/plan-history'),
+                    fetchJSON('/api/data/services-catalog').catch(() => [])
                 ]);
                 PLANS_DATA = plansData || [];
                 planHistory = planHistoryData || [];
+                SERVICES_CATALOG = {};
+                (servicesCatalogData || []).forEach(function (s) { if (s && s.id) SERVICES_CATALOG[s.id] = s; });
 
                 paymentMethods = paymentMethodsData;
                 paymentHistory = paymentHistoryData;

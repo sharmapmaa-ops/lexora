@@ -375,8 +375,8 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     // Page counts aren't known until each PDF is opened, so this is a
     // minimum: at least one page per selected file. Real billing happens
     // per page below.
-    const perPageRate = billing.perPageRate();
-    const perDocument = billing.isPerDocument();
+    const perPageRate = billing.perPageRate('data-extraction');
+    const perDocument = billing.isPerDocument('data-extraction');
     const minNeeded = perPageRate * selected.length;
     const balance = billing.balance();
     log(`System > Checking Wallet Balance > ${CURRENCY_SYMBOL}${minNeeded.toFixed(2)} required for ${selected.length} file(s) (${billing.planName()} plan: Data Extraction ${CURRENCY_SYMBOL}${perPageRate}${perDocument ? '/document' : '/page'})`, 'Info');
@@ -530,8 +530,8 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     if (!b) return '';
     const sel = STATE.files.filter(function (f) { return f.selected !== false; });
     if (!sel.length) return '';
-    const rate = b.perPageRate();
-    const perDocument = b.isPerDocument();
+    const rate = b.perPageRate('data-extraction');
+    const perDocument = b.isPerDocument('data-extraction');
     const total = perDocument ? rate * sel.length : sel.reduce(function (sum, f) { return sum + rate * Math.max(1, f.pageCount || 1); }, 0);
     return `💰 Rate: ${CURRENCY_SYMBOL}${rate.toFixed(2)}${perDocument ? '/document' : '/page'} · Est. total: ${CURRENCY_SYMBOL}${total.toFixed(2)} for ${sel.length} selected file(s)`;
   }

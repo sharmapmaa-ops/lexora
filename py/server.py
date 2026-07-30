@@ -759,6 +759,9 @@ ALLOWED_RESOURCES = {
     "agents",
     "company",
     "plans",
+    # Services Catalog (Plans & Offers admin > Services table) - lets
+    # Admin move a service between Paid/Free and set its billing unit.
+    "services-catalog",
 }
 
 # json files that must never be served as static files (contain secrets).
@@ -2522,6 +2525,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/rules/delete-pending": self._handle_rules_delete_pending,
             "/api/rules/delete-approved": self._handle_rules_delete_approved,
             "/api/rules/add-blank": self._handle_rules_add_blank,
+            "/api/admin/services-catalog-seed": self._handle_services_catalog_seed,
             "/api/rules/update-approved": self._handle_rules_update_approved,
             "/api/lease/generate-pdf": self._handle_lease_generate_pdf,
             "/api/translation/upload": self._handle_translation_upload,
@@ -4506,6 +4510,43 @@ class Handler(SimpleHTTPRequestHandler):
             applied += 1
         self._save_rules(data)
         return 200, {"ok": True, "updated": applied}
+
+    def _handle_services_catalog_seed(self, body):
+        """Admin table's "Seed missing services" - the frontend already
+        knows every registered service (js/free-services.js's
+        allTools()), this just bulk-adds any of them not already a row
+        here yet. Never touches/overwrites an existing row, so an Admin's
+        earlier edits (moving a service between Paid/Free, changing its
+        billing unit) always survive a re-seed after new services get
+        added to the app later."""
+        self._require_role(("Admin", "Developer"))
+        incoming = body.get("services")
+        if not isinstance(incoming, list):
+            raise ValueError("services must be a list.")
+        if db is None or not db.is_enabled():
+            raise ValueError("Database is not configured.")
+
+        existing = db.list_documents("services-catalog")
+        existing_ids = {str(d.get("id")) for d in existing}
+        added = 0
+        for svc in incoming:
+            if not isinstance(svc, dict):
+                continue
+            sid = str(svc.get("id") or "").strip()
+            if not sid or sid in existing_ids:
+                continue
+            existing.append({
+                "id": sid,
+                "name": svc.get("name") or sid,
+                "type": svc.get("type") or "Free",
+                "billingUnit": svc.get("billingUnit") or "document",
+                "image": svc.get("image") or (sid + ".jpg"),
+            })
+            existing_ids.add(sid)
+            added += 1
+        if added:
+            db.replace_documents("services-catalog", existing)
+        return 200, {"ok": True, "added": added, "total": len(existing)}
 
     def _handle_rules_add_blank(self, body):
         """Admin table's "+ Add Row" - creates a blank pending rule ready
