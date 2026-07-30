@@ -850,6 +850,7 @@
                                 <h3>⚙️ Setup</h3>
                                 <div class="card-body">
                                     ${outputFieldHTML}
+                                    ${window.StorageDestinations ? StorageDestinations.renderSelectorHtml(serviceId + 'Destination') : ''}
 
                                     ${serviceId === 'lease-abstraction' ? `
                                     <div class="setup-row-split">
@@ -2574,11 +2575,28 @@
             };
 
             // Bug 4: translation output browser-only download (session blob)
-            window.downloadSessionBlob = function(fileId) {
+            window.downloadSessionBlob = async function(fileId) {
                 const entry = translationBlobStore[fileId];
                 if (!entry || !entry.blob) {
                     showWarning('This file is only available during the session it was processed in. Please run it again to download.');
                     return;
+                }
+                // Which service this file belongs to, so the right
+                // destination selector gets checked (Translation and
+                // Lease Abstraction each have their own).
+                const isLeaseFile = leaseFiles.some(f => f.id === fileId);
+                const destInputId = (isLeaseFile ? 'lease-abstraction' : 'translation') + 'Destination';
+                try {
+                    if (window.StorageDestinations) {
+                        const result = await StorageDestinations.saveFile(destInputId, entry.blob, entry.name || 'Translation.docx');
+                        if (result.provider !== 'local') {
+                            const providerLabel = window.StorageDestinations.labelFor(result.provider);
+                            showMessage('✅ Saved', `${entry.name} was saved to ${providerLabel}.`, ['OK']);
+                            return;
+                        }
+                    }
+                } catch (err) {
+                    showWarning((err.message || 'Could not save to that destination') + ' - downloading locally instead.');
                 }
                 const url = URL.createObjectURL(entry.blob);
                 const a = document.createElement('a');
@@ -10483,13 +10501,9 @@
                 return `
                     <div class="auth-oauth-divider"><span>or continue with</span></div>
                     <div class="auth-oauth-row">
-                        <button class="auth-oauth-btn" onclick="startOAuthLogin('google')">
+                        <button class="auth-oauth-btn" onclick="startOAuthLogin('google')" style="grid-column:1/-1;">
                             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#4285F4" d="M23.5 12.27c0-.79-.07-1.54-.2-2.27H12v4.3h6.47c-.28 1.5-1.13 2.77-2.4 3.62v3.01h3.88c2.27-2.09 3.55-5.17 3.55-8.66z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.87-3.01c-1.08.72-2.45 1.15-4.06 1.15-3.13 0-5.78-2.11-6.73-4.96H1.28v3.11C3.26 21.3 7.31 24 12 24z"/><path fill="#FBBC05" d="M5.27 14.27a7.2 7.2 0 0 1-.38-2.27c0-.79.14-1.55.38-2.27V6.62H1.28A11.98 11.98 0 0 0 0 12c0 1.94.46 3.77 1.28 5.38z"/><path fill="#EA4335" d="M12 4.77c1.77 0 3.35.61 4.6 1.8l3.44-3.44C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.28 6.62l3.99 3.11C6.22 6.88 8.87 4.77 12 4.77z"/></svg>
                             Google
-                        </button>
-                        <button class="auth-oauth-btn" onclick="startOAuthLogin('facebook')">
-                            <svg viewBox="0 0 24 24" width="18" height="18" fill="#1877F2"><path d="M24 12.07C24 5.4 18.63 0 12 0S0 5.4 0 12.07C0 18.1 4.39 23.1 10.13 24v-8.44H7.08v-3.49h3.05V9.41c0-3.02 1.79-4.69 4.53-4.69 1.31 0 2.68.24 2.68.24v2.96h-1.51c-1.49 0-1.95.93-1.95 1.89v2.26h3.32l-.53 3.49h-2.79V24C19.61 23.1 24 18.1 24 12.07z"/></svg>
-                            Facebook
                         </button>
                     </div>`;
             }

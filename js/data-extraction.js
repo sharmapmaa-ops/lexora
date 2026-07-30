@@ -276,12 +276,24 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     return { heads: heads, body: body };
   }
 
-  function download(blob, name) {
+  async function download(blob, name) {
+    if (window.StorageDestinations) {
+      try {
+        const result = await StorageDestinations.saveFile('deDestination', blob, name);
+        if (result.provider !== 'local') {
+          setStatus(`Saved to ${StorageDestinations.labelFor(result.provider)}.`, 'ok');
+          return;
+        }
+      } catch (err) {
+        setStatus((err.message || 'Could not save to that destination') + ' - downloading locally instead.', 'error');
+      }
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = name;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+    setStatus('Downloaded.', 'ok');
   }
 
   function csvCell(v) {
@@ -643,6 +655,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
                   </label>
                 </div>
               </div>
+              ${window.StorageDestinations ? StorageDestinations.renderSelectorHtml('deDestination') : ''}
               </div>
               <div class="setup-group" style="margin-top:8px;">
                 <div class="process-controls">

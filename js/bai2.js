@@ -41,12 +41,24 @@
     el.textContent = msg || '';
   }
 
-  function download(blob, name) {
+  async function download(blob, name) {
+    if (window.StorageDestinations) {
+      try {
+        const result = await StorageDestinations.saveFile('bai2Destination', blob, name);
+        if (result.provider !== 'local') {
+          setStatus(`Saved to ${StorageDestinations.labelFor(result.provider)}.`, 'ok');
+          return;
+        }
+      } catch (err) {
+        setStatus((err.message || 'Could not save to that destination') + ' - downloading locally instead.', 'error');
+      }
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = name;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+    setStatus('Downloaded.', 'ok');
   }
 
   // ── reading the statement ──────────────────────────────────────────
@@ -268,7 +280,6 @@ Return ONLY this JSON, nothing else:
       }));
       download(new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), `statement_${stamp}.csv`);
     }
-    setStatus('Downloaded.', 'ok');
   }
 
   function downloadOne(uid) {
@@ -513,6 +524,9 @@ Return ONLY this JSON, nothing else:
                   <option value="csv">CSV (.csv)</option>
                   <option value="json">JSON (.json)</option>
                 </select>
+              </div>
+              ${window.StorageDestinations ? StorageDestinations.renderSelectorHtml('bai2Destination') : ''}
+              <div class="setup-group">
                 <div style="display:flex;align-items:center;gap:20px;margin-top:10px;">
                   <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
                          title="Checked: each page is read by the vision model - needed for scans and images. Unchecked: faster local text read, for text-based PDFs only.">

@@ -3728,7 +3728,7 @@
 }
 
 .admin-db-card {
-    height: 450px;
+    height: 450px !important;
     max-height: 88vh;
     overflow-y: auto;
 }
