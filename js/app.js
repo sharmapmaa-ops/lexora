@@ -251,6 +251,7 @@
             // partially-seeded or not-yet-seeded catalog never hides or
             // breaks anything.
             let SERVICES_CATALOG = {};
+            window.SERVICES_CATALOG = SERVICES_CATALOG;
             let planHistory = [];
 
             // Item 3 - looks up the current user's assigned plan (users.json
@@ -9600,7 +9601,9 @@
                 'humanize-document-tool': { body: function() { return window.PaidCalculators.render('humanize-document-tool'); } },
                 'paid-services': {
                     body: function() {
-                        const items = [
+                        // Native paid services (Translation, OCR, ...) -
+                        // minus any the Services Catalog has moved to Free.
+                        const nativeSvcs = (window.FreeServices && FreeServices.nativePaidServices) || [
                             { id: 'lease-abstraction', icon: '📄', label: 'Lease Abstraction', desc: 'Extract key terms and clauses from lease documents.' },
                             { id: 'translation', icon: '🌐', label: 'Translation', desc: 'Translate documents into 60+ languages, layout preserved.' },
                             { id: 'ocr', icon: '🔍', label: 'OCR', desc: 'Turn scanned or photographed pages into editable Word.' },
@@ -9609,11 +9612,28 @@
                             { id: 'content-writing-tool', icon: '✍️', label: 'Content Writing Tool', desc: 'Generate blog posts, captions, product descriptions and more.' },
                             { id: 'humanize-document-tool', icon: '🧑', label: 'Humanize Document Tool', desc: 'Rewrite stiff or AI-sounding text to read more naturally.' },
                         ];
+                        const items = nativeSvcs
+                            .filter(t => !(SERVICES_CATALOG[t.id] && SERVICES_CATALOG[t.id].type === 'Free'))
+                            .map(t => ({ id: t.id, icon: t.icon, label: t.label, desc: t.desc, external: false }));
+
+                        // Any normally-free tool the catalog has marked
+                        // Paid - metadata comes from the free-tools
+                        // registry itself (allToolsRaw), not duplicated
+                        // here, so the label/icon always matches what
+                        // that tool is actually called elsewhere.
+                        if (window.FreeServices && FreeServices.allToolsRaw) {
+                            FreeServices.allToolsRaw().forEach(function (t) {
+                                if (SERVICES_CATALOG[t.id] && SERVICES_CATALOG[t.id].type === 'Paid') {
+                                    items.push({ id: t.id, icon: t.icon || '🔧', label: t.label, desc: t.desc || '', external: true });
+                                }
+                            });
+                        }
+
                         return `
                             <div class="tool-group-title">💼 Paid Services</div>
                             <div class="tools-grid">
                                 ${items.map(t => `
-                                    <div class="tool-card" onclick="lexoraNavigate('services','${t.id}')">
+                                    <div class="tool-card" onclick="${t.external ? `FreeServices.open('${t.id}')` : `lexoraNavigate('services','${t.id}')`}">
                                         <div class="tool-card-icon">${t.icon}</div>
                                         <div class="tool-card-name">${escapeHtml(t.label)}</div>
                                         <div class="tool-card-desc">${escapeHtml(t.desc)}</div>
@@ -10233,6 +10253,7 @@
                 planHistory = planHistoryData || [];
                 SERVICES_CATALOG = {};
                 (servicesCatalogData || []).forEach(function (s) { if (s && s.id) SERVICES_CATALOG[s.id] = s; });
+                window.SERVICES_CATALOG = SERVICES_CATALOG;
 
                 paymentMethods = paymentMethodsData;
                 paymentHistory = paymentHistoryData;

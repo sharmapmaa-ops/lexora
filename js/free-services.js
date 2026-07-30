@@ -444,7 +444,35 @@
 
   // Everything that can be opened, whichever module registered it:
   // ServiceRunner file-tools, plus the card-based registries.
-  function allTools() {
+  // The 7 services with their own dedicated page/billing outside this
+  // module (Translation, OCR, etc. - built in app.js/paid-calculators.js
+  // as full paid-service UIs, not a simple card()/ServiceRunner tool).
+  // When the Services Catalog marks one of these "Free", it still needs
+  // its own real page (can't be rendered generically), so it's added as
+  // an "external" tile here - clicking it navigates to that dedicated
+  // page instead of trying to render it inline.
+  const NATIVE_PAID_SERVICES = [
+    { id: 'lease-abstraction', label: 'Lease Abstraction', icon: '📄', desc: 'Extract key terms and clauses from lease documents.' },
+    { id: 'translation', label: 'Translation', icon: '🌐', desc: 'Translate documents into 60+ languages, layout preserved.' },
+    { id: 'ocr', label: 'OCR', icon: '🔍', desc: 'Turn scanned or photographed pages into editable Word.' },
+    { id: 'data-extraction', label: 'Data Extraction', icon: '📊', desc: 'Define your own fields and get a clean structured table.' },
+    { id: 'bai2', label: 'BAI2', icon: '🏦', desc: 'Convert bank statements into BAI2, CSV, or JSON.' },
+    { id: 'content-writing-tool', label: 'Content Writing Tool', icon: '✍️', desc: 'Generate blog posts, captions, product descriptions and more.' },
+    { id: 'humanize-document-tool', label: 'Humanize Document Tool', icon: '🧑', desc: 'Rewrite stiff or AI-sounding text to read more naturally.' },
+  ];
+
+  // Services Catalog (Admin > PostgreSQL > Services Catalog table) can
+  // move any service between Free/Paid - checked here so both the tile
+  // list and the actual open() gate agree on the same classification.
+  // Falls back to "whatever this module already treats it as" (free) for
+  // anything not yet in the catalog, so a partially-seeded table never
+  // hides a tool that was working before.
+  function catalogType(id) {
+    const entry = window.SERVICES_CATALOG && window.SERVICES_CATALOG[id];
+    return entry ? entry.type : null;
+  }
+
+  function allToolsRaw() {
     const seen = {};
     const list = [];
     const push = (t) => { if (t && t.id && !seen[t.id]) { seen[t.id] = true; list.push(t); } };
@@ -452,6 +480,23 @@
     TOOLS.forEach(push);
     extraCards().forEach(push);
     return list;
+  }
+
+  function allTools() {
+    const list = allToolsRaw();
+
+    // A normally-free tool marked "Paid" in the catalog moves OUT of
+    // this list (the Paid Services page picks it up instead - see
+    // app.js's paid-services landing body).
+    const filtered = list.filter(t => catalogType(t.id) !== 'Paid');
+
+    // A native paid service marked "Free" moves IN, as an external tile
+    // (its own real page, not rendered by this module).
+    NATIVE_PAID_SERVICES.forEach(function (svc) {
+      if (catalogType(svc.id) === 'Free') filtered.push(Object.assign({ external: true }, svc));
+    });
+
+    return filtered;
   }
 
   // Login page ko wahi catalogue chahiye jo Other Services dikhata hai.
@@ -478,8 +523,9 @@
   }
 
   function toolCard(t) {
+    const click = t.external ? `lexoraNavigate('services','${t.id}')` : `FreeServices.open('${t.id}')`;
     return `
-      <div class="tool-card" onclick="FreeServices.open('${t.id}')">
+      <div class="tool-card" onclick="${click}">
         <div class="tool-card-icon">${t.icon || '🔧'}</div>
         <div class="tool-card-name">${esc(t.label)}</div>
         <div class="tool-card-desc">${esc(t.desc || '')}</div>
@@ -539,7 +585,44 @@
     return '';
   }
 
+  // A normally-free tool marked "Paid" in the Services Catalog charges
+  // once per open (there's no single natural "process" moment shared
+  // across calculators/generators/converters the way file-upload paid
+  // services have a Start button) - same rate/balance machinery every
+  // other paid service already uses (window.LexoraBilling), just
+  // triggered here instead of from inside the tool itself.
+  function chargeForPaidAccess(id, onProceed) {
+    const billing = window.LexoraBilling;
+    if (!billing) { onProceed(); return; } // billing not ready - fail open rather than block the tool entirely
+    const rate = billing.perPageRate(id);
+    if (!rate || rate <= 0) { onProceed(); return; }
+    if (billing.balance() < rate) {
+      if (window.showWarning) showWarning(`This is now a paid feature. ₹${rate.toFixed(2)} is needed but your wallet balance is too low - please add balance first.`);
+      return;
+    }
+    if (window.showConfirm) {
+      showConfirm('💰 Paid Feature', `This is now a paid feature. ₹${rate.toFixed(2)} will be charged from your wallet. Continue?`, function (confirmed) {
+        if (!confirmed) return;
+        billing.charge(titleOf(id) + ' - access', rate);
+        onProceed();
+      });
+    } else {
+      billing.charge(titleOf(id) + ' - access', rate);
+      onProceed();
+    }
+  }
+
   function open(id) {
+    const isNowPaid = id !== 'other-services' && catalogType(id) === 'Paid'
+      && !NATIVE_PAID_SERVICES.some(s => s.id === id);
+    if (isNowPaid) {
+      chargeForPaidAccess(id, function () { openNow(id); });
+      return;
+    }
+    openNow(id);
+  }
+
+  function openNow(id) {
     const host = document.getElementById('contentBody');
     if (host) host.innerHTML = render(id);
     if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
@@ -555,6 +638,8 @@
     has: has,
     open: open,
     catalogue: catalogue,
+    allToolsRaw: allToolsRaw,
+    nativePaidServices: NATIVE_PAID_SERVICES,
     syncFromBox: syncFromBox,
     syncFromSlider: syncFromSlider,
     runEmi: runEmi,
