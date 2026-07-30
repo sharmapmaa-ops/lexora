@@ -2521,6 +2521,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/rules/reject": self._handle_rules_reject,
             "/api/rules/delete-pending": self._handle_rules_delete_pending,
             "/api/rules/delete-approved": self._handle_rules_delete_approved,
+            "/api/rules/add-blank": self._handle_rules_add_blank,
             "/api/rules/update-approved": self._handle_rules_update_approved,
             "/api/lease/generate-pdf": self._handle_lease_generate_pdf,
             "/api/translation/upload": self._handle_translation_upload,
@@ -4505,6 +4506,28 @@ class Handler(SimpleHTTPRequestHandler):
             applied += 1
         self._save_rules(data)
         return 200, {"ok": True, "updated": applied}
+
+    def _handle_rules_add_blank(self, body):
+        """Admin table's "+ Add Row" - creates a blank pending rule ready
+        to be filled in and approved, same shape as an auto-discovered or
+        manually-proposed one, just empty. Lands in "pending" (not
+        "approved") since a blank rule with no content shouldn't be able
+        to actually affect extraction until someone fills it in and it
+        goes through the normal approval step."""
+        self._require_role(("Admin", "Developer"))
+        user_id = _safe_id(self._resolve_user_id(body))
+        data = self._load_rules()
+        new_rule = {
+            "id": "rule_" + secrets.token_hex(6),
+            "fieldId": "", "ruleType": "mapping", "ruleText": "",
+            "status": "pending", "confidence": None,
+            "usageCount": 0, "successCount": 0, "appliedCount": 0,
+            "createdAt": datetime.datetime.now().strftime("%m/%d/%Y, %I:%M:%S %p"),
+            "approvedAt": None, "userId": user_id, "auditLog": [], "builtin": False,
+        }
+        data.setdefault("pending", []).append(new_rule)
+        self._save_rules(data)
+        return 200, {"ok": True, "rule": new_rule}
 
     # ---- Item 7: auto rule-discovery. Fire-and-forget (mirrors the email
     # notification pattern) - runs a lightweight extra LLM call in the

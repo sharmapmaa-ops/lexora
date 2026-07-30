@@ -2061,9 +2061,14 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
    panel next to their card, so the page doesn't look like a bare form. ---- */
 .service-split-layout {
     display: grid;
-    grid-template-columns: minmax(240px, 340px) 1fr;
+    grid-template-columns: minmax(260px, 390px) 1fr;
     gap: 20px;
     align-items: stretch;
+}
+
+.service-split-layout .service-card {
+    height: 450px;
+    overflow-y: auto;
 }
 
 .service-visual-panel {
@@ -2071,15 +2076,21 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
     border-radius: 14px;
     overflow: hidden;
     background: linear-gradient(160deg, #1257f5 0%, #0b1533 100%);
-    min-height: 240px;
+    height: 450px;
 }
 
 .service-visual-img {
     position: absolute;
-    inset: 0;
-    width: 100%;
+    top: 0;
+    left: 0;
     height: 100%;
-    object-fit: cover;
+    width: auto;
+    max-width: none;
+    /* Height always fills the panel exactly (image scales proportionally
+       to match it - never distorted). Width is never force-stretched -
+       whatever width results from that height, if it's wider than the
+       panel, the parent's overflow:hidden simply clips the right side,
+       so the LEFT part of the image is what's always visible. */
 }
 
 .service-visual-icon {
@@ -2100,7 +2111,8 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
 
 @media (max-width: 820px) {
     .service-split-layout { grid-template-columns: 1fr; }
-    .service-visual-panel { min-height: 160px; }
+    .service-split-layout .service-card { height: auto; }
+    .service-visual-panel { height: 200px; }
     .service-visual-icon { font-size: 2.6rem; }
 }
 
@@ -2673,7 +2685,7 @@ label { font-size: .76rem; }
 .contact-hero-copy h2 { font-size: 1.5rem; }
 .contact-channel { padding: 12px 13px; }
 .contact-row { padding: 9px 0; }
-.footer { padding: 10px 20px; font-size: .76rem; }
+.footer { padding: 5px 20px; font-size: .68rem; }
 
 /* ---- 3. copyright center, social right ---- */
 .footer-inner { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; }

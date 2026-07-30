@@ -313,9 +313,10 @@
                 const social = (COMPANY_INFO && COMPANY_INFO.social) || {};
                 const order = ['facebook', 'instagram', 'linkedin', 'youtube'];
                 const links = order.filter(function (k) { return social[k]; });
-                if (!links.length) return '';
+                if (!links.length && !o.includeShare) return '';
                 const size = o.size || 18;
                 const color = o.color || 'currentColor';
+                const shareIcon = '<path d="M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 .09 4.26L8.91 11.7a3 3 0 1 0 0 4.6l6.19 3.44A3 3 0 1 0 16 18a3 3 0 0 0-.09-.7L9.72 13.86a3 3 0 0 0 0-3.72l6.19-3.44c.02.22.09.44.09.7A3 3 0 0 0 18 8z" fill-rule="evenodd"/>';
                 return `<div style="display:flex;gap:${o.gap || 12}px;align-items:center;${o.justify ? 'justify-content:' + o.justify + ';' : ''}">
                     ${links.map(function (k) {
                         return `<a href="${escapeHtml(social[k])}" target="_blank" rel="noopener noreferrer"
@@ -325,6 +326,12 @@
                             <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${SOCIAL_ICONS[k]}</svg>
                         </a>`;
                     }).join('')}
+                    ${o.includeShare ? `
+                        <a onclick="openShareModal()" title="Share"
+                           style="display:inline-flex;color:${color};opacity:0.85;transition:opacity .15s;cursor:pointer;"
+                           onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.85">
+                            <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${shareIcon}</svg>
+                        </a>` : ''}
                 </div>`;
             }
 
@@ -6839,6 +6846,7 @@
                         </table>
                         </div>
                         <div class="db-table-caption">${rows.length} row(s)</div>
+                        ${name === 'cfg_company' ? '' : `
                         <div class="db-edit-table-actions">
                             <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${escapeHtml(name)}')">+ Add Row</button>
                             <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Selected</button>
@@ -6846,8 +6854,7 @@
                             <span class="admin-toolbar-spacer"></span>
                             <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
                             <button class="admin-btn admin-btn-save" onclick="runDbMigration()">\u2934 Run migration</button>
-                            <button class="admin-btn admin-btn-add-folder" onclick="adminOpenPricingEditor()">\u{1F4B2} Plan Pricing</button>
-                        </div>`;
+                        </div>`}`;
                     host.dataset.rows = JSON.stringify(rows);
                 } catch (err) {
                     host.innerHTML = `<p class="db-note is-bad" style="padding:14px;">${escapeHtml(err.message)}</p>`;
@@ -6913,24 +6920,105 @@
                 const rows = _rulesTableRows;
                 host.innerHTML = `
                     <div class="db-edit-table-wrapper">
-                    <table class="admin-json-table db-txn-table">
+                    <table class="admin-json-table db-txn-table db-edit-table">
                         <thead>
                             <tr>
-                                ${RULES_TABLE_COLUMNS.map(c => `<th>${escapeHtml(RULES_TABLE_LABELS[c] || c)}</th>`).join('')}
+                                <th><input type="checkbox" onchange="dbTableToggleAll(this)" /></th>
+                                ${RULES_TABLE_COLUMNS.map(c => `<th${c === 'ruleText' ? ' style="width:280px;"' : ''}>${escapeHtml(RULES_TABLE_LABELS[c] || c)}</th>`).join('')}
                                 <th></th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody id="dbTableBody">
                             ${rows.map((r, i) => `
-                                <tr>
-                                    ${RULES_TABLE_COLUMNS.map(c => `<td>${_rulesTableCell(r, c, i)}</td>`).join('')}
+                                <tr data-row-index="${i}">
+                                    <td><input type="checkbox" class="db-row-select" /></td>
+                                    ${RULES_TABLE_COLUMNS.map(c => `<td${c === 'ruleText' ? ' style="width:280px;"' : ''}>${_rulesTableCell(r, c, i)}</td>`).join('')}
                                     <td>${r._editable ? `<button class="admin-btn admin-btn-save" onclick="saveRuleRow(${i})">💾 Save</button>` : ''}</td>
                                 </tr>`).join('')}
                         </tbody>
                     </table>
                     </div>
-                    <div class="db-table-caption">${rows.length} rule(s) - ${rows.filter(r => r._editable).length} approved (editable), ${rows.filter(r => !r._editable).length} pending. Approve/reject/delete from the Lease Abstraction rules review screen.</div>`;
+                    <div class="db-table-caption">${rows.length} rule(s) - ${rows.filter(r => r._editable).length} approved (editable), ${rows.filter(r => !r._editable).length} pending. Approve/reject from the Lease Abstraction rules review screen.</div>
+                    <div class="db-edit-table-actions">
+                        <button class="admin-btn admin-btn-add-folder" onclick="addBlankRuleRow()">+ Add Row</button>
+                        <button class="admin-btn admin-btn-delete" onclick="deleteSelectedRuleRows()">\u{1F5D1} Delete Selected</button>
+                        <button class="admin-btn admin-btn-download" onclick="downloadRulesCsv()">\u2B07\uFE0F Download</button>
+                        <span class="admin-toolbar-spacer"></span>
+                        <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
+                        <button class="admin-btn admin-btn-save" onclick="runDbMigration()">\u2934 Run migration</button>
+                    </div>`;
             }
+
+            window.addBlankRuleRow = async function() {
+                try {
+                    const res = await authFetch('/api/rules/add-blank', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId: CURRENT_USER_ID })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not add a new rule.');
+                    const host = document.getElementById('dbActiveTableBody');
+                    if (host) dbTableLoadRules(host);
+                } catch (err) {
+                    showWarning(err.message || 'Could not add a new rule.');
+                }
+            };
+
+            window.deleteSelectedRuleRows = async function() {
+                const checked = Array.from(document.querySelectorAll('#dbTableBody .db-row-select:checked'));
+                if (!checked.length) { showWarning('Select at least one row first.'); return; }
+                const indices = checked.map(cb => parseInt(cb.closest('tr').dataset.rowIndex, 10));
+                const approvedIds = [], pendingIds = [];
+                indices.forEach(i => {
+                    const row = _rulesTableRows[i];
+                    if (!row) return;
+                    (row._editable ? approvedIds : pendingIds).push(row.id);
+                });
+                showConfirm('\u{1F5D1} Delete Selected Rules', `Delete ${indices.length} rule(s)? This cannot be undone.`, async function(confirmed) {
+                    if (!confirmed) return;
+                    try {
+                        if (approvedIds.length) {
+                            const res = await authFetch('/api/rules/delete-approved', {
+                                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ ruleIds: approvedIds })
+                            });
+                            const data = await res.json();
+                            if (!res.ok) throw new Error(data.error || 'Could not delete approved rule(s).');
+                        }
+                        if (pendingIds.length) {
+                            const res = await authFetch('/api/rules/delete-pending', {
+                                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ ruleIds: pendingIds, userId: CURRENT_USER_ID })
+                            });
+                            const data = await res.json();
+                            if (!res.ok) throw new Error(data.error || 'Could not delete pending rule(s).');
+                        }
+                        const host = document.getElementById('dbActiveTableBody');
+                        if (host) dbTableLoadRules(host);
+                    } catch (err) {
+                        showWarning(err.message || 'Could not delete the selected rule(s).');
+                    }
+                });
+            };
+
+            window.downloadRulesCsv = function() {
+                const rows = _rulesTableRows;
+                if (!rows.length) { showWarning('Nothing to download.'); return; }
+                const esc = (v) => {
+                    const s = v == null ? '' : (Array.isArray(v) ? v.length + ' entries' : String(v));
+                    return `"${s.replace(/"/g, '""')}"`;
+                };
+                const csv = [RULES_TABLE_COLUMNS.join(',')]
+                    .concat(rows.map(r => RULES_TABLE_COLUMNS.map(c => esc(r[c])).join(',')))
+                    .join('\n');
+                const blob = new Blob(['\ufeff' + csv], { type: 'text/csv' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = 'rules.csv';
+                document.body.appendChild(a); a.click(); a.remove();
+                URL.revokeObjectURL(url);
+            };
 
             window.saveRuleRow = async function(rowIndex) {
                 const row = _rulesTableRows[rowIndex];
@@ -7358,6 +7446,12 @@
 
             function buildAdminFilesBody() {
                 return `
+                    <div class="admin-files-card" id="adminFilesCard">
+                        <div class="admin-files-header">
+                            <h3>\u{1F5C4} PostgreSQL</h3>
+                        </div>
+                        ${buildDbStatusPanel()}
+                    </div>
                     <div class="admin-files-card" id="maintenanceCard">
                         <div class="admin-files-header">
                             <h3>🛠️ Maintenance Mode</h3>
@@ -7365,12 +7459,6 @@
                         <div class="card-body" id="maintenanceCardBody">
                             <p class="ds-card-sub">Loading…</p>
                         </div>
-                    </div>
-                    <div class="admin-files-card" id="adminFilesCard">
-                        <div class="admin-files-header">
-                            <h3>\u{1F5C4} PostgreSQL</h3>
-                        </div>
-                        ${buildDbStatusPanel()}
                     </div>
                 `;
             }
@@ -8249,7 +8337,7 @@
                 const logoEl = document.getElementById('companyLogo');
                 const nameEl = document.getElementById('companyName');
                 const socialFooter = document.getElementById('footerSocial');
-                if (socialFooter) socialFooter.innerHTML = buildSocialLinksHtml({ size: 16, gap: 14, color: 'rgba(255,255,255,0.85)' });
+                if (socialFooter) socialFooter.innerHTML = buildSocialLinksHtml({ size: 16, gap: 14, color: 'rgba(255,255,255,0.85)', includeShare: true });
                 const footerEl = document.getElementById('footerCompany');
 
                 if (logoEl) {
@@ -9790,10 +9878,7 @@
                                         </div>`).join('')}
                                     <div class="contact-follow">
                                         <span>Follow us</span>
-                                        ${buildSocialLinksHtml({ size: 20, gap: 12, color: '#1257f5' })}
-                                        <button class="footer-share-btn" onclick="openShareModal()" title="Share ${escapeHtml((COMPANY_INFO && COMPANY_INFO.name) || 'Lexora')}" style="margin-left:8px;">
-                                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 10.5 15.4 6.5M8.6 13.5 15.4 17.5"/></svg>
-                                        </button>
+                                        ${buildSocialLinksHtml({ size: 20, gap: 12, color: '#1257f5', includeShare: true })}
                                     </div>
                                 </div>
 
@@ -10579,7 +10664,7 @@
                 const name = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora';
                 const shortName = String(name).split(/\s+/)[0] || 'Lexora';
                 const logoPath = (COMPANY_INFO && COMPANY_INFO.logo) || 'Pictures/logo.png';
-                const social = buildSocialLinksHtml({ size: 18, gap: 14, color: 'rgba(11,21,51,0.45)' });
+                const social = buildSocialLinksHtml({ size: 18, gap: 14, color: 'rgba(11,21,51,0.45)', includeShare: true });
 
                 root.innerHTML = `
                     <div class="auth-page">
@@ -10596,9 +10681,6 @@
                             <div class="footer-inner">
                                 <span class="footer-spacer"></span>
                                 <span class="footer-copy">&copy; ${new Date().getFullYear()} ${escapeHtml(name)}. All rights reserved. | Version 1.0.0</span>
-                                <button class="footer-share-btn" onclick="openShareModal()" title="Share ${escapeHtml(name)}">
-                                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 10.5 15.4 6.5M8.6 13.5 15.4 17.5"/></svg>
-                                </button>
                                 <span id="authFooterSocial">${social || ''}</span>
                             </div>
                         </div>
@@ -10790,6 +10872,10 @@
 
             window.handleAuthRegister = async function() {
                 hideAuthError();
+                if (MAINTENANCE_INFO.enabled) {
+                    showMaintenanceScreen(MAINTENANCE_INFO.message);
+                    return;
+                }
                 const typeInput = document.querySelector('input[name="regAccountType"]:checked');
                 const accountType = typeInput ? typeInput.value : 'Personal';
                 const isOrg = accountType !== 'Personal';
@@ -11278,10 +11364,6 @@
                     AUTH_TOKEN = null;
                     localStorage.removeItem(AUTH_SESSION_KEY);
                     localStorage.removeItem(AUTH_TOKEN_KEY);
-                }
-                if (MAINTENANCE_INFO.enabled) {
-                    showMaintenanceScreen(MAINTENANCE_INFO.message);
-                    return;
                 }
                 showAuthScreen();
             }
