@@ -10296,6 +10296,10 @@
                 const paidCount = services.filter(s => s.type === 'paid').length;
                 return `
                     <div class="auth-services-card">
+                        <div class="auth-services-heading">
+                            <h2>Our Most Popular Tools</h2>
+                            <p>We present the best of the best. All free, no catch</p>
+                        </div>
                         <div class="auth-filter-bar">
                             <button class="auth-filter-btn active" data-filter="all" onclick="setAuthServiceFilter('all')">All Services <em>${services.length}</em></button>
                             <button class="auth-filter-btn" data-filter="free" onclick="setAuthServiceFilter('free')">Free Services <em>${freeCount}</em></button>

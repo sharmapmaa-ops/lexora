@@ -2818,6 +2818,24 @@ label { font-size: .76rem; }
     margin-top: 1.2em;
 }
 
+.auth-services-heading {
+    text-align: center;
+    margin-bottom: 1.3em;
+}
+
+.auth-services-heading h2 {
+    font-size: 1.9em;
+    font-weight: 800;
+    color: var(--lx-navy);
+    margin: 0 0 0.25em;
+}
+
+.auth-services-heading p {
+    font-size: 1em;
+    color: var(--lx-muted);
+    margin: 0;
+}
+
 .auth-filter-bar {
     display: flex;
     flex-wrap: wrap;
