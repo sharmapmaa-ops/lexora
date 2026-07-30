@@ -401,6 +401,12 @@
         list.push({ id: id, label: c.label, icon: c.icon, desc: c.desc });
       });
     });
+    if (window.PaidCalculators && window.PaidCalculators.freeCards) {
+      Object.keys(window.PaidCalculators.freeCards).forEach(function (id) {
+        const c = window.PaidCalculators.freeCards[id];
+        list.push({ id: id, label: c.label, icon: c.icon, desc: c.desc });
+      });
+    }
     return list;
   }
 
