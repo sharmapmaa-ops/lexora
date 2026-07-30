@@ -308,6 +308,160 @@ def _destroy_sessions_for_user(user_id):
 
 
 # ============================================================
+# Google / Facebook sign-in (OAuth2 authorization-code flow).
+#
+# This is a real browser-navigation flow, not a fetch() call like the
+# rest of the app: clicking "Continue with Google" sends the browser to
+# Google's own consent screen, Google redirects back to our /callback
+# route with a code, we exchange that for the user's email, then create/
+# find the matching Lexora account and log them in - finally redirecting
+# to "/" with a short-lived one-time token in the URL, which the SPA
+# picks up on load (same pattern already used for the "magic verify
+# link" from registration emails) and exchanges for the real session.
+#
+# Needs these env vars set (see .env.example): GOOGLE_CLIENT_ID,
+# GOOGLE_CLIENT_SECRET, FACEBOOK_APP_ID, FACEBOOK_APP_SECRET, and
+# ideally APP_BASE_URL (e.g. https://lexora.onrender.com) so the
+# redirect_uri sent to Google/Facebook is always exactly what's
+# registered in their developer consoles, regardless of what Host header
+# a request happens to arrive with.
+# ============================================================
+_oauth_states = {}
+_oauth_states_lock = threading.Lock()
+OAUTH_STATE_TTL_SECONDS = 600
+
+
+def _oauth_configured(provider):
+    if provider == "google":
+        return bool(os.environ.get("GOOGLE_CLIENT_ID")) and bool(os.environ.get("GOOGLE_CLIENT_SECRET"))
+    if provider == "facebook":
+        return bool(os.environ.get("FACEBOOK_APP_ID")) and bool(os.environ.get("FACEBOOK_APP_SECRET"))
+    return False
+
+
+def _oauth_base_url(handler):
+    configured = os.environ.get("APP_BASE_URL", "").strip().rstrip("/")
+    if configured:
+        return configured
+    # Local-dev fallback only - production should set APP_BASE_URL so the
+    # redirect_uri can't be influenced by a spoofed Host header.
+    host = handler.headers.get("Host", "localhost:8000")
+    return f"http://{host}"
+
+
+def _new_oauth_state():
+    token = secrets.token_urlsafe(24)
+    with _oauth_states_lock:
+        now = time.time()
+        # Sweep expired entries while we're here rather than growing forever.
+        for t in [k for k, v in _oauth_states.items() if now - v > OAUTH_STATE_TTL_SECONDS]:
+            del _oauth_states[t]
+        _oauth_states[token] = now
+    return token
+
+
+def _consume_oauth_state(token):
+    with _oauth_states_lock:
+        created = _oauth_states.pop(token, None)
+    if created is None:
+        return False
+    return time.time() - created <= OAUTH_STATE_TTL_SECONDS
+
+
+def _oauth_fetch_user_email(provider, code, redirect_uri):
+    """Exchanges the authorization code for an access token, then fetches
+    the account's email/name. Returns (email, first_name, last_name)."""
+    if provider == "google":
+        token_data = urlencode({
+            "code": code,
+            "client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
+            "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/token", data=token_data, method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            token_resp = json.loads(resp.read().decode("utf-8"))
+        access_token = token_resp.get("access_token")
+        if not access_token:
+            raise ValueError("Google did not return an access token.")
+
+        info_req = urllib.request.Request(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        with urllib.request.urlopen(info_req, timeout=15) as resp:
+            info = json.loads(resp.read().decode("utf-8"))
+        email = (info.get("email") or "").strip().lower()
+        if not email:
+            raise ValueError("Google did not share an email address for this account.")
+        given = info.get("given_name") or (info.get("name") or "").split(" ")[0] or "there"
+        family = info.get("family_name") or ""
+        return email, given, family
+
+    if provider == "facebook":
+        token_url = "https://graph.facebook.com/v19.0/oauth/access_token?" + urlencode({
+            "client_id": os.environ.get("FACEBOOK_APP_ID", ""),
+            "client_secret": os.environ.get("FACEBOOK_APP_SECRET", ""),
+            "redirect_uri": redirect_uri,
+            "code": code,
+        })
+        with urllib.request.urlopen(token_url, timeout=15) as resp:
+            token_resp = json.loads(resp.read().decode("utf-8"))
+        access_token = token_resp.get("access_token")
+        if not access_token:
+            raise ValueError("Facebook did not return an access token.")
+
+        info_url = "https://graph.facebook.com/me?" + urlencode({
+            "fields": "id,email,first_name,last_name",
+            "access_token": access_token,
+        })
+        with urllib.request.urlopen(info_url, timeout=15) as resp:
+            info = json.loads(resp.read().decode("utf-8"))
+        email = (info.get("email") or "").strip().lower()
+        if not email:
+            raise ValueError("This Facebook account has no email address to sign in with - "
+                              "Facebook only shares one if the account has a verified email on file.")
+        return email, info.get("first_name") or "there", info.get("last_name") or ""
+
+    raise ValueError(f"Unknown provider: {provider}")
+
+
+def _find_or_create_oauth_user(email, first_name, last_name):
+    """Finds the existing account by email, or creates a new one -
+    already-verified (Google/Facebook already confirmed the email), no
+    password usable for login (a random unguessable string - the account
+    can only be accessed via OAuth, or by using "Forgot password" later
+    to set a real one)."""
+    users = auth_store.load_users()
+    user = auth_store.find_user_by_email(users, email)
+    if user:
+        return user
+
+    user_id = auth_store.next_user_id(users)
+    today = datetime.date.today()
+    new_user = {
+        "id": user_id, "photo": None, "firstName": first_name, "lastName": last_name,
+        "gender": "", "birthdate": "", "mobile": "", "email": email,
+        "password": auth_store.hash_password(secrets.token_urlsafe(24)),
+        "status": "Active", "apiKey": None,
+        "sessionStatus": "Offline", "role": "User", "lock": "No",
+        "twoFactorAuth": "No", "emailVerified": "Yes", "mobileVerified": "No",
+        "verificationMethod": "email", "sysConfig": "Desktop",
+        "plan": "Free", "planStartDate": today.isoformat(),
+        "planEndDate": (today + datetime.timedelta(days=7)).isoformat(), "planStatus": "Active",
+        "createdAt": datetime.datetime.utcnow().isoformat() + "Z",
+        "accountType": "Personal",
+    }
+    users.append(new_user)
+    auth_store.save_users(users)
+    return new_user
+
+
+# ============================================================
 # Razorpay - server-side verified balance top-ups.
 #
 # The existing generic PUT /api/data/payment-history route lets ANY
@@ -1593,6 +1747,16 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_redirect(self, url):
+        """A real browser-navigation redirect (302) - used only by the
+        OAuth start/callback routes, since those are followed by the
+        browser itself (clicking "Continue with Google"), not called via
+        fetch() like every other route in this app."""
+        self.send_response(302)
+        self.send_header("Location", url)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     # ------------------------------------------------------------------
     # Session-based auth. Every protected route calls _resolve_user_id()
     # (POST, body-based) or _resolve_user_id_query() (GET, query-string
@@ -1699,6 +1863,10 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/admin/read": self._handle_admin_read,
             "/api/auth/me": self._handle_auth_me,
             "/api/auth/directory": self._handle_auth_directory,
+            "/api/auth/oauth/google/start": lambda q: self._handle_oauth_start("google", q),
+            "/api/auth/oauth/google/callback": lambda q: self._handle_oauth_callback("google", q),
+            "/api/auth/oauth/facebook/start": lambda q: self._handle_oauth_start("facebook", q),
+            "/api/auth/oauth/facebook/callback": lambda q: self._handle_oauth_callback("facebook", q),
             "/api/auth/email-status": self._handle_auth_email_status,
             "/api/lease/extract-status": self._handle_lease_extract_status,
             "/api/lease/analyze-status": self._handle_lease_analyze_status,
@@ -3937,6 +4105,66 @@ class Handler(SimpleHTTPRequestHandler):
         if not user:
             return self._send_json(404, {"error": "Account not found"})
         return self._send_json(200, {"ok": True, "user": auth_store.public_user_view(user)})
+
+    def _handle_oauth_start(self, provider, query):
+        if not _oauth_configured(provider):
+            return self._send_json(503, {"error": f"{provider.capitalize()} sign-in is not configured on this server yet."})
+        redirect_uri = f"{_oauth_base_url(self)}/api/auth/oauth/{provider}/callback"
+        state = _new_oauth_state()
+
+        if provider == "google":
+            params = {
+                "client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "scope": "openid email profile",
+                "state": state,
+                "prompt": "select_account",
+            }
+            return self._send_redirect("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
+
+        if provider == "facebook":
+            params = {
+                "client_id": os.environ.get("FACEBOOK_APP_ID", ""),
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "scope": "email,public_profile",
+                "state": state,
+            }
+            return self._send_redirect("https://www.facebook.com/v19.0/dialog/oauth?" + urlencode(params))
+
+        return self._send_json(400, {"error": "Unknown sign-in provider."})
+
+    def _handle_oauth_callback(self, provider, query):
+        base_url = _oauth_base_url(self)
+        error = (query.get("error", [""])[0] or "").strip()
+        if error:
+            return self._send_redirect(f"{base_url}/?oauthError=" + url_quote(f"{provider.capitalize()} sign-in was cancelled or denied."))
+
+        state = (query.get("state", [""])[0] or "").strip()
+        code = (query.get("code", [""])[0] or "").strip()
+        if not code or not state or not _consume_oauth_state(state):
+            return self._send_redirect(f"{base_url}/?oauthError=" + url_quote("That sign-in link has expired - please try again."))
+
+        try:
+            _check_rate_limit(f"oauth:{provider}:{self.client_address[0]}", max_attempts=20, window_seconds=600)
+            redirect_uri = f"{base_url}/api/auth/oauth/{provider}/callback"
+            email, first_name, last_name = _oauth_fetch_user_email(provider, code, redirect_uri)
+            user = _find_or_create_oauth_user(email, first_name, last_name)
+            if user.get("lock") == "Yes":
+                return self._send_redirect(f"{base_url}/?oauthError=" + url_quote("This account is locked. Please contact support."))
+            user["sessionStatus"] = "Online"
+            users = auth_store.load_users()
+            for u in users:
+                if u.get("id") == user["id"]:
+                    u["sessionStatus"] = "Online"
+            auth_store.save_users(users)
+            token = _create_session(user["id"])
+        except Exception as err:  # noqa: BLE001 - always land the user back on the login screen, never a raw error page
+            print(f"OAuth {provider} sign-in failed: {err}")
+            return self._send_redirect(f"{base_url}/?oauthError=" + url_quote(str(err) or "Sign-in failed - please try again."))
+
+        return self._send_redirect(f"{base_url}/?oauthToken=" + url_quote(token))
 
     # Sanitized (no password/verification-code fields) user list - used by
     # Developer/Admin UI features that need to show "which user" something

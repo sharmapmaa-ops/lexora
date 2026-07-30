@@ -107,7 +107,9 @@
   // ══════════════════════════════════════════════════════════════════
   function renderSip() {
     return `
-      <div class="service-card">
+      <div class="service-split-layout">
+        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">\ud83d\udcc8</span></div>
+        <div class="service-card">
         <h3 class="card-head-row"><span>\ud83d\udcc8 SIP Calculator</span>${backButtonFree()}</h3>
         <div class="card-body">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
@@ -124,6 +126,7 @@
             Estimate assuming a constant monthly return - actual mutual fund/SIP returns vary and are not guaranteed.
           </p>
         </div>
+      </div>
       </div>`;
   }
 
@@ -160,7 +163,9 @@
 
   function renderIncomeTax() {
     return `
-      <div class="service-card">
+      <div class="service-split-layout">
+        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">\ud83e\uddfe</span></div>
+        <div class="service-card">
         <h3 class="card-head-row"><span>\ud83e\uddfe Income Tax Calculator (India)</span>${backButtonFree()}</h3>
         <div class="card-body">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
@@ -183,6 +188,7 @@
             Consult a tax professional for filing purposes.
           </p>
         </div>
+      </div>
       </div>`;
   }
 
@@ -228,7 +234,9 @@
   // ══════════════════════════════════════════════════════════════════
   function renderCompoundInterest() {
     return `
-      <div class="service-card">
+      <div class="service-split-layout">
+        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">\ud83d\udcb9</span></div>
+        <div class="service-card">
         <h3 class="card-head-row"><span>\ud83d\udcb9 Compound Interest Calculator</span>${backButtonFree()}</h3>
         <div class="card-body">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
@@ -248,6 +256,7 @@
           ${freeStatusRow('tCi')}
           <div id="tCiResult" style="margin-top:10px;"></div>
         </div>
+      </div>
       </div>`;
   }
 
@@ -274,7 +283,9 @@
   // ══════════════════════════════════════════════════════════════════
   function renderLoanEligibility() {
     return `
-      <div class="service-card">
+      <div class="service-split-layout">
+        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">\ud83c\udfe6</span></div>
+        <div class="service-card">
         <h3 class="card-head-row"><span>\ud83c\udfe6 Loan Eligibility Calculator</span>${backButtonFree()}</h3>
         <div class="card-body">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
@@ -294,6 +305,7 @@
             credit score, employment type, existing liabilities, and the lender's own policy.
           </p>
         </div>
+      </div>
       </div>`;
   }
 
@@ -330,7 +342,9 @@
 
   function renderContentWriting() {
     return `
-      <div class="service-card">
+      <div class="service-split-layout">
+        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">✍️</span></div>
+        <div class="service-card">
         <h3 class="card-head-row"><span>✍️ Content Writing Tool</span>${backButton()}</h3>
         <div class="card-body">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
@@ -369,6 +383,7 @@
             <button class="process-btn clear-btn" onclick="PaidCalculators.downloadContent('tCwOut', 'content.txt')">⬇️ Download</button>
           </div>
         </div>
+      </div>
       </div>`;
   }
 
@@ -399,7 +414,9 @@
   // ══════════════════════════════════════════════════════════════════
   function renderHumanize() {
     return `
-      <div class="service-card">
+      <div class="service-split-layout">
+        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">🧑</span></div>
+        <div class="service-card">
         <h3 class="card-head-row"><span>🧑 Humanize Document Tool</span>${backButton()}</h3>
         <div class="card-body">
           <div class="setup-group">
@@ -422,6 +439,7 @@
             repetitive phrasing) - it does not claim to defeat any specific AI-detection tool.
           </p>
         </div>
+      </div>
       </div>`;
   }
 
@@ -503,7 +521,9 @@
 
   function renderBackgroundRemover() {
     return `
-      <div class="service-card">
+      <div class="service-split-layout">
+        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">🪄</span></div>
+        <div class="service-card">
         <h3 class="card-head-row"><span>🪄 Background Remover</span>${backButtonFree()}</h3>
         <div class="card-body">
           <div class="setup-group">
@@ -521,6 +541,7 @@
             the initial run can take a little longer than later ones.
           </p>
         </div>
+      </div>
       </div>`;
   }
 
@@ -592,7 +613,9 @@
   function renderTextToSpeech() {
     setTimeout(populateVoiceList, 0);
     return `
-      <div class="service-card">
+      <div class="service-split-layout">
+        <div class="service-visual-panel" aria-hidden="true"><span class="service-visual-icon">🔊</span></div>
+        <div class="service-card">
         <h3 class="card-head-row"><span>🔊 Text-to-Speech</span>${backButtonFree()}</h3>
         <div class="card-body">
           <div class="setup-group">
@@ -613,6 +636,7 @@
             browser and operating system. Playback only (no file download in this version).
           </p>
         </div>
+      </div>
       </div>`;
   }
 

@@ -29,11 +29,16 @@
 
   function card(icon, title, body, note) {
     return `
-      <div class="service-card">
-        <h3>${icon} ${esc(title)}</h3>
-        <div class="card-body">
-          ${body}
-          ${note ? `<p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:14px;">${note}</p>` : ''}
+      <div class="service-split-layout">
+        <div class="service-visual-panel" aria-hidden="true">
+          <span class="service-visual-icon">${icon}</span>
+        </div>
+        <div class="service-card">
+          <h3>${icon} ${esc(title)}</h3>
+          <div class="card-body">
+            ${body}
+            ${note ? `<p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:14px;">${note}</p>` : ''}
+          </div>
         </div>
       </div>`;
   }

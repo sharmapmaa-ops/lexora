@@ -10220,6 +10220,29 @@
                 } catch (e) { /* private mode - not worth failing a login over */ }
             }
 
+            // "Continue with Google/Facebook" - a real page navigation
+            // (not fetch), since the whole point is landing on Google/
+            // Facebook's own consent screen. Reused identically by both
+            // the Login and Create Account cards.
+            function buildOAuthButtonsHtml() {
+                return `
+                    <div class="auth-oauth-divider"><span>or continue with</span></div>
+                    <div class="auth-oauth-row">
+                        <button class="auth-oauth-btn" onclick="startOAuthLogin('google')">
+                            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="#4285F4" d="M23.5 12.27c0-.79-.07-1.54-.2-2.27H12v4.3h6.47c-.28 1.5-1.13 2.77-2.4 3.62v3.01h3.88c2.27-2.09 3.55-5.17 3.55-8.66z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.87-3.01c-1.08.72-2.45 1.15-4.06 1.15-3.13 0-5.78-2.11-6.73-4.96H1.28v3.11C3.26 21.3 7.31 24 12 24z"/><path fill="#FBBC05" d="M5.27 14.27a7.2 7.2 0 0 1-.38-2.27c0-.79.14-1.55.38-2.27V6.62H1.28A11.98 11.98 0 0 0 0 12c0 1.94.46 3.77 1.28 5.38z"/><path fill="#EA4335" d="M12 4.77c1.77 0 3.35.61 4.6 1.8l3.44-3.44C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.28 6.62l3.99 3.11C6.22 6.88 8.87 4.77 12 4.77z"/></svg>
+                            Google
+                        </button>
+                        <button class="auth-oauth-btn" onclick="startOAuthLogin('facebook')">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="#1877F2"><path d="M24 12.07C24 5.4 18.63 0 12 0S0 5.4 0 12.07C0 18.1 4.39 23.1 10.13 24v-8.44H7.08v-3.49h3.05V9.41c0-3.02 1.79-4.69 4.53-4.69 1.31 0 2.68.24 2.68.24v2.96h-1.51c-1.49 0-1.95.93-1.95 1.89v2.26h3.32l-.53 3.49h-2.79V24C19.61 23.1 24 18.1 24 12.07z"/></svg>
+                            Facebook
+                        </button>
+                    </div>`;
+            }
+
+            window.startOAuthLogin = function(provider) {
+                window.location.href = '/api/auth/oauth/' + encodeURIComponent(provider) + '/start';
+            };
+
             function buildLoginCard() {
                 const remembered = getRememberedEmail();
                 return `
@@ -10248,6 +10271,7 @@
                         <button class="auth-btn-primary" onclick="handleAuthLogin()">Login</button>
                         <button class="auth-btn-secondary" onclick="authResetForm(['loginEmail','loginPassword'])">Reset</button>
                     </div>
+                    ${buildOAuthButtonsHtml()}
                     <div class="auth-card-footer">
                         Don't have an account? <a onclick="authGoTo('register')">Create Account</a>
                     </div>
@@ -10310,6 +10334,7 @@
                         <button class="auth-btn-primary" onclick="handleAuthRegister()">Submit</button>
                         <button class="auth-btn-secondary" onclick="authGoTo('login')">Back to Login</button>
                     </div>
+                    ${buildOAuthButtonsHtml()}
                 `;
             }
 
@@ -11006,11 +11031,51 @@
                 }, 15000);
             }
 
+            // Picks up the one-time session token the OAuth callback
+            // (py/server.py's _handle_oauth_callback) leaves in the URL
+            // after a successful Google/Facebook sign-in - same "arrives
+            // via a real page redirect, not fetch()" pattern as the magic
+            // verify link, just carrying a ready-to-use session token
+            // instead of an OTP code.
+            async function tryHandleOAuthRedirect() {
+                const params = new URLSearchParams(window.location.search);
+                const token = params.get('oauthToken');
+                const oauthError = params.get('oauthError');
+                if (!token && !oauthError) return false;
+
+                history.replaceState({}, '', window.location.pathname);
+
+                if (oauthError) {
+                    showAuthScreen();
+                    setTimeout(() => showAuthError(oauthError), 0);
+                    return true;
+                }
+
+                AUTH_TOKEN = token;
+                window.__lexoraAuthToken = token;
+                try {
+                    const res = await authFetch('/api/auth/me');
+                    const data = await res.json();
+                    if (!res.ok || !data.user) throw new Error(data.error || 'Sign-in failed.');
+                    CURRENT_USER_ID = data.user.id;
+                    localStorage.setItem(AUTH_SESSION_KEY, CURRENT_USER_ID);
+                    localStorage.setItem(AUTH_TOKEN_KEY, token);
+                    document.getElementById('authScreen').style.display = 'none';
+                    initializeApp();
+                } catch (err) {
+                    AUTH_TOKEN = null;
+                    showAuthScreen();
+                    setTimeout(() => showAuthError(err.message || 'Sign-in failed - please try again.'), 0);
+                }
+                return true;
+            }
+
             async function boot() {
                 try {
                     COMPANY_INFO = await fetchJSON('/api/data/company');
                 } catch (e) { /* auth screen falls back to a default name */ }
 
+                if (await tryHandleOAuthRedirect()) return;
                 if (tryHandleMagicVerifyLink()) return;
 
                 const savedUserId = localStorage.getItem(AUTH_SESSION_KEY);
