@@ -299,6 +299,14 @@ def _destroy_session(token):
         _persist_sessions_locked()
 
 
+def _destroy_sessions_for_user(user_id):
+    with _sessions_lock:
+        stale = [t for t, s in _sessions.items() if s.get("userId") == user_id]
+        for t in stale:
+            del _sessions[t]
+        _persist_sessions_locked()
+
+
 # ============================================================
 # Razorpay - server-side verified balance top-ups.
 #
@@ -2217,6 +2225,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/profile/send-mobile-otp": self._handle_profile_send_mobile_otp,
             "/api/profile/verify-mobile-otp": self._handle_profile_verify_mobile_otp,
             "/api/auth/logout": self._handle_auth_logout,
+            "/api/auth/delete-account": self._handle_auth_delete_account,
             "/api/payment/create-order": self._handle_payment_create_order,
             "/api/payment/verify-payment": self._handle_payment_verify,
         }
@@ -4435,6 +4444,31 @@ class Handler(SimpleHTTPRequestHandler):
         auth_header = self.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             _destroy_session(auth_header[7:].strip())
+        return 200, {"ok": True}
+
+    def _handle_auth_delete_account(self, body):
+        """Profile > Delete Account. Requires re-entering the password (the
+        same bar as a password change) since this is irreversible. Removes
+        the user record and destroys their session(s) - their historical
+        transactions/support tickets stay (same as any other account that's
+        gone but whose past activity is still referenced elsewhere), only
+        the login/profile itself is deleted."""
+        user_id = _safe_id(self._resolve_user_id(body))
+        password = body.get("password") or ""
+        if not password:
+            raise ValueError("Please enter your password.")
+        _check_rate_limit(f"delete-account:{user_id}")
+
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            raise ValueError("Account not found.")
+        if not auth_store.verify_password(password, user.get("password")):
+            raise ValueError("Incorrect password.")
+
+        users = [u for u in users if u.get("id") != user_id]
+        auth_store.save_users(users)
+        _destroy_sessions_for_user(user_id)
         return 200, {"ok": True}
 
     def _handle_auth_forgot_password(self, body):

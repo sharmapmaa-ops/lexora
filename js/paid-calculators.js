@@ -75,7 +75,7 @@
   function renderSip() {
     return `
       <div class="service-card">
-        <h3 class="card-head-row"><span>\ud83d\udcc8 SIP Calculator</span></h3>
+        <h3 class="card-head-row"><span>\ud83d\udcc8 SIP Calculator</span>${backButton()}</h3>
         <div class="card-body">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             ${fld('Monthly investment', `<input type="number" id="tSipAmt" value="10000" min="100" style="width:100%;" />`)}
@@ -90,7 +90,6 @@
           <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:12px;">
             Estimate assuming a constant monthly return - actual mutual fund/SIP returns vary and are not guaranteed.
           </p>
-          ${backButton()}
         </div>
       </div>`;
   }
@@ -129,7 +128,7 @@
   function renderIncomeTax() {
     return `
       <div class="service-card">
-        <h3 class="card-head-row"><span>\ud83e\uddfe Income Tax Calculator (India)</span></h3>
+        <h3 class="card-head-row"><span>\ud83e\uddfe Income Tax Calculator (India)</span>${backButton()}</h3>
         <div class="card-body">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             ${fld('Annual income (gross)', `<input type="number" id="tTaxIncome" value="1200000" min="0" style="width:100%;" />`)}
@@ -150,7 +149,6 @@
             actual liability depends on regime choice, other deductions, and your specific situation.
             Consult a tax professional for filing purposes.
           </p>
-          ${backButton()}
         </div>
       </div>`;
   }
@@ -198,7 +196,7 @@
   function renderCompoundInterest() {
     return `
       <div class="service-card">
-        <h3 class="card-head-row"><span>\ud83d\udcb9 Compound Interest Calculator</span></h3>
+        <h3 class="card-head-row"><span>\ud83d\udcb9 Compound Interest Calculator</span>${backButton()}</h3>
         <div class="card-body">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             ${fld('Principal amount', `<input type="number" id="tCiPrincipal" value="100000" min="0" style="width:100%;" />`)}
@@ -216,7 +214,6 @@
           </div>
           ${billingRow('tCi')}
           <div id="tCiResult" style="margin-top:10px;"></div>
-          ${backButton()}
         </div>
       </div>`;
   }
@@ -245,7 +242,7 @@
   function renderLoanEligibility() {
     return `
       <div class="service-card">
-        <h3 class="card-head-row"><span>\ud83c\udfe6 Loan Eligibility Calculator</span></h3>
+        <h3 class="card-head-row"><span>\ud83c\udfe6 Loan Eligibility Calculator</span>${backButton()}</h3>
         <div class="card-body">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             ${fld('Monthly net income', `<input type="number" id="tLeIncome" value="80000" min="0" style="width:100%;" />`)}
@@ -263,7 +260,6 @@
             Estimate based on a simple EMI-to-income ratio - actual eligibility also depends on your
             credit score, employment type, existing liabilities, and the lender's own policy.
           </p>
-          ${backButton()}
         </div>
       </div>`;
   }
@@ -302,7 +298,7 @@
   function renderContentWriting() {
     return `
       <div class="service-card">
-        <h3 class="card-head-row"><span>✍️ Content Writing Tool</span></h3>
+        <h3 class="card-head-row"><span>✍️ Content Writing Tool</span>${backButton()}</h3>
         <div class="card-body">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             ${fld('Content type', `<select id="tCwType" style="width:100%;">
@@ -339,7 +335,6 @@
           <div class="process-controls" style="margin-top:10px;">
             <button class="process-btn clear-btn" onclick="PaidCalculators.downloadContent('tCwOut', 'content.txt')">⬇️ Download</button>
           </div>
-          ${backButton()}
         </div>
       </div>`;
   }
@@ -372,7 +367,7 @@
   function renderHumanize() {
     return `
       <div class="service-card">
-        <h3 class="card-head-row"><span>🧑 Humanize Document Tool</span></h3>
+        <h3 class="card-head-row"><span>🧑 Humanize Document Tool</span>${backButton()}</h3>
         <div class="card-body">
           <div class="setup-group">
             <label>Text to humanize</label>
@@ -393,7 +388,6 @@
             Rewrites the text to read more naturally (varied sentence rhythm, less
             repetitive phrasing) - it does not claim to defeat any specific AI-detection tool.
           </p>
-          ${backButton()}
         </div>
       </div>`;
   }
@@ -477,7 +471,7 @@
   function renderBackgroundRemover() {
     return `
       <div class="service-card">
-        <h3 class="card-head-row"><span>🪄 Background Remover</span></h3>
+        <h3 class="card-head-row"><span>🪄 Background Remover</span>${backButton()}</h3>
         <div class="card-body">
           <div class="setup-group">
             <label>Upload an image</label>
@@ -493,7 +487,6 @@
             First use on this device downloads a one-time ~40MB model (cached afterwards) -
             the initial run can take a little longer than later ones.
           </p>
-          ${backButton()}
         </div>
       </div>`;
   }
@@ -567,7 +560,7 @@
     setTimeout(populateVoiceList, 0);
     return `
       <div class="service-card">
-        <h3 class="card-head-row"><span>🔊 Text-to-Speech</span></h3>
+        <h3 class="card-head-row"><span>🔊 Text-to-Speech</span>${backButton()}</h3>
         <div class="card-body">
           <div class="setup-group">
             <label>Text to read aloud</label>
@@ -586,7 +579,6 @@
             Uses your browser/device's built-in voices - available voices and quality vary by
             browser and operating system. Playback only (no file download in this version).
           </p>
-          ${backButton()}
         </div>
       </div>`;
   }

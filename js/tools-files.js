@@ -1393,6 +1393,109 @@
     }
   });
 
+  // ══════════════════════════════════════════════════════════════════
+  // JSON TO CSV
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'json-to-csv',
+    title: 'JSON to CSV',
+    icon: '🔄',
+    accept: '.json,application/json',
+    backTo: BACK,
+    description: 'Upload a JSON file (an object, or an array of objects), get a CSV back.',
+    setupHtml: function () { return ''; },
+    process: async function (files, ctx, label) {
+      const f = files[0];
+      const text = await f.text();
+      let data;
+      try { data = JSON.parse(text); } catch (e) { throw new Error('That file is not valid JSON.'); }
+      // A single JSON object (not wrapped in an array) is a perfectly
+      // reasonable thing to upload - convert it to a one-row CSV instead
+      // of rejecting it.
+      if (data && typeof data === 'object' && !Array.isArray(data)) data = [data];
+      if (!Array.isArray(data)) throw new Error('Expected a JSON object or an array of objects.');
+      if (!data.length) throw new Error('That array is empty.');
+
+      const heads = [];
+      data.forEach(function (o) {
+        Object.keys(o || {}).forEach(function (k) { if (heads.indexOf(k) === -1) heads.push(k); });
+      });
+      const cell = (v) => {
+        const s = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+      };
+      const csv = [heads.join(',')].concat(data.map(function (o) {
+        return heads.map(function (h) { return cell(o ? o[h] : ''); }).join(',');
+      })).join('\n');
+
+      ctx.download(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' }), `${stem(f.name)}.csv`);
+      ctx.log(`${label} > Records = ${data.length}`, 'Info');
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}.csv`, 'Success');
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // CSV/EXCEL TO JSON
+  // ══════════════════════════════════════════════════════════════════
+  ServiceRunner.register({
+    id: 'csv-to-json',
+    title: 'CSV/Excel to JSON',
+    icon: '🔄',
+    accept: '.csv,.xlsx,.xls,text/csv',
+    backTo: BACK,
+    description: 'Upload a CSV or Excel file, get JSON back.',
+    setupHtml: function () { return ''; },
+    process: async function (files, ctx, label) {
+      const f = files[0];
+      let csvText;
+      if (/\.(xlsx|xls)$/i.test(f.name)) {
+        need(typeof XLSX !== 'undefined' ? XLSX : undefined, 'SheetJS');
+        const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+        csvText = XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]]);
+        ctx.log(`${label} > Sheet = ${wb.SheetNames[0]}`, 'Info');
+      } else {
+        csvText = await f.text();
+      }
+
+      // Same small CSV parser other tools already use (js/tools-docs.js
+      // has its own copy for the paste-based tools) - simple RFC4180-ish
+      // parsing: handles quoted fields, escaped quotes, commas/newlines
+      // inside quotes.
+      const rows = [];
+      let row = [], cell = '', inQuotes = false;
+      for (let i = 0; i < csvText.length; i++) {
+        const c = csvText[i], next = csvText[i + 1];
+        if (inQuotes) {
+          if (c === '"' && next === '"') { cell += '"'; i++; }
+          else if (c === '"') { inQuotes = false; }
+          else { cell += c; }
+        } else if (c === '"') {
+          inQuotes = true;
+        } else if (c === ',') {
+          row.push(cell); cell = '';
+        } else if (c === '\n' || c === '\r') {
+          if (c === '\r' && next === '\n') i++;
+          row.push(cell); cell = '';
+          rows.push(row); row = [];
+        } else {
+          cell += c;
+        }
+      }
+      if (cell || row.length) { row.push(cell); rows.push(row); }
+      const cleanRows = rows.filter(function (r) { return r.length > 1 || r[0] !== ''; });
+
+      if (cleanRows.length < 2) throw new Error('Need a header row plus at least one data row.');
+      const heads = cleanRows[0].map(function (h) { return String(h).trim(); });
+      const objs = cleanRows.slice(1).map(function (r) {
+        const o = {}; heads.forEach(function (h, i) { o[h] = r[i] == null ? '' : r[i]; }); return o;
+      });
+
+      ctx.download(new Blob([JSON.stringify(objs, null, 2)], { type: 'application/json' }), `${stem(f.name)}.json`);
+      ctx.log(`${label} > Rows read = ${objs.length}`, 'Info');
+      ctx.log(`${label} > Generate Output > ${stem(f.name)}.json`, 'Success');
+    }
+  });
+
   window.ToolsFiles = {
     onPreset: onPreset,
     fillForm: fillForm,

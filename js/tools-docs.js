@@ -720,175 +720,7 @@
       line('Reading time', `~${Math.max(1, Math.ceil(words / 200))} min`));
   }
 
-  // ══════════════════════════════════════════════════════════════════
-  // JSON ↔ CSV
-  // ══════════════════════════════════════════════════════════════════
-  // ══════════════════════════════════════════════════════════════════
-  // JSON TO CSV
-  // ══════════════════════════════════════════════════════════════════
-  function renderJsonToCsv() {
-    return card('🔄', 'JSON to CSV', `
-      <div class="setup-group">
-        <label>Upload a JSON file, or paste JSON below</label>
-        <div style="margin-bottom:8px;">
-          <button class="process-btn clear-btn" onclick="document.getElementById('tJ2cFile').click()">📁 Upload JSON file</button>
-          <input type="file" id="tJ2cFile" accept=".json,application/json" style="display:none;" onchange="ToolsDocs.loadJsonFile(this.files[0])" />
-        </div>
-        <textarea id="tJ2cIn" rows="8" style="width:100%;font-family:monospace;font-size:12px;"
-                  placeholder='Paste JSON (an object, or an array of objects)…'></textarea>
-      </div>
-      <div class="process-controls" style="margin-top:12px;">
-        <button class="process-btn start-btn" onclick="ToolsDocs.convertJsonToCsv()">Convert to CSV</button>
-      </div>
-      <div id="tJ2cStatus" style="margin-top:8px;font-size:0.86rem;min-height:1.1em;"></div>
-      <div class="setup-group" style="margin-top:10px;">
-        <label>Output (CSV)</label>
-        <textarea id="tJ2cOut" rows="8" style="width:100%;font-family:monospace;font-size:12px;" readonly></textarea>
-      </div>
-      <div class="process-controls" style="margin-top:10px;">
-        <button class="process-btn clear-btn" onclick="ToolsDocs.downloadJsonToCsv()">⬇️ Download CSV</button>
-      </div>`);
-  }
 
-  function loadJsonFile(file) {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = function () {
-      const el = document.getElementById('tJ2cIn');
-      if (el) el.value = String(reader.result || '');
-      say('tJ2cStatus', `Loaded "${file.name}" - click Convert to CSV.`, 'ok');
-    };
-    reader.onerror = function () { say('tJ2cStatus', 'Could not read that file.', 'error'); };
-    reader.readAsText(file);
-  }
-
-  function convertJsonToCsv() {
-    const input = val('tJ2cIn');
-    const set = (v) => { const el = document.getElementById('tJ2cOut'); if (el) el.value = v; };
-    try {
-      let data = JSON.parse(input);
-      // A single JSON object (not wrapped in an array) is a perfectly
-      // reasonable thing to paste/upload - convert it to a one-row CSV
-      // instead of rejecting it.
-      if (data && typeof data === 'object' && !Array.isArray(data)) data = [data];
-      if (!Array.isArray(data)) throw new Error('Expected a JSON object or an array of objects.');
-      if (!data.length) throw new Error('That array is empty.');
-      // Union of all keys, so rows with extra/missing fields still line up.
-      const heads = [];
-      data.forEach(function (o) {
-        Object.keys(o || {}).forEach(function (k) { if (heads.indexOf(k) === -1) heads.push(k); });
-      });
-      const cell = (v) => {
-        const s = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
-        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-      };
-      set([heads.join(',')].concat(data.map(function (o) {
-        return heads.map(function (h) { return cell(o ? o[h] : ''); }).join(',');
-      })).join('\n'));
-      say('tJ2cStatus', `Converted ${data.length} record(s).`, 'ok');
-    } catch (e) {
-      set('');
-      say('tJ2cStatus', e.message, 'error');
-    }
-  }
-
-  function downloadJsonToCsv() {
-    const text = val('tJ2cOut');
-    if (!text) return say('tJ2cStatus', 'Convert something first.', 'error');
-    download(new Blob([text], { type: 'text/csv;charset=utf-8' }), 'converted.csv');
-  }
-
-  // ══════════════════════════════════════════════════════════════════
-  // CSV/EXCEL TO JSON
-  // ══════════════════════════════════════════════════════════════════
-  function renderCsvToJson() {
-    return card('🔄', 'CSV/Excel to JSON', `
-      <div class="setup-group">
-        <label>Upload a CSV or Excel file, or paste CSV below</label>
-        <div style="margin-bottom:8px;">
-          <button class="process-btn clear-btn" onclick="document.getElementById('tC2jFile').click()">📁 Upload CSV/Excel file</button>
-          <input type="file" id="tC2jFile" accept=".csv,.xlsx,.xls,text/csv" style="display:none;" onchange="ToolsDocs.loadCsvOrExcelFile(this.files[0])" />
-        </div>
-        <textarea id="tC2jIn" rows="8" style="width:100%;font-family:monospace;font-size:12px;"
-                  placeholder='Paste CSV here, or upload a file above…'></textarea>
-      </div>
-      <div class="process-controls" style="margin-top:12px;">
-        <button class="process-btn start-btn" onclick="ToolsDocs.convertCsvToJson()">Convert to JSON</button>
-      </div>
-      <div id="tC2jStatus" style="margin-top:8px;font-size:0.86rem;min-height:1.1em;"></div>
-      <div class="setup-group" style="margin-top:10px;">
-        <label>Output (JSON)</label>
-        <textarea id="tC2jOut" rows="8" style="width:100%;font-family:monospace;font-size:12px;" readonly></textarea>
-      </div>
-      <div class="process-controls" style="margin-top:10px;">
-        <button class="process-btn clear-btn" onclick="ToolsDocs.downloadCsvToJson()">⬇️ Download JSON</button>
-      </div>`);
-  }
-
-  // Excel files are binary, so they can't go through the plain-text
-  // textarea like CSV/JSON can - read them with SheetJS and convert the
-  // first sheet straight to a CSV string, which then reuses the exact
-  // same CSV-parsing path as a pasted/typed CSV.
-  function loadCsvOrExcelFile(file) {
-    if (!file) return;
-    const isExcel = /\.xlsx?$/i.test(file.name);
-    if (isExcel) {
-      if (typeof XLSX === 'undefined') return say('tC2jStatus', 'Excel support failed to load - please refresh.', 'error');
-      const reader = new FileReader();
-      reader.onload = function () {
-        try {
-          const wb = XLSX.read(new Uint8Array(reader.result), { type: 'array' });
-          const sheet = wb.Sheets[wb.SheetNames[0]];
-          const csv = XLSX.utils.sheet_to_csv(sheet);
-          const el = document.getElementById('tC2jIn');
-          if (el) el.value = csv;
-          say('tC2jStatus', `Loaded "${file.name}" (sheet: ${wb.SheetNames[0]}) - click Convert to JSON.`, 'ok');
-        } catch (e) {
-          say('tC2jStatus', 'Could not read that Excel file.', 'error');
-        }
-      };
-      reader.onerror = function () { say('tC2jStatus', 'Could not read that file.', 'error'); };
-      reader.readAsArrayBuffer(file);
-    } else {
-      const reader = new FileReader();
-      reader.onload = function () {
-        const el = document.getElementById('tC2jIn');
-        if (el) el.value = String(reader.result || '');
-        say('tC2jStatus', `Loaded "${file.name}" - click Convert to JSON.`, 'ok');
-      };
-      reader.onerror = function () { say('tC2jStatus', 'Could not read that file.', 'error'); };
-      reader.readAsText(file);
-    }
-  }
-
-  function convertCsvToJson() {
-    const input = val('tC2jIn');
-    const set = (v) => { const el = document.getElementById('tC2jOut'); if (el) el.value = v; };
-    try {
-      const rows = parseCsv(input);
-      if (rows.length < 2) throw new Error('Need a header row plus at least one data row.');
-      const heads = rows[0].map(function (h) { return String(h).trim(); });
-      const objs = rows.slice(1).map(function (r) {
-        const o = {}; heads.forEach(function (h, i) { o[h] = r[i] == null ? '' : r[i]; }); return o;
-      });
-      set(JSON.stringify(objs, null, 2));
-      say('tC2jStatus', `Converted ${objs.length} row(s).`, 'ok');
-    } catch (e) {
-      set('');
-      say('tC2jStatus', e.message, 'error');
-    }
-  }
-
-  function downloadCsvToJson() {
-    const text = val('tC2jOut');
-    if (!text) return say('tC2jStatus', 'Convert something first.', 'error');
-    download(new Blob([text], { type: 'application/json' }), 'converted.json');
-  }
-
-
-  // ══════════════════════════════════════════════════════════════════
-  // QR CODE GENERATOR
-  // ══════════════════════════════════════════════════════════════════
   // ══════════════════════════════════════════════════════════════════
   // BUSINESS NAME GENERATOR
   // ══════════════════════════════════════════════════════════════════
@@ -1428,8 +1260,6 @@
     'percentage-calculator': { label: 'Percentage Calculator', icon: '💯', desc: 'What is X% of Y, and what % is X of Y.',  render: renderPercentage },
     'date-diff-calculator': { label: 'Date Difference Calculator', icon: '📅', desc: 'Days between two dates.',             render: renderDateDiff },
     'discount-gst-calculator': { label: 'Discount/GST Calculator', icon: '🏷️', desc: 'Discount and GST on a price.',       render: renderDiscountGst },
-    'json-to-csv':         { label: 'JSON to CSV',         icon: '🔄', desc: 'Upload JSON, get a CSV file.',                render: renderJsonToCsv },
-    'csv-to-json':         { label: 'CSV/Excel to JSON',   icon: '🔄', desc: 'Upload CSV or Excel, get JSON.',             render: renderCsvToJson },
     'qr-generator':        { label: 'QR Code Generator',   icon: '🔳', desc: 'Make a QR code from any text or link.',       render: renderQr },
     'barcode-generator':   { label: 'Barcode Generator',   icon: '▮',  desc: 'CODE128, EAN, UPC and more.',                 render: renderBarcode },
     'signature-maker':     { label: 'Signature Maker',     icon: '✍️', desc: 'Draw a signature, download as a transparent PNG.', render: renderSignatureMaker },
@@ -1459,12 +1289,6 @@
     runPercentage: runPercentage,
     runDateDiff: runDateDiff,
     runDiscountGst: runDiscountGst,
-    loadJsonFile: loadJsonFile,
-    convertJsonToCsv: convertJsonToCsv,
-    downloadJsonToCsv: downloadJsonToCsv,
-    loadCsvOrExcelFile: loadCsvOrExcelFile,
-    convertCsvToJson: convertCsvToJson,
-    downloadCsvToJson: downloadCsvToJson,
     runQr: runQr,
     downloadQr: downloadQr,
     runBarcode: runBarcode,

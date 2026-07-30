@@ -864,6 +864,11 @@ ADMIN_HIDDEN_TABLES = {
     _doc_table("translation-activity-log"),
     _doc_table("plan-history"),
     _doc_table("payment-methods"),
+    _doc_table("translation-files"),
+    _doc_table("lease-files"),
+    _doc_table("contact-submissions"),
+    _settings_table("card-layout"),
+    _settings_table("agents"),
 }
 
 # Company aur Plans (items 1.02 / 1.03) ka poora record ek hi JSONB

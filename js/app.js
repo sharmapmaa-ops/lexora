@@ -3774,6 +3774,7 @@
                                     const txn = result.transaction;
                                     paymentHistory.push(txn);
                                     _creditDeveloperRevenueRecord(txn, description);
+                                    persistPaymentHistory();
 
                                     amountInput.value = '';
                                     descInput.value = '';
@@ -5564,6 +5565,16 @@
                             </div>
                         </div>
 
+                        <div class="payment-card profile-danger-card">
+                            <h3>⚠️ Delete Account</h3>
+                            <div class="card-body">
+                                <p style="font-size:0.86rem;color:rgba(0,0,0,0.6);margin:0 0 12px;">
+                                    Permanently deletes your account, wallet balance, and processing history. This cannot be undone.
+                                </p>
+                                <button class="submit-btn profile-danger-btn" onclick="confirmDeleteAccount()">Delete My Account</button>
+                            </div>
+                        </div>
+
                         </div>
                     </div>
                 `;
@@ -7169,10 +7180,20 @@
                     return !isNaN(d.getTime()) && d >= cutoff;
                 }).length;
 
-                const developerUserId = getDeveloperUserId();
+                // Real money received has two possible paymentTypes:
+                // 'Razorpay' (direct checkout, server-verified - always
+                // real, no status gate needed) and 'Balance Received'
+                // (manual/admin-approved top-up - only counts once
+                // approved, not while pending or cancelled). Summed
+                // across every user directly, rather than relying on the
+                // Developer-account "mirror" copy (_creditDeveloperRevenueRecord) -
+                // that mirror is only for the Developer's own Payment
+                // History view, not a reliable source for this total.
                 const totalRevenue = paymentHistory
                     .filter(function (t) {
-                        return t.paymentType === 'Balance Received' && t.status !== 'cancelled' && t.userId === developerUserId;
+                        if (t.paymentType === 'Razorpay') return true;
+                        if (t.paymentType === 'Balance Received') return t.status === 'approved';
+                        return false;
                     })
                     .reduce(function (sum, t) { return sum + (Number(t.credit) || 0); }, 0);
 
@@ -8906,16 +8927,20 @@
                 const encodedUrl = encodeURIComponent(shareUrl);
                 const encodedText = encodeURIComponent(`Check out ${name}`);
                 const links = [
-                    ['pinterest', `https://pinterest.com/pin/create/button/?url=${encodedUrl}&description=${encodedText}`,
-                     '<path d="M12 2a10 10 0 0 0-3.64 19.31c-.05-.82-.09-2.08.02-2.98.1-.8.65-5.1.65-5.1s-.17-.33-.17-.82c0-.77.45-1.34 1-1.34.48 0 .7.36.7.79 0 .48-.3 1.2-.46 1.87-.13.55.28 1 .82 1 .98 0 1.74-1.04 1.74-2.53 0-1.32-.95-2.25-2.31-2.25-1.57 0-2.5 1.18-2.5 2.4 0 .48.18.99.42 1.27a.17.17 0 0 1 .04.16c-.04.18-.14.55-.16.63-.03.1-.09.13-.2.08-.75-.35-1.22-1.45-1.22-2.33 0-1.9 1.38-3.64 3.98-3.64 2.09 0 3.71 1.49 3.71 3.48 0 2.08-1.31 3.75-3.13 3.75-.61 0-1.19-.32-1.38-.7l-.38 1.43c-.13.53-.5 1.19-.74 1.6A10 10 0 1 0 12 2z"/>'],
-                    ['tumblr', `https://tumblr.com/widgets/share/tool?canonicalUrl=${encodedUrl}&title=${encodedText}`,
-                     '<path d="M14.5 21c-3 0-4.9-1.6-4.9-4.7V10.9H8V8.3c2.3-.6 3.2-2.6 3.4-4.5h2.5V8h3v2.9h-3v5c0 1.2.6 1.8 1.7 1.8.5 0 1-.1 1.4-.3l.7 2.7c-.8.6-2 .9-3.2.9z"/>'],
+                    ['whatsapp', `https://wa.me/?text=${encodedText}%20${encodedUrl}`,
+                     '<path d="M17.5 14.4c-.3-.1-1.7-.9-2-1-.3-.1-.5-.1-.7.1-.2.3-.8 1-.9 1.2-.2.2-.3.2-.6.1-.3-.1-1.2-.5-2.4-1.5-.9-.8-1.5-1.8-1.6-2-.2-.3 0-.5.1-.6.1-.1.3-.3.4-.5.1-.1.2-.3.3-.4.1-.2 0-.4 0-.5 0-.1-.7-1.7-1-2.3-.2-.6-.5-.5-.7-.5h-.6c-.2 0-.5.1-.8.4-.3.3-1 1-1 2.4s1.1 2.8 1.2 3c.1.2 2.2 3.4 5.4 4.7.7.3 1.3.5 1.8.7.7.2 1.4.2 1.9.1.6-.1 1.7-.7 2-1.4.2-.7.2-1.2.2-1.4z"/><path d="M12 2a10 10 0 0 0-8.6 15L2 22l5.1-1.3A10 10 0 1 0 12 2zm0 18.2c-1.6 0-3.1-.4-4.4-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2z"/>'],
+                    ['instagram', `https://www.instagram.com/`,
+                     '<path d="M12 2.16c3.2 0 3.58.01 4.85.07 1.17.05 1.8.25 2.23.41.56.22.96.48 1.38.9.42.42.68.82.9 1.38.16.42.36 1.06.41 2.23.06 1.27.07 1.65.07 4.85s-.01 3.58-.07 4.85c-.05 1.17-.25 1.8-.41 2.23-.22.56-.48.96-.9 1.38-.42.42-.82.68-1.38.9-.42.16-1.06.36-2.23.41-1.27.06-1.65.07-4.85.07s-3.58-.01-4.85-.07c-1.17-.05-1.8-.25-2.23-.41a3.8 3.8 0 0 1-1.38-.9 3.8 3.8 0 0 1-.9-1.38c-.16-.42-.36-1.06-.41-2.23C2.17 15.58 2.16 15.2 2.16 12s.01-3.58.07-4.85c.05-1.17.25-1.8.41-2.23.22-.56.48-.96.9-1.38.42-.42.82-.68 1.38-.9.42-.16 1.06-.36 2.23-.41C8.42 2.17 8.8 2.16 12 2.16zm0 3.68a6.16 6.16 0 1 0 0 12.32 6.16 6.16 0 0 0 0-12.32zm0 10.16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm7.85-10.4a1.44 1.44 0 1 1-2.88 0 1.44 1.44 0 0 1 2.88 0z"/>'],
                     ['twitter', `https://twitter.com/intent/tweet?url=${encodedUrl}&text=${encodedText}`,
                      '<path d="M22 5.9c-.7.3-1.5.6-2.3.7.8-.5 1.5-1.3 1.8-2.3-.8.5-1.7.8-2.6 1a4.1 4.1 0 0 0-7 3.7A11.6 11.6 0 0 1 3.4 4.7a4.1 4.1 0 0 0 1.3 5.5c-.7 0-1.3-.2-1.9-.5v.1c0 2 1.4 3.6 3.3 4a4.1 4.1 0 0 1-1.9.1c.5 1.6 2.1 2.8 3.9 2.9A8.2 8.2 0 0 1 2 18.6a11.6 11.6 0 0 0 6.3 1.8c7.5 0 11.7-6.3 11.7-11.7v-.5c.8-.6 1.5-1.3 2-2.1z"/>'],
                     ['facebook', `https://www.facebook.com/sharer/sharer.php?u=${encodedUrl}`,
                      '<path d="M22 12a10 10 0 1 0-11.56 9.88v-6.99H7.9V12h2.54V9.8c0-2.5 1.49-3.89 3.77-3.89 1.09 0 2.24.2 2.24.2v2.46h-1.26c-1.24 0-1.63.77-1.63 1.56V12h2.78l-.45 2.89h-2.33v6.99A10 10 0 0 0 22 12z"/>'],
                     ['linkedin', `https://www.linkedin.com/sharing/share-offsite/?url=${encodedUrl}`,
                      '<path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.35V9h3.41v1.56h.05a3.74 3.74 0 0 1 3.37-1.85c3.6 0 4.27 2.37 4.27 5.46zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.55V9h3.57z"/>'],
+                    ['telegram', `https://t.me/share/url?url=${encodedUrl}&text=${encodedText}`,
+                     '<path d="M22 3 2.5 10.9c-1.3.5-1.3 1.2-.2 1.5l5 1.6 1.9 6c.2.6.4.8.9.8s.6-.2.9-.5l2.4-2.3 4.9 3.6c.9.5 1.5.2 1.8-.8L23.9 4c.4-1.3-.4-1.9-1.9-1z"/>'],
+                    ['snapchat', `https://creativekit.snapchat.com/share?attachmentUrl=${encodedUrl}`,
+                     '<path d="M12 2c3 0 4.7 2.3 4.8 4.8.05.9 0 1.7-.05 2.4.35.15.9.2 1.35-.05.4-.2.85 0 .9.4.05.5-.3.85-.85 1.15-.1.05-.5.25-.6.55-.1.3.05.7.4 1.1.55.65 1.5 1.1 2.6 1.3.3.05.5.35.4.65-.15.5-.9.75-1.5.9-.15.55-.3.9-.65.9-.3 0-.75-.1-1.25-.05-.45.05-.9.4-1.9.4-.5 0-1-.2-1.55-.4-.5-.2-1-.35-1.6-.35s-1.1.15-1.6.35c-.55.2-1.05.4-1.55.4-1 0-1.45-.35-1.9-.4-.5-.05-.95.05-1.25.05-.35 0-.5-.35-.65-.9-.6-.15-1.35-.4-1.5-.9-.1-.3.1-.6.4-.65 1.1-.2 2.05-.65 2.6-1.3.35-.4.5-.8.4-1.1-.1-.3-.5-.5-.6-.55-.55-.3-.9-.65-.85-1.15.05-.4.5-.6.9-.4.45.25 1 .2 1.35.05-.05-.7-.1-1.5-.05-2.4C7.3 4.3 9 2 12 2z"/>'],
                 ];
                 const html = `
                     <div class="admin-modal-overlay" id="shareModalOverlay">
@@ -9643,6 +9668,9 @@
                                     <div class="contact-follow">
                                         <span>Follow us</span>
                                         ${buildSocialLinksHtml({ size: 20, gap: 12, color: '#1257f5' })}
+                                        <button class="footer-share-btn" onclick="openShareModal()" title="Share ${escapeHtml((COMPANY_INFO && COMPANY_INFO.name) || 'Lexora')}" style="margin-left:8px;">
+                                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 10.5 15.4 6.5M8.6 13.5 15.4 17.5"/></svg>
+                                        </button>
                                     </div>
                                 </div>
 
@@ -10482,11 +10510,27 @@
                 el.classList.remove('expired');
             }
 
+            // Only swaps the .auth-card's own content (login/register/
+            // forgot/verify form) - used for step changes within the auth
+            // screen so the left branding panel, tools catalogue, and
+            // footer don't get destroyed and rebuilt (which was visibly
+            // flickering/blinking everything on screen for a full-page
+            // change that only ever affected the card itself).
+            function updateAuthCardOnly() {
+                const card = document.querySelector('.auth-card');
+                if (!card) { renderAuthScreen(); return; }
+                card.innerHTML = buildAuthCard();
+                if (authState.step === 'verify') {
+                    wireOtpBoxes();
+                    startAuthCountdown();
+                }
+            }
+
             window.authGoTo = function(step) {
                 clearInterval(authState.countdownInterval);
                 authState.step = step;
                 authState.emailFailed = false;
-                renderAuthScreen();
+                updateAuthCardOnly();
             };
 
             window.authGoBackFromVerify = function() {
@@ -10724,6 +10768,62 @@
                 // real company/user name is applied - see boot() note.
                 initializeApp();
             }
+
+            // Profile > Delete Account. Requires re-entering the password
+            // (not just a click-through confirm) since this is
+            // irreversible - same bar as changing a password, but higher
+            // stakes.
+            window.confirmDeleteAccount = function() {
+                const existing = document.getElementById('deleteAccountOverlay');
+                if (existing) existing.remove();
+                const html = `
+                    <div class="admin-modal-overlay" id="deleteAccountOverlay">
+                        <div class="admin-modal-card message-popup-card" style="max-width:400px;">
+                            <button class="admin-modal-close" onclick="closeDeleteAccountModal()">✕</button>
+                            <h3 class="admin-modal-title" style="color:#b3261e;">⚠️ Delete Account</h3>
+                            <p style="font-size:0.86rem;color:rgba(0,0,0,0.65);margin:0 0 14px;">
+                                This permanently deletes your account, wallet balance, and processing
+                                history. This cannot be undone. Enter your password to confirm.
+                            </p>
+                            <div class="password-field-wrapper" style="margin-bottom:10px;">
+                                <input type="password" id="deleteAccountPassword" class="form-group" placeholder="Your password" style="width:100%;" />
+                            </div>
+                            <div id="deleteAccountError" class="auth-error-box" style="display:none;"></div>
+                            <div class="admin-modal-actions" style="margin-top:12px;">
+                                <button class="admin-modal-cancel" onclick="closeDeleteAccountModal()">Cancel</button>
+                                <button class="admin-modal-save profile-danger-btn" onclick="submitDeleteAccount()">Delete Permanently</button>
+                            </div>
+                        </div>
+                    </div>`;
+                document.body.insertAdjacentHTML('beforeend', html);
+            };
+
+            window.closeDeleteAccountModal = function() {
+                const overlay = document.getElementById('deleteAccountOverlay');
+                if (overlay) overlay.remove();
+            };
+
+            window.submitDeleteAccount = async function() {
+                const password = document.getElementById('deleteAccountPassword').value;
+                const errBox = document.getElementById('deleteAccountError');
+                if (!password) {
+                    if (errBox) { errBox.textContent = 'Please enter your password.'; errBox.style.display = 'block'; }
+                    return;
+                }
+                try {
+                    const res = await authFetch('/api/auth/delete-account', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId: CURRENT_USER_ID, password: password })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Could not delete account.');
+                    closeDeleteAccountModal();
+                    performLogout();
+                } catch (err) {
+                    if (errBox) { errBox.textContent = err.message || 'Could not delete account.'; errBox.style.display = 'block'; }
+                }
+            };
 
             function performLogout() {
                 // Stop any in-progress translation run before tearing down
