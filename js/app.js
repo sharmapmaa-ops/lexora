@@ -310,23 +310,26 @@
 
             function buildSocialLinksHtml(opts) {
                 const o = opts || {};
-                const social = (COMPANY_INFO && COMPANY_INFO.social) || {};
+                const c = COMPANY_INFO || {};
+                const legacySocial = c.social || {};
                 const order = ['facebook', 'instagram', 'linkedin', 'youtube'];
-                const links = order.filter(function (k) { return social[k]; });
-                if (!links.length && !o.includeShare) return '';
+                const links = order.filter(function (k) { return c[k] || legacySocial[k]; });
+                const shareOn = c.shareEnabled !== 'No' && c.shareEnabled !== false;
+                const includeShare = !!(o.includeShare && shareOn);
+                if (!links.length && !includeShare) return '';
                 const size = o.size || 18;
                 const color = o.color || 'currentColor';
                 const shareIcon = '<path d="M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 .09 4.26L8.91 11.7a3 3 0 1 0 0 4.6l6.19 3.44A3 3 0 1 0 16 18a3 3 0 0 0-.09-.7L9.72 13.86a3 3 0 0 0 0-3.72l6.19-3.44c.02.22.09.44.09.7A3 3 0 0 0 18 8z" fill-rule="evenodd"/>';
                 return `<div style="display:flex;gap:${o.gap || 12}px;align-items:center;${o.justify ? 'justify-content:' + o.justify + ';' : ''}">
                     ${links.map(function (k) {
-                        return `<a href="${escapeHtml(social[k])}" target="_blank" rel="noopener noreferrer"
+                        return `<a href="${escapeHtml(c[k] || legacySocial[k])}" target="_blank" rel="noopener noreferrer"
                                    title="${k.charAt(0).toUpperCase() + k.slice(1)}"
                                    style="display:inline-flex;color:${color};opacity:0.85;transition:opacity .15s;"
                                    onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.85">
                             <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${SOCIAL_ICONS[k]}</svg>
                         </a>`;
                     }).join('')}
-                    ${o.includeShare ? `
+                    ${includeShare ? `
                         <a onclick="openShareModal()" title="Share"
                            style="display:inline-flex;color:${color};opacity:0.85;transition:opacity .15s;cursor:pointer;"
                            onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.85">
@@ -6714,6 +6717,23 @@
 
             // Kaunsa table abhi khula hai.
             let dbActiveTable = null;
+            let dbFilterRowVisible = false;
+
+            window.dbToggleFilterRow = function() {
+                dbFilterRowVisible = !dbFilterRowVisible;
+                const row = document.getElementById('dbFilterRow');
+                if (row) {
+                    row.style.display = dbFilterRowVisible ? '' : 'none';
+                    if (!dbFilterRowVisible) {
+                        // Clear any active filters when hiding the row again.
+                        row.querySelectorAll('.db-filter-input').forEach(inp => { inp.value = ''; });
+                        row.querySelectorAll('.db-filter-input').forEach((inp, ci) => dbTableFilter(ci, ''));
+                    } else {
+                        const first = row.querySelector('.db-filter-input');
+                        if (first) first.focus();
+                    }
+                }
+            };
 
             // Ek hi selectbox me saari tables - option badalte hi table
             // switch ho jaati hai. Naam se row-count hata diya (sirf naam
@@ -6739,6 +6759,7 @@
                                         ${escapeHtml(_dbTableLabel(t.name))}${t.exists ? '' : ' (not created yet)'}
                                     </option>`).join('')}
                             </select>
+                            <button class="admin-btn" id="dbFilterToggleBtn" onclick="dbToggleFilterRow()">\u{1F50D} Filter</button>
                         </div>
                         <div id="dbActiveTableBody"></div>`;
                     if (dbActiveTable) dbTableLoad(dbActiveTable);
@@ -6770,6 +6791,11 @@
                 const safe = escapeHtml(raw).replace(/"/g, '&quot;');
                 if (!col.editable) {
                     return `<input type="text" value="${safe}" disabled title="Ye column edit nahi ho sakta" />`;
+                }
+                if (Array.isArray(col.options) && col.options.length) {
+                    return `<select class="db-cell-input" data-col="${escapeHtml(col.name)}">
+                        ${col.options.map(opt => `<option value="${escapeHtml(opt)}" ${opt === raw ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                    </select>`;
                 }
                 if (col.type === 'jsonb' || col.type === 'json') {
                     return `<textarea class="db-cell-input db-cell-json" rows="2" data-col="${escapeHtml(col.name)}">${escapeHtml(raw)}</textarea>`;
@@ -6823,10 +6849,10 @@
                             <thead>
                                 <tr>
                                     <th><input type="checkbox" onchange="dbTableToggleAll(this)" /></th>
-                                    ${cols.map(c => `<th>${escapeHtml(_dbTableLabel(c.name))}${c.primaryKey ? ' \u{1F511}' : ''}</th>`).join('')}
+                                    ${cols.map(c => `<th>${escapeHtml(c.label || _dbTableLabel(c.name))}${c.primaryKey ? ' \u{1F511}' : ''}</th>`).join('')}
                                     <th></th>
                                 </tr>
-                                <tr class="db-filter-row">
+                                <tr class="db-filter-row" id="dbFilterRow" style="${dbFilterRowVisible ? '' : 'display:none;'}">
                                     <th></th>
                                     ${cols.map((c, ci) => `<th><input type="text" class="db-filter-input" placeholder="Filter\u2026" oninput="dbTableFilter(${ci}, this.value)" /></th>`).join('')}
                                     <th></th>
@@ -7446,7 +7472,7 @@
 
             function buildAdminFilesBody() {
                 return `
-                    <div class="admin-files-card" id="adminFilesCard">
+                    <div class="admin-files-card history-card admin-db-card" id="adminFilesCard">
                         <div class="admin-files-header">
                             <h3>\u{1F5C4} PostgreSQL</h3>
                         </div>
@@ -9743,10 +9769,6 @@
                                         <p class="ds-card-sub">Track and manage all your support requests in one place.</p>
                                     </div>
                                 </div>
-                                <button class="support-back-btn" onclick="lexoraNavigate('services','other-services')">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
-                                    Back to Free Services
-                                </button>
                             </div>
                             <div class="history-filter-bar">
                                 <div class="filter-group">
@@ -9798,7 +9820,6 @@
                                 <div class="support-log-footer-row">
                                     <button class="filter-btn delete-btn" onclick="deleteSelectedSupport()">🗑️ Delete</button>
                                     <a class="support-create-new-link" onclick="openMessagePopup('compose')">➕ Create New</a>
-                                    <button class="filter-btn download-btn" onclick="downloadSupportExcel()">⬇️ Download Excel</button>
                                 </div>
                             </div>
                         </div>

@@ -3727,6 +3727,12 @@
     gap: 14px;
 }
 
+.admin-db-card {
+    height: 450px;
+    max-height: 88vh;
+    overflow-y: auto;
+}
+
 .admin-files-header h3 {
     color: black;
     font-weight: 500;

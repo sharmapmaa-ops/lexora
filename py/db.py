@@ -886,27 +886,72 @@ VIRTUAL_TABLES = {
         "resource": "company",
         "fields": [
             "name", "address", "workingHours", "workingDays", "location",
-            "email", "phone", "whatsapp", "logo", "social", "currency",
+            "email", "phone", "whatsapp", "logo",
+            "youtube", "facebook", "linkedin", "instagram",
+            "shareEnabled", "currency",
         ],
-        "types": {"social": "jsonb"},
-        "jsonb_defaults": {"social": {}},
+        "types": {},
+        "jsonb_defaults": {},
+        "select_options": {
+            "shareEnabled": ["Yes", "No"],
+            "currency": ["INR", "USD", "AED"],
+        },
         "readonly_fields": set(),
     },
     "doc_plans": {
         "kind": "document",
         "resource": "plans",
         "fields": [
-            "id", "name", "icon", "monthlyPrice", "pricePerTranslation",
-            "pricePerLeaseAbstraction", "billingUnit", "featured",
-            "features", "currency",
+            "id", "name", "icon", "frequency", "monthlyPrice",
+            "pricePerTranslation", "billingUnit",
+            "paidFeature", "freeFeature", "supportFeature",
         ],
-        "types": {"features": "jsonb"},
-        "jsonb_defaults": {"features": []},
+        "types": {},
+        "jsonb_defaults": {},
+        "select_options": {
+            "frequency": ["Daily", "Monthly", "Yearly"],
+            "paidFeature": ["Yes", "No"],
+            "freeFeature": ["Yes", "No"],
+            "supportFeature": ["Yes", "No"],
+        },
         # 'id' rename allow nahi karte - baaki app me plan id se hi
         # lookup hota hai (billing, plan switch, waghera); rename se
         # references toot jayenge.
         "readonly_fields": {"id"},
     },
+    "doc_contact_submissions": {
+        "kind": "document",
+        "resource": "contact-submissions",
+        "fields": [
+            "userId", "id", "subject", "message", "status", "response",
+            "date", "updatedAt",
+        ],
+        "types": {},
+        "jsonb_defaults": {},
+        "select_options": {
+            "status": ["Pending", "WIP", "Resolved"],
+        },
+        # 'id' (ticket number) rename allow nahi - yehi doc_id bhi hai.
+        # 'updatedAt' real DB column se aata hai (JSONB me nahi), isliye
+        # edit karne layak nahi - wo apne aap update hoti hai.
+        "readonly_fields": {"id", "updatedAt"},
+    },
+}
+
+# Human-readable column headers for the Admin Database table viewer -
+# only needed where the underlying field name (kept as-is everywhere
+# else in the app, so nothing else has to change) doesn't already read
+# naturally as a column header.
+VIRTUAL_TABLE_LABELS = {
+    "cfg_company": {"workingHours": "Working Hours", "workingDays": "Working Days",
+                     "youtube": "Youtube", "facebook": "Facebook", "linkedin": "Linkedin",
+                     "instagram": "Instagram", "shareEnabled": "Share"},
+    "doc_plans": {"id": "Plan ID", "name": "Plan Name", "icon": "Plan Icon",
+                  "monthlyPrice": "Plan Price", "pricePerTranslation": "Paid Services Price",
+                  "billingUnit": "Paid Billing Unit", "paidFeature": "Paid Feature",
+                  "freeFeature": "Free Feature", "supportFeature": "Support Feature"},
+    "doc_contact_submissions": {"userId": "User ID", "id": "Ticket ID",
+                                 "date": "Created At", "updatedAt": "Updated At"},
 }
 
 
@@ -936,13 +981,17 @@ def table_columns(name):
         spec = VIRTUAL_TABLES[name]
         readonly = spec["readonly_fields"]
         types = spec.get("types", {})
+        select_options = spec.get("select_options", {})
+        labels = VIRTUAL_TABLE_LABELS.get(name, {})
         return [
             {
                 "name": f,
+                "label": labels.get(f, f[:1].upper() + f[1:]),
                 "type": types.get(f, "text"),
                 "nullable": True,
                 "primaryKey": spec["kind"] == "document" and f == "id",
                 "editable": f not in readonly,
+                "options": select_options.get(f),
             }
             for f in spec["fields"]
         ]
@@ -1202,9 +1251,26 @@ def table_rows(name, limit=500):
         if spec["kind"] == "settings":
             data = get_setting(spec["resource"]) or {}
             return [{f: data.get(f, "") for f in fields}]
-        # kind == "document": har row ka apna data JSONB
-        docs = list_documents(spec["resource"])
-        return [{f: d.get(f, "") for f in fields} for d in docs]
+        # kind == "document": har row ka apna data JSONB, plus - agar
+        # fields me "updatedAt" mangi gayi ho - real updated_at column bhi
+        # (list_documents() sirf data column deta hai, isliye yahan seedha
+        # query karte hain jab wo extra column chahiye ho).
+        needs_updated_at = "updatedAt" in fields
+        table = _doc_table(spec["resource"])
+        init_schema()
+        with connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT data, updated_at FROM {table} ORDER BY position, doc_id")
+                db_rows = cur.fetchall()
+        out = []
+        for r in db_rows:
+            d = r["data"] or {}
+            row = {f: d.get(f, "") for f in fields if f != "updatedAt"}
+            if needs_updated_at:
+                ua = r.get("updated_at")
+                row["updatedAt"] = ua.isoformat(sep=" ", timespec="seconds") if ua else ""
+            out.append(row)
+        return out
     init_schema()
     with connect() as conn:
         with conn.cursor() as cur:
