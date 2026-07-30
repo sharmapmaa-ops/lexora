@@ -8992,6 +8992,8 @@
                         'loan-eligibility-calculator': 'Loan Eligibility Calculator',
                         'content-writing-tool': 'Content Writing Tool',
                         'humanize-document-tool': 'Humanize Document Tool',
+                        'background-remover': 'Background Remover',
+                        'text-to-speech': 'Text-to-Speech',
                     };
 
                     if (subId) {
@@ -9240,6 +9242,8 @@
                 'loan-eligibility-calculator': { body: function() { return window.PaidCalculators.render('loan-eligibility-calculator'); } },
                 'content-writing-tool': { body: function() { return window.PaidCalculators.render('content-writing-tool'); } },
                 'humanize-document-tool': { body: function() { return window.PaidCalculators.render('humanize-document-tool'); } },
+                'background-remover': { body: function() { return window.PaidCalculators.render('background-remover'); } },
+                'text-to-speech': { body: function() { return window.PaidCalculators.render('text-to-speech'); } },
                 'paid-services': {
                     body: function() {
                         const items = [
@@ -9254,6 +9258,8 @@
                             { id: 'loan-eligibility-calculator', icon: '🏦', label: 'Loan Eligibility Calculator', desc: 'Estimate the maximum loan you could qualify for.' },
                             { id: 'content-writing-tool', icon: '✍️', label: 'Content Writing Tool', desc: 'Generate blog posts, captions, product descriptions and more.' },
                             { id: 'humanize-document-tool', icon: '🧑', label: 'Humanize Document Tool', desc: 'Rewrite stiff or AI-sounding text to read more naturally.' },
+                            { id: 'background-remover', icon: '🪄', label: 'Background Remover', desc: 'Remove the background from a photo, right in your browser.' },
+                            { id: 'text-to-speech', icon: '🔊', label: 'Text-to-Speech', desc: 'Have any text read aloud in a natural voice.' },
                         ];
                         return `
                             <div class="tool-group-title">💼 Paid Services</div>

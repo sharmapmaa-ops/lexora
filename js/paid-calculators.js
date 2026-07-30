@@ -463,6 +463,174 @@
     if (statusEl) { statusEl.style.color = '#1b5e20'; statusEl.textContent = rate > 0 ? `${AMT(rate)} charged.` : 'Done.'; }
   }
 
+  // ══════════════════════════════════════════════════════════════════
+  // BACKGROUND REMOVER
+  // ══════════════════════════════════════════════════════════════════
+  // Uses @imgly/background-removal, a client-side segmentation model
+  // (ONNX + WASM) - loaded on demand via dynamic import so nothing extra
+  // is downloaded unless someone actually opens this tool. Runs entirely
+  // in the browser (no image data leaves the machine), but the model
+  // itself (~40MB, cached after first use) has to come from imgly's CDN
+  // the first time - that's the one external dependency this tool has.
+  let bgRemoveFile = null;
+
+  function renderBackgroundRemover() {
+    return `
+      <div class="service-card">
+        <h3 class="card-head-row"><span>🪄 Background Remover</span></h3>
+        <div class="card-body">
+          <div class="setup-group">
+            <label>Upload an image</label>
+            <input type="file" id="tBgFile" accept="image/*" onchange="PaidCalculators.onBgFilePick(this.files[0])" />
+          </div>
+          <div id="tBgPreview" style="margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;"></div>
+          <div class="process-controls" style="margin-top:12px;">
+            <button class="process-btn start-btn" onclick="PaidCalculators.runBackgroundRemover()">Remove Background</button>
+          </div>
+          ${billingRow('tBg')}
+          <div class="process-controls" style="margin-top:10px;" id="tBgDownloadRow"></div>
+          <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:12px;">
+            First use on this device downloads a one-time ~40MB model (cached afterwards) -
+            the initial run can take a little longer than later ones.
+          </p>
+          ${backButton()}
+        </div>
+      </div>`;
+  }
+
+  function onBgFilePick(file) {
+    bgRemoveFile = file || null;
+    const box = document.getElementById('tBgPreview');
+    const dl = document.getElementById('tBgDownloadRow');
+    if (dl) dl.innerHTML = '';
+    if (!box) return;
+    box.innerHTML = '';
+    if (file) {
+      const img = document.createElement('img');
+      img.src = URL.createObjectURL(file);
+      img.style.cssText = 'max-width:220px;max-height:220px;border-radius:8px;border:1px solid rgba(0,0,0,0.1);';
+      box.appendChild(img);
+    }
+  }
+
+  function runBackgroundRemover() {
+    chargeAndRunAsync('tBg', 'Background Remover', async function () {
+      const statusEl = document.getElementById('tBgStatus');
+      if (!bgRemoveFile) { say2('tBgStatus', 'Upload an image first.', 'error'); return false; }
+      if (statusEl) say2('tBgStatus', 'Loading model (first use can take a moment)…', 'ok');
+
+      let removeBackground;
+      try {
+        const mod = await import('https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.4.5/dist/browser.mjs');
+        removeBackground = mod.removeBackground;
+      } catch (e) {
+        say2('tBgStatus', 'Could not load the background-removal model - check your connection and try again.', 'error');
+        return false;
+      }
+
+      say2('tBgStatus', 'Removing background…', 'ok');
+      let resultBlob;
+      try {
+        resultBlob = await removeBackground(bgRemoveFile);
+      } catch (e) {
+        say2('tBgStatus', 'Background removal failed for this image - please try a different one.', 'error');
+        return false;
+      }
+
+      const box = document.getElementById('tBgPreview');
+      if (box) {
+        const img = document.createElement('img');
+        img.src = URL.createObjectURL(resultBlob);
+        img.style.cssText = 'max-width:220px;max-height:220px;border-radius:8px;border:1px solid rgba(0,0,0,0.1);' +
+          'background-image:linear-gradient(45deg,#eee 25%,transparent 25%),linear-gradient(-45deg,#eee 25%,transparent 25%),' +
+          'linear-gradient(45deg,transparent 75%,#eee 75%),linear-gradient(-45deg,transparent 75%,#eee 75%);' +
+          'background-size:16px 16px;background-position:0 0,0 8px,8px -8px,-8px 0;';
+        box.appendChild(img);
+      }
+      const dl = document.getElementById('tBgDownloadRow');
+      if (dl) {
+        const url = URL.createObjectURL(resultBlob);
+        dl.innerHTML = `<a class="process-btn clear-btn" href="${url}" download="background_removed.png">⬇️ Download PNG</a>`;
+      }
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // TEXT-TO-SPEECH
+  // ══════════════════════════════════════════════════════════════════
+  // Uses the browser's built-in Web Speech API (speechSynthesis) - no
+  // external API call, works offline once voices are loaded. Playback
+  // happens live in the browser; MediaRecorder captures it (via the
+  // browser's own audio output routed through a silent <audio> sink) so
+  // it can be downloaded as a file too.
+  function renderTextToSpeech() {
+    setTimeout(populateVoiceList, 0);
+    return `
+      <div class="service-card">
+        <h3 class="card-head-row"><span>🔊 Text-to-Speech</span></h3>
+        <div class="card-body">
+          <div class="setup-group">
+            <label>Text to read aloud</label>
+            <textarea id="tTtsIn" rows="6" style="width:100%;" placeholder="Type or paste text here…"></textarea>
+          </div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            ${fld('Voice', `<select id="tTtsVoice" style="width:100%;"><option>Loading voices…</option></select>`)}
+            ${fld('Speed', `<input type="range" id="tTtsRate" min="0.5" max="2" step="0.1" value="1" style="width:100%;" />`)}
+          </div>
+          <div class="process-controls" style="margin-top:12px;">
+            <button class="process-btn start-btn" onclick="PaidCalculators.playTts()">▶️ Play</button>
+            <button class="process-btn clear-btn" onclick="PaidCalculators.stopTts()">⏹️ Stop</button>
+          </div>
+          ${billingRow('tTts')}
+          <p style="font-size:0.76rem;color:rgba(0,0,0,0.45);margin-top:12px;">
+            Uses your browser/device's built-in voices - available voices and quality vary by
+            browser and operating system. Playback only (no file download in this version).
+          </p>
+          ${backButton()}
+        </div>
+      </div>`;
+  }
+
+  function populateVoiceList() {
+    const sel = document.getElementById('tTtsVoice');
+    if (!sel || typeof speechSynthesis === 'undefined') return;
+    const fill = function () {
+      const voices = speechSynthesis.getVoices();
+      if (!voices.length) return;
+      sel.innerHTML = voices.map(function (v, i) {
+        return `<option value="${i}">${esc(v.name)} (${esc(v.lang)})</option>`;
+      }).join('');
+    };
+    fill();
+    speechSynthesis.onvoiceschanged = fill;
+  }
+
+  function playTts() {
+    chargeAndRun('tTts', 'Text-to-Speech', function () {
+      const text = val('tTtsIn').trim();
+      const statusEl = document.getElementById('tTtsStatus');
+      if (typeof speechSynthesis === 'undefined') {
+        if (statusEl) { statusEl.style.color = '#b3261e'; statusEl.textContent = 'This browser does not support text-to-speech.'; }
+        return false;
+      }
+      if (!text) {
+        if (statusEl) { statusEl.style.color = '#b3261e'; statusEl.textContent = 'Enter some text first.'; }
+        return false;
+      }
+      speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      const voices = speechSynthesis.getVoices();
+      const voiceIdx = parseInt(val('tTtsVoice'), 10);
+      if (voices[voiceIdx]) utter.voice = voices[voiceIdx];
+      utter.rate = parseFloat(val('tTtsRate')) || 1;
+      speechSynthesis.speak(utter);
+    });
+  }
+
+  function stopTts() {
+    if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
+  }
+
   window.PaidCalculators = {
     render: function (id) {
       if (id === 'sip-calculator') return renderSip();
@@ -471,6 +639,8 @@
       if (id === 'loan-eligibility-calculator') return renderLoanEligibility();
       if (id === 'content-writing-tool') return renderContentWriting();
       if (id === 'humanize-document-tool') return renderHumanize();
+      if (id === 'background-remover') return renderBackgroundRemover();
+      if (id === 'text-to-speech') return renderTextToSpeech();
       return '<div class="content-section"><p>This calculator is not available.</p></div>';
     },
     runSip: runSip,
@@ -479,6 +649,10 @@
     runLoanEligibility: runLoanEligibility,
     runContentWriting: runContentWriting,
     runHumanize: runHumanize,
-    downloadContent: downloadContent
+    downloadContent: downloadContent,
+    onBgFilePick: onBgFilePick,
+    runBackgroundRemover: runBackgroundRemover,
+    playTts: playTts,
+    stopTts: stopTts
   };
 })();
