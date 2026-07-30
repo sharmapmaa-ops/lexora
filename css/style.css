@@ -5118,6 +5118,21 @@
     flex-shrink: 0;
 }
 
+.db-edit-table-actions-bottom .db-table-select-row { margin-top: 0; }
+
+.db-pagination {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.db-pagination-label {
+    font-size: 0.8rem;
+    color: rgba(0,0,0,0.6);
+    min-width: 50px;
+    text-align: center;
+}
+
 .admin-toolbar-spacer { flex: 1; }
 
 /* ===== Notifications page (was entirely unstyled before) ===== */

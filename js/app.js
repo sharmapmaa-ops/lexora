@@ -774,6 +774,15 @@
             // ============================================================
             // 13. BUILD SERVICE UPLOAD HTML (full page render)
             // ============================================================
+            // Services Catalog "Name" column override - used everywhere a
+            // native paid service's label gets displayed (breadcrumbs,
+            // page headings, tile labels), so a rename actually takes
+            // effect everywhere instead of just some places.
+            function svcName(id, fallback) {
+                const entry = SERVICES_CATALOG[id];
+                return (entry && entry.name && entry.name.trim()) ? entry.name.trim() : fallback;
+            }
+
             function buildServiceUploadHTML(serviceId, serviceLabel, icon) {
                 const isTranslation = serviceId === 'translation';
                 const files = isTranslation ? getMyTranslationFiles() : getMyLeaseFiles();
@@ -4306,7 +4315,9 @@
                 // (missing/not-yet-seeded entries don't disappear).
                 const apiAllowed = (id) => {
                     const catalogId = id.indexOf('free:') === 0 ? id.slice(5) : id;
-                    return !(SERVICES_CATALOG[catalogId] && SERVICES_CATALOG[catalogId].apiAccess === 'No');
+                    const entry = SERVICES_CATALOG[catalogId];
+                    if (entry && entry.visibility === 'Hidden') return false;
+                    return !(entry && entry.apiAccess === 'No');
                 };
 
                 return paid.concat(freeToolDocs()).filter(s => apiAllowed(s.id));
@@ -6767,9 +6778,11 @@
                 }
             };
 
-            // Kaunsa table abhi khula hai.
+            // Kaunsa table abhi khula hai, aur kaunsa page (pagination).
             let dbActiveTable = null;
             let dbFilterRowVisible = false;
+            let dbTablePage = 1;
+            const DB_TABLE_PAGE_SIZE = 20;
 
             window.dbToggleFilterRow = function() {
                 dbFilterRowVisible = !dbFilterRowVisible;
@@ -6784,6 +6797,102 @@
                         const first = row.querySelector('.db-filter-input');
                         if (first) first.focus();
                     }
+                }
+            };
+
+            window.dbTableGoToPage = function(name, page) {
+                dbTablePage = Math.max(1, page);
+                dbTableLoad(name);
+            };
+
+            window.dbTableLoad = async function(name) {
+                const host = document.getElementById('dbActiveTableBody');
+                if (!host) return;
+                host.innerHTML = '<p class="ds-card-sub" style="padding:14px;">Loading\u2026</p>';
+
+                // "rules" is stored as ONE row (a single JSONB blob holding
+                // { approved: [...], pending: [...] }) - that's the right
+                // storage shape for it (same singleton pattern as
+                // company/card-layout), but the generic per-record grid
+                // below expects one row per record, so it was dumping the
+                // entire ruleset's JSON into a single "data" cell instead
+                // of showing one row per rule. Read it via the same
+                // /api/rules/list the rest of the app already uses, and
+                // flatten approved+pending into real rows here instead.
+                if (name === 'cfg_rules') {
+                    return dbTableLoadRules(host);
+                }
+
+                try {
+                    const res = await authFetch('/api/admin/db-table?name=' + encodeURIComponent(name));
+                    const d = await res.json();
+                    if (!res.ok) throw new Error(d.error || 'Could not read table.');
+                    const allRows = d.rows || [];
+                    _dbTableColumns = d.columns || (allRows.length ? Object.keys(allRows[0]).map(n => ({ name: n, type: 'text', editable: true, primaryKey: false })) : []);
+                    const cols = _dbTableColumns;
+
+                    const totalPages = Math.max(1, Math.ceil(allRows.length / DB_TABLE_PAGE_SIZE));
+                    if (dbTablePage > totalPages) dbTablePage = totalPages;
+                    const pageStart = (dbTablePage - 1) * DB_TABLE_PAGE_SIZE;
+                    const rows = allRows.slice(pageStart, pageStart + DB_TABLE_PAGE_SIZE);
+
+                    const tableOptions = (window._dbTablesList || []).map(t => `
+                        <option value="${escapeHtml(t.name)}" ${t.name === name ? 'selected' : ''} ${t.exists ? '' : 'disabled'}>
+                            ${escapeHtml(_dbTableLabel(t.name))}${t.exists ? '' : ' (not created yet)'}
+                        </option>`).join('');
+
+                    host.innerHTML = `
+                        <div class="db-edit-table-wrapper">
+                        <table class="admin-json-table db-txn-table db-edit-table">
+                            <thead>
+                                <tr>
+                                    <th><input type="checkbox" onchange="dbTableToggleAll(this)" /></th>
+                                    ${cols.map(c => `<th>${escapeHtml(c.label || _dbTableLabel(c.name))}${c.primaryKey ? ' \u{1F511}' : ''}</th>`).join('')}
+                                </tr>
+                                <tr class="db-filter-row" id="dbFilterRow" style="${dbFilterRowVisible ? '' : 'display:none;'}">
+                                    <th></th>
+                                    ${cols.map((c, ci) => `<th><input type="text" class="db-filter-input" placeholder="Filter\u2026" oninput="dbTableFilter(${ci}, this.value)" /></th>`).join('')}
+                                </tr>
+                            </thead>
+                            <tbody id="dbTableBody">
+                                ${rows.map((r, i) => `
+                                    <tr data-row-index="${pageStart + i}">
+                                        <td><input type="checkbox" class="db-row-select" /></td>
+                                        ${cols.map(c => `<td>${_dbCellToInput(c, r[c.name])}</td>`).join('')}
+                                    </tr>`).join('')}
+                            </tbody>
+                        </table>
+                        </div>
+                        <div class="db-table-caption">${allRows.length} row(s)${totalPages > 1 ? ` \u2014 page ${dbTablePage} of ${totalPages}` : ''}</div>
+                        <div class="db-edit-table-actions db-edit-table-actions-bottom">
+                            <div class="db-table-select-row">
+                                <label for="dbTableSelect">Table</label>
+                                <select id="dbTableSelect" class="db-table-select" onchange="switchDbTable(this.value)">
+                                    ${tableOptions}
+                                </select>
+                            </div>
+                            <button class="admin-btn" id="dbFilterToggleBtn" onclick="dbToggleFilterRow()">\u{1F50D} Filter</button>
+                            ${name === 'cfg_company' ? '' : `
+                            <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${escapeHtml(name)}')">+ Add Row</button>
+                            <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Row(s)</button>
+                            <button class="admin-btn admin-btn-save" onclick="dbTableSaveAll('${escapeHtml(name)}')">\u{1F4BE} Save</button>
+                            <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
+                            ${name === 'doc_services_catalog' ? `<button class="admin-btn" onclick="seedServicesCatalog()">\u{1F331} Seed Missing Services</button>` : ''}
+                            `}
+                            <span class="admin-toolbar-spacer"></span>
+                            <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
+                            <button class="admin-btn admin-btn-save" onclick="runDbMigration()">\u2934 Run migration</button>
+                            ${totalPages > 1 ? `
+                            <div class="db-pagination">
+                                <button class="admin-btn" ${dbTablePage <= 1 ? 'disabled' : ''} onclick="dbTableGoToPage('${escapeHtml(name)}', ${dbTablePage - 1})">\u2039 Prev</button>
+                                <span class="db-pagination-label">${dbTablePage} / ${totalPages}</span>
+                                <button class="admin-btn" ${dbTablePage >= totalPages ? 'disabled' : ''} onclick="dbTableGoToPage('${escapeHtml(name)}', ${dbTablePage + 1})">Next \u203a</button>
+                            </div>` : ''}
+                        </div>`;
+                    host.dataset.rows = JSON.stringify(allRows);
+                    host.dataset.pageStart = String(pageStart);
+                } catch (err) {
+                    host.innerHTML = `<p class="db-note is-bad" style="padding:14px;">${escapeHtml(err.message)}</p>`;
                 }
             };
 
@@ -6802,18 +6911,8 @@
                     if (!existing.some(t => t.name === dbActiveTable)) {
                         dbActiveTable = existing.length ? existing[0].name : null;
                     }
-                    box.innerHTML = `
-                        <div class="db-table-select-row">
-                            <label for="dbTableSelect">Table</label>
-                            <select id="dbTableSelect" class="db-table-select" onchange="switchDbTable(this.value)">
-                                ${d.tables.map(t => `
-                                    <option value="${escapeHtml(t.name)}" ${t.name === dbActiveTable ? 'selected' : ''} ${t.exists ? '' : 'disabled'}>
-                                        ${escapeHtml(_dbTableLabel(t.name))}${t.exists ? '' : ' (not created yet)'}
-                                    </option>`).join('')}
-                            </select>
-                            <button class="admin-btn" id="dbFilterToggleBtn" onclick="dbToggleFilterRow()">\u{1F50D} Filter</button>
-                        </div>
-                        <div id="dbActiveTableBody"></div>`;
+                    box.innerHTML = `<div id="dbActiveTableBody"></div>`;
+                    window._dbTablesList = d.tables;
                     if (dbActiveTable) dbTableLoad(dbActiveTable);
                 } catch (err) {
                     box.innerHTML = `<p class="db-note is-bad">${escapeHtml(err.message)}</p>`;
@@ -6828,6 +6927,7 @@
 
             window.switchDbTable = function(name) {
                 dbActiveTable = name;
+                dbTablePage = 1;
                 dbTableLoad(name);
             };
 
@@ -6866,82 +6966,6 @@
                 return values;
             }
 
-            window.dbTableLoad = async function(name) {
-                const host = document.getElementById('dbActiveTableBody');
-                if (!host) return;
-                host.innerHTML = '<p class="ds-card-sub" style="padding:14px;">Loading\u2026</p>';
-
-                // "rules" is stored as ONE row (a single JSONB blob holding
-                // { approved: [...], pending: [...] }) - that's the right
-                // storage shape for it (same singleton pattern as
-                // company/card-layout), but the generic per-record grid
-                // below expects one row per record, so it was dumping the
-                // entire ruleset's JSON into a single "data" cell instead
-                // of showing one row per rule. Read it via the same
-                // /api/rules/list the rest of the app already uses, and
-                // flatten approved+pending into real rows here instead.
-                //
-                // IMPORTANT: the Table dropdown's <option value> is the
-                // real SQL table name (cfg_rules), not the plain resource
-                // name (rules) - this used to check against 'rules' and
-                // silently never matched, so this special case never
-                // actually ran and the generic Id/Data/Updated At view
-                // showed instead. Fixed to check the real table name.
-                if (name === 'cfg_rules') {
-                    return dbTableLoadRules(host);
-                }
-
-                try {
-                    const res = await authFetch('/api/admin/db-table?name=' + encodeURIComponent(name));
-                    const d = await res.json();
-                    if (!res.ok) throw new Error(d.error || 'Could not read table.');
-                    const rows = d.rows || [];
-                    _dbTableColumns = d.columns || (rows.length ? Object.keys(rows[0]).map(n => ({ name: n, type: 'text', editable: true, primaryKey: false })) : []);
-                    const cols = _dbTableColumns;
-                    host.innerHTML = `
-                        <div class="db-edit-table-wrapper">
-                        <table class="admin-json-table db-txn-table db-edit-table">
-                            <thead>
-                                <tr>
-                                    <th><input type="checkbox" onchange="dbTableToggleAll(this)" /></th>
-                                    ${cols.map(c => `<th>${escapeHtml(c.label || _dbTableLabel(c.name))}${c.primaryKey ? ' \u{1F511}' : ''}</th>`).join('')}
-                                    <th></th>
-                                </tr>
-                                <tr class="db-filter-row" id="dbFilterRow" style="${dbFilterRowVisible ? '' : 'display:none;'}">
-                                    <th></th>
-                                    ${cols.map((c, ci) => `<th><input type="text" class="db-filter-input" placeholder="Filter\u2026" oninput="dbTableFilter(${ci}, this.value)" /></th>`).join('')}
-                                    <th></th>
-                                </tr>
-                            </thead>
-                            <tbody id="dbTableBody">
-                                ${rows.map((r, i) => `
-                                    <tr data-row-index="${i}">
-                                        <td><input type="checkbox" class="db-row-select" /></td>
-                                        ${cols.map(c => `<td>${_dbCellToInput(c, r[c.name])}</td>`).join('')}
-                                        <td class="db-row-actions">
-                                            <button class="admin-btn admin-btn-save" onclick="dbTableSaveRow('${escapeHtml(name)}', ${i})" title="Save">\u{1F4BE}</button>
-                                            <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteRow('${escapeHtml(name)}', ${i})" title="Delete">\u{1F5D1}</button>
-                                        </td>
-                                    </tr>`).join('')}
-                            </tbody>
-                        </table>
-                        </div>
-                        <div class="db-table-caption">${rows.length} row(s)</div>
-                        ${name === 'cfg_company' ? '' : `
-                        <div class="db-edit-table-actions">
-                            <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${escapeHtml(name)}')">+ Add Row</button>
-                            <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Selected</button>
-                            <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
-                            ${name === 'doc_services_catalog' ? `<button class="admin-btn" onclick="seedServicesCatalog()">\u{1F331} Seed Missing Services</button>` : ''}
-                            <span class="admin-toolbar-spacer"></span>
-                            <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
-                            <button class="admin-btn admin-btn-save" onclick="runDbMigration()">\u2934 Run migration</button>
-                        </div>`}`;
-                    host.dataset.rows = JSON.stringify(rows);
-                } catch (err) {
-                    host.innerHTML = `<p class="db-note is-bad" style="padding:14px;">${escapeHtml(err.message)}</p>`;
-                }
-            };
 
             // One row per rule (approved + pending combined) - approved
             // rules are editable (fieldId/ruleType/ruleText, saved via the
@@ -7245,15 +7269,12 @@
                 if (!cols.length) { showWarning('Is table me koi editable column nahi mila.'); return; }
                 const tbody = document.getElementById('dbTableBody');
                 if (!tbody) return;
-                const tempIndex = 'new';
+                window._dbNewRowSeq = (window._dbNewRowSeq || 0) + 1;
+                const tempIndex = 'new-' + window._dbNewRowSeq;
                 const rowHtml = `
                     <tr data-row-index="${tempIndex}" class="db-new-row">
-                        <td></td>
+                        <td><a onclick="this.closest('tr').remove()" style="cursor:pointer;color:#b3261e;" title="Remove this unsaved row">\u2715</a></td>
                         ${_dbTableColumns.map(c => `<td>${_dbCellToInput(c, '')}</td>`).join('')}
-                        <td class="db-row-actions">
-                            <button class="admin-btn admin-btn-save" onclick="dbTableInsertRow('${escapeHtml(name)}', this)">\u{1F4BE}</button>
-                            <button class="admin-btn admin-btn-delete" onclick="this.closest('tr').remove()">\u2715</button>
-                        </td>
                     </tr>`;
                 tbody.insertAdjacentHTML('beforeend', rowHtml);
                 tbody.lastElementChild.scrollIntoView({ block: 'nearest' });
@@ -7276,6 +7297,58 @@
                 } catch (err) {
                     showWarning(err.message);
                 }
+            };
+
+            // Replaces the old per-row Save buttons - one click saves
+            // EVERY row currently on screen: new (unsaved) rows get
+            // inserted, existing rows get updated with whatever's
+            // currently in their inputs (even ones the person didn't
+            // touch - harmless, since it just writes back the same
+            // value for those).
+            window.dbTableSaveAll = async function(name) {
+                const scroll = document.getElementById('dbActiveTableBody');
+                if (!scroll) return;
+                const originalRows = JSON.parse(scroll.dataset.rows || '[]');
+                const trs = Array.from(document.querySelectorAll('#dbTableBody tr'));
+                if (!trs.length) { showWarning('Save karne ke liye koi row nahi hai.'); return; }
+
+                let inserted = 0, updated = 0, failed = 0;
+                for (const tr of trs) {
+                    const idx = tr.dataset.rowIndex;
+                    const values = _dbReadRowInputs(tr);
+                    try {
+                        if (String(idx).indexOf('new') === 0) {
+                            const res = await authFetch('/api/admin/db-table-insert', {
+                                method: 'POST',
+                                body: JSON.stringify({ table: name, values })
+                            });
+                            const d = await res.json();
+                            if (!res.ok) throw new Error(d.error || 'Insert failed.');
+                            inserted++;
+                        } else {
+                            const originalRow = originalRows[parseInt(idx, 10)];
+                            if (!originalRow) continue;
+                            const key = _dbKeyFor(name, originalRow);
+                            const res = await authFetch('/api/admin/db-table-update', {
+                                method: 'POST',
+                                body: JSON.stringify({ table: name, key, values })
+                            });
+                            const d = await res.json();
+                            if (!res.ok) throw new Error(d.error || 'Save failed.');
+                            updated++;
+                        }
+                    } catch (err) {
+                        failed++;
+                    }
+                }
+
+                if (failed) {
+                    showWarning(`${inserted + updated} row(s) saved, ${failed} failed - check the data and try again.`);
+                } else {
+                    showSuccess(`Saved (${updated} updated, ${inserted} new).`);
+                }
+                await dbTableLoad(name);
+                renderDbTables();
             };
 
             window.runDbMigration = function() {
@@ -9368,7 +9441,7 @@
                     if (subId) {
                         const sub = parent.subItems.find(item => item.id === subId);
                         dataKey = subId;
-                        breadcrumb = parent.label + ' / ' + (sub ? sub.label : (UNLISTED_LABELS[subId] || subId));
+                        breadcrumb = parent.label + ' / ' + (sub ? sub.label : ((SERVICES_CATALOG[subId] && SERVICES_CATALOG[subId].name && SERVICES_CATALOG[subId].name.trim()) || UNLISTED_LABELS[subId] || subId));
                         activeSubItemId = subId;
                     } else {
                         activeSubItemId = null;
@@ -9597,12 +9670,12 @@
                                 </div>
                             `;
                         }
-                        return buildServiceUploadHTML('lease-abstraction', 'Lease Abstraction', '📄');
+                        return buildServiceUploadHTML('lease-abstraction', svcName('lease-abstraction', 'Lease Abstraction'), '📄');
                     }
                 },
                 translation: {
                     body: function() {
-                        return buildServiceUploadHTML('translation', 'Translation', '🌐');
+                        return buildServiceUploadHTML('translation', svcName('translation', 'Translation'), '🌐');
                     }
                 },
                 'content-writing-tool': { body: function() { return window.PaidCalculators.render('content-writing-tool'); } },
@@ -9622,7 +9695,12 @@
                         ];
                         const items = nativeSvcs
                             .filter(t => !(SERVICES_CATALOG[t.id] && SERVICES_CATALOG[t.id].type === 'Free'))
-                            .map(t => ({ id: t.id, icon: t.icon, label: t.label, desc: t.desc, external: false }));
+                            .filter(t => !(SERVICES_CATALOG[t.id] && SERVICES_CATALOG[t.id].visibility === 'Hidden'))
+                            .map(t => ({
+                                id: t.id, icon: t.icon,
+                                label: (SERVICES_CATALOG[t.id] && SERVICES_CATALOG[t.id].name && SERVICES_CATALOG[t.id].name.trim()) || t.label,
+                                desc: t.desc, external: false
+                            }));
 
                         // Any normally-free tool the catalog has marked
                         // Paid - metadata comes from the free-tools
@@ -9631,8 +9709,9 @@
                         // that tool is actually called elsewhere.
                         if (window.FreeServices && FreeServices.allToolsRaw) {
                             FreeServices.allToolsRaw().forEach(function (t) {
-                                if (SERVICES_CATALOG[t.id] && SERVICES_CATALOG[t.id].type === 'Paid') {
-                                    items.push({ id: t.id, icon: t.icon || '🔧', label: t.label, desc: t.desc || '', external: true });
+                                const entry = SERVICES_CATALOG[t.id];
+                                if (entry && entry.type === 'Paid' && entry.visibility !== 'Hidden') {
+                                    items.push({ id: t.id, icon: t.icon || '🔧', label: (entry.name && entry.name.trim()) || t.label, desc: t.desc || '', external: true });
                                 }
                             });
                         }

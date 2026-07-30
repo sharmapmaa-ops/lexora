@@ -963,14 +963,15 @@ VIRTUAL_TABLES = {
     "doc_services_catalog": {
         "kind": "document",
         "resource": "services-catalog",
-        "fields": ["id", "name", "type", "billingUnit", "apiAccess", "image"],
+        "fields": ["id", "name", "type", "billingUnit", "apiAccess", "visibility", "image"],
         "types": {},
         "jsonb_defaults": {},
-        "field_defaults": {"type": "Free", "billingUnit": "document", "apiAccess": "Yes"},
+        "field_defaults": {"type": "Free", "billingUnit": "document", "apiAccess": "Yes", "visibility": "Visible"},
         "select_options": {
             "type": ["Paid", "Free"],
             "billingUnit": [["page", "Per Page"], ["document", "Per Document"], ["process", "Per Process"]],
             "apiAccess": ["Yes", "No"],
+            "visibility": [["Visible", "Unhide"], ["Hidden", "Hide"]],
         },
         # 'id' rename allow nahi - baaki app isi id se service ko
         # dhoondhta/render karta hai (catalogue placement, billing
@@ -997,7 +998,8 @@ VIRTUAL_TABLE_LABELS = {
     "doc_contact_submissions": {"userId": "User ID", "id": "Ticket ID",
                                  "date": "Created At", "updatedAt": "Updated At"},
     "doc_services_catalog": {"id": "Service ID", "name": "Name", "type": "Paid/Free",
-                              "billingUnit": "Paid Billing Unit", "apiAccess": "API Access", "image": "Image"},
+                              "billingUnit": "Paid Billing Unit", "apiAccess": "API Access",
+                              "visibility": "Visibility", "image": "Image"},
 }
 
 

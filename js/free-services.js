@@ -472,6 +472,15 @@
     return entry ? entry.type : null;
   }
 
+  // "Hidden" in the Services Catalog removes a service from EVERY
+  // listing (Free Services, Paid Services, API Documentation) - a
+  // stronger switch than the Paid/Free toggle, which just moves a
+  // service between two catalogues rather than removing it entirely.
+  function isHidden(id) {
+    const entry = window.SERVICES_CATALOG && window.SERVICES_CATALOG[id];
+    return !!(entry && entry.visibility === 'Hidden');
+  }
+
   // Services Catalog "Name" column overrides a service's display label
   // everywhere it's shown as a tile - the id (and everything id-based,
   // like the service-image lookup) never changes, only what's printed
@@ -496,14 +505,15 @@
 
     // A normally-free tool marked "Paid" in the catalog moves OUT of
     // this list (the Paid Services page picks it up instead - see
-    // app.js's paid-services landing body).
-    const filtered = list.filter(t => catalogType(t.id) !== 'Paid')
+    // app.js's paid-services landing body). Hidden ones are removed
+    // entirely, regardless of Paid/Free.
+    const filtered = list.filter(t => catalogType(t.id) !== 'Paid' && !isHidden(t.id))
       .map(t => Object.assign({}, t, { label: catalogName(t.id, t.label) }));
 
     // A native paid service marked "Free" moves IN, as an external tile
-    // (its own real page, not rendered by this module).
+    // (its own real page, not rendered by this module) - unless hidden.
     NATIVE_PAID_SERVICES.forEach(function (svc) {
-      if (catalogType(svc.id) === 'Free') {
+      if (catalogType(svc.id) === 'Free' && !isHidden(svc.id)) {
         filtered.push(Object.assign({ external: true }, svc, { label: catalogName(svc.id, svc.label) }));
       }
     });
@@ -652,6 +662,7 @@
     catalogue: catalogue,
     allToolsRaw: allToolsRaw,
     nativePaidServices: NATIVE_PAID_SERVICES,
+    isHidden: isHidden,
     syncFromBox: syncFromBox,
     syncFromSlider: syncFromSlider,
     runEmi: runEmi,
