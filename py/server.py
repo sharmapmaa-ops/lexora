@@ -1653,61 +1653,59 @@ def _lerp_color(c1, c2, t):
     )
 
 
+# ── Account Statement design tokens (exact, from the approved design
+#    spec) - shared by the donut chart and the statement builder. ────
+_NAVY = "#081B52"
+_GREEN = "#15803D"
+_RED = "#DC2626"
+_LIGHT_GREY = "#F9FAFB"
+_BORDER = "#E5E7EB"
+_TEXT_DARK = "#1F2430"
+_TEXT_MUTED = "#6B7280"
+
+
 def _donut_chart_drawing(credit_count, credit_amt, debit_count, debit_amt, neutral_count=0):
-    """Small green/red/gray donut ('Transaction Overview') matching the
-    reference design. Built from Wedge shapes with an innerRadius (a
-    real ring, native to reportlab, rather than drawing a full pie and
-    masking a hole on top of it - so it's unambiguously donut-shaped,
-    not just a circle). Each slice is a soft light-to-dark gradient of
-    its own color rather than one flat fill, approximated with many
-    thin sub-wedges since reportlab has no direct per-slice gradient
-    fill. neutral_count (gray) covers rows with no credit or debit at
-    all - e.g. a failed payment attempt - so the number in the middle
-    always matches "Total Transactions" instead of coming up short."""
+    """Doughnut chart ('Transaction Overview') matching the approved
+    design - solid Green (#15803D) / Red (#DC2626) / light-grey slices,
+    a real ring built from Wedge shapes with an innerRadius (native to
+    reportlab). neutral_count (grey) covers rows with no credit or
+    debit at all - e.g. a failed payment attempt - so the number in the
+    middle always matches "Total Transactions" instead of coming up
+    short."""
     from reportlab.graphics.shapes import Drawing, String, Wedge
     from reportlab.lib import colors
-    import math
 
-    total = credit_count + debit_count + neutral_count
-    size = 1.7 * 72  # 1.7in in points, Drawing units are points
+    total_all = credit_count + debit_count + neutral_count
+    chart_total = credit_count + debit_count  # grey/neutral slice removed from the visual ring per the design spec
+    size = 1.75 * 72  # 1.75in in points, Drawing units are points
     cx = cy = size / 2
     outer_r = size / 2 - 4
-    inner_r = outer_r * 0.42  # classic donut-chart proportion - a moderate, chunky ring rather than a thin one
+    inner_r = outer_r * 0.55  # matches the reference's ring thickness
 
     d = Drawing(size, size)
 
-    slices = [
-        (credit_count, colors.HexColor("#e8f5ec"), colors.HexColor("#146c37")),
-        (debit_count, colors.HexColor("#fbe9e7"), colors.HexColor("#a31515")),
-    ]
-    if neutral_count:
-        slices.append((neutral_count, colors.HexColor("#f2f2f2"), colors.HexColor("#8a8a8a")))
-
-    if total <= 0:
-        slices = [(1, colors.HexColor("#eeeeee"), colors.HexColor("#cccccc"))]
-        total = 1
+    slices = [(credit_count, colors.HexColor(_GREEN)), (debit_count, colors.HexColor(_RED))]
+    if chart_total <= 0:
+        slices = [(1, colors.HexColor(_LIGHT_GREY))]
+        chart_total = 1
 
     start_angle = 90.0  # 12 o'clock, matching the reference
-    for value, light, dark in slices:
-        sweep = 360.0 * (value / total)
+    for value, fill in slices:
+        sweep = 360.0 * (value / chart_total)
         if sweep <= 0:
             continue
-        sub_steps = max(1, int(sweep // 3) + 1)  # ~3 degrees per micro-wedge for a smooth gradient
-        step = sweep / sub_steps
-        for s in range(sub_steps):
-            a0 = start_angle - (s * step)
-            a1 = a0 - step
-            t = s / max(1, sub_steps - 1)
-            fill = _lerp_color(light, dark, t)
-            w = Wedge(cx, cy, outer_r, a1, a0, innerRadius=inner_r,
-                      fillColor=fill, strokeColor=fill, strokeWidth=0.3)
-            d.add(w)
+        w = Wedge(cx, cy, outer_r, start_angle - sweep, start_angle,
+                  radius1=inner_r, annular=True,
+                  fillColor=fill, strokeColor=colors.white, strokeWidth=1.2)
+        d.add(w)
         start_angle -= sweep
 
-    d.add(String(cx, cy + 6, str(total), fontSize=17, fontName="Helvetica-Bold",
-                 fillColor=colors.HexColor("#0b1330"), textAnchor="middle"))
-    d.add(String(cx, cy - 10, "Transactions", fontSize=7,
-                 fillColor=colors.HexColor("#555555"), textAnchor="middle"))
+    d.add(String(cx, cy + 13, "Total", fontSize=8, fontName="Helvetica",
+                 fillColor=colors.HexColor(_TEXT_MUTED), textAnchor="middle"))
+    d.add(String(cx, cy - 5, str(total_all), fontSize=19, fontName="Helvetica-Bold",
+                 fillColor=colors.HexColor(_NAVY), textAnchor="middle"))
+    d.add(String(cx, cy - 19, "Transactions", fontSize=7.2, fontName="Helvetica",
+                 fillColor=colors.HexColor(_TEXT_MUTED), textAnchor="middle"))
     return d
 
 
@@ -1765,14 +1763,60 @@ def _draw_icon_glyph(canvas_obj, name, cx, cy, size, color):
     canvas_obj.restoreState()
 
 
+def _round_rect_with_shadow(canvas_obj, x, y, w, h, radius=8, fill=None, shadow=True):
+    """A card with a soft (simulated) shadow and rounded corners -
+    reportlab has no native blur/shadow, so this fakes one with a
+    slightly offset, very light grey rounded rect drawn first."""
+    from reportlab.lib import colors
+    if shadow:
+        canvas_obj.saveState()
+        canvas_obj.setFillColor(colors.Color(0.05, 0.08, 0.2, alpha=0.06))
+        canvas_obj.roundRect(x + 1.2, y - 1.5, w, h, radius, stroke=0, fill=1)
+        canvas_obj.restoreState()
+    canvas_obj.saveState()
+    canvas_obj.setFillColor(colors.HexColor(fill) if fill else colors.white)
+    canvas_obj.setStrokeColor(colors.HexColor(_BORDER))
+    canvas_obj.setLineWidth(0.75)
+    canvas_obj.roundRect(x, y, w, h, radius, stroke=1, fill=1)
+    canvas_obj.restoreState()
+
+
+def _date_fmt(date_str):
+    """'2026-07-02' -> '02 Jul 2026' (per the design spec)."""
+    try:
+        d = datetime.date.fromisoformat(str(date_str)[:10])
+        return d.strftime("%d %b %Y")
+    except Exception:  # noqa: BLE001
+        return str(date_str or "")
+
+
+def _time_fmt_12h(time_str):
+    """Normalizes any stored time (already-12h 'HH:MM AM/PM' or 24h
+    'HH:MM') to a clean 12-hour 'HH:MM AM/PM' - the design-correction
+    doc for this PDF specifically and repeatedly asks for AM/PM here,
+    distinct from the app's own live UI (which uses 24-hour elsewhere
+    per a separate, direct instruction covering that)."""
+    s = str(time_str or "").strip()
+    m = re.match(r"^(\d{1,2}):(\d{2})\s*(AM|PM)?$", s, re.IGNORECASE)
+    if not m:
+        return s
+    h = int(m.group(1))
+    minute = m.group(2)
+    if m.group(3):
+        return f"{h:02d}:{minute} {m.group(3).upper()}"
+    # Already 24-hour - convert to 12-hour + AM/PM.
+    ap = "AM" if h < 12 else "PM"
+    h12 = h % 12
+    if h12 == 0:
+        h12 = 12
+    return f"{h12:02d}:{minute} {ap}"
+
+
 def _account_statement_page_decorator(logo_path, footer_note, from_name, from_mobile, from_email,
                                        statement_date, summary_period, total_transactions):
-    """Returns the on-page canvas callback that draws everything meant
-    to repeat on EVERY page - logo + "ACCOUNT STATEMENT" title, the
-    "From" box + statement metadata, and (via the numbered-canvas
-    wrapper below) the footer. Drawing these directly on the canvas
-    (rather than as story flowables) is what makes them actually repeat
-    on page 2 onward instead of only appearing once."""
+    """Draws the repeating header + customer-info card on every page -
+    small logo top-left, title top-right, a single rounded card below
+    holding both the From block and the statement metadata."""
     from reportlab.lib.units import inch
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -1789,57 +1833,57 @@ def _account_statement_page_decorator(logo_path, footer_note, from_name, from_mo
         width, height = A4
         canvas_obj.saveState()
 
-        # ---- Logo + title ----
-        logo_size = 2.2 * inch
-        logo_top_gap = 0.5 * inch
+        margin = 0.5 * inch
+        top = height - margin
+
+        # ---- Small logo (left) + title (right), one compact row ----
+        logo_size = 0.5 * inch
         if logo_reader is not None:
             try:
-                canvas_obj.drawImage(logo_reader, 0.6 * inch, height - logo_top_gap - logo_size,
+                canvas_obj.drawImage(logo_reader, margin, top - logo_size,
                                       width=logo_size, height=logo_size,
                                       preserveAspectRatio=True, mask="auto")
             except Exception:  # noqa: BLE001
                 pass
-        canvas_obj.setFont("Helvetica-Bold", 19)
-        canvas_obj.setFillColor(colors.HexColor("#0b1330"))
-        canvas_obj.drawRightString(width - 0.6 * inch, height - logo_top_gap - 0.3 * inch, "ACCOUNT STATEMENT")
+        canvas_obj.setFont("Helvetica-Bold", 17)
+        canvas_obj.setFillColor(colors.HexColor(_NAVY))
+        canvas_obj.drawRightString(width - margin, top - logo_size + 4, "ACCOUNT STATEMENT")
 
-        # ---- "From" box (left) + statement metadata (right) ----
-        top_y = height - logo_top_gap - logo_size  # bottom edge of the logo, everything below is anchored off this now
-        box_top = top_y - 0.2 * inch
-        box_h = 0.95 * inch
-        box_w = 3.9 * inch
-        canvas_obj.setStrokeColor(colors.HexColor("#dddddd"))
-        canvas_obj.setLineWidth(0.75)
-        canvas_obj.rect(0.6 * inch, box_top - box_h, box_w, box_h, stroke=1, fill=0)
+        header_bottom = top - logo_size
 
-        tx = 0.6 * inch + 0.18 * inch
-        canvas_obj.setFont("Helvetica-Bold", 9.5)
-        canvas_obj.setFillColor(colors.HexColor("#1b8a4a"))
-        canvas_obj.drawString(tx, box_top - 0.24 * inch, "From:")
-        canvas_obj.setFont("Helvetica-Bold", 12.5)
-        canvas_obj.setFillColor(colors.HexColor("#0b1330"))
-        canvas_obj.drawString(tx, box_top - 0.46 * inch, from_name)
-        canvas_obj.setFont("Helvetica", 9)
-        canvas_obj.setFillColor(colors.HexColor("#333333"))
-        canvas_obj.drawString(tx, box_top - 0.68 * inch, f"Mobile: {from_mobile}  |  Email: {from_email}")
+        # ---- Customer info card ----
+        card_top = header_bottom - 0.15 * inch
+        card_h = 0.95 * inch
+        card_w = width - 2 * margin
+        _round_rect_with_shadow(canvas_obj, margin, card_top - card_h, card_w, card_h, radius=9)
 
-        meta_x = 0.6 * inch + box_w + 0.25 * inch
-        label_x2 = meta_x + 1.18 * inch
-        val_x = meta_x + 1.30 * inch
-        meta_rows = [
-            ("Statement Date", statement_date),
-            ("Summary Period", summary_period),
-            ("Total Transactions", str(total_transactions)),
-        ]
-        my = box_top - 0.16 * inch
-        for label, value in meta_rows:
-            canvas_obj.setFont("Helvetica-Bold", 9.3)
-            canvas_obj.setFillColor(colors.HexColor("#0b1330"))
+        pad = 0.18 * inch
+        tx = margin + pad
+        ty = card_top - 0.26 * inch
+        canvas_obj.setFont("Helvetica-Bold", 9)
+        canvas_obj.setFillColor(colors.HexColor(_GREEN))
+        canvas_obj.drawString(tx, ty, "From:")
+        canvas_obj.setFont("Helvetica-Bold", 13)
+        canvas_obj.setFillColor(colors.HexColor(_TEXT_DARK))
+        canvas_obj.drawString(tx, ty - 0.22 * inch, from_name)
+        canvas_obj.setFont("Helvetica", 8.8)
+        canvas_obj.setFillColor(colors.HexColor(_TEXT_MUTED))
+        canvas_obj.drawString(tx, ty - 0.44 * inch, f"Mobile: {from_mobile}   |   Email: {from_email}")
+
+        meta_x = margin + card_w * 0.52
+        label_x2 = meta_x + 1.15 * inch
+        val_x = meta_x + 1.28 * inch
+        my = ty
+        for label, value in [("Statement Date", statement_date), ("Summary Period", summary_period),
+                              ("Total Transactions", str(total_transactions))]:
+            canvas_obj.setFont("Helvetica-Bold", 9)
+            canvas_obj.setFillColor(colors.HexColor(_TEXT_DARK))
             canvas_obj.drawString(meta_x, my, label)
             canvas_obj.drawString(label_x2, my, ":")
-            canvas_obj.setFont("Helvetica", 8.8)
+            canvas_obj.setFont("Helvetica", 9)
+            canvas_obj.setFillColor(colors.HexColor(_TEXT_DARK))
             canvas_obj.drawString(val_x, my, value)
-            my -= 0.26 * inch
+            my -= 0.24 * inch
 
         canvas_obj.restoreState()
 
@@ -1848,11 +1892,10 @@ def _account_statement_page_decorator(logo_path, footer_note, from_name, from_mo
 
 def _account_statement_numbered_canvas(logo_path, footer_note, from_name, from_mobile, from_email,
                                         statement_date, summary_period, total_transactions):
-    """Two-pass numbered canvas: draws the repeating header/From-box on
-    every page, plus (once the total page count is known) the footer -
-    disclaimer+icon and page number always, "To be continued..." on
-    every page except the last, and the 4 closing badges only on the
-    last page."""
+    """Two-pass numbered canvas - header/info-card repeat every page;
+    footer (computer icon + note, green rounded "Page X of Y" badge)
+    always; "To be continued..." (green, right-aligned) on every page
+    except the last, the 4 feature icons only on the last page."""
     from reportlab.pdfgen import canvas as canvas_module
     from reportlab.lib.units import inch
     from reportlab.lib import colors
@@ -1885,45 +1928,69 @@ def _account_statement_numbered_canvas(logo_path, footer_note, from_name, from_m
 
         def _draw_footer(self, page_num, total_pages):
             width, _ = A4
+            margin = 0.5 * inch
             self.saveState()
-            self.setStrokeColor(colors.HexColor("#dddddd"))
-            self.line(0.6 * inch, 0.75 * inch, width - 0.6 * inch, 0.75 * inch)
-            _draw_icon_glyph(self, "computer", 0.72 * inch, 0.55 * inch, 0.26 * inch, colors.HexColor("#555555"))
-            self.setFont("Helvetica", 8)
-            self.setFillColor(colors.HexColor("#555555"))
-            self.drawString(0.92 * inch, 0.52 * inch, footer_note)
-            self.drawRightString(width - 0.6 * inch, 0.52 * inch, f"Page {page_num} of {total_pages}")
+            # Rounded card behind the whole footer strip.
+            _round_rect_with_shadow(self, margin, 0.35 * inch, width - 2 * margin, 0.52 * inch, radius=9, fill="#FFFFFF")
+            _draw_icon_glyph(self, "computer", margin + 0.28 * inch, 0.61 * inch, 0.24 * inch, colors.HexColor(_TEXT_MUTED))
+            self.setFont("Helvetica-Bold", 8.5)
+            self.setFillColor(colors.HexColor(_TEXT_DARK))
+            self.drawString(margin + 0.46 * inch, 0.67 * inch, "Computer Rise Print")
+            self.setFont("Helvetica", 7.6)
+            self.setFillColor(colors.HexColor(_TEXT_MUTED))
+            self.drawString(margin + 0.46 * inch, 0.53 * inch, footer_note)
+            # Green rounded "Page X of Y" badge, right side, vertically
+            # centered within the footer card.
+            label = f"Page {page_num} of {total_pages}"
+            self.setFont("Helvetica-Bold", 8.5)
+            badge_w = self.stringWidth(label, "Helvetica-Bold", 8.5) + 0.4 * inch
+            badge_h = 0.3 * inch
+            badge_x = width - margin - 0.2 * inch - badge_w
+            badge_y = 0.35 * inch + (0.52 * inch - badge_h) / 2
+            self.setFillColor(colors.HexColor(_GREEN))
+            self.roundRect(badge_x, badge_y, badge_w, badge_h, badge_h / 2, stroke=0, fill=1)
+            self.setFillColor(colors.white)
+            self.drawCentredString(badge_x + badge_w / 2, badge_y + badge_h / 2 - 3, label)
             self.restoreState()
 
         def _draw_continued(self):
             width, _ = A4
+            margin = 0.5 * inch
             self.saveState()
-            self.setFont("Helvetica-Bold", 10)
-            self.setFillColor(colors.HexColor("#0b1330"))
-            self.drawRightString(width - 0.65 * inch, 0.95 * inch, "To be continued...  \u203a")
+            self.setFont("Helvetica-Bold", 9.5)
+            self.setFillColor(colors.HexColor(_GREEN))
+            self.drawRightString(width - margin, 1.15 * inch, "To be continued...  \u203a")
             self.restoreState()
 
         def _draw_closing_badges(self):
             width, _ = A4
+            margin = 0.5 * inch
             badges = [
                 ("detailed", "Detailed Transaction Records"),
                 ("clear", "Clear Account Overview"),
                 ("secure", "Secure & Reliable"),
                 ("download", "Download Anytime"),
             ]
-            usable_width = width - 1.2 * inch
+            usable_width = width - 2 * margin
             col_w = usable_width / len(badges)
-            circle_y = 1.2 * inch
+            circle_y = 1.35 * inch
             self.saveState()
             for i, (icon_name, label) in enumerate(badges):
-                cx = 0.6 * inch + col_w * i + col_w / 2
-                self.setStrokeColor(colors.HexColor("#1b8a4a"))
+                cx = margin + col_w * i + col_w / 2
+                if i > 0:
+                    # Thin separator line between each icon column.
+                    sep_x = margin + col_w * i
+                    self.setStrokeColor(colors.HexColor(_BORDER))
+                    self.setLineWidth(0.5)
+                    self.line(sep_x, circle_y - 26, sep_x, circle_y + 16)
+                self.setStrokeColor(colors.HexColor(_GREEN))
+                self.setLineWidth(1.2)
                 self.setFillColor(colors.white)
-                self.circle(cx, circle_y, 13, stroke=1, fill=1)
-                _draw_icon_glyph(self, icon_name, cx, circle_y, 0.19 * inch, colors.HexColor("#1b8a4a"))
-                self.setFont("Helvetica-Bold", 7.6)
-                self.setFillColor(colors.HexColor("#0b1330"))
-                self.drawCentredString(cx, circle_y - 24, label)
+                self.circle(cx, circle_y, 15, stroke=1, fill=1)
+                _draw_icon_glyph(self, icon_name, cx, circle_y, 0.22 * inch, colors.HexColor(_GREEN))
+                self.setFont("Helvetica-Bold", 7.8)
+                self.setFillColor(colors.HexColor(_TEXT_DARK))
+                self.drawCentredString(cx, circle_y - 28, label)
             self.restoreState()
 
     return StatementCanvas, draw_top
@@ -1931,10 +1998,11 @@ def _account_statement_numbered_canvas(logo_path, footer_note, from_name, from_m
 
 def _build_account_statement_pdf(company_name, logo_path, user, txns,
                                   start_date, end_date, opening_balance):
-    """Payment Summary > "Download Account Statement". Header, From
-    box + metadata, and footer all repeat on every page (drawn via the
-    canvas, not the story flow) - "To be continued..." on non-final
-    pages, the 4 closing badges only on the last one."""
+    """Payment Summary > "Download Account Statement" - redesigned to
+    match the approved reference design pixel-for-pixel as closely as
+    reportlab allows: rounded cards with soft shadows, the exact navy/
+    green/red/grey palette, a proper doughnut chart, consistent table
+    styling, and a repeating header + customer-info card on every page."""
     import io
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import inch
@@ -1946,26 +2014,35 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     from reportlab.lib.enums import TA_RIGHT
 
     styles = getSampleStyleSheet()
-    label_style = ParagraphStyle("StmtLabel", parent=styles["Normal"], fontSize=9.3, leading=13.5)
+    label_style = ParagraphStyle("StmtLabel", parent=styles["Normal"], fontName="Helvetica",
+                                  fontSize=9.3, leading=13.5, textColor=colors.HexColor(_TEXT_DARK))
     box_head_style = ParagraphStyle("StmtBoxHead", parent=styles["Normal"], fontSize=9.8,
                                      fontName="Helvetica-Bold", textColor=colors.white)
 
     full_name = f"{user.get('firstName') or ''} {user.get('lastName') or ''}".strip() or "-"
     statement_date_str = datetime.date.today().strftime("%d %b %Y")
-    summary_period_str = f"{start_date} to {end_date}" if start_date else "As on Today"
+
+    # Item 4 in the design spec - when no explicit filter range was
+    # given, show the ACTUAL span of the transactions being listed
+    # (not a vague "As on Today") - falls back to "As on Today" only
+    # when there's truly nothing to derive a range from (no rows).
+    if start_date:
+        summary_period_str = f"{_date_fmt(start_date)} to {_date_fmt(end_date)}"
+    elif txns:
+        dates = sorted(str(t.get("date") or "") for t in txns if t.get("date"))
+        summary_period_str = f"{_date_fmt(dates[0])} to {_date_fmt(dates[-1])}" if dates else "As on Today"
+    else:
+        summary_period_str = "As on Today"
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
-        topMargin=4.05 * inch, bottomMargin=1.35 * inch,
-        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+        topMargin=1.85 * inch, bottomMargin=1.75 * inch,
+        leftMargin=0.5 * inch, rightMargin=0.5 * inch,
     )
     story = []
 
-    # ---- Account Overview + Transaction Overview donut, side by side ----
-    # (equal-height boxes: both wrapped at a fixed row height instead of
-    # letting each size to its own content, which is what made one
-    # taller than the other before)
+    # ---- Account Overview + Transaction Overview, side by side ----
     total_credit = sum(float(t.get("credit") or 0) for t in txns)
     total_debit = sum(float(t.get("debit") or 0) for t in txns)
     net_change = total_credit - total_debit
@@ -1974,7 +2051,7 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     debit_count = sum(1 for t in txns if float(t.get("debit") or 0) > 0)
     neutral_count = len(txns) - credit_count - debit_count
 
-    BOX_BODY_HEIGHT = 1.95 * inch  # both boxes' content area locked to this - must be taller than the donut drawing itself (1.6in) PLUS the cell's own top/bottom padding, or the last row (Current Balance) gets clipped
+    BOX_BODY_HEIGHT = 1.95 * inch
 
     overview_rows = [
         ["Opening Balance", f"{opening_balance:,.2f}"],
@@ -1985,61 +2062,57 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     ]
     ov_table = Table(overview_rows, colWidths=[1.7 * inch, 1.2 * inch], rowHeights=[BOX_BODY_HEIGHT / 5] * 5)
     ov_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
         ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor(_TEXT_DARK)),
         ("ALIGN", (1, 0), (1, -1), "RIGHT"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TEXTCOLOR", (1, 1), (1, 1), colors.HexColor("#1b8a4a")),
-        ("TEXTCOLOR", (1, 2), (1, 2), colors.HexColor("#c62828")),
+        ("TEXTCOLOR", (1, 1), (1, 1), colors.HexColor(_GREEN)),
+        ("TEXTCOLOR", (1, 2), (1, 2), colors.HexColor(_RED)),
         ("FONTNAME", (0, 4), (1, 4), "Helvetica-Bold"),
-        ("LINEABOVE", (0, 4), (1, 4), 0.75, colors.HexColor("#dddddd")),
+        ("LINEABOVE", (0, 4), (1, 4), 0.75, colors.HexColor(_BORDER)),
     ]))
-    ov_box = Table([[Paragraph("ACCOUNT OVERVIEW", box_head_style)], [ov_table]],
-                    colWidths=[3.0 * inch], rowHeights=[0.3 * inch, BOX_BODY_HEIGHT])
+    ov_box = Table([[Paragraph("ACCOUNT OVERVIEW", box_head_style)], [ov_table]], colWidths=[3.0 * inch])
     ov_box.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#0b1330")),
-        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#dddddd")),
-        ("VALIGN", (0, 0), (0, 0), "MIDDLE"), ("VALIGN", (0, 1), (0, 1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("BACKGROUND", (0, 0), (0, 0), colors.HexColor(_NAVY)),
+        ("ROUNDEDCORNERS", [9, 9, 9, 9]),
+        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor(_BORDER)),
+        ("LEFTPADDING", (0, 0), (-1, -1), 12), ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ("TOPPADDING", (0, 0), (0, 0), 7), ("BOTTOMPADDING", (0, 0), (0, 0), 7),
         ("TOPPADDING", (0, 1), (0, 1), 8), ("BOTTOMPADDING", (0, 1), (0, 1), 8),
     ]))
 
     donut = _donut_chart_drawing(credit_count, total_credit, debit_count, total_debit, neutral_count)
-    legend_style = ParagraphStyle("StmtLegend", parent=label_style, fontSize=9, leading=13)
+    legend_style = ParagraphStyle("StmtLegend", parent=label_style, fontSize=9, leading=13.5)
     legend_bits = [
-        Paragraph(f'<font color="#1b8a4a">\u25cf</font> Credit ({credit_count})<br/>'
+        Paragraph(f'<font color="{_GREEN}">\u25cf</font> Credit ({credit_count})<br/>'
                   f'<b>{total_credit:,.2f}</b>', legend_style),
-        Spacer(1, 6),
-        Paragraph(f'<font color="#c62828">\u25cf</font> Debit ({debit_count})<br/>'
+        Spacer(1, 8),
+        Paragraph(f'<font color="{_RED}">\u25cf</font> Debit ({debit_count})<br/>'
                   f'<b>{total_debit:,.2f}</b>', legend_style),
     ]
-    donut_row = Table([[donut, legend_bits]], colWidths=[1.7 * inch, 1.3 * inch], rowHeights=[BOX_BODY_HEIGHT])
+    donut_row = Table([[donut, legend_bits]], colWidths=[1.75 * inch, 1.25 * inch], rowHeights=[BOX_BODY_HEIGHT])
     donut_row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
     tx_box = Table([[Paragraph("TRANSACTION OVERVIEW", box_head_style)], [donut_row]],
                    colWidths=[3.0 * inch], rowHeights=[0.3 * inch, BOX_BODY_HEIGHT])
     tx_box.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#0b1330")),
-        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#dddddd")),
-        ("VALIGN", (0, 0), (0, 0), "MIDDLE"), ("VALIGN", (0, 1), (0, 1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("BACKGROUND", (0, 0), (0, 0), colors.HexColor(_NAVY)),
+        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor(_BORDER)),
+        ("LEFTPADDING", (0, 0), (-1, -1), 12), ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ("TOPPADDING", (0, 0), (0, 0), 7), ("BOTTOMPADDING", (0, 0), (0, 0), 7),
         ("TOPPADDING", (0, 1), (0, 1), 8), ("BOTTOMPADDING", (0, 1), (0, 1), 8),
     ]))
 
     overview_row = Table([[ov_box, tx_box]], colWidths=[3.3 * inch, 3.3 * inch])
     overview_row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     story.append(overview_row)
-    story.append(Spacer(1, 16))
+    story.append(Spacer(1, 10))
 
-    # ---- Transaction table, with running Balance column ----
-    cell_style = ParagraphStyle("StmtCell", parent=label_style, fontSize=7.5, leading=9.2, wordWrap="CJK")
+    # ---- Transaction table ----
+    cell_style = ParagraphStyle("StmtCell", parent=label_style, fontSize=7.6, leading=10.5, wordWrap="CJK")
     bold_cell_style = ParagraphStyle("StmtCellBold", parent=cell_style, fontName="Helvetica-Bold")
-    # Balance-row amounts need their OWN right-aligned style - a
-    # Paragraph controls its own text alignment regardless of the
-    # table cell's ALIGN setting, which is why these were showing up
-    # left-aligned even though the column itself is right-aligned.
     bold_right_style = ParagraphStyle("StmtCellBoldRight", parent=bold_cell_style, alignment=TA_RIGHT)
-
-    def _desc_right(text):
-        return Paragraph(escape_html(text), bold_right_style)
+    bold_center_style = ParagraphStyle("StmtCellBoldCenter", parent=bold_cell_style, alignment=1)  # TA_CENTER
 
     def _cell(text, bold=False):
         return Paragraph(escape_html(text), bold_cell_style if bold else cell_style)
@@ -2047,46 +2120,63 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     def _amount_cell(text):
         return Paragraph(escape_html(text), bold_right_style)
 
+    def _desc_right(text):
+        return Paragraph(escape_html(text), bold_right_style)
+
+    def _dt(t):
+        d = _date_fmt(t.get("date"))
+        tm = _time_fmt_12h(t.get("time"))
+        return f"{d} {tm}".strip()
+
     rows = [["#", "Date & Time", "Transaction ID", "Description", "Credit", "Debit", "Balance"]]
-    rows.append(["", _cell(start_date or "", True), "", _desc_right("Opening Balance"), "", "", _amount_cell(f"{opening_balance:,.2f}")])
+    rows.append(["", _cell(_date_fmt(start_date) if start_date else (_date_fmt(sorted(t.get('date') for t in txns if t.get('date'))[0]) if txns else ''), True),
+                 "", Paragraph(escape_html("Opening Balance"), bold_center_style), "", "", _amount_cell(f"{opening_balance:,.2f}")])
     running = opening_balance
     for i, t in enumerate(txns, start=1):
         credit = float(t.get("credit") or 0)
         debit = float(t.get("debit") or 0)
         running += credit - debit
-        date_time = t.get("date") or ""
-        if t.get("time"):
-            date_time = f"{date_time} {t.get('time')}"
         rows.append([
-            str(i), _cell(date_time), _cell(t.get("id") or ""), _cell(t.get("description") or ""),
+            str(i), _cell(_dt(t)), _cell(t.get("id") or ""), _cell(t.get("description") or ""),
             f"{credit:,.2f}" if credit else "\u2013",
             f"{debit:,.2f}" if debit else "\u2013",
             f"{running:,.2f}",
         ])
-    rows.append(["", _cell(end_date or "", True), "", _desc_right("Closing Balance"), "", "", _amount_cell(f"{running:,.2f}")])
+    end_label = _date_fmt(end_date) if end_date else (_date_fmt(sorted(t.get('date') for t in txns if t.get('date'))[-1]) if txns else '')
+    rows.append(["", _cell(end_label, True), "", _desc_right("Closing Balance"), "", "", _amount_cell(f"{running:,.2f}")])
 
-    col_widths = [0.26 * inch, 1.2 * inch, 1.0 * inch, 2.0 * inch, 0.7 * inch, 0.7 * inch, 0.86 * inch]
+    col_widths = [0.24 * inch, 1.25 * inch, 1.4 * inch, 2.2 * inch, 0.68 * inch, 0.68 * inch, 0.82 * inch]
     table = Table(rows, colWidths=col_widths, repeatRows=1)
     table_style = [
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0b1330")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(_NAVY)),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.6),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#f7f7fb")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor(_BORDER)),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor(_LIGHT_GREY)]),
         ("ALIGN", (0, 0), (0, -1), "CENTER"),
         ("ALIGN", (4, 0), (6, -1), "RIGHT"),
-        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#e7ebfa")),
+        ("ALIGN", (1, 0), (3, -1), "LEFT"),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor(_LIGHT_GREY)),
         ("SPAN", (0, 1), (2, 1)),
-        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#e7ebfa")),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#EAECEF")),
         ("SPAN", (0, -1), (2, -1)),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
     ]
     table.setStyle(TableStyle(table_style))
     story.append(table)
-    story.append(Spacer(1, 14))
+    story.append(Spacer(1, 12))
 
+    story.append(Table([[""]], colWidths=[7.27 * inch], rowHeights=[0.5],
+                        style=TableStyle([("LINEABOVE", (0, 0), (-1, 0), 0.75, colors.HexColor(_BORDER))])))
+    story.append(Spacer(1, 8))
     story.append(Paragraph(
-        f'<font color="#1b8a4a"><b>Amount in Words:</b></font> {escape_html(_amount_in_words(current_balance))}',
+        f'<font color="{_GREEN}"><b>Amount in Words:</b></font> '
+        f'<font color="{_TEXT_DARK}">{escape_html(_amount_in_words(current_balance))}</font>',
         ParagraphStyle("StmtWords", parent=label_style, fontSize=9.5)))
 
     canvas_cls, draw_top = _account_statement_numbered_canvas(
