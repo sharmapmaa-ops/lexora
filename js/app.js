@@ -6915,7 +6915,8 @@
                             <button class="admin-btn admin-btn-save" onclick="dbTableSaveAll('${escapeHtml(name)}')">\u{1F4BE} Save</button>
                             <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
                             ${name === 'doc_services_catalog' ? `<button class="admin-btn" onclick="seedServicesCatalog()">\u{1F331} Seed Missing Services</button>
-                            <button class="admin-btn" onclick="resetServicesApiAccess()">\u{1F511} Reset API Access (Translation only)</button>` : ''}
+                            <button class="admin-btn" onclick="resetServicesApiAccess()">\u{1F511} Reset API Access (Translation only)</button>
+                            <button class="admin-btn" onclick="fixServicesCatalogNames()">\u{1F527} Fix Names (clear id-as-name)</button>` : ''}
                             `}
                             <span class="admin-toolbar-spacer"></span>
                             <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
@@ -7241,6 +7242,7 @@
                             } catch (err) { /* keep going, report at the end via reload */ }
                         }
                         showSuccess('Selected rows delete ho gaye.');
+                        if (name === 'doc_services_catalog') await refreshServicesCatalog();
                         await dbTableLoad(name);
                         renderDbTables();
                     });
@@ -7269,6 +7271,7 @@
                     const d = await res.json();
                     if (!res.ok) throw new Error(d.error || 'Save failed.');
                     showSuccess('Row saved.');
+                    if (name === 'doc_services_catalog') await refreshServicesCatalog();
                     await dbTableLoad(name);
                     renderDbTables();
                 } catch (err) {
@@ -7292,6 +7295,7 @@
                             const d = await res.json();
                             if (!res.ok) throw new Error(d.error || 'Delete failed.');
                             showSuccess('Row deleted.');
+                            if (name === 'doc_services_catalog') await refreshServicesCatalog();
                             await dbTableLoad(name);
                             renderDbTables();
                         } catch (err) {
@@ -7342,6 +7346,7 @@
                     const d = await res.json();
                     if (!res.ok) throw new Error(d.error || 'Insert failed.');
                     showSuccess('New row created.');
+                    if (name === 'doc_services_catalog') await refreshServicesCatalog();
                     await dbTableLoad(name);
                     renderDbTables();
                 } catch (err) {
@@ -7397,6 +7402,7 @@
                 } else {
                     showSuccess(`Saved (${updated} updated, ${inserted} new).`);
                 }
+                if (name === 'doc_services_catalog') await refreshServicesCatalog();
                 await dbTableLoad(name);
                 renderDbTables();
             };
@@ -7687,12 +7693,9 @@
             // rows (possibly already edited by an Admin) are left alone.
             window.seedServicesCatalog = async function() {
                 const services = [];
-                const PAID_SERVICE_IDS = [
-                    'lease-abstraction', 'translation', 'ocr', 'bai2', 'data-extraction',
-                    'content-writing-tool', 'humanize-document-tool',
-                ];
-                PAID_SERVICE_IDS.forEach(function (id) {
-                    services.push({ id: id, name: id, type: 'Paid', billingUnit: 'document' });
+                const nativeSvcs = (window.FreeServices && FreeServices.nativePaidServices) || [];
+                nativeSvcs.forEach(function (svc) {
+                    services.push({ id: svc.id, name: svc.label || '', type: 'Paid', billingUnit: 'document' });
                 });
                 try {
                     if (window.FreeServices && typeof FreeServices.catalogue === 'function') {
@@ -7713,6 +7716,7 @@
                     const data = await res.json();
                     if (!res.ok) throw new Error(data.error || 'Could not seed the Services Catalog.');
                     showMessage('✅ Seeded', `Added ${data.added} new service(s). Total in catalog: ${data.total}.`, ['OK']);
+                    await refreshServicesCatalog();
                     const host = document.getElementById('dbActiveTableBody');
                     if (host) dbTableLoad('doc_services_catalog');
                 } catch (err) {
@@ -7728,9 +7732,26 @@
                         const data = await res.json();
                         if (!res.ok) throw new Error(data.error || 'Could not update API Access.');
                         showMessage('✅ Done', `Updated ${data.changed} of ${data.total} service(s).`, ['OK']);
+                        await refreshServicesCatalog();
                         dbTableLoad('doc_services_catalog');
                     } catch (err) {
                         showWarning(err.message || 'Could not update API Access.');
+                    }
+                });
+            };
+
+            window.fixServicesCatalogNames = async function() {
+                showConfirm('\ud83d\udd27 Fix Names', 'Clear the Name field for any row where it\'s just a copy of the Service ID (a seeding bug, not a real rename)? Real renames are left untouched.', async function(confirmed) {
+                    if (!confirmed) return;
+                    try {
+                        const res = await authFetch('/api/admin/services-catalog-fix-names', { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error || 'Could not fix names.');
+                        showMessage('✅ Done', `Fixed ${data.changed} of ${data.total} service(s).`, ['OK']);
+                        await refreshServicesCatalog();
+                        dbTableLoad('doc_services_catalog');
+                    } catch (err) {
+                        showWarning(err.message || 'Could not fix names.');
                     }
                 });
             };
@@ -10392,6 +10413,22 @@
                 return res.json();
             }
 
+            // Re-fetches the Services Catalog and refreshes both the
+            // module-local and window-exposed copies - called after any
+            // Admin edit to it, so the rest of the app (service pages,
+            // Free/Paid listings) reflects the change immediately instead
+            // of only after a full page reload (loadAppData() only ran
+            // this once, at login).
+            window.refreshServicesCatalog = async function() {
+                try {
+                    const rows = await fetchJSON('/api/data/services-catalog');
+                    const map = {};
+                    (rows || []).forEach(function (s) { if (s && s.id) map[s.id] = s; });
+                    SERVICES_CATALOG = map;
+                    window.SERVICES_CATALOG = map;
+                } catch (e) { /* keep whatever was already loaded */ }
+            };
+
             async function loadAppData() {
                 const [
                     paymentMethodsData,
@@ -10573,21 +10610,22 @@
             ];
 
             const AUTH_PAID_TOOLS = [
-                ['Document Translation', '60+ languages, layout preserved exactly',
+                ['translation', 'Document Translation', '60+ languages, layout preserved exactly',
                  '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 3 2.6 15 0 18M12 3c-2.6 3-2.6 15 0 18"/>'],
-                ['OCR Conversion', 'Scanned or photographed pages rebuilt into editable Word',
+                ['ocr', 'OCR Conversion', 'Scanned or photographed pages rebuilt into editable Word',
                  '<path d="M4 8V6a2 2 0 0 1 2-2h2M20 8V6a2 2 0 0 0-2-2h-2M4 16v2a2 2 0 0 0 2 2h2M20 16v2a2 2 0 0 1-2 2h-2"/><path d="M7 12h10"/>'],
-                ['Data Extraction', 'Define your own fields, get a clean table from every file',
+                ['data-extraction', 'Data Extraction', 'Define your own fields, get a clean table from every file',
                  '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 10h18M9 10v10"/>'],
-                ['BAI2 Conversion', 'Bank statements converted to BAI2, CSV or JSON',
+                ['bai2', 'BAI2 Conversion', 'Bank statements converted to BAI2, CSV or JSON',
                  '<path d="M3 9.5 12 4l9 5.5"/><path d="M5 10.5v8M9.5 10.5v8M14.5 10.5v8M19 10.5v8M3 20h18"/>'],
-                ['Lease Abstraction', 'Structured lease fields with source citations',
+                ['lease-abstraction', 'Lease Abstraction', 'Structured lease fields with source citations',
                  '<path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4M8.5 12h7M8.5 16h4"/>'],
-                ['Content Writing Tool', 'Blog posts, captions, product descriptions and more',
+                ['content-writing-tool', 'Content Writing Tool', 'Blog posts, captions, product descriptions and more',
                  '<path d="M4 19.5V17l10-10 2.5 2.5-10 10H4z"/><path d="M14 6.5 17.5 10"/>'],
-                ['Humanize Document Tool', 'Rewrite stiff or AI-sounding text to read more naturally',
+                ['humanize-document-tool', 'Humanize Document Tool', 'Rewrite stiff or AI-sounding text to read more naturally',
                  '<circle cx="12" cy="8" r="3.2"/><path d="M5 20c0-3.9 3.1-7 7-7s7 3.1 7 7"/>']
             ];
+            const AUTH_PAID_TOOLS_ICON_FALLBACK = '<rect x="4" y="4" width="16" height="16" rx="3"/>';
 
             // Category ke hisab se icon - free tools ki list registry se
             // aati hai, to icon yahan naam par map hota hai.
@@ -10666,12 +10704,35 @@
             // Har service (paid ya free) ek hi shape me: type/label/desc/icon -
             // taaki ek hi thumbnail-card renderer dono ke liye chale.
             function authAllServices() {
-                const paid = AUTH_PAID_TOOLS.map(t => ({
-                    type: 'paid',
-                    label: t[0],
-                    desc: t[1],
-                    iconHtml: authIcon(t[2])
-                }));
+                const catalog = window.SERVICES_CATALOG || {};
+                const paid = AUTH_PAID_TOOLS
+                    .filter(t => {
+                        const entry = catalog[t[0]];
+                        if (entry && entry.visibility === 'Hidden') return false;
+                        if (entry && entry.type === 'Free') return false;
+                        return true;
+                    })
+                    .map(t => ({
+                        type: 'paid',
+                        label: (catalog[t[0]] && catalog[t[0]].name && catalog[t[0]].name.trim()) || t[1],
+                        desc: t[2],
+                        iconHtml: authIcon(t[3])
+                    }));
+                // Any normally-free tool the catalog has marked Paid shows
+                // here too, matching the in-app Paid Services page.
+                if (window.FreeServices && FreeServices.allToolsRaw) {
+                    FreeServices.allToolsRaw().forEach(function (t) {
+                        const entry = catalog[t.id];
+                        if (entry && entry.type === 'Paid' && entry.visibility !== 'Hidden') {
+                            paid.push({
+                                type: 'paid',
+                                label: (entry.name && entry.name.trim()) || t.label,
+                                desc: t.desc || '',
+                                iconHtml: authIcon(AUTH_PAID_TOOLS_ICON_FALLBACK)
+                            });
+                        }
+                    });
+                }
                 const free = [];
                 authFreeTools().forEach(c => {
                     const catIcon = AUTH_CAT_ICONS[c[0]] || AUTH_CAT_ICONS['More Tools'];

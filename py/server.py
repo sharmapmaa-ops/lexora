@@ -2528,6 +2528,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/rules/add-blank": self._handle_rules_add_blank,
             "/api/admin/services-catalog-seed": self._handle_services_catalog_seed,
             "/api/admin/services-catalog-reset-api-access": self._handle_services_catalog_reset_api_access,
+            "/api/admin/services-catalog-fix-names": self._handle_services_catalog_fix_names,
             "/api/rules/update-approved": self._handle_rules_update_approved,
             "/api/lease/generate-pdf": self._handle_lease_generate_pdf,
             "/api/translation/upload": self._handle_translation_upload,
@@ -4564,6 +4565,26 @@ class Handler(SimpleHTTPRequestHandler):
             desired = "Yes" if row.get("id") == "translation" else "No"
             if row.get("apiAccess") != desired:
                 row["apiAccess"] = desired
+                changed += 1
+        if changed:
+            db.replace_documents("services-catalog", rows)
+        return 200, {"ok": True, "changed": changed, "total": len(rows)}
+
+    def _handle_services_catalog_fix_names(self, body):
+        """One-time cleanup for a seeding bug: earlier seeds wrote
+        name == id (e.g. name: "ocr") which then incorrectly triggered
+        the "this service was renamed" override everywhere, showing the
+        raw id instead of the proper label (OCR, Data Extraction, ...).
+        Clears any name field that's still exactly equal to its own id -
+        a REAL rename (name != id) is left completely untouched."""
+        self._require_role(("Admin", "Developer"))
+        if db is None or not db.is_enabled():
+            raise ValueError("Database is not configured.")
+        rows = db.list_documents("services-catalog")
+        changed = 0
+        for row in rows:
+            if row.get("name") == row.get("id"):
+                row["name"] = ""
                 changed += 1
         if changed:
             db.replace_documents("services-catalog", rows)
