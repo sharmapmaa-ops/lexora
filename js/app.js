@@ -1809,7 +1809,7 @@
                         paymentHistory.push({
                             id: txnId,
                             date: localDateStr(now),
-                            time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                            time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
                             userId: CURRENT_USER_ID,
                             paymentType: 'Service Fee',
                             paymentMode: 'Wallet Balance',
@@ -2310,7 +2310,7 @@
                                 paymentHistory.push({
                                     id: fileTxnId,
                                     date: localDateStr(nowF),
-                                    time: nowF.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                                    time: nowF.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
                                     userId: CURRENT_USER_ID,
                                     paymentType: 'Service Fee',
                                     paymentMode: 'Wallet Balance',
@@ -2416,7 +2416,7 @@
                         paymentHistory.push({
                             id: txnId,
                             date: localDateStr(now),
-                            time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                            time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
                             userId: CURRENT_USER_ID,
                             paymentType: 'Service Fee',
                             paymentMode: 'Wallet Balance',
@@ -3204,9 +3204,9 @@
                            </a>`
                         : '';
                     tr.innerHTML = `
-                        ${includeCheckbox ? `<td><input type="checkbox" class="txn-select-checkbox" data-txn-id="${transaction.id}" ${selectedTransactionIds.has(transaction.id) ? 'checked' : ''} onchange="toggleSelectTransaction('${transaction.id}', this.checked)" />${receiptIcon}</td>` : ''}
+                        ${includeCheckbox ? `<td><input type="checkbox" class="txn-select-checkbox" data-txn-id="${transaction.id}" ${selectedTransactionIds.has(transaction.id) ? 'checked' : ''} onchange="toggleSelectTransaction('${transaction.id}', this.checked)" /></td>` : ''}
                         <td>${dateTimeText}</td>
-                        <td><span style="font-weight:500;color:darkblue;">${transaction.id}</span></td>
+                        <td><span style="font-weight:500;color:darkblue;">${transaction.id}</span>${receiptIcon}</td>
                         <td>${escapeHtml(transaction.userId || '')}</td>
                         <td>${transaction.paymentMode}</td>
                         <td>${descriptionText}</td>
@@ -3446,10 +3446,6 @@
                                     Clear
                                 </button>
                                 <div class="filter-bar-spacer"></div>
-                                <button class="filter-btn download-btn" onclick="downloadHistoryInvoicePdf()">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
-                                    Download
-                                </button>
                                 <button class="filter-btn download-btn" onclick="downloadAccountStatementPdf()">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
                                     Download Account Statement
@@ -3665,7 +3661,7 @@
                     paymentHistory.push({
                         id: txnId,
                         date: localDateStr(now),
-                        time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                        time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
                         userId: CURRENT_USER_ID,
                         paymentType: 'Plan Subscription',
                         paymentMode: 'Wallet Balance',
@@ -3704,7 +3700,7 @@
                 paymentHistory.push({
                     id: txnId,
                     date: localDateStr(now),
-                    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
                     userId: developerId,
                     paymentType: 'Expense',
                     paymentMode: method.name + ' ' + method.details,
@@ -3826,7 +3822,7 @@
                     paymentHistory.push({
                         id: 'TXN' + String(nextTransactionId++).padStart(3, '0'),
                         date: localDateStr(now),
-                        time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                        time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
                         userId: CURRENT_USER_ID,
                         paymentType: 'Razorpay',
                         paymentMode: 'Razorpay',
@@ -5970,7 +5966,7 @@
                     id: 'NOTIF' + String(nextNotificationId++).padStart(3, '0'),
                     userId: userId,
                     date: localDateStr(now),
-                    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
                     description: description,
                     read: false
                 }, meta || {}));
@@ -6871,7 +6867,60 @@
             };
 
             window.dbTableGoToPage = function(name, page) {
+                if (name === 'cfg_rules') {
+                    dbRulesPage = Math.max(1, page);
+                    const host = document.getElementById('dbActiveTableBody');
+                    if (host) _renderRulesTable(host);
+                    return;
+                }
                 dbTablePage = Math.max(1, page);
+                dbTableLoad(name);
+            };
+
+            let dbTablePerPage = 20;
+
+            function _dbPaginationHtml(name, page, perPage, total) {
+                const pages = Math.max(1, Math.ceil(total / perPage));
+                if (page > pages) page = pages;
+                const shownFrom = total === 0 ? 0 : (page - 1) * perPage + 1;
+                const shownTo = Math.min(total, page * perPage);
+                const nums = [];
+                if (pages <= 5) {
+                    for (let i = 1; i <= pages; i++) nums.push(i);
+                } else if (page <= 3) {
+                    nums.push(1, 2, 3, '\u2026', pages);
+                } else if (page >= pages - 2) {
+                    nums.push(1, '\u2026', pages - 2, pages - 1, pages);
+                } else {
+                    nums.push(1, '\u2026', page, '\u2026', pages);
+                }
+                const btn = (label, target, extra) =>
+                    target === null
+                        ? `<span class="pager-gap">${label}</span>`
+                        : `<button class="pager-btn ${extra || ''}" ${target ? `onclick="dbTableGoToPage('${escapeHtml(name)}', ${target})"` : 'disabled'}>${label}</button>`;
+                return `
+                    <span class="pager-count">Showing ${shownFrom} to ${shownTo} of ${total} entries</span>
+                    <div class="pager-controls">
+                        <select class="pager-select" onchange="dbTableSetPerPage('${escapeHtml(name)}', this.value)">
+                            ${[10, 20, 50, 100].map(n => `<option value="${n}" ${n === perPage ? 'selected' : ''}>${n} per page</option>`).join('')}
+                        </select>
+                        ${btn('\u00ab', page > 1 ? 1 : 0)}
+                        ${btn('\u2039', page > 1 ? page - 1 : 0)}
+                        ${nums.map(n => n === '\u2026' ? btn('\u2026', null) : btn(n, n, n === page ? 'is-current' : '')).join('')}
+                        ${btn('\u203a', page < pages ? page + 1 : 0)}
+                        ${btn('\u00bb', page < pages ? pages : 0)}
+                    </div>`;
+            }
+
+            window.dbTableSetPerPage = function(name, value) {
+                dbTablePerPage = parseInt(value, 10) || 20;
+                dbTablePage = 1;
+                dbRulesPage = 1;
+                if (name === 'cfg_rules') {
+                    const host = document.getElementById('dbActiveTableBody');
+                    if (host) _renderRulesTable(host);
+                    return;
+                }
                 dbTableLoad(name);
             };
 
@@ -6901,10 +6950,10 @@
                     _dbTableColumns = d.columns || (allRows.length ? Object.keys(allRows[0]).map(n => ({ name: n, type: 'text', editable: true, primaryKey: false })) : []);
                     const cols = _dbTableColumns;
 
-                    const totalPages = Math.max(1, Math.ceil(allRows.length / DB_TABLE_PAGE_SIZE));
+                    const totalPages = Math.max(1, Math.ceil(allRows.length / dbTablePerPage));
                     if (dbTablePage > totalPages) dbTablePage = totalPages;
-                    const pageStart = (dbTablePage - 1) * DB_TABLE_PAGE_SIZE;
-                    const rows = allRows.slice(pageStart, pageStart + DB_TABLE_PAGE_SIZE);
+                    const pageStart = (dbTablePage - 1) * dbTablePerPage;
+                    const rows = allRows.slice(pageStart, pageStart + dbTablePerPage);
 
                     const tableOptions = (window._dbTablesList || []).map(t => `
                         <option value="${escapeHtml(t.name)}" ${t.name === name ? 'selected' : ''} ${t.exists ? '' : 'disabled'}>
@@ -6933,7 +6982,7 @@
                             </tbody>
                         </table>
                         </div>
-                        <div class="db-table-caption">${allRows.length} row(s)${totalPages > 1 ? ` \u2014 page ${dbTablePage} of ${totalPages}` : ''}</div>
+                        <div class="db-table-caption">${allRows.length} row(s)</div>
                         <div class="db-edit-table-actions db-edit-table-actions-bottom">
                             <div class="db-table-select-row">
                                 <label for="dbTableSelect">Table</label>
@@ -6942,24 +6991,14 @@
                                 </select>
                             </div>
                             <button class="admin-btn" id="dbFilterToggleBtn" onclick="dbToggleFilterRow()">\u{1F50D} Filter</button>
-                            ${name === 'cfg_company' ? '' : `
                             <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${escapeHtml(name)}')">+ Add Row</button>
                             <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Row(s)</button>
                             <button class="admin-btn admin-btn-save" onclick="dbTableSaveAll('${escapeHtml(name)}')">\u{1F4BE} Save</button>
                             <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
-                            ${name === 'doc_services_catalog' ? `<button class="admin-btn" onclick="seedServicesCatalog()">\u{1F331} Seed Missing Services</button>
-                            <button class="admin-btn" onclick="resetServicesApiAccess()">\u{1F511} Reset API Access (Translation only)</button>
-                            <button class="admin-btn" onclick="fixServicesCatalogNames()">\u{1F527} Fix Names (clear id-as-name)</button>` : ''}
-                            `}
-                            <span class="admin-toolbar-spacer"></span>
                             <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
-                            <button class="admin-btn admin-btn-save" onclick="runDbMigration()">\u2934 Run migration</button>
-                            ${totalPages > 1 ? `
-                            <div class="db-pagination">
-                                <button class="admin-btn" ${dbTablePage <= 1 ? 'disabled' : ''} onclick="dbTableGoToPage('${escapeHtml(name)}', ${dbTablePage - 1})">\u2039 Prev</button>
-                                <span class="db-pagination-label">${dbTablePage} / ${totalPages}</span>
-                                <button class="admin-btn" ${dbTablePage >= totalPages ? 'disabled' : ''} onclick="dbTableGoToPage('${escapeHtml(name)}', ${dbTablePage + 1})">Next \u203a</button>
-                            </div>` : ''}
+                        </div>
+                        <div class="history-pager">
+                            ${_dbPaginationHtml(name, dbTablePage, dbTablePerPage, allRows.length)}
                         </div>`;
                     host.dataset.rows = JSON.stringify(allRows);
                     host.dataset.pageStart = String(pageStart);
@@ -7094,8 +7133,20 @@
                 return escapeHtml(String(v));
             }
 
+            let dbRulesPage = 1;
+
             function _renderRulesTable(host) {
-                const rows = _rulesTableRows;
+                const allRows = _rulesTableRows;
+                const totalPages = Math.max(1, Math.ceil(allRows.length / dbTablePerPage));
+                if (dbRulesPage > totalPages) dbRulesPage = totalPages;
+                const pageStart = (dbRulesPage - 1) * dbTablePerPage;
+                const rows = allRows.slice(pageStart, pageStart + dbTablePerPage);
+
+                const tableOptions = (window._dbTablesList || []).map(t => `
+                    <option value="${escapeHtml(t.name)}" ${t.name === 'cfg_rules' ? 'selected' : ''} ${t.exists ? '' : 'disabled'}>
+                        ${escapeHtml(_dbTableLabel(t.name))}${t.exists ? '' : ' (not created yet)'}
+                    </option>`).join('');
+
                 host.innerHTML = `
                     <div class="db-edit-table-wrapper">
                     <table class="admin-json-table db-txn-table db-edit-table">
@@ -7103,27 +7154,38 @@
                             <tr>
                                 <th><input type="checkbox" onchange="dbTableToggleAll(this)" /></th>
                                 ${RULES_TABLE_COLUMNS.map(c => `<th${c === 'ruleText' ? ' style="width:280px;"' : ''}>${escapeHtml(RULES_TABLE_LABELS[c] || c)}</th>`).join('')}
+                            </tr>
+                            <tr class="db-filter-row" id="dbFilterRow" style="${dbFilterRowVisible ? '' : 'display:none;'}">
                                 <th></th>
+                                ${RULES_TABLE_COLUMNS.map((c, ci) => `<th><input type="text" class="db-filter-input" placeholder="Filter\u2026" oninput="dbTableFilter(${ci}, this.value)" /></th>`).join('')}
                             </tr>
                         </thead>
                         <tbody id="dbTableBody">
                             ${rows.map((r, i) => `
-                                <tr data-row-index="${i}">
+                                <tr data-row-index="${pageStart + i}">
                                     <td><input type="checkbox" class="db-row-select" /></td>
-                                    ${RULES_TABLE_COLUMNS.map(c => `<td${c === 'ruleText' ? ' style="width:280px;"' : ''}>${_rulesTableCell(r, c, i)}</td>`).join('')}
-                                    <td>${r._editable ? `<button class="admin-btn admin-btn-save" onclick="saveRuleRow(${i})">💾 Save</button>` : ''}</td>
+                                    ${RULES_TABLE_COLUMNS.map(c => `<td${c === 'ruleText' ? ' style="width:280px;"' : ''}>${_rulesTableCell(r, c, pageStart + i)}</td>`).join('')}
                                 </tr>`).join('')}
                         </tbody>
                     </table>
                     </div>
-                    <div class="db-table-caption">${rows.length} rule(s) - ${rows.filter(r => r._editable).length} approved (editable), ${rows.filter(r => !r._editable).length} pending. Approve/reject from the Lease Abstraction rules review screen.</div>
-                    <div class="db-edit-table-actions">
+                    <div class="db-table-caption">${allRows.length} rule(s) - ${allRows.filter(r => r._editable).length} approved (editable), ${allRows.filter(r => !r._editable).length} pending. Approve/reject from the Lease Abstraction rules review screen.</div>
+                    <div class="db-edit-table-actions db-edit-table-actions-bottom">
+                        <div class="db-table-select-row">
+                            <label for="dbTableSelect">Table</label>
+                            <select id="dbTableSelect" class="db-table-select" onchange="switchDbTable(this.value)">
+                                ${tableOptions}
+                            </select>
+                        </div>
+                        <button class="admin-btn" id="dbFilterToggleBtn" onclick="dbToggleFilterRow()">\u{1F50D} Filter</button>
                         <button class="admin-btn admin-btn-add-folder" onclick="addBlankRuleRow()">+ Add Row</button>
-                        <button class="admin-btn admin-btn-delete" onclick="deleteSelectedRuleRows()">\u{1F5D1} Delete Selected</button>
+                        <button class="admin-btn admin-btn-delete" onclick="deleteSelectedRuleRows()">\u{1F5D1} Delete Row(s)</button>
+                        <button class="admin-btn admin-btn-save" onclick="saveAllRuleRows()">\u{1F4BE} Save</button>
                         <button class="admin-btn admin-btn-download" onclick="downloadRulesCsv()">\u2B07\uFE0F Download</button>
-                        <span class="admin-toolbar-spacer"></span>
                         <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
-                        <button class="admin-btn admin-btn-save" onclick="runDbMigration()">\u2934 Run migration</button>
+                    </div>
+                    <div class="history-pager">
+                        ${_dbPaginationHtml('cfg_rules', dbRulesPage, dbTablePerPage, allRows.length)}
                     </div>`;
             }
 
@@ -7198,24 +7260,31 @@
                 URL.revokeObjectURL(url);
             };
 
-            window.saveRuleRow = async function(rowIndex) {
-                const row = _rulesTableRows[rowIndex];
-                if (!row || !row._editable) return;
-                const fieldId = (document.getElementById(`fieldIdInp_${rowIndex}`) || {}).value;
-                const ruleType = (document.getElementById(`ruleTypeSel_${rowIndex}`) || {}).value;
-                const ruleText = (document.getElementById(`ruleTextInp_${rowIndex}`) || {}).value;
+            window.saveAllRuleRows = async function() {
+                const trs = Array.from(document.querySelectorAll('#dbTableBody tr'));
+                const updates = [];
+                trs.forEach(tr => {
+                    const idx = parseInt(tr.dataset.rowIndex, 10);
+                    const row = _rulesTableRows[idx];
+                    if (!row || !row._editable) return;
+                    const fieldId = (document.getElementById(`fieldIdInp_${idx}`) || {}).value;
+                    const ruleType = (document.getElementById(`ruleTypeSel_${idx}`) || {}).value;
+                    const ruleText = (document.getElementById(`ruleTextInp_${idx}`) || {}).value;
+                    updates.push({ id: row.id, fieldId, ruleType, ruleText });
+                    row.fieldId = fieldId; row.ruleType = ruleType; row.ruleText = ruleText;
+                });
+                if (!updates.length) { showWarning('No editable (approved) rules on this page to save.'); return; }
                 try {
                     const res = await authFetch('/api/rules/update-approved', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ updates: [{ id: row.id, fieldId, ruleType, ruleText }] })
+                        body: JSON.stringify({ updates })
                     });
                     const data = await res.json();
-                    if (!res.ok) throw new Error(data.error || 'Could not save that rule.');
-                    row.fieldId = fieldId; row.ruleType = ruleType; row.ruleText = ruleText;
-                    showMessage('✅ Saved', 'Rule updated.', ['OK']);
+                    if (!res.ok) throw new Error(data.error || 'Could not save rules.');
+                    showSuccess(`Saved ${updates.length} rule(s).`);
                 } catch (err) {
-                    showWarning(err.message || 'Could not save that rule.');
+                    showWarning(err.message || 'Could not save rules.');
                 }
             };
 
@@ -10348,7 +10417,7 @@
                     paymentHistory.push({
                         id: txnId,
                         date: localDateStr(now),
-                        time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+                        time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
                         userId: CURRENT_USER_ID,
                         paymentType: 'Service Fee',
                         paymentMode: 'Wallet Balance',

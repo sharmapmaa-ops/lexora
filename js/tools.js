@@ -169,7 +169,7 @@
 
     const fmt = (zone) => instant.toLocaleString('en-GB', {
       timeZone: zone, weekday: 'short', year: 'numeric', month: 'short',
-      day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: true
+      day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false
     });
     const offset = (zone) => {
       const p = new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'shortOffset' })
