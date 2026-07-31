@@ -3198,8 +3198,13 @@
                     } else if (transaction.status === 'failed') {
                         descriptionText = `<span class="txn-status-tag cancelled">Failed</span> : ${descriptionText}`;
                     }
+                    const receiptIcon = transaction.paymentType === 'Razorpay'
+                        ? `<a onclick="downloadTxnReceiptPdf('${transaction.id}')" title="Download receipt" style="cursor:pointer;color:#1257f5;margin-left:6px;display:inline-flex;vertical-align:middle;">
+                               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
+                           </a>`
+                        : '';
                     tr.innerHTML = `
-                        ${includeCheckbox ? `<td><input type="checkbox" class="txn-select-checkbox" data-txn-id="${transaction.id}" ${selectedTransactionIds.has(transaction.id) ? 'checked' : ''} onchange="toggleSelectTransaction('${transaction.id}', this.checked)" /></td>` : ''}
+                        ${includeCheckbox ? `<td><input type="checkbox" class="txn-select-checkbox" data-txn-id="${transaction.id}" ${selectedTransactionIds.has(transaction.id) ? 'checked' : ''} onchange="toggleSelectTransaction('${transaction.id}', this.checked)" />${receiptIcon}</td>` : ''}
                         <td>${dateTimeText}</td>
                         <td><span style="font-weight:500;color:darkblue;">${transaction.id}</span></td>
                         <td>${escapeHtml(transaction.userId || '')}</td>
@@ -3212,6 +3217,15 @@
                     tbody.appendChild(tr);
                 });
             }
+
+            // Per-row receipt download (Payment History) - Razorpay
+            // transactions only, matching the reference receipt design.
+            window.downloadTxnReceiptPdf = function(txnId) {
+                const url = '/api/payment/receipt-pdf?userId=' + encodeURIComponent(CURRENT_USER_ID) +
+                    '&token=' + encodeURIComponent(AUTH_TOKEN || '') +
+                    '&txnId=' + encodeURIComponent(txnId);
+                window.open(url, '_blank');
+            };
 
             window.toggleSelectTransaction = function(txnId, checked) {
                 if (checked) selectedTransactionIds.add(txnId);
@@ -3355,6 +3369,21 @@
                 window.open(url, '_blank');
             };
 
+            // "Download Account Statement" - the fuller report (account
+            // overview box, donut chart, running Balance column) that
+            // matches the reference design shared for this feature.
+            window.downloadAccountStatementPdf = function() {
+                let url = '/api/payment/account-statement-pdf?userId=' + encodeURIComponent(CURRENT_USER_ID) +
+                    '&token=' + encodeURIComponent(AUTH_TOKEN || '');
+                const fromInput = document.getElementById('historyFromDate');
+                const toInput = document.getElementById('historyToDate');
+                if (fromInput && toInput && fromInput.value && toInput.value) {
+                    url += '&startDate=' + encodeURIComponent(fromInput.value) +
+                        '&endDate=' + encodeURIComponent(toInput.value);
+                }
+                window.open(url, '_blank');
+            };
+
             function updateSummary(list) {
                 // Item 2 - "Total Credit / Total Debit / Current Balance"
                 // ab sirf Payment page ke top wale balance-grid me dikhte
@@ -3420,6 +3449,10 @@
                                 <button class="filter-btn download-btn" onclick="downloadHistoryInvoicePdf()">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
                                     Download
+                                </button>
+                                <button class="filter-btn download-btn" onclick="downloadAccountStatementPdf()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+                                    Download Account Statement
                                 </button>
                                 <button class="filter-btn raise-issue-btn" onclick="openRaiseIssueModal()">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg>

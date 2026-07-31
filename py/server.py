@@ -1602,8 +1602,419 @@ def _build_invoice_pdf(company_name, logo_path, user, txns,
         story.append(Paragraph(part, label_style))
         story.append(Spacer(1, 4))
 
-    doc.build(story)
+def _numbered_canvas_factory(footer_note):
+    """Canvas subclass that stamps 'Page X of Y' + a footer disclaimer
+    bottom-right/bottom-left of every page - reportlab's standard
+    technique for numbering pages when the total page count isn't known
+    until the whole story has already been laid out."""
+    from reportlab.pdfgen import canvas as canvas_module
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+
+    class NumberedCanvas(canvas_module.Canvas):
+        def __init__(self, *args, **kwargs):
+            canvas_module.Canvas.__init__(self, *args, **kwargs)
+            self._saved_page_states = []
+
+        def showPage(self):
+            self._saved_page_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total_pages = len(self._saved_page_states)
+            for state in self._saved_page_states:
+                self.__dict__.update(state)
+                self._draw_footer(total_pages)
+                canvas_module.Canvas.showPage(self)
+            canvas_module.Canvas.save(self)
+
+        def _draw_footer(self, total_pages):
+            width, _ = self._pagesize
+            self.setStrokeColor(colors.HexColor("#dddddd"))
+            self.line(0.6 * inch, 0.75 * inch, width - 0.6 * inch, 0.75 * inch)
+            self.setFont("Helvetica", 8)
+            self.setFillColor(colors.HexColor("#555555"))
+            self.drawString(0.6 * inch, 0.55 * inch, footer_note)
+            page_label = f"Page {self._pageNumber} of {total_pages}"
+            self.drawRightString(width - 0.6 * inch, 0.55 * inch, page_label)
+
+    return NumberedCanvas
+
+
+def _donut_chart_drawing(credit_count, credit_amt, debit_count, debit_amt):
+    """Small green/red donut ('Transaction Overview') matching the
+    reference design - reportlab has no built-in donut, so this draws a
+    Pie and punches a white circle in the middle for the hole, with the
+    total transaction count centered inside."""
+    from reportlab.graphics.shapes import Drawing, String
+    from reportlab.graphics.charts.piecharts import Pie
+    from reportlab.lib import colors
+
+    total = credit_count + debit_count
+    size = 1.6 * 72  # 1.6in in points, Drawing units are points
+    d = Drawing(size, size)
+    pie = Pie()
+    pie.x = 4
+    pie.y = 4
+    pie.width = size - 8
+    pie.height = size - 8
+    pie.data = [max(credit_count, 0.0001), max(debit_count, 0.0001)] if total else [1]
+    pie.labels = None
+    pie.slices.strokeWidth = 0
+    pie.slices[0].fillColor = colors.HexColor("#1b8a4a")
+    if total:
+        pie.slices[1].fillColor = colors.HexColor("#c62828")
+    d.add(pie)
+    # Punch the donut hole.
+    from reportlab.graphics.shapes import Circle
+    hole = Circle(size / 2, size / 2, size * 0.32, fillColor=colors.white, strokeColor=colors.white)
+    d.add(hole)
+    d.add(String(size / 2, size / 2 + 6, str(total), fontSize=16, fontName="Helvetica-Bold",
+                 fillColor=colors.HexColor("#0b1330"), textAnchor="middle"))
+    d.add(String(size / 2, size / 2 - 10, "Transactions", fontSize=7,
+                 fillColor=colors.HexColor("#555555"), textAnchor="middle"))
+    return d
+
+
+def _build_account_statement_pdf(company_name, logo_path, user, txns,
+                                  start_date, end_date, opening_balance):
+    """Payment Summary > "Download Account Statement" - a fuller report
+    than the plain invoice (item: account overview box + donut chart +
+    a running Balance column per row), matching the reference design
+    the user shared. Reuses the same reportlab/platypus approach as
+    _build_invoice_pdf."""
+    import io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.platypus import (
+        SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image,
+    )
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_RIGHT
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("StmtTitle", parent=styles["Heading1"], fontSize=20, spaceAfter=2)
+    label_style = ParagraphStyle("StmtLabel", parent=styles["Normal"], fontSize=10, leading=15)
+    box_head_style = ParagraphStyle("StmtBoxHead", parent=styles["Normal"], fontSize=10.5,
+                                     fontName="Helvetica-Bold", textColor=colors.white)
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        topMargin=0.6 * inch, bottomMargin=0.95 * inch,
+        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+    )
+    story = []
+
+    # ---- Header: logo + "ACCOUNT STATEMENT" ----
+    if logo_path:
+        try:
+            logo_cell = Image(logo_path, width=1.2 * inch, height=1.2 * inch, kind="proportional")
+        except Exception:  # noqa: BLE001
+            logo_cell = Paragraph(company_name, title_style)
+    else:
+        logo_cell = Paragraph(company_name, title_style)
+    header_table = Table(
+        [[logo_cell, Paragraph("ACCOUNT STATEMENT", ParagraphStyle(
+            "StmtRight", parent=title_style, alignment=TA_RIGHT))]],
+        colWidths=[3.5 * inch, 3.3 * inch])
+    header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+    story.append(header_table)
+    story.append(Spacer(1, 14))
+
+    # ---- "From" (account holder) box + statement metadata, side by side ----
+    full_name = f"{user.get('firstName') or ''} {user.get('lastName') or ''}".strip() or "-"
+    from_lines = [
+        Paragraph("<b>From:</b>", ParagraphStyle("StmtFromTag", parent=label_style, textColor=colors.HexColor("#1b8a4a"))),
+        Paragraph(f"<b>{escape_html(full_name)}</b>", ParagraphStyle("StmtFromName", parent=label_style, fontSize=13)),
+        Paragraph(f"Mobile: {escape_html(user.get('mobile') or '-')}  |  Email: {escape_html(user.get('email') or '-')}", label_style),
+    ]
+    meta_rows = [
+        ["Statement Date", ":", datetime.date.today().strftime("%d %b %Y")],
+        ["Summary Period", ":", f"{start_date} to {end_date}" if start_date else "All time"],
+        ["Total Transactions", ":", str(len(txns))],
+    ]
+    meta_table = Table(meta_rows, colWidths=[1.3 * inch, 0.15 * inch, 1.7 * inch])
+    meta_table.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("ALIGN", (2, 0), (2, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    top_row = Table([[from_lines, meta_table]], colWidths=[3.9 * inch, 3.0 * inch])
+    top_row.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOX", (0, 0), (0, 0), 0.75, colors.HexColor("#dddddd")),
+        ("LEFTPADDING", (0, 0), (0, 0), 10), ("TOPPADDING", (0, 0), (0, 0), 10),
+        ("RIGHTPADDING", (0, 0), (0, 0), 10), ("BOTTOMPADDING", (0, 0), (0, 0), 10),
+        ("LEFTPADDING", (1, 0), (1, 0), 14),
+    ]))
+    story.append(top_row)
+    story.append(Spacer(1, 16))
+
+    # ---- Account Overview + Transaction Overview donut, side by side ----
+    total_credit = sum(float(t.get("credit") or 0) for t in txns)
+    total_debit = sum(float(t.get("debit") or 0) for t in txns)
+    net_change = total_credit - total_debit
+    current_balance = opening_balance + net_change
+    credit_count = sum(1 for t in txns if float(t.get("credit") or 0) > 0)
+    debit_count = sum(1 for t in txns if float(t.get("debit") or 0) > 0)
+
+    overview_rows = [
+        ["Opening Balance", f"{opening_balance:,.2f}"],
+        ["Total Credit", f"{total_credit:,.2f}"],
+        ["Total Debit", f"{total_debit:,.2f}"],
+        ["Net Change", f"{net_change:,.2f}"],
+        ["Current Balance", f"{current_balance:,.2f}"],
+    ]
+    ov_table = Table(overview_rows, colWidths=[1.7 * inch, 1.2 * inch])
+    ov_style = [
+        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TEXTCOLOR", (1, 1), (1, 1), colors.HexColor("#1b8a4a")),
+        ("TEXTCOLOR", (1, 2), (1, 2), colors.HexColor("#c62828")),
+        ("FONTNAME", (0, 4), (1, 4), "Helvetica-Bold"),
+        ("LINEABOVE", (0, 4), (1, 4), 0.75, colors.HexColor("#dddddd")),
+    ]
+    ov_table.setStyle(TableStyle(ov_style))
+    ov_box = Table([[Paragraph("ACCOUNT OVERVIEW", box_head_style)], [ov_table]], colWidths=[3.0 * inch])
+    ov_box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#0b1330")),
+        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#dddddd")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (0, 0), 6), ("BOTTOMPADDING", (0, 0), (0, 0), 6),
+        ("TOPPADDING", (0, 1), (0, 1), 8), ("BOTTOMPADDING", (0, 1), (0, 1), 8),
+    ]))
+
+    donut = _donut_chart_drawing(credit_count, total_credit, debit_count, total_debit)
+    legend_style = ParagraphStyle("StmtLegend", parent=label_style, fontSize=9, leading=13)
+    legend = [
+        Paragraph(f'<font color="#1b8a4a">\u25cf</font> Credit ({credit_count})<br/>'
+                  f'<b>{total_credit:,.2f}</b>', legend_style),
+        Spacer(1, 6),
+        Paragraph(f'<font color="#c62828">\u25cf</font> Debit ({debit_count})<br/>'
+                  f'<b>{total_debit:,.2f}</b>', legend_style),
+    ]
+    donut_row = Table([[donut, legend]], colWidths=[1.7 * inch, 1.3 * inch])
+    donut_row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+    tx_box = Table([[Paragraph("TRANSACTION OVERVIEW", box_head_style)], [donut_row]], colWidths=[3.0 * inch])
+    tx_box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#0b1330")),
+        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#dddddd")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (0, 0), 6), ("BOTTOMPADDING", (0, 0), (0, 0), 6),
+        ("TOPPADDING", (0, 1), (0, 1), 8), ("BOTTOMPADDING", (0, 1), (0, 1), 8),
+    ]))
+
+    overview_row = Table([[ov_box, tx_box]], colWidths=[3.3 * inch, 3.3 * inch])
+    overview_row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    story.append(overview_row)
+    story.append(Spacer(1, 16))
+
+    # ---- Transaction table, with running Balance column ----
+    cell_style = ParagraphStyle("StmtCell", parent=label_style, fontSize=8.2, leading=10, wordWrap="CJK")
+    bold_cell_style = ParagraphStyle("StmtCellBold", parent=cell_style, fontName="Helvetica-Bold")
+
+    def _cell(text, bold=False):
+        return Paragraph(escape_html(text), bold_cell_style if bold else cell_style)
+
+    rows = [["#", "Date & Time", "Transaction ID", "Description", "Credit", "Debit", "Balance"]]
+    rows.append(["", _cell(start_date or "", True), "", _cell("Opening Balance", True), "", "", _cell(f"{opening_balance:,.2f}", True)])
+    running = opening_balance
+    for i, t in enumerate(txns, start=1):
+        credit = float(t.get("credit") or 0)
+        debit = float(t.get("debit") or 0)
+        running += credit - debit
+        date_time = t.get("date") or ""
+        if t.get("time"):
+            date_time = f"{date_time} {t.get('time')}"
+        rows.append([
+            str(i), _cell(date_time), _cell(t.get("id") or ""), _cell(t.get("description") or ""),
+            f"{credit:,.2f}" if credit else "\u2013",
+            f"{debit:,.2f}" if debit else "\u2013",
+            f"{running:,.2f}",
+        ])
+    rows.append(["", _cell(end_date or "", True), "", _cell("Closing Balance", True), "", "", _cell(f"{running:,.2f}", True)])
+
+    col_widths = [0.28 * inch, 1.05 * inch, 1.05 * inch, 2.1 * inch, 0.72 * inch, 0.72 * inch, 0.85 * inch]
+    table = Table(rows, colWidths=col_widths, repeatRows=1)
+    table_style = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0b1330")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.2),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#f7f7fb")]),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("ALIGN", (4, 0), (6, -1), "RIGHT"),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#e7ebfa")),
+        ("SPAN", (0, 1), (2, 1)),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#e7ebfa")),
+        ("SPAN", (0, -1), (2, -1)),
+    ]
+    table.setStyle(TableStyle(table_style))
+    story.append(table)
+    story.append(Spacer(1, 14))
+
+    story.append(Paragraph(
+        f'<font color="#1b8a4a"><b>Amount in Words:</b></font> {escape_html(_amount_in_words(current_balance))}',
+        ParagraphStyle("StmtWords", parent=label_style, fontSize=9.5)))
+
+    doc.build(story, canvasmaker=_numbered_canvas_factory(
+        "This is a computer generated printout and does not require signature."))
     return buf.getvalue()
+
+
+def _build_receipt_pdf(company_name, logo_path, user, txn):
+    """Payment History row > download icon (Razorpay rows only) -
+    single-transaction receipt matching the reference design."""
+    import io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_RIGHT
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("RcptTitle", parent=styles["Heading1"], fontSize=22, spaceAfter=2)
+    label_style = ParagraphStyle("RcptLabel", parent=styles["Normal"], fontSize=10, leading=15)
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        topMargin=0.6 * inch, bottomMargin=0.95 * inch,
+        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+    )
+    story = []
+
+    if logo_path:
+        try:
+            logo_cell = Image(logo_path, width=1.1 * inch, height=1.1 * inch, kind="proportional")
+        except Exception:  # noqa: BLE001
+            logo_cell = Paragraph(company_name, title_style)
+    else:
+        logo_cell = Paragraph(company_name, title_style)
+    header_table = Table(
+        [[logo_cell, Paragraph("RECEIPT", ParagraphStyle("RcptRight", parent=title_style, alignment=TA_RIGHT))]],
+        colWidths=[3.5 * inch, 3.3 * inch])
+    header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+    story.append(header_table)
+    story.append(Spacer(1, 14))
+
+    full_name = f"{user.get('firstName') or ''} {user.get('lastName') or ''}".strip() or "-"
+    from_lines = [
+        Paragraph("<b>Received From:</b>", ParagraphStyle("RcptFromTag", parent=label_style, textColor=colors.HexColor("#1b8a4a"))),
+        Paragraph(f"<b>{escape_html(full_name)}</b>", ParagraphStyle("RcptFromName", parent=label_style, fontSize=13)),
+        Paragraph(f"{escape_html(user.get('mobile') or '-')}", label_style),
+        Paragraph(f"{escape_html(user.get('email') or '-')}", label_style),
+    ]
+    meta_rows = [
+        ["Receipt No.", ":", "RCP-" + str(txn.get("id") or "")],
+        ["Receipt Date", ":", datetime.date.today().strftime("%d %b %Y")],
+    ]
+    meta_table = Table(meta_rows, colWidths=[1.1 * inch, 0.15 * inch, 1.7 * inch])
+    meta_table.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    top_row = Table([[from_lines, meta_table]], colWidths=[3.9 * inch, 3.0 * inch])
+    top_row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    story.append(top_row)
+    story.append(Spacer(1, 16))
+
+    amount = float(txn.get("credit") or 0)
+    amount_box = Table([[
+        Paragraph(f'<font color="#1b8a4a"><b>RECEIVED AMOUNT</b></font><br/>'
+                  f'<font size="22"><b>{amount:,.2f}</b></font>', label_style),
+        Paragraph('<font color="#1b8a4a"><b>Thank you for your payment.</b></font><br/>'
+                  'We have received your payment successfully.', label_style),
+    ]], colWidths=[3.4 * inch, 3.5 * inch])
+    amount_box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f2f7f3")),
+        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#dddddd")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 14), ("TOPPADDING", (0, 0), (-1, -1), 12),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+    ]))
+    story.append(amount_box)
+    story.append(Spacer(1, 16))
+
+    date_time = txn.get("date") or ""
+    if txn.get("time"):
+        date_time = f"{date_time} {txn.get('time')}"
+    detail_rows = [
+        ["Transaction ID", txn.get("id") or ""],
+        ["Transaction Date & Time", date_time],
+        ["Description", txn.get("description") or ""],
+        ["Amount Received", f"{amount:,.2f}"],
+        ["Amount in Words", _amount_in_words(amount)],
+        ["Payment Method", txn.get("paymentMode") or "Razorpay"],
+    ]
+    cell_style = ParagraphStyle("RcptCell", parent=label_style, fontSize=9.5, wordWrap="CJK")
+    detail_table = Table(
+        [[Paragraph(f"<b>{escape_html(r[0])}</b>", cell_style), Paragraph(escape_html(r[1]), cell_style)] for r in detail_rows],
+        colWidths=[2.2 * inch, 4.6 * inch])
+    detail_table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0b1330")),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
+        ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    story.append(detail_table)
+    story.append(Spacer(1, 16))
+    story.append(Paragraph("If you have any questions, feel free to contact us.",
+                            ParagraphStyle("RcptFooterNote", parent=label_style, alignment=1, fontSize=9,
+                                           textColor=colors.HexColor("#555555"))))
+
+    doc.build(story, canvasmaker=_numbered_canvas_factory(
+        "This is a computer generated printout and does not require signature."))
+    return buf.getvalue()
+
+
+def _amount_in_words(amount):
+    """Indian-numbering (lakh/crore) amount-in-words, e.g. 99671 ->
+    'Ninety Nine Thousand Six Hundred Seventy One Only'. Paise are
+    rounded off - these statements/receipts only ever show whole-rupee
+    style wording, matching the reference design."""
+    ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+            "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
+            "Seventeen", "Eighteen", "Nineteen"]
+    tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+
+    def two_digits(n):
+        if n < 20:
+            return ones[n]
+        return (tens[n // 10] + (" " + ones[n % 10] if n % 10 else "")).strip()
+
+    def three_digits(n):
+        if n >= 100:
+            return (ones[n // 100] + " Hundred" + (" " + two_digits(n % 100) if n % 100 else "")).strip()
+        return two_digits(n)
+
+    n = int(round(abs(amount)))
+    if n == 0:
+        return "Zero Only"
+
+    crore, n = divmod(n, 10000000)
+    lakh, n = divmod(n, 100000)
+    thousand, n = divmod(n, 1000)
+    hundred = n
+
+    parts = []
+    if crore:
+        parts.append(three_digits(crore) + " Crore")
+    if lakh:
+        parts.append(three_digits(lakh) + " Lakh")
+    if thousand:
+        parts.append(three_digits(thousand) + " Thousand")
+    if hundred:
+        parts.append(three_digits(hundred))
+    return " ".join(parts).strip() + " Only"
 
 
 def escape_html(s):
@@ -2030,6 +2441,8 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/lease/download": self._handle_lease_download,
             "/api/translation/download": self._handle_translation_download,
             "/api/payment/invoice-pdf": self._handle_payment_invoice_pdf,
+            "/api/payment/account-statement-pdf": self._handle_payment_account_statement_pdf,
+            "/api/payment/receipt-pdf": self._handle_payment_receipt_pdf,
         }
         if not Handler._routes_checked:
             Handler._routes_checked = True
@@ -4095,6 +4508,121 @@ class Handler(SimpleHTTPRequestHandler):
 
 
         download_name = f"Invoice_{user_id}_{datetime.date.today().isoformat()}.pdf"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/pdf")
+        self.send_header("Content-Length", str(len(pdf_bytes)))
+        self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
+        self.end_headers()
+        self.wfile.write(pdf_bytes)
+
+    def _handle_payment_account_statement_pdf(self, query):
+        """Payment Summary > "Download Account Statement" - the fuller
+        report (account overview box, donut chart, running Balance
+        column per row) matching the reference design shared for this
+        feature. Same date-range filtering as the existing invoice PDF."""
+        if not lease_engine.REPORTLAB_OK:
+            return self._send_json(500, {"error": "PDF library (reportlab) is not installed on the server."})
+
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            return self._send_json(404, {"error": "Account not found."})
+
+        start_date = (query.get("startDate", [""])[0] or "").strip()
+        end_date = (query.get("endDate", [""])[0] or "").strip()
+
+        if db is not None and db.is_enabled():
+            try:
+                txns = db.list_transactions(user_id)
+            except Exception as err:  # noqa: BLE001
+                print(f"[db] account statement: transactions read failed, falling back to JSON: {err}")
+                txns = [r for r in self._read_payment_history_file() if r.get("userId") == user_id]
+        else:
+            txns = [r for r in self._read_payment_history_file() if r.get("userId") == user_id]
+
+        def _sort_key(t):
+            return (str(t.get("date") or ""), str(t.get("time") or ""))
+        txns = sorted(txns, key=_sort_key)
+
+        opening_balance = 0.0
+        in_range_txns = txns
+        if start_date and end_date:
+            before_start = [t for t in txns if str(t.get("date") or "") < start_date]
+            opening_balance = sum(float(t.get("credit") or 0) - float(t.get("debit") or 0) for t in before_start)
+            in_range_txns = [t for t in txns if start_date <= str(t.get("date") or "") <= end_date]
+
+        company = _load_company_info()
+        company_name = company.get("name") or "Lexora"
+        logo_rel = company.get("logo") or ""
+        logo_path = os.path.join(ROOT_DIR, logo_rel) if logo_rel else ""
+        if not os.path.isfile(logo_path):
+            logo_path = ""
+
+        try:
+            pdf_bytes = _build_account_statement_pdf(
+                company_name, logo_path, user, in_range_txns,
+                start_date=start_date, end_date=end_date, opening_balance=opening_balance,
+            )
+        except Exception as err:  # noqa: BLE001
+            return self._send_json(500, {"error": f"Could not build account statement PDF: {err}"})
+
+        download_name = f"Account_Statement_{user_id}_{datetime.date.today().isoformat()}.pdf"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/pdf")
+        self.send_header("Content-Length", str(len(pdf_bytes)))
+        self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
+        self.end_headers()
+        self.wfile.write(pdf_bytes)
+
+    def _handle_payment_receipt_pdf(self, query):
+        """Payment History row > download icon - Razorpay-paid rows
+        only, matching the reference receipt design shared for this
+        feature."""
+        if not lease_engine.REPORTLAB_OK:
+            return self._send_json(500, {"error": "PDF library (reportlab) is not installed on the server."})
+
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        txn_id = (query.get("txnId", [""])[0] or "").strip()
+        if not txn_id:
+            return self._send_json(400, {"error": "txnId is required."})
+
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            return self._send_json(404, {"error": "Account not found."})
+
+        if db is not None and db.is_enabled():
+            try:
+                txns = db.list_transactions(user_id)
+            except Exception as err:  # noqa: BLE001
+                print(f"[db] receipt: transactions read failed, falling back to JSON: {err}")
+                txns = [r for r in self._read_payment_history_file() if r.get("userId") == user_id]
+        else:
+            txns = [r for r in self._read_payment_history_file() if r.get("userId") == user_id]
+
+        txn = next((t for t in txns if str(t.get("id")) == txn_id), None)
+        if not txn:
+            return self._send_json(404, {"error": "That transaction could not be found."})
+        # Receipts only make sense for actual money received via
+        # Razorpay - a wallet-to-wallet adjustment or a service charge
+        # isn't a "payment received" in the sense this receipt implies.
+        if txn.get("paymentType") != "Razorpay":
+            return self._send_json(400, {"error": "A receipt is only available for Razorpay payments."})
+
+        company = _load_company_info()
+        company_name = company.get("name") or "Lexora"
+        logo_rel = company.get("logo") or ""
+        logo_path = os.path.join(ROOT_DIR, logo_rel) if logo_rel else ""
+        if not os.path.isfile(logo_path):
+            logo_path = ""
+
+        try:
+            pdf_bytes = _build_receipt_pdf(company_name, logo_path, user, txn)
+        except Exception as err:  # noqa: BLE001
+            return self._send_json(500, {"error": f"Could not build receipt PDF: {err}"})
+
+        download_name = f"Receipt_{txn_id}.pdf"
         self.send_response(200)
         self.send_header("Content-Type", "application/pdf")
         self.send_header("Content-Length", str(len(pdf_bytes)))
