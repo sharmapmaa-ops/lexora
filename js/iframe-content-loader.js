@@ -36,7 +36,6 @@
     var poll = setInterval(function () {
         tries++;
         var shell = document.getElementById("appShell");
-        var authScreen = document.getElementById("authScreen");
 
         if (shell && shell.style.display !== "none") {
             clearInterval(poll);
@@ -59,12 +58,17 @@
             return;
         }
 
-        // Not logged in (auth screen visible) and this page requires
-        // login - let the shell know so it can show a "please login"
-        // state around the iframe if it wants to.
-        if (authScreen && authScreen.style.display !== "none" && tries > 4) {
-            notifyParent("logged-out");
-        }
+        // NOTE: we deliberately do NOT auto-notify the parent shell of a
+        // "logged-out" state here anymore. Detecting that reliably would
+        // need to distinguish "boot() just hasn't finished its API calls
+        // yet" from "the session is genuinely invalid" - on a slower
+        // network the former can easily take longer than any fixed
+        // timeout, which caused false positives and a login<->dashboard
+        // reload loop on every single navigation. If a session truly
+        // expires, this page will simply show its own embedded login
+        // form (app.js's normal authScreen) inside the content area,
+        // which is safe and always correct, just not a full-shell
+        // redirect.
 
         if (tries >= maxTries) clearInterval(poll);
     }, 150);

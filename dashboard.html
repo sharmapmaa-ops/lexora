@@ -147,13 +147,6 @@
             setTimeout(function () { window.location.replace('login.html'); }, 300);
         }
 
-        // If the session disappears (expired / logged out from within a
-        // content frame), bounce back to the public login shell.
-        window.addEventListener('message', function (e) {
-            if (e.data && e.data.lexoraFrame && e.data.status === 'logged-out') {
-                window.location.replace('login.html');
-            }
-        });
     </script>
 </body>
 </html>
