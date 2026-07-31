@@ -599,6 +599,8 @@
                 const combined = SYSTEM_CONFIG_BASE.concat(dbNames);
                 return combined.filter((v, i) => combined.indexOf(v) === i); // de-dupe
             }
+            window.getSystemConfigs = getSystemConfigs;
+            window.systemConfigProviderId = systemConfigProviderId;
             let currentSystemConfig = 'Desktop';
             let connectionStatus = 'idle'; // 'idle', 'connected', 'disconnected'
 
@@ -4238,6 +4240,7 @@
             function showMessage(title, message, buttons) {
                 renderMessageBox({ title: title, message: message, buttons: buttons || ['OK'] });
             }
+            window.showMessage = showMessage;
 
             window.showSuccess = function(message) {
                 renderMessageBox({
@@ -10781,6 +10784,7 @@
                     return res;
                 });
             }
+            window.authFetch = authFetch;
 
             let authState = {
                 step: 'login',           // login | register | forgot | verify | newPassword

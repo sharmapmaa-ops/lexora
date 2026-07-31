@@ -54,6 +54,44 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
   }
 
+  // Item 14/16 - if this service's Services Catalog row has
+  // systemConfig=Yes, route the finished file through whatever System
+  // Configuration is selected (upload to the browser-managed provider,
+  // or a click-to-download link) instead of firing the browser's
+  // download immediately. Anything without systemConfig keeps the
+  // original direct-download behavior, unchanged.
+  async function smartDownload(id, blob, filename) {
+    const catalogEntry = window.SERVICES_CATALOG && window.SERVICES_CATALOG[id];
+    const hasSystemConfig = !!(catalogEntry && catalogEntry.systemConfig === 'Yes');
+    if (!hasSystemConfig) { downloadBlob(blob, filename); return; }
+
+    const st = state(id);
+    const selected = st.systemConfig || 'Desktop';
+    try {
+      if (window.systemConfigProviderId && window.StorageDestinations) {
+        const providerId = window.systemConfigProviderId(selected);
+        if (providerId) {
+          const result = await StorageDestinations.saveFileToProvider(providerId, blob, filename);
+          if (result.provider !== 'local') {
+            addLog(id, `System > Saved to ${selected}`, 'Success');
+            refresh(id);
+            return;
+          }
+        }
+      }
+    } catch (err) {
+      addLog(id, `System > Could not save to ${selected} - ${err.message || err}`, 'Failed');
+    }
+    // Desktop (or a provider that wasn't actually configured) - a
+    // click-to-download link rather than an immediate auto-download.
+    const url = URL.createObjectURL(blob);
+    if (window.showDownloadLinkModal) {
+      window.showDownloadLinkModal(filename, url);
+    } else {
+      downloadBlob(blob, filename);
+    }
+  }
+
   // ── rendering ──────────────────────────────────────────────────────
   // Deliberately mirrors buildServiceUploadHTML() in app.js class-for-class
   // (service-upload-layout / service-card / drop-zone / file-list-card /
@@ -111,6 +149,90 @@
     }).join('');
   }
 
+  // Item 14 - shows only when this service's Services Catalog row has
+  // systemConfig=Yes. Mirrors app.js's Lease Abstraction implementation
+  // but keeps state per-service (state(id).systemConfig) instead of one
+  // shared variable, since ServiceRunner covers many services at once.
+  function _systemConfigHtml(id, st) {
+    const catalogEntry = window.SERVICES_CATALOG && window.SERVICES_CATALOG[id];
+    if (!catalogEntry || catalogEntry.systemConfig !== 'Yes') return '';
+    if (!st.systemConfig) st.systemConfig = 'Desktop';
+    const options = (window.getSystemConfigs ? window.getSystemConfigs() : ['Desktop']);
+    const optionsHtml = options.map(function (name) {
+      return `<option value="${esc(name)}" ${name === st.systemConfig ? 'selected' : ''}>${esc(name)}</option>`;
+    }).join('');
+    const statusHtml = st.connectionStatus === 'connected'
+      ? '<span class="connection-status connected">\u25cf Connected</span>'
+      : (st.connectionStatus === 'disconnected' ? '<span class="connection-status disconnected">\u25cf Not Connected</span>' : '');
+    return `
+      <div class="setup-group">
+        <label>System Configuration</label>
+        <div class="system-config-row">
+          <select id="srSysConfig_${id}" onchange="ServiceRunner.verifyConnection('${id}')">
+            ${optionsHtml}
+          </select>
+          <span id="srSysConfigStatus_${id}">${statusHtml}</span>
+        </div>
+      </div>`;
+  }
+
+  function verifyConnection(id) {
+    const select = document.getElementById('srSysConfig_' + id);
+    if (!select) return;
+    const selected = select.value;
+    const st = state(id);
+
+    if (selected === 'Desktop') {
+      st.systemConfig = 'Desktop';
+      st.connectionStatus = 'connected';
+      refresh(id);
+      return;
+    }
+
+    const providerId = window.systemConfigProviderId ? window.systemConfigProviderId(selected) : null;
+    if (providerId && window.StorageDestinations) {
+      StorageDestinations.openConfig(providerId, null);
+      const check = setInterval(function () {
+        if (document.getElementById('storageConfigOverlay')) return; // still open
+        clearInterval(check);
+        if (StorageDestinations.isConfigured(providerId)) {
+          st.systemConfig = selected;
+          st.connectionStatus = 'connected';
+        } else {
+          st.systemConfig = 'Desktop';
+          st.connectionStatus = 'idle';
+          select.value = 'Desktop';
+        }
+        refresh(id);
+      }, 400);
+      return;
+    }
+
+    // Sharefile/Sharepoint - same server-managed OAuth check app.js uses.
+    (async function () {
+      try {
+        const statusRes = await window.authFetch(`/api/integrations/status?provider=${selected.toLowerCase()}`);
+        const status = await statusRes.json();
+        if (!status.configured) {
+          st.systemConfig = 'Desktop';
+          st.connectionStatus = 'disconnected';
+          select.value = 'Desktop';
+          refresh(id);
+          if (window.showMessage) window.showMessage('⚙️ Not Set Up Yet', `${selected} isn't connected yet - ask your Developer to register it first. Switched back to Desktop for now.`, ['OK']);
+          return;
+        }
+        window.open(status.authUrl, '_blank', 'width=520,height=640');
+        select.value = 'Desktop';
+        st.systemConfig = 'Desktop';
+        refresh(id);
+      } catch (err) {
+        select.value = 'Desktop';
+        st.systemConfig = 'Desktop';
+        refresh(id);
+      }
+    })();
+  }
+
   function render(id) {
     const svc = SERVICES[id];
     if (!svc) return '<div class="content-section"><p>This service is not available.</p></div>';
@@ -149,6 +271,7 @@
           <div class="service-card">
             <h3>⚙️ Setup</h3>
             <div class="card-body">
+              ${_systemConfigHtml(id, st)}
               <div id="srSetup_${id}">${setup}</div>
               <div class="setup-group" style="margin-top:8px;">
                 <div class="process-controls">
@@ -332,7 +455,7 @@
 
     const ctx = {
       log: function (msg, status) { addLog(id, msg, status); refresh(id); },
-      download: downloadBlob,
+      download: function (blob, filename) { return smartDownload(id, blob, filename); },
       shouldStop: function () { return st.stopped; }
     };
 
@@ -379,7 +502,7 @@
     refresh(id);
     const ctx = {
       log: function (msg, status) { addLog(id, msg, status); refresh(id); },
-      download: downloadBlob,
+      download: function (blob, filename) { return smartDownload(id, blob, filename); },
       shouldStop: function () { return st.stopped; }
     };
     try {
@@ -426,11 +549,13 @@
     onDrop: onDrop,
     onDragOver: onDragOver,
     onDragLeave: onDragLeave,
+    verifyConnection: verifyConnection,
     toggleSelect: toggleSelect,
     toggleAll: toggleAll,
     clear: clear,
     start: start,
     startBatch: startBatch,
-    download: downloadBlob
+    download: downloadBlob,
+    smartDownload: smartDownload
   };
 })();

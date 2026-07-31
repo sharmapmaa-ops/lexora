@@ -360,7 +360,7 @@
       } catch (e) { /* field type we can't set - skip it rather than abort */ }
     });
     const bytes = await doc.save();
-    ServiceRunner.download(new Blob([bytes], { type: 'application/pdf' }), `${stem(formDoc.name)}_filled.pdf`);
+    ServiceRunner.smartDownload('pdf-form-filler', new Blob([bytes], { type: 'application/pdf' }), `${stem(formDoc.name)}_filled.pdf`);
     const st = ServiceRunner.state('pdf-form-filler');
     st.log.unshift({ time: new Date().toLocaleString(), activity: `Filled ${filled} field(s) > ${stem(formDoc.name)}_filled.pdf`, status: 'Success' });
     ServiceRunner.refresh('pdf-form-filler');
