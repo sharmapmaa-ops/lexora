@@ -2562,7 +2562,25 @@ class Handler(SimpleHTTPRequestHandler):
         # intentionally left to that layer, since this process itself
         # doesn't know whether it's actually being reached over https.
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
+        # The dashboard/login shells embed a handful of this app's own
+        # pages in an <iframe> (e.g. dashboard.html -> payment-content.html)
+        # - those specific pages need SAMEORIGIN so the browser will render
+        # them inside that iframe. Everything else keeps the stricter DENY,
+        # since third-party framing is still never wanted.
+        _frame_path = urlparse(self.path).path
+        _framed_pages = (
+            "/login.html", "/dashboard.html",
+            "/login-content.html", "/dashboard-content.html",
+            "/services-content.html", "/plans-offers-content.html",
+            "/payment-content.html", "/contact-us-content.html",
+            "/profile-content.html", "/api-documentation-content.html",
+            "/support-content.html", "/notification-content.html",
+            "/admin-overview-content.html", "/admin-content.html",
+        )
+        if _frame_path in _framed_pages:
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
+        else:
+            self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
 
         # No caching for the app's own static files - CSS/JS/HTML edits
