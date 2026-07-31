@@ -293,7 +293,7 @@
                   layout kept - text sits in positioned boxes over the page background.
                 </div>
               </div>
-              ${window.StorageDestinations ? StorageDestinations.renderSelectorHtml('ocrDestination') : ''}
+
               <div class="setup-group" style="margin-top:8px;">
                 <div class="process-controls">
                   <button class="process-btn start-btn" ${STATE.running || !STATE.files.length ? 'disabled' : ''}

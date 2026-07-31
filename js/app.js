@@ -45,11 +45,11 @@
                         "subItems": [
                             {
                                 "id": "paid-services",
-                                "label": "Paid Services"
+                                "label": "💼 Paid Services"
                             },
                             {
                                 "id": "other-services",
-                                "label": "Free Services"
+                                "label": "🧰 Free Services"
                             }
                         ]
                     },
@@ -252,6 +252,11 @@
             // breaks anything.
             let SERVICES_CATALOG = {};
             window.SERVICES_CATALOG = SERVICES_CATALOG;
+            // Item 15 - admin-manageable "System Configuration" systems
+            // list (Desktop is always available; everything else comes
+            // from the doc_system_configs table, fetched at login).
+            let SYSTEM_CONFIGS_DB = [];
+            window.SYSTEM_CONFIGS_DB = SYSTEM_CONFIGS_DB;
             let planHistory = [];
 
             // Item 3 - looks up the current user's assigned plan (users.json
@@ -568,7 +573,32 @@
             // System Configuration options are fixed (no system-configs.json
             // anymore) - the *default* selection comes from the logged-in
             // user's "sysConfig" field in users.json instead.
-            const SYSTEM_CONFIGS = ['Desktop', 'Sharefile', 'Sharepoint'];
+            // Desktop/Sharefile/Sharepoint are server-managed (a real OAuth
+            // app registered in .env - see verifySystemConnection()). The
+            // rest are browser-managed via js/storage-destinations.js (the
+            // person pastes their own token, nothing registered server-side).
+            const SYSTEM_CONFIG_BASE = ['Desktop', 'Sharefile', 'Sharepoint'];
+            // Item 16 - a name -> browser-provider mapping, built both
+            // from the fixed browser-storage providers AND by loosely
+            // matching admin-entered System Configuration names (so
+            // "Google Drive", "google drive", "GoogleDrive" etc. all
+            // resolve to the same provider) - this is what decides
+            // whether a given System Configuration entry is browser-
+            // managed (credential-paste) or server-managed (Sharefile/
+            // Sharepoint's real OAuth apps) when a service actually
+            // uses it.
+            const KNOWN_BROWSER_PROVIDERS = {
+                'google drive': 'google-drive', dropbox: 'dropbox', box: 'box',
+                onedrive: 'onedrive', 'one drive': 'onedrive', webdav: 'webdav', sftp: 'sftp',
+            };
+            function systemConfigProviderId(name) {
+                return KNOWN_BROWSER_PROVIDERS[String(name || '').trim().toLowerCase()] || null;
+            }
+            function getSystemConfigs() {
+                const dbNames = (window.SYSTEM_CONFIGS_DB || []).map(s => s.name).filter(Boolean);
+                const combined = SYSTEM_CONFIG_BASE.concat(dbNames);
+                return combined.filter((v, i) => combined.indexOf(v) === i); // de-dupe
+            }
             let currentSystemConfig = 'Desktop';
             let connectionStatus = 'idle'; // 'idle', 'connected', 'disconnected'
 
@@ -845,7 +875,7 @@
                 `;
 
                 // System config
-                let systemOptions = SYSTEM_CONFIGS.map(config => `
+                let systemOptions = getSystemConfigs().map(config => `
                     <option value="${config}" ${config === currentSystemConfig ? 'selected' : ''}>${config}</option>
                 `).join('');
 
@@ -898,19 +928,21 @@
                                 <h3>⚙️ Setup</h3>
                                 <div class="card-body">
                                     ${outputFieldHTML}
-                                    ${window.StorageDestinations ? StorageDestinations.renderSelectorHtml(serviceId + 'Destination') : ''}
+
+                                    ${(SERVICES_CATALOG[serviceId] && SERVICES_CATALOG[serviceId].systemConfig === 'Yes') ? `
+                                    <div class="setup-group">
+                                        <label>System Configuration</label>
+                                        <div class="system-config-row">
+                                            <select id="systemConfigSelect" onchange="verifySystemConnection()">
+                                                ${systemOptions}
+                                            </select>
+                                            <span id="connectionStatusWrap">${buildConnectionStatusHTML()}</span>
+                                        </div>
+                                    </div>
+                                    ` : ``}
 
                                     ${serviceId === 'lease-abstraction' ? `
                                     <div class="setup-row-split">
-                                        <div class="setup-group">
-                                            <label>System Configuration</label>
-                                            <div class="system-config-row">
-                                                <select id="systemConfigSelect" onchange="verifySystemConnection()">
-                                                    ${systemOptions}
-                                                </select>
-                                                <span id="connectionStatusWrap">${buildConnectionStatusHTML()}</span>
-                                            </div>
-                                        </div>
                                         <div class="setup-group">
                                             <label>Extraction Rules</label>
                                             <button class="filter-btn" onclick="openRulesPopup()">📐 Update Rules</button>
@@ -2623,30 +2655,58 @@
             };
 
             // Bug 4: translation output browser-only download (session blob)
+            // Item 16 - services with System Configuration show a link to
+            // click when ready, instead of the browser's download firing
+            // immediately. showMessage() can't embed a real link (it
+            // renders via textContent, not innerHTML), so this is a
+            // small dedicated modal instead.
+            window.showDownloadLinkModal = function(filename, blobUrl) {
+                const existing = document.getElementById('downloadLinkOverlay');
+                if (existing) existing.remove();
+                const html = `
+                    <div class="admin-modal-overlay" id="downloadLinkOverlay">
+                        <div class="admin-modal-card message-popup-card" style="max-width:420px;text-align:center;">
+                            <button class="admin-modal-close" onclick="document.getElementById('downloadLinkOverlay').remove()">✕</button>
+                            <h3 class="admin-modal-title">✅ File Ready</h3>
+                            <p style="font-size:0.86rem;color:rgba(0,0,0,0.6);margin:0 0 16px;">Your file has finished processing.</p>
+                            <a href="${blobUrl}" download="${escapeHtml(filename)}"
+                               onclick="setTimeout(() => document.getElementById('downloadLinkOverlay') && document.getElementById('downloadLinkOverlay').remove(), 200)"
+                               style="display:inline-block;padding:10px 22px;background:#1257f5;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;font-size:0.9rem;">
+                                ⬇️ Download ${escapeHtml(filename)}
+                            </a>
+                        </div>
+                    </div>`;
+                document.body.insertAdjacentHTML('beforeend', html);
+            };
+
             window.downloadSessionBlob = async function(fileId) {
                 const entry = translationBlobStore[fileId];
                 if (!entry || !entry.blob) {
                     showWarning('This file is only available during the session it was processed in. Please run it again to download.');
                     return;
                 }
-                // Which service this file belongs to, so the right
-                // destination selector gets checked (Translation and
-                // Lease Abstraction each have their own).
                 const isLeaseFile = leaseFiles.some(f => f.id === fileId);
-                const destInputId = (isLeaseFile ? 'lease-abstraction' : 'translation') + 'Destination';
+                const svcId = isLeaseFile ? 'lease-abstraction' : 'translation';
+                const hasSystemConfig = SERVICES_CATALOG[svcId] && SERVICES_CATALOG[svcId].systemConfig === 'Yes';
                 try {
-                    if (window.StorageDestinations) {
-                        const result = await StorageDestinations.saveFile(destInputId, entry.blob, entry.name || 'Translation.docx');
-                        if (result.provider !== 'local') {
-                            const providerLabel = window.StorageDestinations.labelFor(result.provider);
-                            showMessage('✅ Saved', `${entry.name} was saved to ${providerLabel}.`, ['OK']);
-                            return;
+                    if (hasSystemConfig && window.StorageDestinations) {
+                        const providerId = systemConfigProviderId(currentSystemConfig);
+                        if (providerId) {
+                            const result = await StorageDestinations.saveFileToProvider(providerId, entry.blob, entry.name || 'Lease_Abstraction.docx');
+                            if (result.provider !== 'local') {
+                                showMessage('✅ Saved', `${entry.name} was saved to ${currentSystemConfig}.`, ['OK']);
+                                return;
+                            }
                         }
                     }
                 } catch (err) {
                     showWarning((err.message || 'Could not save to that destination') + ' - downloading locally instead.');
                 }
                 const url = URL.createObjectURL(entry.blob);
+                if (hasSystemConfig) {
+                    showDownloadLinkModal(entry.name || 'Lease_Abstraction.docx', url);
+                    return;
+                }
                 const a = document.createElement('a');
                 a.href = url;
                 a.download = entry.name || 'Translation.docx';
@@ -2811,6 +2871,31 @@
                     connectionStatus = 'connected';
                     currentSystemConfig = 'Desktop';
                     refreshServicePage(activeSubItemId || 'lease-abstraction');
+                    return;
+                }
+
+                // Browser-managed providers (Google Drive, Dropbox, Box,
+                // OneDrive, WebDAV, SFTP) - the person pastes their own
+                // token/credentials, nothing registered server-side.
+                const providerId = systemConfigProviderId(selected);
+                if (providerId) {
+                    if (!window.StorageDestinations) { showWarning('Storage destinations are not available right now.'); select.value = 'Desktop'; return; }
+                    StorageDestinations.openConfig(providerId, null);
+                    // openConfig() shows its own modal; reflect the outcome
+                    // once the person saves or cancels it.
+                    const check = setInterval(() => {
+                        if (document.getElementById('storageConfigOverlay')) return; // still open
+                        clearInterval(check);
+                        if (StorageDestinations.isConfigured(providerId)) {
+                            connectionStatus = 'connected';
+                            currentSystemConfig = selected;
+                        } else {
+                            connectionStatus = 'idle';
+                            currentSystemConfig = 'Desktop';
+                            select.value = 'Desktop';
+                        }
+                        refreshServicePage(activeSubItemId || 'lease-abstraction');
+                    }, 400);
                     return;
                 }
 
@@ -3153,11 +3238,15 @@
 
             // "H:MM AM/PM" (most rows) ya "HH:MM" (kuch purani rows) - dono
             // ko ek hi 24-hour "MM/DD/YYYY HH:MM" me badal deta hai.
-            function formatTxnDateTime(dateStr, timeStr) {
+            function formatTxnDate(dateStr) {
                 const d = new Date(dateStr);
                 const mm = String(d.getMonth() + 1).padStart(2, '0');
                 const dd = String(d.getDate()).padStart(2, '0');
                 const yyyy = d.getFullYear();
+                return `${mm}/${dd}/${yyyy}`;
+            }
+
+            function formatTxnTime(timeStr) {
                 let hh = '00', min = '00';
                 const m = String(timeStr || '').trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
                 if (m) {
@@ -3170,11 +3259,15 @@
                     hh = String(h).padStart(2, '0');
                     min = m[2];
                 }
-                return `${mm}/${dd}/${yyyy} ${hh}:${min}`;
+                return `${hh}:${min}`;
+            }
+
+            function formatTxnDateTime(dateStr, timeStr) {
+                return `${formatTxnDate(dateStr)} ${formatTxnTime(timeStr)}`;
             }
 
             function renderHistoryRows(tbody, list, includeCheckbox) {
-                const colCount = includeCheckbox ? 9 : 8;
+                const colCount = includeCheckbox ? 11 : 10;
                 if (list.length === 0) {
                     tbody.innerHTML =
                         `<tr><td colspan="${colCount}" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions found.</td></tr>`;
@@ -3184,7 +3277,6 @@
                 const sortedHistory = [...list].sort((a, b) => new Date(b.date) - new Date(a.date));
                 sortedHistory.forEach((transaction) => {
                     const tr = document.createElement('tr');
-                    const dateTimeText = formatTxnDateTime(transaction.date, transaction.time);
                     // Item 3 - a balance-add sitting in pending_approval (or
                     // cancelled) shows a clear status prefix on its
                     // description, everywhere this row shape is used
@@ -3198,21 +3290,23 @@
                     } else if (transaction.status === 'failed') {
                         descriptionText = `<span class="txn-status-tag cancelled">Failed</span> : ${descriptionText}`;
                     }
-                    const receiptIcon = transaction.paymentType === 'Razorpay'
-                        ? `<a onclick="downloadTxnReceiptPdf('${transaction.id}')" title="Download receipt" style="cursor:pointer;color:#1257f5;margin-left:6px;display:inline-flex;vertical-align:middle;">
-                               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
+                    const receiptIcon = transaction.credit > 0
+                        ? `<a onclick="downloadTxnReceiptPdf('${transaction.id}')" title="Download receipt" style="cursor:pointer;color:#1257f5;display:inline-flex;">
+                               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
                            </a>`
                         : '';
                     tr.innerHTML = `
                         ${includeCheckbox ? `<td><input type="checkbox" class="txn-select-checkbox" data-txn-id="${transaction.id}" ${selectedTransactionIds.has(transaction.id) ? 'checked' : ''} onchange="toggleSelectTransaction('${transaction.id}', this.checked)" /></td>` : ''}
-                        <td>${dateTimeText}</td>
-                        <td><span style="font-weight:500;color:darkblue;">${transaction.id}</span>${receiptIcon}</td>
-                        <td>${escapeHtml(transaction.userId || '')}</td>
+                        <td>${receiptIcon}</td>
+                        <td>${formatTxnDate(transaction.date)}</td>
+                        <td>${formatTxnTime(transaction.time)}</td>
+                        <td><span style="font-weight:500;color:darkblue;">${transaction.id}</span></td>
                         <td>${transaction.paymentMode}</td>
                         <td>${descriptionText}</td>
-                        <td class="credit">${transaction.credit > 0 ? formatMoney(transaction.credit) : '-'}</td>
-                        <td class="debit">${transaction.debit > 0 ? formatMoney(transaction.debit) : '-'}</td>
+                        <td class="credit" style="text-align:right;">${transaction.credit > 0 ? formatMoney(transaction.credit) : '-'}</td>
+                        <td class="debit" style="text-align:right;">${transaction.debit > 0 ? formatMoney(transaction.debit) : '-'}</td>
                         <td>${txnStatusPill(transaction.status)}</td>
+                        <td>${escapeHtml(transaction.userId || '')}</td>
                     `;
                     tbody.appendChild(tr);
                 });
@@ -3460,14 +3554,16 @@
                                     <thead>
                                         <tr>
                                             <th style="width:36px;"><input type="checkbox" id="historySelectAll" onchange="toggleSelectAllTransactions(this.checked)" /></th>
-                                            <th>Date &amp; Time</th>
+                                            <th>Download</th>
+                                            <th>Date</th>
+                                            <th>Time</th>
                                             <th>Transaction ID</th>
-                                            <th>User ID</th>
                                             <th>Payment Mode</th>
                                             <th>Description</th>
-                                            <th>Credit</th>
-                                            <th>Debit</th>
+                                            <th style="text-align:right;">Credit</th>
+                                            <th style="text-align:right;">Debit</th>
                                             <th>Status</th>
+                                            <th>User ID</th>
                                         </tr>
                                     </thead>
                                 </table>
@@ -6961,6 +7057,23 @@
                         </option>`).join('');
 
                     host.innerHTML = `
+                        <div class="db-edit-table-actions" id="dbTableSelectRow">
+                            <div class="db-table-select-row">
+                                <label for="dbTableSelect">Table</label>
+                                <select id="dbTableSelect" class="db-table-select" onchange="switchDbTable(this.value)">
+                                    ${tableOptions}
+                                </select>
+                            </div>
+                            <button class="admin-btn" id="dbFilterToggleBtn" onclick="dbToggleFilterRow()">\u{1F50D} Filter</button>
+                            <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${escapeHtml(name)}')">+ Add Row</button>
+                            <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Row(s)</button>
+                            <button class="admin-btn admin-btn-save" onclick="dbTableSaveAll('${escapeHtml(name)}')">\u{1F4BE} Save</button>
+                            <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
+                            <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
+                        </div>
+                        <div class="history-pager">
+                            ${_dbPaginationHtml(name, dbTablePage, dbTablePerPage, allRows.length)}
+                        </div>
                         <div class="db-edit-table-wrapper">
                         <table class="admin-json-table db-txn-table db-edit-table">
                             <thead>
@@ -6982,24 +7095,7 @@
                             </tbody>
                         </table>
                         </div>
-                        <div class="db-table-caption">${allRows.length} row(s)</div>
-                        <div class="db-edit-table-actions db-edit-table-actions-bottom">
-                            <div class="db-table-select-row">
-                                <label for="dbTableSelect">Table</label>
-                                <select id="dbTableSelect" class="db-table-select" onchange="switchDbTable(this.value)">
-                                    ${tableOptions}
-                                </select>
-                            </div>
-                            <button class="admin-btn" id="dbFilterToggleBtn" onclick="dbToggleFilterRow()">\u{1F50D} Filter</button>
-                            <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${escapeHtml(name)}')">+ Add Row</button>
-                            <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Row(s)</button>
-                            <button class="admin-btn admin-btn-save" onclick="dbTableSaveAll('${escapeHtml(name)}')">\u{1F4BE} Save</button>
-                            <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
-                            <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
-                        </div>
-                        <div class="history-pager">
-                            ${_dbPaginationHtml(name, dbTablePage, dbTablePerPage, allRows.length)}
-                        </div>`;
+                        <div class="db-table-caption">${allRows.length} row(s)</div>`;
                     host.dataset.rows = JSON.stringify(allRows);
                     host.dataset.pageStart = String(pageStart);
                 } catch (err) {
@@ -7148,6 +7244,23 @@
                     </option>`).join('');
 
                 host.innerHTML = `
+                    <div class="db-edit-table-actions">
+                        <div class="db-table-select-row">
+                            <label for="dbTableSelect">Table</label>
+                            <select id="dbTableSelect" class="db-table-select" onchange="switchDbTable(this.value)">
+                                ${tableOptions}
+                            </select>
+                        </div>
+                        <button class="admin-btn" id="dbFilterToggleBtn" onclick="dbToggleFilterRow()">\u{1F50D} Filter</button>
+                        <button class="admin-btn admin-btn-add-folder" onclick="addBlankRuleRow()">+ Add Row</button>
+                        <button class="admin-btn admin-btn-delete" onclick="deleteSelectedRuleRows()">\u{1F5D1} Delete Row(s)</button>
+                        <button class="admin-btn admin-btn-save" onclick="saveAllRuleRows()">\u{1F4BE} Save</button>
+                        <button class="admin-btn admin-btn-download" onclick="downloadRulesCsv()">\u2B07\uFE0F Download</button>
+                        <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
+                    </div>
+                    <div class="history-pager">
+                        ${_dbPaginationHtml('cfg_rules', dbRulesPage, dbTablePerPage, allRows.length)}
+                    </div>
                     <div class="db-edit-table-wrapper">
                     <table class="admin-json-table db-txn-table db-edit-table">
                         <thead>
@@ -7169,24 +7282,7 @@
                         </tbody>
                     </table>
                     </div>
-                    <div class="db-table-caption">${allRows.length} rule(s) - ${allRows.filter(r => r._editable).length} approved (editable), ${allRows.filter(r => !r._editable).length} pending. Approve/reject from the Lease Abstraction rules review screen.</div>
-                    <div class="db-edit-table-actions db-edit-table-actions-bottom">
-                        <div class="db-table-select-row">
-                            <label for="dbTableSelect">Table</label>
-                            <select id="dbTableSelect" class="db-table-select" onchange="switchDbTable(this.value)">
-                                ${tableOptions}
-                            </select>
-                        </div>
-                        <button class="admin-btn" id="dbFilterToggleBtn" onclick="dbToggleFilterRow()">\u{1F50D} Filter</button>
-                        <button class="admin-btn admin-btn-add-folder" onclick="addBlankRuleRow()">+ Add Row</button>
-                        <button class="admin-btn admin-btn-delete" onclick="deleteSelectedRuleRows()">\u{1F5D1} Delete Row(s)</button>
-                        <button class="admin-btn admin-btn-save" onclick="saveAllRuleRows()">\u{1F4BE} Save</button>
-                        <button class="admin-btn admin-btn-download" onclick="downloadRulesCsv()">\u2B07\uFE0F Download</button>
-                        <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
-                    </div>
-                    <div class="history-pager">
-                        ${_dbPaginationHtml('cfg_rules', dbRulesPage, dbTablePerPage, allRows.length)}
-                    </div>`;
+                    <div class="db-table-caption">${allRows.length} rule(s) - ${allRows.filter(r => r._editable).length} approved (editable), ${allRows.filter(r => !r._editable).length} pending. Approve/reject from the Lease Abstraction rules review screen.</div>`;
             }
 
             window.addBlankRuleRow = async function() {
@@ -7793,6 +7889,32 @@
             // and the fixed set of paid ones) and asks the backend to add
             // any not already a row in the Services Catalog - existing
             // rows (possibly already edited by an Admin) are left alone.
+            window.seedSystemConfigs = async function() {
+                const defaults = ['Google Drive', 'Dropbox', 'Box', 'OneDrive', 'WebDAV', 'SFTP'];
+                let added = 0;
+                for (const name of defaults) {
+                    try {
+                        const res = await authFetch('/api/admin/db-table-insert', {
+                            method: 'POST',
+                            body: JSON.stringify({ table: 'doc_system_configs', values: { id: name.toLowerCase().replace(/\s+/g, '-'), name: name } })
+                        });
+                        if (res.ok) added++;
+                    } catch (e) { /* likely already exists - skip */ }
+                }
+                showMessage('✅ Seeded', `Added ${added} default system(s) (skipped any that already existed).`, ['OK']);
+                await refreshSystemConfigs();
+                const host = document.getElementById('dbActiveTableBody');
+                if (host) dbTableLoad('doc_system_configs');
+            };
+
+            window.refreshSystemConfigs = async function() {
+                try {
+                    const rows = await fetchJSON('/api/data/system-configs');
+                    SYSTEM_CONFIGS_DB = rows || [];
+                    window.SYSTEM_CONFIGS_DB = SYSTEM_CONFIGS_DB;
+                } catch (e) { /* keep whatever was already loaded */ }
+            };
+
             window.seedServicesCatalog = async function() {
                 const services = [];
                 const nativeSvcs = (window.FreeServices && FreeServices.nativePaidServices) || [];
@@ -10547,7 +10669,8 @@
                     notificationsData,
                     plansData,
                     planHistoryData,
-                    servicesCatalogData
+                    servicesCatalogData,
+                    systemConfigsData
                 ] = await Promise.all([
                     fetchJSON('/api/data/payment-methods'),
                     // Postgres chalu ho to ye route DB se deta hai,
@@ -10565,13 +10688,16 @@
                     fetchJSON('/api/data/notifications'),
                     fetchJSON('/api/data/plans'),
                     fetchJSON('/api/data/plan-history'),
-                    fetchJSON('/api/data/services-catalog').catch(() => [])
+                    fetchJSON('/api/data/services-catalog').catch(() => []),
+                    fetchJSON('/api/data/system-configs').catch(() => [])
                 ]);
                 PLANS_DATA = plansData || [];
                 planHistory = planHistoryData || [];
                 SERVICES_CATALOG = {};
                 (servicesCatalogData || []).forEach(function (s) { if (s && s.id) SERVICES_CATALOG[s.id] = s; });
                 window.SERVICES_CATALOG = SERVICES_CATALOG;
+                SYSTEM_CONFIGS_DB = systemConfigsData || [];
+                window.SYSTEM_CONFIGS_DB = SYSTEM_CONFIGS_DB;
 
                 paymentMethods = paymentMethodsData;
                 paymentHistory = paymentHistoryData;

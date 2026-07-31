@@ -132,6 +132,9 @@
             <h3 class="card-head-row"><span>📤 Upload File(s)</span>${backBtn}</h3>
             <div class="card-body">
               <div class="drop-zone" onclick="${st.running ? 'void(0)' : `document.getElementById('srIn_${id}').click()`}"
+                   ondragover="ServiceRunner.onDragOver(event)"
+                   ondragleave="ServiceRunner.onDragLeave(event)"
+                   ondrop="ServiceRunner.onDrop('${id}', event)"
                    style="${st.running ? 'opacity:0.5;pointer-events:none;' : ''}">
                 <div class="drop-icon">📤</div>
                 <div class="drop-text">Drag &amp; drop files here</div>
@@ -266,6 +269,33 @@
     refresh(id);
   }
 
+  function onDrop(id, ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const zone = ev.currentTarget;
+    if (zone) zone.classList.remove('dragover');
+    const st = state(id);
+    if (st.running) return;
+    const dropped = Array.from((ev.dataTransfer && ev.dataTransfer.files) || []);
+    if (!dropped.length) return;
+    dropped.forEach(function (f) {
+      st.files.push({ uid: st.nextId++, file: f, selected: true, status: 'Pending' });
+    });
+    refresh(id);
+  }
+
+  function onDragOver(ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (ev.currentTarget) ev.currentTarget.classList.add('dragover');
+  }
+
+  function onDragLeave(ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (ev.currentTarget) ev.currentTarget.classList.remove('dragover');
+  }
+
   function toggleAll(id, checked) {
     state(id).files.forEach(function (f) { f.selected = !!checked; });
     refresh(id);
@@ -393,6 +423,9 @@
     has: function (id) { return Object.prototype.hasOwnProperty.call(SERVICES, id); },
     state: state,
     onPick: onPick,
+    onDrop: onDrop,
+    onDragOver: onDragOver,
+    onDragLeave: onDragLeave,
     toggleSelect: toggleSelect,
     toggleAll: toggleAll,
     clear: clear,

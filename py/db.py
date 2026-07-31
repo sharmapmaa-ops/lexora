@@ -801,6 +801,12 @@ DOCUMENT_RESOURCES = (
     # falls back to the old hardcoded classification for any service not
     # yet present here, so an empty/partial table never hides a service.
     "services-catalog",
+    # System Configurations (item 15) - the list of storage systems
+    # (Dropbox, Google Drive, ...) offered in any service's "System
+    # Configuration" dropdown, admin-manageable instead of a hardcoded
+    # list. The dropdown itself only shows on a service at all when
+    # that service's Services Catalog row has systemConfig=Yes.
+    "system-configs",
 )
 
 DB_BACKED_RESOURCES = ("payment-history", "notifications") + DOCUMENT_RESOURCES
@@ -963,15 +969,16 @@ VIRTUAL_TABLES = {
     "doc_services_catalog": {
         "kind": "document",
         "resource": "services-catalog",
-        "fields": ["id", "name", "type", "billingUnit", "apiAccess", "visibility", "image"],
+        "fields": ["id", "name", "type", "billingUnit", "apiAccess", "visibility", "systemConfig", "image"],
         "types": {},
         "jsonb_defaults": {},
-        "field_defaults": {"type": "Free", "billingUnit": "document", "apiAccess": "No", "visibility": "Visible"},
+        "field_defaults": {"type": "Free", "billingUnit": "document", "apiAccess": "No", "visibility": "Visible", "systemConfig": "No"},
         "select_options": {
             "type": ["Paid", "Free"],
             "billingUnit": [["page", "Per Page"], ["document", "Per Document"], ["process", "Per Process"]],
             "apiAccess": ["Yes", "No"],
             "visibility": [["Visible", "Unhide"], ["Hidden", "Hide"]],
+            "systemConfig": ["Yes", "No"],
         },
         # 'id' rename allow nahi - baaki app isi id se service ko
         # dhoondhta/render karta hai (catalogue placement, billing
@@ -979,6 +986,16 @@ VIRTUAL_TABLES = {
         # IS allowed (item 2 ka poora point yehi hai) - display label
         # frontend me is field se override hoti hai, id se nahi.
         "readonly_fields": {"id"},
+    },
+    "doc_system_configs": {
+        "kind": "document",
+        "resource": "system-configs",
+        "fields": ["id", "name"],
+        "types": {},
+        "jsonb_defaults": {},
+        "field_defaults": {},
+        "select_options": {},
+        "readonly_fields": set(),
     },
 }
 
@@ -999,7 +1016,8 @@ VIRTUAL_TABLE_LABELS = {
                                  "date": "Created At", "updatedAt": "Updated At"},
     "doc_services_catalog": {"id": "Service ID", "name": "Name", "type": "Paid/Free",
                               "billingUnit": "Paid Billing Unit", "apiAccess": "API Access",
-                              "visibility": "Visibility", "image": "Image"},
+                              "visibility": "Visibility", "systemConfig": "System Configuration", "image": "Image"},
+    "doc_system_configs": {"id": "ID", "name": "System Name"},
 }
 
 

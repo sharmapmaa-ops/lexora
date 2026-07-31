@@ -762,6 +762,9 @@ ALLOWED_RESOURCES = {
     # Services Catalog (Plans & Offers admin > Services table) - lets
     # Admin move a service between Paid/Free and set its billing unit.
     "services-catalog",
+    # System Configurations (item 15) - admin-manageable storage systems
+    # list, feeds every service's System Configuration dropdown.
+    "system-configs",
 }
 
 # json files that must never be served as static files (contain secrets).
@@ -1669,7 +1672,7 @@ def _donut_chart_drawing(credit_count, credit_amt, debit_count, debit_amt, neutr
     size = 1.7 * 72  # 1.7in in points, Drawing units are points
     cx = cy = size / 2
     outer_r = size / 2 - 4
-    inner_r = outer_r * 0.55  # ring thickness ~45% of radius - clearly a donut, not a sliver or a solid disc
+    inner_r = outer_r * 0.42  # classic donut-chart proportion - a moderate, chunky ring rather than a thin one
 
     d = Drawing(size, size)
 
@@ -1787,20 +1790,22 @@ def _account_statement_page_decorator(logo_path, footer_note, from_name, from_mo
         canvas_obj.saveState()
 
         # ---- Logo + title ----
-        top_y = height - 0.9 * inch
+        logo_size = 2.2 * inch
+        logo_top_gap = 0.5 * inch
         if logo_reader is not None:
             try:
-                canvas_obj.drawImage(logo_reader, 0.6 * inch, top_y - 0.85 * inch,
-                                      width=1.1 * inch, height=1.1 * inch,
+                canvas_obj.drawImage(logo_reader, 0.6 * inch, height - logo_top_gap - logo_size,
+                                      width=logo_size, height=logo_size,
                                       preserveAspectRatio=True, mask="auto")
             except Exception:  # noqa: BLE001
                 pass
         canvas_obj.setFont("Helvetica-Bold", 19)
         canvas_obj.setFillColor(colors.HexColor("#0b1330"))
-        canvas_obj.drawRightString(width - 0.6 * inch, top_y - 0.15 * inch, "ACCOUNT STATEMENT")
+        canvas_obj.drawRightString(width - 0.6 * inch, height - logo_top_gap - 0.3 * inch, "ACCOUNT STATEMENT")
 
         # ---- "From" box (left) + statement metadata (right) ----
-        box_top = top_y - 1.0 * inch
+        top_y = height - logo_top_gap - logo_size  # bottom edge of the logo, everything below is anchored off this now
+        box_top = top_y - 0.2 * inch
         box_h = 0.95 * inch
         box_w = 3.9 * inch
         canvas_obj.setStrokeColor(colors.HexColor("#dddddd"))
@@ -1901,27 +1906,24 @@ def _account_statement_numbered_canvas(logo_path, footer_note, from_name, from_m
         def _draw_closing_badges(self):
             width, _ = A4
             badges = [
-                ("detailed", "Detailed", "Transaction Records"),
-                ("clear", "Clear", "Account Overview"),
-                ("secure", "Secure", "& Reliable"),
-                ("download", "Download", "Anytime"),
+                ("detailed", "Detailed Transaction Records"),
+                ("clear", "Clear Account Overview"),
+                ("secure", "Secure & Reliable"),
+                ("download", "Download Anytime"),
             ]
             usable_width = width - 1.2 * inch
             col_w = usable_width / len(badges)
-            circle_y = 1.25 * inch
+            circle_y = 1.2 * inch
             self.saveState()
-            for i, (icon_name, line1, line2) in enumerate(badges):
+            for i, (icon_name, label) in enumerate(badges):
                 cx = 0.6 * inch + col_w * i + col_w / 2
                 self.setStrokeColor(colors.HexColor("#1b8a4a"))
                 self.setFillColor(colors.white)
                 self.circle(cx, circle_y, 13, stroke=1, fill=1)
                 _draw_icon_glyph(self, icon_name, cx, circle_y, 0.19 * inch, colors.HexColor("#1b8a4a"))
-                self.setFont("Helvetica-Bold", 8.3)
+                self.setFont("Helvetica-Bold", 7.6)
                 self.setFillColor(colors.HexColor("#0b1330"))
-                self.drawCentredString(cx, circle_y - 24, line1)
-                self.setFont("Helvetica-Bold", 7.2)
-                self.setFillColor(colors.HexColor("#555555"))
-                self.drawCentredString(cx, circle_y - 35, line2)
+                self.drawCentredString(cx, circle_y - 24, label)
             self.restoreState()
 
     return StatementCanvas, draw_top
@@ -1955,7 +1957,7 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
-        topMargin=3.05 * inch, bottomMargin=1.35 * inch,
+        topMargin=4.05 * inch, bottomMargin=1.35 * inch,
         leftMargin=0.6 * inch, rightMargin=0.6 * inch,
     )
     story = []
@@ -2010,9 +2012,6 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
         Paragraph(f'<font color="#c62828">\u25cf</font> Debit ({debit_count})<br/>'
                   f'<b>{total_debit:,.2f}</b>', legend_style),
     ]
-    if neutral_count:
-        legend_bits.append(Spacer(1, 6))
-        legend_bits.append(Paragraph(f'<font color="#999999">\u25cf</font> No change ({neutral_count})', legend_style))
     donut_row = Table([[donut, legend_bits]], colWidths=[1.7 * inch, 1.3 * inch], rowHeights=[BOX_BODY_HEIGHT])
     donut_row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
     tx_box = Table([[Paragraph("TRANSACTION OVERVIEW", box_head_style)], [donut_row]],
@@ -3357,7 +3356,7 @@ class Handler(SimpleHTTPRequestHandler):
         entry = {
             "id": "TXN-RZP-" + payment_id[-10:],
             "date": now.strftime("%Y-%m-%d"),
-            "time": now.strftime("%I:%M %p"),
+            "time": now.strftime("%H:%M"),
             "userId": user_id,
             "paymentType": "Razorpay",
             "paymentMode": f"Razorpay ({order.get('currency', 'INR')})",
@@ -4836,11 +4835,11 @@ class Handler(SimpleHTTPRequestHandler):
         txn = next((t for t in txns if str(t.get("id")) == txn_id), None)
         if not txn:
             return self._send_json(404, {"error": "That transaction could not be found."})
-        # Receipts only make sense for actual money received via
-        # Razorpay - a wallet-to-wallet adjustment or a service charge
-        # isn't a "payment received" in the sense this receipt implies.
-        if txn.get("paymentType") != "Razorpay":
-            return self._send_json(400, {"error": "A receipt is only available for Razorpay payments."})
+        # A receipt only makes sense where money was actually received
+        # (a Credit amount) - a debit-only row (a service charge) has
+        # nothing to issue a receipt for.
+        if not (float(txn.get("credit") or 0) > 0):
+            return self._send_json(400, {"error": "A receipt is only available for transactions with a credit amount."})
 
         company = _load_company_info()
         company_name = company.get("name") or "Lexora"
@@ -5365,7 +5364,7 @@ class Handler(SimpleHTTPRequestHandler):
             "fieldId": "", "ruleType": "mapping", "ruleText": "",
             "status": "pending", "confidence": None,
             "usageCount": 0, "successCount": 0, "appliedCount": 0,
-            "createdAt": datetime.datetime.now().strftime("%m/%d/%Y, %I:%M:%S %p"),
+            "createdAt": datetime.datetime.now().strftime("%m/%d/%Y, %H:%M:%S"),
             "approvedAt": None, "userId": user_id, "auditLog": [], "builtin": False,
         }
         data.setdefault("pending", []).append(new_rule)
@@ -5886,7 +5885,7 @@ class Handler(SimpleHTTPRequestHandler):
 
         raw_key = "tc_live_" + secrets.token_urlsafe(32)
         key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
-        created_at = datetime.datetime.now().strftime("%m/%d/%Y, %I:%M:%S %p")
+        created_at = datetime.datetime.now().strftime("%m/%d/%Y, %H:%M:%S")
 
         user["apiKeyHash"] = key_hash
         user["apiKeyCreatedAt"] = created_at

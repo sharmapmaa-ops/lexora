@@ -655,7 +655,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
                   </label>
                 </div>
               </div>
-              ${window.StorageDestinations ? StorageDestinations.renderSelectorHtml('deDestination') : ''}
+
               </div>
               <div class="setup-group" style="margin-top:8px;">
                 <div class="process-controls">

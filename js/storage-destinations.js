@@ -329,7 +329,10 @@
   async function saveFile(inputId, blob, filename) {
     const sel = document.getElementById(inputId);
     const provider = sel ? sel.value : 'local';
+    return saveFileToProvider(provider, blob, filename);
+  }
 
+  async function saveFileToProvider(provider, blob, filename) {
     if (provider === 'sftp') {
       localDownload(blob, filename);
       if (isConfigured('sftp')) showSftpInstructions(filename);
@@ -369,6 +372,7 @@
     disconnect: disconnect,
     isConfigured: isConfigured,
     saveFile: saveFile,
+    saveFileToProvider: saveFileToProvider,
     labelFor: providerName,
   };
 })();

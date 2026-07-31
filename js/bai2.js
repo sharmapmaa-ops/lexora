@@ -525,7 +525,7 @@ Return ONLY this JSON, nothing else:
                   <option value="json">JSON (.json)</option>
                 </select>
               </div>
-              ${window.StorageDestinations ? StorageDestinations.renderSelectorHtml('bai2Destination') : ''}
+
               <div class="setup-group">
                 <div style="display:flex;align-items:center;gap:20px;margin-top:10px;">
                   <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;"
