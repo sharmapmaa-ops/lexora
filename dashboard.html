@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+<title>Dashboard | Lexora AI Solutions</title>
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#00008B" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/design-system.css">
+<style>
+    html, body { height: 100%; margin: 0; }
+    .shell-frame {
+        display: block;
+        width: 100%;
+        border: 0;
+        height: calc(100vh - 62px);
+        background: var(--ds-page, #f4f6fb);
+    }
+    .user-avatar-static {
+        width: 36px; height: 36px; border-radius: 50%;
+        background: rgba(255,255,255,.18); color: #fff;
+        display: flex; align-items: center; justify-content: center;
+        font-weight: 700; cursor: pointer; position: relative;
+    }
+    .user-dropdown-static {
+        display: none; position: absolute; right: 0; top: 46px;
+        background: #fff; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.18);
+        min-width: 180px; overflow: hidden; z-index: 50;
+    }
+    .user-dropdown-static.show { display: block; }
+    .user-dropdown-static button {
+        display: block; width: 100%; text-align: left; padding: 10px 16px;
+        border: 0; background: #fff; cursor: pointer; font-size: 14px; color: #1e293b;
+    }
+    .user-dropdown-static button:hover { background: #f1f5f9; }
+    .user-dropdown-static button.logout { color: #dc2626; border-top: 1px solid #eee; }
+</style>
+</head>
+<body>
+
+    <!-- ===== TOP MENU BAR (static shell - not app.js driven) ===== -->
+    <div class="top-menu-bar" id="topMenuBar">
+        <div class="menu-left">
+            <div class="company-logo" id="companyLogo">🏢</div>
+            <div class="company-info">
+                <span class="company-name" id="companyName">
+                    Lexora
+                    <span class="separator" id="separator">|</span>
+                </span>
+                <span class="current-menu-name" id="currentMenuLabel">
+                    <span id="currentMenuDisplay">Dashboard</span>
+                </span>
+            </div>
+        </div>
+
+        <div class="menu-wrapper" id="menuWrapper">
+            <ul class="menu" id="mainMenu">
+                <li class="menu-item"><a href="javascript:void(0)" class="active" onclick="lexoraShellNav('dashboard', this)">📊 Dashboard</a></li>
+                <li class="menu-item"><a href="javascript:void(0)" onclick="lexoraShellNav('services', this)">🛠️ Services</a></li>
+                <li class="menu-item"><a href="javascript:void(0)" onclick="lexoraShellNav('plans', this)">📋 Plans &amp; Offers</a></li>
+                <li class="menu-item"><a href="javascript:void(0)" onclick="lexoraShellNav('payment', this)">💳 Payment</a></li>
+                <li class="menu-item"><a href="javascript:void(0)" onclick="lexoraShellNav('contact', this)">📞 Contact Us</a></li>
+            </ul>
+
+            <div class="user-profile" id="userProfile" style="position:relative;">
+                <div class="user-avatar-static" id="userAvatarStatic" onclick="toggleStaticDropdown(event)">
+                    <span id="avatarInitials">U</span>
+                    <div class="user-dropdown-static" id="userDropdownStatic">
+                        <button onclick="lexoraShellNav('profile')">👤 My Profile</button>
+                        <button onclick="lexoraShellNav('api-docs')">📘 API Documentation</button>
+                        <button onclick="lexoraShellNav('support')">🎫 Support</button>
+                        <button onclick="lexoraShellNav('admin')">🗂️ Admin</button>
+                        <button onclick="lexoraShellNav('overview')">📈 Overview</button>
+                        <button onclick="lexoraShellNav('notification')">🔔 Notification</button>
+                        <button class="logout" onclick="lexoraLogout()">🚪 Logout</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <button class="menu-toggle" id="menuToggle" onclick="document.getElementById('menuWrapper').classList.toggle('open')">☰</button>
+    </div>
+
+    <!-- ===== IFRAME > Dashboard section content ===== -->
+    <iframe id="contentFrame" class="shell-frame" title="Lexora dashboard content" src="dashboard-content.html"></iframe>
+
+    <script>
+        // Guard: this shell is for logged-in users only.
+        (function () {
+            var loggedIn = !!localStorage.getItem('lexora_session_user_id');
+            if (!loggedIn) {
+                window.location.replace('login.html');
+            }
+        })();
+
+        var PAGE_SRC = {
+            dashboard: 'dashboard-content.html',
+            services: 'services-content.html',
+            plans: 'plans-offers-content.html',
+            payment: 'payment-content.html',
+            contact: 'contact-us-content.html',
+            profile: 'profile-content.html',
+            'api-docs': 'api-documentation-content.html',
+            support: 'support-content.html',
+            notification: 'notification-content.html',
+            overview: 'admin-overview-content.html',
+            admin: 'admin-content.html'
+        };
+        var PAGE_LABEL = {
+            dashboard: 'Dashboard', services: 'Services', plans: 'Plans & Offers',
+            payment: 'Payment', contact: 'Contact Us', profile: 'Profile',
+            'api-docs': 'API Documentation', support: 'Support',
+            notification: 'Notification', overview: 'Overview', admin: 'Admin'
+        };
+
+        function lexoraShellNav(page, el) {
+            document.querySelectorAll('#mainMenu > li > a').forEach(function (a) { a.classList.remove('active'); });
+            if (el) el.classList.add('active');
+            document.getElementById('currentMenuDisplay').textContent = PAGE_LABEL[page] || page;
+            document.getElementById('contentFrame').src = PAGE_SRC[page];
+            document.getElementById('userDropdownStatic').classList.remove('show');
+        }
+
+        function toggleStaticDropdown(e) {
+            e.stopPropagation();
+            document.getElementById('userDropdownStatic').classList.toggle('show');
+        }
+        document.addEventListener('click', function () {
+            document.getElementById('userDropdownStatic').classList.remove('show');
+        });
+
+        function lexoraLogout() {
+            var frame = document.getElementById('contentFrame');
+            try {
+                // Reuse the real logout flow (revokes token server-side too)
+                // from whichever content frame is currently loaded.
+                if (frame.contentWindow && frame.contentWindow.handleUserAction) {
+                    frame.contentWindow.handleUserAction('Logout');
+                }
+            } catch (e) { /* ignore */ }
+            localStorage.removeItem('lexora_session_user_id');
+            localStorage.removeItem('lexora_session_token');
+            setTimeout(function () { window.location.replace('login.html'); }, 300);
+        }
+
+        // If the session disappears (expired / logged out from within a
+        // content frame), bounce back to the public login shell.
+        window.addEventListener('message', function (e) {
+            if (e.data && e.data.lexoraFrame && e.data.status === 'logged-out') {
+                window.location.replace('login.html');
+            }
+        });
+    </script>
+</body>
+</html>

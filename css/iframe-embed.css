@@ -1,0 +1,23 @@
+/*
+ * iframe-embed.css
+ * ----------------
+ * Applied only on the "*-content.html" pages that load inside the
+ * dashboard/login iframe. The parent shell page already renders its own
+ * top menu bar, so we hide this embedded copy's menu bar + footer and
+ * let its content area fill the iframe.
+ */
+body.lexora-embedded #topMenuBar,
+body.lexora-embedded .footer {
+    display: none !important;
+}
+
+body.lexora-embedded .center-content {
+    padding-top: 20px;
+    min-height: 100vh;
+}
+
+/* The auth screen (login form) is also shown full-bleed when this file
+   is used for the public Login/Home content - no extra chrome needed. */
+body.lexora-embedded .auth-screen {
+    min-height: 100vh;
+}
