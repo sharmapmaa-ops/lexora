@@ -3360,7 +3360,7 @@
                     // receipt to give yet.
                     const isSuccess = !['pending_approval', 'cancelled', 'failed'].includes(transaction.status);
                     const receiptIcon = (isCredit && isSuccess)
-                        ? `<a onclick="downloadTxnReceiptPdf('${transaction.id}')" title="Download receipt" class="txn-download-icon">
+                        ? `<a onclick="downloadTxnReceiptPdf('${transaction.id}', '${escapeHtml(transaction.userId || '')}')" title="Download receipt" class="txn-download-icon">
                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
                            </a>`
                         : '';
@@ -3388,8 +3388,8 @@
 
             // Per-row receipt download (Payment History) - Razorpay
             // transactions only, matching the reference receipt design.
-            window.downloadTxnReceiptPdf = function(txnId) {
-                const url = '/api/payment/receipt-pdf?userId=' + encodeURIComponent(CURRENT_USER_ID) +
+            window.downloadTxnReceiptPdf = function(txnId, txnUserId) {
+                const url = '/api/payment/receipt-pdf?userId=' + encodeURIComponent(txnUserId || CURRENT_USER_ID) +
                     '&token=' + encodeURIComponent(AUTH_TOKEN || '') +
                     '&txnId=' + encodeURIComponent(txnId);
                 window.open(url, '_blank');

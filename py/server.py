@@ -3094,14 +3094,20 @@ class Handler(SimpleHTTPRequestHandler):
         return user.get("role") if user else None
 
     def _authorize_user(self, requested_user_id):
-        """Returns the session's real userId if it's allowed to act as
-        requested_user_id (either it IS that user, or it's Admin/
-        Developer) - raises AuthError otherwise."""
+        """Returns the userId this request should actually operate on -
+        requested_user_id itself if the session is allowed to act as
+        that user (either it IS that user, or it's Admin/Developer),
+        raises AuthError otherwise. Returning the SESSION's own id
+        instead of requested_user_id here was the bug: it meant an
+        Admin "viewing/downloading another user's data" silently
+        operated on the Admin's own account instead of the one actually
+        requested, since every caller uses this return value as the
+        target user_id for its DB lookup."""
         session_user_id = self._authenticated_user_id()
         if not requested_user_id or session_user_id == requested_user_id:
             return session_user_id
         if self._session_user_role(session_user_id) in ("Admin", "Developer"):
-            return session_user_id
+            return requested_user_id
         raise AuthError("You are not authorized to access this account's data.")
 
     def _resolve_user_id(self, body):
