@@ -1230,6 +1230,18 @@ body, input, select, textarea, button {
 .txn-status-pill.cancelled { background: #eceff5; color: #5b6a86; }
 .txn-status-pill.failed    { background: #fbdede; color: #b91c1c; }
 
+.txn-type-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: .78rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.txn-type-badge svg { flex-shrink: 0; }
+.txn-type-badge.credit { color: #15803d; }
+.txn-type-badge.debit  { color: #dc2626; }
+
 /* ---- pagination footer ---- */
 .history-pager {
     display: flex;

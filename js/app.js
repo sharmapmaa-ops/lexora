@@ -3314,15 +3314,24 @@
             }
 
             function renderHistoryRows(tbody, list, includeCheckbox) {
-                const colCount = includeCheckbox ? 11 : 10;
+                const colCount = includeCheckbox ? 10 : 9;
                 if (list.length === 0) {
                     tbody.innerHTML =
                         `<tr><td colspan="${colCount}" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions found.</td></tr>`;
                     return;
                 }
                 tbody.innerHTML = '';
-                const sortedHistory = [...list].sort((a, b) => new Date(b.date) - new Date(a.date));
-                sortedHistory.forEach((transaction) => {
+                // Running balance reads chronologically (oldest first), so
+                // compute it in that order, then display newest-first like
+                // the rest of this table always has.
+                const chronological = [...list].sort((a, b) => new Date(a.date + ' ' + (a.time || '')) - new Date(b.date + ' ' + (b.time || '')));
+                let running = 0;
+                const withBalance = chronological.map(t => {
+                    running += (Number(t.credit) || 0) - (Number(t.debit) || 0);
+                    return Object.assign({}, t, { _runningBalance: running });
+                });
+                const sortedHistory = withBalance.slice().reverse();
+                sortedHistory.forEach((transaction, idx) => {
                     const tr = document.createElement('tr');
                     // Item 3 - a balance-add sitting in pending_approval (or
                     // cancelled) shows a clear status prefix on its
@@ -3338,21 +3347,26 @@
                         descriptionText = `<span class="txn-status-tag cancelled">Failed</span> : ${descriptionText}`;
                     }
                     const receiptIcon = transaction.credit > 0
-                        ? `<a onclick="downloadTxnReceiptPdf('${transaction.id}')" title="Download receipt" style="cursor:pointer;color:#1257f5;display:inline-flex;">
-                               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
+                        ? `<a onclick="downloadTxnReceiptPdf('${transaction.id}')" title="Download receipt" style="cursor:pointer;color:#1257f5;display:inline-flex;margin-left:6px;vertical-align:middle;">
+                               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
                            </a>`
                         : '';
+                    const isCredit = Number(transaction.credit) > 0;
+                    const typeBadge = isCredit
+                        ? `<span class="txn-type-badge credit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M12 7v8M8.5 11.5 12 15l3.5-3.5"/></svg> Credit</span>`
+                        : `<span class="txn-type-badge debit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M15.5 12.5 12 9l-3.5 3.5M12 17V9"/></svg> Debit</span>`;
+                    const amountValue = isCredit ? Number(transaction.credit) : -Number(transaction.debit);
+                    const amountText = `${amountValue >= 0 ? '+' : '-'}${formatMoney(Math.abs(amountValue))}`;
                     tr.innerHTML = `
                         ${includeCheckbox ? `<td><input type="checkbox" class="txn-select-checkbox" data-txn-id="${transaction.id}" ${selectedTransactionIds.has(transaction.id) ? 'checked' : ''} onchange="toggleSelectTransaction('${transaction.id}', this.checked)" /></td>` : ''}
-                        <td>${receiptIcon}</td>
-                        <td>${formatTxnDate(transaction.date)}</td>
-                        <td>${formatTxnTime(transaction.time)}</td>
-                        <td><span style="font-weight:500;color:darkblue;">${transaction.id}</span></td>
-                        <td>${transaction.paymentMode}</td>
+                        <td>${idx + 1}</td>
+                        <td>${formatTxnDate(transaction.date)}, ${formatTxnTime(transaction.time)}</td>
+                        <td>${typeBadge}</td>
+                        <td><span style="font-weight:500;color:darkblue;">${transaction.id}</span>${receiptIcon}</td>
                         <td>${descriptionText}</td>
-                        <td class="credit" style="text-align:right;">${transaction.credit > 0 ? formatMoney(transaction.credit) : '-'}</td>
-                        <td class="debit" style="text-align:right;">${transaction.debit > 0 ? formatMoney(transaction.debit) : '-'}</td>
+                        <td class="${isCredit ? 'credit' : 'debit'}" style="text-align:right;font-weight:600;">${amountText}</td>
                         <td>${txnStatusPill(transaction.status)}</td>
+                        <td style="text-align:right;">${formatMoney(transaction._runningBalance)}</td>
                         <td>${escapeHtml(transaction.userId || '')}</td>
                     `;
                     tbody.appendChild(tr);
@@ -3601,15 +3615,14 @@
                                     <thead>
                                         <tr>
                                             <th style="width:36px;"><input type="checkbox" id="historySelectAll" onchange="toggleSelectAllTransactions(this.checked)" /></th>
-                                            <th>Download</th>
-                                            <th>Date</th>
-                                            <th>Time</th>
+                                            <th>#</th>
+                                            <th>Date &amp; Time</th>
+                                            <th>Type</th>
                                             <th>Transaction ID</th>
-                                            <th>Payment Mode</th>
                                             <th>Description</th>
-                                            <th style="text-align:right;">Credit</th>
-                                            <th style="text-align:right;">Debit</th>
+                                            <th style="text-align:right;">Amount (\u20b9)</th>
                                             <th>Status</th>
+                                            <th style="text-align:right;">Balance (\u20b9)</th>
                                             <th>User ID</th>
                                         </tr>
                                     </thead>
@@ -3701,6 +3714,18 @@
                 return USER_DIRECTORY.filter(u => u.role === 'Admin' || u.role === 'Developer').map(u => u.id);
             }
 
+            window.cancelPlanAutoRenew = function() {
+                showConfirm('Cancel Auto-Renewal',
+                    `Your ${profileData.plan} plan will stay active until ${profileData.planEndDate}, but won't auto-renew after that - your account will move to the Free plan instead. Continue?`,
+                    function(confirmed) {
+                        if (!confirmed) return;
+                        profileData.autoRenew = false;
+                        persistProfile();
+                        addNotification(`Auto-renewal for your ${profileData.plan} plan has been cancelled. It'll remain active until ${profileData.planEndDate}, then move to Free.`);
+                        loadContent('plans-offers');
+                    });
+            };
+
             window.switchPlan = function(planId) {
                 const plan = PLANS_DATA.find(p => p.id === planId);
                 if (!plan) { showWarning('That plan could not be found.'); return; }
@@ -3764,6 +3789,7 @@
                     profileData.planStartDate = startDateStr;
                     profileData.planEndDate = endDateStr;
                     profileData.planStatus = 'Active';
+                    profileData.autoRenew = plan.monthlyPrice > 0;
                     persistProfile();
 
                     // Item - plan history table (shown below the plan cards
@@ -9986,14 +10012,15 @@
                                     <table class="history-table today-table" id="todayTableHeader">
                                         <thead>
                                             <tr>
+                                                <th>#</th>
                                                 <th>Date &amp; Time</th>
+                                                <th>Type</th>
                                                 <th>Transaction ID</th>
-                                                <th>User ID</th>
-                                                <th>Payment Mode</th>
                                                 <th>Description</th>
-                                                <th>Credit</th>
-                                                <th>Debit</th>
+                                                <th style="text-align:right;">Amount (\u20b9)</th>
                                                 <th>Status</th>
+                                                <th style="text-align:right;">Balance (\u20b9)</th>
+                                                <th>User ID</th>
                                             </tr>
                                         </thead>
                                     </table>
@@ -10143,7 +10170,16 @@
                         // nahi hain (login page wali FreeServices catalogue
                         // hi reuse ki hai).
                         const freeServiceNames = authFreeTools().flatMap(g => g[1]).map(t => (t && (t.label || t)) || '').filter(Boolean);
+                        const autoRenewBanner = (myPlan.monthlyPrice > 0 && profileData.autoRenew !== false) ? `
+                            <div class="auto-renew-banner">
+                                <span>Your ${escapeHtml(myPlanName)} plan auto-renews on ${escapeHtml(profileData.planEndDate || '')} - ${currencySymbol()}${myPlan.monthlyPrice} will be deducted from your wallet balance automatically.</span>
+                                <button class="filter-btn" onclick="cancelPlanAutoRenew()">Cancel Auto-Renewal</button>
+                            </div>` : (myPlan.monthlyPrice > 0 ? `
+                            <div class="auto-renew-banner is-cancelled">
+                                <span>Auto-renewal is off. Your ${escapeHtml(myPlanName)} plan will move to Free after ${escapeHtml(profileData.planEndDate || '')}.</span>
+                            </div>` : '');
                         return `
+                        ${autoRenewBanner}
                         <div class="plans-grid">
                             ${PLANS_DATA.map(plan => {
                                 // Tier tay karta hai colour aur button style:
@@ -12117,6 +12153,57 @@
                 const planName = profileData.plan;
 
                 if (daysLeft < 0) {
+                    const currentPlan = PLANS_DATA.find(p => p.name === planName);
+                    // Item 3 - auto-renewal: try to auto-debit the wallet
+                    // for another cycle before falling back to Free.
+                    // autoRenew defaults to true (undefined counts as
+                    // "on") for any account that upgraded before this
+                    // feature existed - only an explicit false (via the
+                    // Cancel button) turns it off.
+                    if (currentPlan && currentPlan.monthlyPrice > 0 && profileData.autoRenew !== false
+                        && getCurrentBalance() >= currentPlan.monthlyPrice) {
+                        const now = new Date();
+                        const newEnd = new Date(now);
+                        newEnd.setDate(newEnd.getDate() + (currentPlan.frequency === 'Yearly' ? 365 : (currentPlan.frequency === 'Daily' ? 1 : 30)));
+                        const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                        paymentHistory.push({
+                            id: txnId,
+                            date: localDateStr(now),
+                            time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+                            userId: CURRENT_USER_ID,
+                            paymentType: 'Plan Auto-Renewal',
+                            paymentMode: 'Wallet Balance',
+                            description: `${planName} plan - auto-renewed`,
+                            credit: 0,
+                            debit: currentPlan.monthlyPrice
+                        });
+                        persistPaymentHistory();
+
+                        profileData.planStartDate = localDateStr(now);
+                        profileData.planEndDate = localDateStr(newEnd);
+                        profileData.planReminderSentFor = null;
+                        await persistProfile();
+
+                        planHistory.push({
+                            userId: CURRENT_USER_ID,
+                            planName: planName,
+                            startDate: profileData.planStartDate,
+                            endDate: profileData.planEndDate,
+                            frequency: currentPlan.frequency || 'Monthly',
+                            amount: currentPlan.monthlyPrice,
+                            pricePerTranslation: currentPlan.pricePerTranslation,
+                        });
+                        persistPlanHistory();
+
+                        addNotification(`Your ${planName} plan was auto-renewed for another cycle - ${currencySymbol()}${currentPlan.monthlyPrice} was deducted from your wallet balance.`);
+                        sendGenericNotificationEmail(
+                            profileData.email, `${profileData.firstName} ${profileData.lastName}`,
+                            `Your ${planName} plan was renewed`,
+                            `Your ${planName} plan was auto-renewed. ${currencySymbol()}${currentPlan.monthlyPrice} was deducted from your wallet balance, valid until ${profileData.planEndDate}.`,
+                            null, null, CURRENT_USER_ID
+                        );
+                        return;
+                    }
                     // Already expired - auto-downgrade to Free, same
                     // bookkeeping _doSwitchPlan does for any plan switch.
                     const freePlan = PLANS_DATA.find(p => p.name === 'Free') || { name: 'Free', monthlyPrice: 0, pricePerTranslation: 0 };

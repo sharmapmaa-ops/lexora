@@ -1873,6 +1873,50 @@ def _donut_chart_drawing(credit_count, credit_amt, debit_count, debit_amt, neutr
     return d
 
 
+_RUPEE_FONT_REGISTERED = False
+
+
+def _ensure_rupee_font():
+    """Helvetica (and the other base-14 PDF fonts) doesn't include the
+    ₹ (Indian Rupee, U+20B9) glyph - reportlab silently swaps in a
+    fallback box character instead of erroring, which is easy to miss
+    until you actually look at the PDF. NotoSans-Regular.ttf (already
+    shipped for the OCR/Arabic pipeline) does have it, so register it
+    once for currency displays elsewhere in this file."""
+    global _RUPEE_FONT_REGISTERED
+    if _RUPEE_FONT_REGISTERED:
+        return
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    try:
+        pdfmetrics.registerFont(TTFont("NotoSansINR", os.path.join(ROOT_DIR, "py", "fonts", "NotoSans-Regular.ttf")))
+        _RUPEE_FONT_REGISTERED = True
+    except Exception as err:  # noqa: BLE001
+        print(f"[pdf] could not register NotoSans for the rupee symbol: {err}")
+
+
+def _rupee_markup(amount):
+    """For use inside a reportlab Paragraph's mini-XML - keeps the ₹
+    symbol itself in the Unicode-safe font while the digits stay in
+    whatever font the surrounding Paragraph already uses (so amounts
+    can still be bold like the rest of a bold cell)."""
+    _ensure_rupee_font()
+    return f'<font name="NotoSansINR">\u20b9</font>{amount:,.2f}'
+
+
+def _draw_rupee_amount(canvas_obj, x, y, amount, font_name, font_size, fill_color):
+    """Canvas-level equivalent of _rupee_markup() - draws the ₹ symbol
+    in the Unicode-safe font immediately followed by the amount in the
+    requested (bold) font, left-aligned starting at x."""
+    _ensure_rupee_font()
+    canvas_obj.setFont("NotoSansINR", font_size)
+    canvas_obj.setFillColor(fill_color)
+    canvas_obj.drawString(x, y, "\u20b9")
+    rupee_w = canvas_obj.stringWidth("\u20b9", "NotoSansINR", font_size)
+    canvas_obj.setFont(font_name, font_size)
+    canvas_obj.drawString(x + rupee_w, y, f"{amount:,.2f}")
+
+
 def _draw_icon_glyph(canvas_obj, name, cx, cy, size, color):
     """Simple vector icon glyphs (no external image files needed) for
     the closing-page badges and the disclaimer note - drawn as basic
@@ -1924,6 +1968,19 @@ def _draw_icon_glyph(canvas_obj, name, cx, cy, size, color):
         canvas_obj.rect(cx - half * 0.9, cy - half * 0.35, size * 0.9, size * 0.65, stroke=1, fill=0)
         canvas_obj.line(cx - half * 0.35, cy - half * 0.65, cx + half * 0.35, cy - half * 0.65)
         canvas_obj.line(cx, cy - half * 0.35, cx, cy - half * 0.65)
+    elif name == "phone":
+        # Classic handset outline
+        p = canvas_obj.beginPath()
+        p.moveTo(cx - half * 0.6, cy + half * 0.7)
+        p.curveTo(cx - half * 0.75, cy + half * 0.4, cx - half * 0.2, cy - half * 0.1, cx + half * 0.1, cy - half * 0.35)
+        p.curveTo(cx + half * 0.35, cy - half * 0.55, cx + half * 0.55, cy - half * 0.75, cx + half * 0.7, cy - half * 0.6)
+        canvas_obj.setLineWidth(1.4)
+        canvas_obj.drawPath(p, stroke=1, fill=0)
+    elif name == "mail":
+        # Envelope
+        canvas_obj.rect(cx - half * 0.8, cy - half * 0.55, size * 0.8, size * 0.55, stroke=1, fill=0)
+        canvas_obj.line(cx - half * 0.8, cy, cx, cy - half * 0.2)
+        canvas_obj.line(cx, cy - half * 0.2, cx + half * 0.8, cy)
     canvas_obj.restoreState()
 
 
@@ -2406,119 +2463,262 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     return buf.getvalue()
 
 def _build_receipt_pdf(company_name, logo_path, user, txn):
-    """Payment History row > download icon (Razorpay rows only) -
-    single-transaction receipt matching the reference design."""
+    """Payment History row > download icon (any row with a Credit
+    amount) - single-transaction receipt, redesigned to match the
+    approved reference pixel-for-pixel: rounded cards, a two-tone
+    Received Amount panel with a vertical divider, a proper Transaction
+    Details table, and the same footer (4 feature badges + rounded
+    footer card + green page badge) as the Account Statement."""
     import io
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import inch
     from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.enums import TA_RIGHT
+    from reportlab.pdfgen import canvas as canvas_module
 
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("RcptTitle", parent=styles["Heading1"], fontSize=22, spaceAfter=2)
-    label_style = ParagraphStyle("RcptLabel", parent=styles["Normal"], fontSize=10, leading=15)
+    label_style = ParagraphStyle("RcptLabel", parent=styles["Normal"], fontName="Helvetica",
+                                  fontSize=9.3, leading=13.5, textColor=colors.HexColor(_TEXT_DARK))
+
+    full_name = f"{user.get('firstName') or ''} {user.get('lastName') or ''}".strip() or "-"
+    amount = float(txn.get("credit") or 0)
+    date_time = _date_fmt(txn.get("date"))
+    if txn.get("time"):
+        date_time = f"{date_time} {_time_fmt_12h(txn.get('time'))}"
+    receipt_no = "RCP-" + str(txn.get("id") or "")
+    receipt_date = datetime.date.today().strftime("%d %b %Y")
+
+    def _draw_header_and_card(canvas_obj, doc):
+        width, height = A4
+        canvas_obj.saveState()
+        margin = 0.5 * inch
+        top = height - margin - 3
+
+        logo_layout_size = 0.5 * inch
+        logo_draw_size = logo_layout_size * 3
+        if logo_path:
+            try:
+                logo_center_y = top - logo_layout_size / 2
+                canvas_obj.drawImage(logo_path, margin, logo_center_y - logo_draw_size / 2,
+                                      width=logo_draw_size, height=logo_draw_size,
+                                      preserveAspectRatio=True, mask="auto")
+            except Exception:  # noqa: BLE001
+                pass
+        canvas_obj.setFont("Helvetica-Bold", 22)
+        canvas_obj.setFillColor(colors.HexColor(_NAVY))
+        canvas_obj.drawRightString(width - margin, top - logo_layout_size + 4, "RECEIPT")
+
+        header_bottom = top - logo_layout_size
+
+        # ---- Customer info card (rounded, with phone/mail icons) ----
+        card_top = header_bottom - 0.15 * inch
+        card_h = 1.15 * inch
+        card_w = 3.6 * inch
+        _round_rect_with_shadow(canvas_obj, margin, card_top - card_h, card_w, card_h, radius=9)
+
+        pad = 0.22 * inch
+        tx = margin + pad
+        ty = card_top - 0.28 * inch
+        canvas_obj.setFont("Helvetica-Bold", 9)
+        canvas_obj.setFillColor(colors.HexColor(_GREEN))
+        canvas_obj.drawString(tx, ty, "Received From:")
+        canvas_obj.setFont("Helvetica-Bold", 14)
+        canvas_obj.setFillColor(colors.HexColor(_TEXT_DARK))
+        canvas_obj.drawString(tx, ty - 0.26 * inch, full_name)
+
+        icon_x = tx + 0.09 * inch
+        canvas_obj.setFont("Helvetica", 9.3)
+        canvas_obj.setFillColor(colors.HexColor(_TEXT_MUTED))
+        mobile = user.get("mobile") or ""
+        if mobile and mobile != "-":
+            _draw_icon_glyph(canvas_obj, "phone", icon_x, ty - 0.56 * inch, 0.13 * inch, colors.HexColor(_GREEN))
+            canvas_obj.drawString(tx + 0.24 * inch, ty - 0.6 * inch, mobile)
+        _draw_icon_glyph(canvas_obj, "mail", icon_x, ty - 0.82 * inch, 0.13 * inch, colors.HexColor(_GREEN))
+        canvas_obj.drawString(tx + 0.24 * inch, ty - 0.86 * inch, user.get("email") or "-")
+
+        # ---- Receipt No. / Receipt Date, right side ----
+        meta_x = margin + card_w + 0.35 * inch
+        label_x2 = meta_x + 1.1 * inch
+        val_x = meta_x + 1.25 * inch
+        my = ty
+        for label, value in [("Receipt No.", receipt_no), ("Receipt Date", receipt_date)]:
+            canvas_obj.setFont("Helvetica-Bold", 10)
+            canvas_obj.setFillColor(colors.HexColor(_TEXT_DARK))
+            canvas_obj.drawString(meta_x, my, label)
+            canvas_obj.drawString(label_x2, my, ":")
+            canvas_obj.setFont("Helvetica", 10)
+            canvas_obj.drawString(val_x, my, value)
+            my -= 0.32 * inch
+
+        # ---- Received Amount split panel ----
+        panel_top = card_top - card_h - 0.2 * inch
+        panel_h = 1.15 * inch
+        panel_w = width - 2 * margin
+        _round_rect_with_shadow(canvas_obj, margin, panel_top - panel_h, panel_w, panel_h,
+                                 radius=9, fill=_LIGHT_GREY)
+
+        circle_cx = margin + 0.55 * inch
+        circle_cy = panel_top - panel_h / 2
+        canvas_obj.setFillColor(colors.HexColor(_GREEN))
+        canvas_obj.circle(circle_cx, circle_cy, 0.32 * inch, stroke=0, fill=1)
+        canvas_obj.setStrokeColor(colors.white)
+        canvas_obj.setLineWidth(2.4)
+        canvas_obj.line(circle_cx - 0.13 * inch, circle_cy, circle_cx - 0.03 * inch, circle_cy - 0.1 * inch)
+        canvas_obj.line(circle_cx - 0.03 * inch, circle_cy - 0.1 * inch, circle_cx + 0.16 * inch, circle_cy + 0.13 * inch)
+
+        amt_x = margin + 1.15 * inch
+        canvas_obj.setFont("Helvetica-Bold", 11)
+        canvas_obj.setFillColor(colors.HexColor(_GREEN))
+        canvas_obj.drawString(amt_x, circle_cy + 0.22 * inch, "RECEIVED AMOUNT")
+        _draw_rupee_amount(canvas_obj, amt_x, circle_cy - 0.2 * inch, amount, "Helvetica-Bold", 26, colors.HexColor(_NAVY))
+
+        divider_x = margin + panel_w * 0.55
+        canvas_obj.setStrokeColor(colors.HexColor(_BORDER))
+        canvas_obj.setLineWidth(0.75)
+        canvas_obj.line(divider_x, panel_top - 0.18 * inch, divider_x, panel_top - panel_h + 0.18 * inch)
+
+        icon2_x = divider_x + 0.45 * inch
+        _draw_icon_glyph(canvas_obj, "detailed", icon2_x, circle_cy + 0.05 * inch, 0.26 * inch, colors.HexColor(_GREEN))
+        canvas_obj.setFont("Helvetica-Bold", 11)
+        canvas_obj.setFillColor(colors.HexColor(_GREEN))
+        canvas_obj.drawString(icon2_x + 0.3 * inch, circle_cy + 0.18 * inch, "Thank you for your payment.")
+        canvas_obj.setFont("Helvetica", 9.3)
+        canvas_obj.setFillColor(colors.HexColor(_TEXT_DARK))
+        canvas_obj.drawString(icon2_x + 0.3 * inch, circle_cy - 0.02 * inch, "We have received your payment")
+        canvas_obj.drawString(icon2_x + 0.3 * inch, circle_cy - 0.18 * inch, "successfully.")
+
+        canvas_obj.restoreState()
+        canvas_obj._lexora_content_top = panel_top - panel_h - 0.2 * inch
 
     buf = io.BytesIO()
+
+    class ReceiptCanvas(canvas_module.Canvas):
+        pass
+
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
-        topMargin=0.6 * inch, bottomMargin=0.95 * inch,
-        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+        topMargin=3.75 * inch, bottomMargin=1.75 * inch,
+        leftMargin=0.5 * inch, rightMargin=0.5 * inch,
     )
     story = []
 
-    if logo_path:
-        try:
-            logo_cell = Image(logo_path, width=1.1 * inch, height=1.1 * inch, kind="proportional")
-        except Exception:  # noqa: BLE001
-            logo_cell = Paragraph(company_name, title_style)
-    else:
-        logo_cell = Paragraph(company_name, title_style)
-    header_table = Table(
-        [[logo_cell, Paragraph("RECEIPT", ParagraphStyle("RcptRight", parent=title_style, alignment=TA_RIGHT))]],
-        colWidths=[3.5 * inch, 3.3 * inch])
-    header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
-    story.append(header_table)
-    story.append(Spacer(1, 14))
-
-    full_name = f"{user.get('firstName') or ''} {user.get('lastName') or ''}".strip() or "-"
-    from_lines = [
-        Paragraph("<b>Received From:</b>", ParagraphStyle("RcptFromTag", parent=label_style, textColor=colors.HexColor("#1b8a4a"))),
-        Paragraph(f"<b>{escape_html(full_name)}</b>", ParagraphStyle("RcptFromName", parent=label_style, fontSize=13)),
-        Paragraph(f"{escape_html(user.get('mobile') or '-')}", label_style),
-        Paragraph(f"{escape_html(user.get('email') or '-')}", label_style),
-    ]
-    meta_rows = [
-        ["Receipt No.", ":", "RCP-" + str(txn.get("id") or "")],
-        ["Receipt Date", ":", datetime.date.today().strftime("%d %b %Y")],
-    ]
-    meta_table = Table(meta_rows, colWidths=[1.1 * inch, 0.15 * inch, 1.7 * inch])
-    meta_table.setStyle(TableStyle([
-        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
-        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-    ]))
-    top_row = Table([[from_lines, meta_table]], colWidths=[3.9 * inch, 3.0 * inch])
-    top_row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
-    story.append(top_row)
-    story.append(Spacer(1, 16))
-
-    amount = float(txn.get("credit") or 0)
-    amount_box = Table([[
-        Paragraph(f'<font color="#1b8a4a"><b>RECEIVED AMOUNT</b></font><br/>'
-                  f'<font size="22"><b>{amount:,.2f}</b></font>', label_style),
-        Paragraph('<font color="#1b8a4a"><b>Thank you for your payment.</b></font><br/>'
-                  'We have received your payment successfully.', label_style),
-    ]], colWidths=[3.4 * inch, 3.5 * inch])
-    amount_box.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f2f7f3")),
-        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#dddddd")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 14), ("TOPPADDING", (0, 0), (-1, -1), 12),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
-    ]))
-    story.append(amount_box)
-    story.append(Spacer(1, 16))
-
-    date_time = txn.get("date") or ""
-    if txn.get("time"):
-        date_time = f"{date_time} {txn.get('time')}"
+    # ---- Transaction Details table ----
+    cell_style = ParagraphStyle("RcptCell", parent=label_style, fontSize=9.3, leading=13, wordWrap="CJK")
+    label_cell_style = ParagraphStyle("RcptLabelCell", parent=cell_style, fontName="Helvetica-Bold")
+    rows = [["TRANSACTION DETAILS", ""]]
     detail_rows = [
-        ["Transaction ID", txn.get("id") or ""],
-        ["Transaction Date & Time", date_time],
-        ["Description", txn.get("description") or ""],
-        ["Amount Received", f"{amount:,.2f}"],
-        ["Amount in Words", _amount_in_words(amount)],
-        ["Payment Method", txn.get("paymentMode") or "Razorpay"],
+        ("Transaction ID", txn.get("id") or ""),
+        ("Transaction Date & Time", date_time),
+        ("Description", txn.get("description") or ""),
+        ("Amount Received", None),  # rendered specially below (rupee-safe font)
+        ("Amount in Words", _amount_in_words(amount, include_rupees=True)),
+        ("Payment Method", txn.get("paymentMode") or "Razorpay"),
     ]
-    cell_style = ParagraphStyle("RcptCell", parent=label_style, fontSize=9.5, wordWrap="CJK")
-    detail_table = Table(
-        [[Paragraph(f"<b>{escape_html(r[0])}</b>", cell_style), Paragraph(escape_html(r[1]), cell_style)] for r in detail_rows],
-        colWidths=[2.2 * inch, 4.6 * inch])
-    detail_table.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0b1330")),
-        ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
-        ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ("LEFTPADDING", (0, 0), (-1, -1), 10),
-    ]))
-    story.append(detail_table)
-    story.append(Spacer(1, 16))
-    story.append(Paragraph("If you have any questions, feel free to contact us.",
-                            ParagraphStyle("RcptFooterNote", parent=label_style, alignment=1, fontSize=9,
-                                           textColor=colors.HexColor("#555555"))))
+    for label, value in detail_rows:
+        if label == "Amount Received":
+            value_html = _rupee_markup(amount)
+        else:
+            value_html = escape_html(value)
+        rows.append([Paragraph(escape_html(label), label_cell_style), Paragraph(value_html, cell_style)])
 
-    doc.build(story, canvasmaker=_numbered_canvas_factory(
-        "This is a computer generated printout and does not require signature."))
+    table = Table(rows, colWidths=[2.3 * inch, 4.47 * inch])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(_NAVY)),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 10.5),
+        ("SPAN", (0, 0), (1, 0)),
+        ("BACKGROUND", (0, 1), (0, -1), colors.HexColor(_LIGHT_GREY)),
+        ("BACKGROUND", (1, 1), (1, -1), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor(_BORDER)),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 9), ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+        ("LEFTPADDING", (0, 0), (-1, -1), 12), ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+    ]))
+    story.append(table)
+    story.append(Spacer(1, 18))
+
+    story.append(Table([[""]], colWidths=[6.77 * inch], rowHeights=[0.5],
+                        style=TableStyle([("LINEABOVE", (0, 0), (-1, 0), 0.75, colors.HexColor(_BORDER), None, (2, 2))])))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("If you have any questions, feel free to contact us.",
+                            ParagraphStyle("RcptFooterNote", parent=label_style, alignment=1, fontSize=9.5,
+                                           textColor=colors.HexColor(_TEXT_MUTED))))
+
+    def _draw_footer(canvas_obj, doc):
+        width, _ = A4
+        margin = 0.5 * inch
+        canvas_obj.saveState()
+        # Footer card: computer icon + disclaimer + green page badge.
+        card_h = 0.59 * inch
+        card_y = 1.05 * inch
+        _round_rect_with_shadow(canvas_obj, margin, card_y, width - 2 * margin, card_h, radius=9, fill="#FFFFFF")
+        mid_y = card_y + card_h / 2
+        _draw_icon_glyph(canvas_obj, "computer", margin + 0.28 * inch, mid_y + 0.04 * inch, 0.24 * inch, colors.HexColor(_TEXT_MUTED))
+        canvas_obj.setFont("Helvetica-Bold", 8.5)
+        canvas_obj.setFillColor(colors.HexColor(_TEXT_DARK))
+        canvas_obj.drawString(margin + 0.46 * inch, mid_y + 0.06 * inch, "Computer Rise Print")
+        canvas_obj.setFont("Helvetica", 7.6)
+        canvas_obj.setFillColor(colors.HexColor(_TEXT_MUTED))
+        canvas_obj.drawString(margin + 0.46 * inch, mid_y - 0.1 * inch,
+                               "This is a computer generated printout and does not require signature.")
+        label = "Page 1 of 1"
+        canvas_obj.setFont("Helvetica-Bold", 8.5)
+        badge_w = canvas_obj.stringWidth(label, "Helvetica-Bold", 8.5) + 0.4 * inch
+        badge_h = 0.3 * inch
+        badge_x = width - margin - 0.2 * inch - badge_w
+        badge_y = mid_y - badge_h / 2
+        canvas_obj.setFillColor(colors.HexColor(_GREEN))
+        canvas_obj.roundRect(badge_x, badge_y, badge_w, badge_h, badge_h / 2, stroke=0, fill=1)
+        canvas_obj.setFillColor(colors.white)
+        canvas_obj.drawCentredString(badge_x + badge_w / 2, badge_y + badge_h / 2 - 3, label)
+
+        # 4 feature badges with separators, above the footer card.
+        badges = [
+            ("detailed", "Detailed", "Transaction Records"),
+            ("clear", "Clear", "Account Overview"),
+            ("secure", "Secure", "& Reliable"),
+            ("download", "Download", "Anytime"),
+        ]
+        usable_width = width - 2 * margin
+        col_w = usable_width / len(badges)
+        circle_y = card_y + card_h + 0.55 * inch
+        for i, (icon_name, line1, line2) in enumerate(badges):
+            cx = margin + col_w * i + col_w / 2
+            if i > 0:
+                sep_x = margin + col_w * i
+                canvas_obj.setStrokeColor(colors.HexColor("#C7CBD1"))
+                canvas_obj.setLineWidth(0.6)
+                canvas_obj.line(sep_x, circle_y - 26, sep_x, circle_y + 16)
+            canvas_obj.setStrokeColor(colors.HexColor(_GREEN))
+            canvas_obj.setLineWidth(1.2)
+            canvas_obj.setFillColor(colors.white)
+            canvas_obj.circle(cx, circle_y, 15.75, stroke=1, fill=1)
+            _draw_icon_glyph(canvas_obj, icon_name, cx, circle_y, 0.23 * inch, colors.HexColor(_GREEN))
+            canvas_obj.setFont("Helvetica-Bold", 8.6)
+            canvas_obj.setFillColor(colors.HexColor(_TEXT_DARK))
+            canvas_obj.drawCentredString(cx, circle_y - 24, line1)
+            canvas_obj.setFont("Helvetica", 7.6)
+            canvas_obj.setFillColor(colors.HexColor(_TEXT_MUTED))
+            canvas_obj.drawCentredString(cx, circle_y - 34, line2)
+        canvas_obj.restoreState()
+
+    def _draw_all(canvas_obj, doc):
+        _draw_header_and_card(canvas_obj, doc)
+        _draw_footer(canvas_obj, doc)
+
+    doc.build(story, onFirstPage=_draw_all, onLaterPages=_draw_all)
     return buf.getvalue()
 
-
-def _amount_in_words(amount):
+def _amount_in_words(amount, include_rupees=False):
     """Indian-numbering (lakh/crore) amount-in-words, e.g. 99671 ->
     'Ninety Nine Thousand Six Hundred Seventy One Only'. Paise are
     rounded off - these statements/receipts only ever show whole-rupee
-    style wording, matching the reference design."""
+    style wording, matching the reference design. include_rupees adds
+    the word "Rupees" before "Only" (used by the Receipt PDF; Account
+    Statement's own reference design doesn't include it, so that one
+    keeps calling this with the default)."""
     ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
             "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
             "Seventeen", "Eighteen", "Nineteen"]
@@ -2534,9 +2734,10 @@ def _amount_in_words(amount):
             return (ones[n // 100] + " Hundred" + (" " + two_digits(n % 100) if n % 100 else "")).strip()
         return two_digits(n)
 
+    suffix = " Rupees Only" if include_rupees else " Only"
     n = int(round(abs(amount)))
     if n == 0:
-        return "Zero Only"
+        return "Zero" + suffix
 
     crore, n = divmod(n, 10000000)
     lakh, n = divmod(n, 100000)
@@ -2552,7 +2753,7 @@ def _amount_in_words(amount):
         parts.append(three_digits(thousand) + " Thousand")
     if hundred:
         parts.append(three_digits(hundred))
-    return " ".join(parts).strip() + " Only"
+    return " ".join(parts).strip() + suffix
 
 
 def escape_html(s):
@@ -5177,7 +5378,22 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception as err:  # noqa: BLE001
             return self._send_json(500, {"error": f"Could not build account statement PDF: {err}"})
 
-        download_name = f"Account_Statement_{user_id}_{datetime.date.today().isoformat()}.pdf"
+        def _mmddyyyy(iso_date):
+            try:
+                d = datetime.date.fromisoformat(str(iso_date)[:10])
+                return d.strftime("%m_%d_%Y")
+            except Exception:  # noqa: BLE001
+                return ""
+
+        period_start = start_date
+        period_end = end_date
+        if not period_start and in_range_txns:
+            dates = sorted(str(t.get("date") or "") for t in in_range_txns if t.get("date"))
+            if dates:
+                period_start, period_end = dates[0], dates[-1]
+        start_label = _mmddyyyy(period_start) or datetime.date.today().strftime("%m_%d_%Y")
+        end_label = _mmddyyyy(period_end) or datetime.date.today().strftime("%m_%d_%Y")
+        download_name = f"Account Statement - {start_label} to {end_label}.pdf"
         self.send_response(200)
         self.send_header("Content-Type", "application/pdf")
         self.send_header("Content-Length", str(len(pdf_bytes)))
@@ -5232,7 +5448,7 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception as err:  # noqa: BLE001
             return self._send_json(500, {"error": f"Could not build receipt PDF: {err}"})
 
-        download_name = f"Receipt_{txn_id}.pdf"
+        download_name = f"Receipt - {datetime.datetime.now().strftime('%m_%d_%Y %H_%M')}.pdf"
         self.send_response(200)
         self.send_header("Content-Type", "application/pdf")
         self.send_header("Content-Length", str(len(pdf_bytes)))
