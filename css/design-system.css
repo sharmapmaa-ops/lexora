@@ -1212,12 +1212,92 @@ body, input, select, textarea, button {
 .filter-btn.reset-btn { color: var(--ds-ink); border-color: var(--ds-line); }
 .filter-btn.raise-issue-btn { color: var(--ds-blue); border-color: rgba(18,87,245,.32); }
 
-.payment-history-table thead th { background: #eef2fa; color: #46557a; }
+.payment-history-table td.credit { color: #15803d; }
+.payment-history-table td.debit  { color: #dc2626; }
+
+.payment-history-table thead th {
+    background: #eef2fa;
+    color: #46557a;
+    font-weight: 700;
+    padding: 10px 12px;
+    height: 42px;
+}
 .payment-history-table { table-layout: fixed; width: 100%; }
+
+/* Item 17 - column widths for the 11-column layout (checkbox, download,
+   date, time, type, transaction id, description, amount, status,
+   balance, user id). Description gets the most room since it's the
+   least predictable in length. */
+.payment-history-table th:nth-child(1),  .payment-history-table td:nth-child(1)  { width: 32px; }
+.payment-history-table th:nth-child(2),  .payment-history-table td:nth-child(2)  { width: 44px; }
+.payment-history-table th:nth-child(3),  .payment-history-table td:nth-child(3)  { width: 9%; }
+.payment-history-table th:nth-child(4),  .payment-history-table td:nth-child(4)  { width: 6%; }
+.payment-history-table th:nth-child(5),  .payment-history-table td:nth-child(5)  { width: 8%; }
+.payment-history-table th:nth-child(6),  .payment-history-table td:nth-child(6)  { width: 14%; }
+.payment-history-table th:nth-child(7),  .payment-history-table td:nth-child(7)  { width: 24%; }
+.payment-history-table th:nth-child(8),  .payment-history-table td:nth-child(8)  { width: 10%; }
+.payment-history-table th:nth-child(9),  .payment-history-table td:nth-child(9)  { width: 9%; }
+.payment-history-table th:nth-child(10), .payment-history-table td:nth-child(10) { width: 10%; }
+.payment-history-table th:nth-child(11), .payment-history-table td:nth-child(11) { width: 8%; }
+
+/* Item 10,11 - compact rows (~4px shorter than before), everything in
+   a row vertically centered. */
+.payment-history-table td {
+    padding: 8px 12px;
+    vertical-align: middle;
+    height: 40px;
+}
+
+/* Item 5 - descriptions wrap onto a second line instead of being
+   truncated, but never break the table layout. */
+.payment-history-table td:nth-child(7) {
+    white-space: normal;
+    word-break: break-word;
+    line-height: 1.35;
+}
+
+/* Item 4 - Transaction ID never wraps/truncates awkwardly. */
+.payment-history-table td:nth-child(6) {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Item 14 - subtle row hover. */
+.payment-history-table tbody tr {
+    transition: background-color 180ms ease;
+}
+.payment-history-table tbody tr:hover {
+    background-color: #f5f8ff;
+}
+
+/* Item 16 - Download icon: centered, consistent size/color, clear
+   hover feedback, pointer cursor. */
+.txn-download-cell { text-align: center; }
+.txn-download-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #1257f5;
+    cursor: pointer;
+    transition: color 150ms ease, transform 150ms ease;
+}
+.txn-download-icon:hover {
+    color: #0b3fc4;
+    transform: translateY(-1px);
+}
+
+/* Item 15 - responsive: amount/status/balance stay visible, ID and
+   description degrade gracefully instead of breaking the layout. */
+@media (max-width: 900px) {
+    .payment-history-table th:nth-child(6), .payment-history-table td:nth-child(6) { width: 11%; }
+    .payment-history-table th:nth-child(7), .payment-history-table td:nth-child(7) { width: 18%; }
+}
 
 /* status pills */
 .txn-status-pill {
     display: inline-block;
+    vertical-align: middle;
     border-radius: 999px;
     font-size: .7rem;
     font-weight: 600;

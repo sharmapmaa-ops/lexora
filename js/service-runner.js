@@ -61,6 +61,12 @@
   // download immediately. Anything without systemConfig keeps the
   // original direct-download behavior, unchanged.
   async function smartDownload(id, blob, filename) {
+    // Re-check the catalog fresh, not whatever was cached when this
+    // page loaded - an Admin toggling System Configuration for this
+    // service should take effect on the very next download.
+    if (window.refreshServicesCatalog) {
+      try { await window.refreshServicesCatalog(); } catch (e) { /* fall back to whatever's cached */ }
+    }
     const catalogEntry = window.SERVICES_CATALOG && window.SERVICES_CATALOG[id];
     const hasSystemConfig = !!(catalogEntry && catalogEntry.systemConfig === 'Yes');
     if (!hasSystemConfig) { downloadBlob(blob, filename); return; }

@@ -2711,6 +2711,13 @@
                 }
                 const isLeaseFile = leaseFiles.some(f => f.id === fileId);
                 const svcId = isLeaseFile ? 'lease-abstraction' : 'translation';
+                // Re-check the catalog fresh (not whatever was cached when
+                // this page loaded) - an Admin toggling System
+                // Configuration for this service should take effect on the
+                // very next download, not require a full page reload first.
+                if (window.refreshServicesCatalog) {
+                    try { await refreshServicesCatalog(); } catch (e) { /* fall back to whatever's cached */ }
+                }
                 const hasSystemConfig = SERVICES_CATALOG[svcId] && SERVICES_CATALOG[svcId].systemConfig === 'Yes';
                 try {
                     if (hasSystemConfig && currentSystemConfig.trim().toLowerCase() === 'email') {
@@ -3314,7 +3321,7 @@
             }
 
             function renderHistoryRows(tbody, list, includeCheckbox) {
-                const colCount = includeCheckbox ? 10 : 9;
+                const colCount = includeCheckbox ? 11 : 10;
                 if (list.length === 0) {
                     tbody.innerHTML =
                         `<tr><td colspan="${colCount}" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions found.</td></tr>`;
@@ -3331,7 +3338,7 @@
                     return Object.assign({}, t, { _runningBalance: running });
                 });
                 const sortedHistory = withBalance.slice().reverse();
-                sortedHistory.forEach((transaction, idx) => {
+                sortedHistory.forEach((transaction) => {
                     const tr = document.createElement('tr');
                     // Item 3 - a balance-add sitting in pending_approval (or
                     // cancelled) shows a clear status prefix on its
@@ -3346,12 +3353,17 @@
                     } else if (transaction.status === 'failed') {
                         descriptionText = `<span class="txn-status-tag cancelled">Failed</span> : ${descriptionText}`;
                     }
-                    const receiptIcon = transaction.credit > 0
-                        ? `<a onclick="downloadTxnReceiptPdf('${transaction.id}')" title="Download receipt" style="cursor:pointer;color:#1257f5;display:inline-flex;margin-left:6px;vertical-align:middle;">
-                               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
+                    const isCredit = Number(transaction.credit) > 0;
+                    // Download is only meaningful for money actually
+                    // received AND successfully settled - a pending/
+                    // cancelled/failed row (even a credit one) has no
+                    // receipt to give yet.
+                    const isSuccess = !['pending_approval', 'cancelled', 'failed'].includes(transaction.status);
+                    const receiptIcon = (isCredit && isSuccess)
+                        ? `<a onclick="downloadTxnReceiptPdf('${transaction.id}')" title="Download receipt" class="txn-download-icon">
+                               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
                            </a>`
                         : '';
-                    const isCredit = Number(transaction.credit) > 0;
                     const typeBadge = isCredit
                         ? `<span class="txn-type-badge credit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M12 7v8M8.5 11.5 12 15l3.5-3.5"/></svg> Credit</span>`
                         : `<span class="txn-type-badge debit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M15.5 12.5 12 9l-3.5 3.5M12 17V9"/></svg> Debit</span>`;
@@ -3359,10 +3371,11 @@
                     const amountText = `${amountValue >= 0 ? '+' : '-'}${formatMoney(Math.abs(amountValue))}`;
                     tr.innerHTML = `
                         ${includeCheckbox ? `<td><input type="checkbox" class="txn-select-checkbox" data-txn-id="${transaction.id}" ${selectedTransactionIds.has(transaction.id) ? 'checked' : ''} onchange="toggleSelectTransaction('${transaction.id}', this.checked)" /></td>` : ''}
-                        <td>${idx + 1}</td>
-                        <td>${formatTxnDate(transaction.date)}, ${formatTxnTime(transaction.time)}</td>
+                        <td class="txn-download-cell">${receiptIcon}</td>
+                        <td>${formatTxnDate(transaction.date)}</td>
+                        <td>${formatTxnTime(transaction.time)}</td>
                         <td>${typeBadge}</td>
-                        <td><span style="font-weight:500;color:darkblue;">${transaction.id}</span>${receiptIcon}</td>
+                        <td><span style="font-weight:500;color:darkblue;">${transaction.id}</span></td>
                         <td>${descriptionText}</td>
                         <td class="${isCredit ? 'credit' : 'debit'}" style="text-align:right;font-weight:600;">${amountText}</td>
                         <td>${txnStatusPill(transaction.status)}</td>
@@ -3615,8 +3628,9 @@
                                     <thead>
                                         <tr>
                                             <th style="width:36px;"><input type="checkbox" id="historySelectAll" onchange="toggleSelectAllTransactions(this.checked)" /></th>
-                                            <th>#</th>
-                                            <th>Date &amp; Time</th>
+                                            <th style="width:44px;">Download</th>
+                                            <th>Date</th>
+                                            <th>Time</th>
                                             <th>Type</th>
                                             <th>Transaction ID</th>
                                             <th>Description</th>
@@ -5317,7 +5331,7 @@
 
                 if (todayList.length === 0) {
                     tbody.innerHTML =
-                        '<tr><td colspan="9" class="dash-empty-cell">' +
+                        '<tr><td colspan="10" class="dash-empty-cell">' +
                         '<svg class="dash-empty-art" viewBox="0 0 72 56" fill="none" aria-hidden="true">' +
                         '<path d="M8 26h14l4 7h20l4-7h14v20a4 4 0 0 1-4 4H12a4 4 0 0 1-4-4z" fill="#dbe8fe"/>' +
                         '<path d="M8 26 18 8h36l10 18" stroke="#bcd6fb" stroke-width="3" stroke-linejoin="round" fill="none"/>' +
@@ -10012,8 +10026,9 @@
                                     <table class="history-table today-table" id="todayTableHeader">
                                         <thead>
                                             <tr>
-                                                <th>#</th>
-                                                <th>Date &amp; Time</th>
+                                                <th style="width:44px;">Download</th>
+                                                <th>Date</th>
+                                                <th>Time</th>
                                                 <th>Type</th>
                                                 <th>Transaction ID</th>
                                                 <th>Description</th>
