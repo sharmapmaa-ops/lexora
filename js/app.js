@@ -693,7 +693,7 @@
                     const isSessionDl = file.sessionDownload && translationBlobStore[file.id];
                     const actionLink = file.status === 'completed' ?
                         (isSessionDl
-                          ? `<a class="file-action-link" onclick="downloadSessionBlob('${file.id}')" title="Download"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`
+                          ? `<a class="file-action-link" onclick="downloadSessionBlob('${file.id}', '${file._serviceOrigin || ''}')" title="Download"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`
                           : `<a class="file-action-link" onclick="downloadFile('${dlFile}', '${docFolder.replace(/'/g, "\\'")}', '${downloadKind}')" title="Download"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`) :
                         file.status === 'needs_review' ?
                         `<a class="file-action-link review-link" onclick="openLeaseReviewModal('${file.id}')">🔍 Review</a>` :
@@ -2703,13 +2703,29 @@
                 document.body.insertAdjacentHTML('beforeend', html);
             };
 
-            window.downloadSessionBlob = async function(fileId) {
+            window.downloadSessionBlob = async function(fileId, serviceOrigin) {
                 const entry = translationBlobStore[fileId];
                 if (!entry || !entry.blob) {
                     showWarning('This file is only available during the session it was processed in. Please run it again to download.');
                     return;
                 }
-                const isLeaseFile = leaseFiles.some(f => f.id === fileId);
+                // Item: lease/translation files use SEPARATE id counters
+                // (both starting at 1), so an id alone can't reliably tell
+                // them apart - a translation file could collide with a
+                // lease file that happens to share the same number,
+                // silently inheriting the WRONG service's System
+                // Configuration setting. The caller now passes its own
+                // origin directly (unambiguous); only guess from ID
+                // membership as a last resort for any older call site.
+                let isLeaseFile;
+                if (serviceOrigin) {
+                    isLeaseFile = serviceOrigin === 'lease-abstraction';
+                } else {
+                    const sourceEntry = leaseFiles.find(f => f.id === fileId) || translationFiles.find(f => f.id === fileId);
+                    isLeaseFile = sourceEntry && sourceEntry._serviceOrigin
+                        ? sourceEntry._serviceOrigin === 'lease-abstraction'
+                        : leaseFiles.some(f => f.id === fileId);
+                }
                 const svcId = isLeaseFile ? 'lease-abstraction' : 'translation';
                 // Re-check the catalog fresh (not whatever was cached when
                 // this page loaded) - an Admin toggling System
@@ -3008,6 +3024,7 @@
 
                     const newFile = {
                         id: idCounter + i,
+                        _serviceOrigin: isTranslation ? 'translation' : 'lease-abstraction',
                         userId: CURRENT_USER_ID,
                         name: file.name,
                         status: 'pending',
