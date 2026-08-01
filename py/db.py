@@ -807,6 +807,13 @@ DOCUMENT_RESOURCES = (
     # list. The dropdown itself only shows on a service at all when
     # that service's Services Catalog row has systemConfig=Yes.
     "system-configs",
+    # Messaging Settings (item 1) - per-event Yes/No toggle controlling
+    # whether that email/SMS actually gets sent. Checked via
+    # _messaging_enabled() right before each real send.
+    "messaging-settings",
+    # AI Prompts (item 2) - every AI prompt used anywhere in the app,
+    # admin-editable instead of hardcoded in Python source.
+    "ai-prompts",
 )
 
 DB_BACKED_RESOURCES = ("payment-history", "notifications") + DOCUMENT_RESOURCES
@@ -997,6 +1004,29 @@ VIRTUAL_TABLES = {
         "select_options": {},
         "readonly_fields": set(),
     },
+    "doc_messaging_settings": {
+        "kind": "document",
+        "resource": "messaging-settings",
+        "fields": ["id", "event", "enabled"],
+        "types": {},
+        "jsonb_defaults": {},
+        "field_defaults": {"enabled": "Yes"},
+        "select_options": {"enabled": ["Yes", "No"]},
+        # 'id' is the fixed event key (e.g. "login-otp") that
+        # _messaging_enabled() looks up by - renaming it would silently
+        # disconnect this row from the actual send-code that checks it.
+        "readonly_fields": {"id"},
+    },
+    "doc_ai_prompts": {
+        "kind": "document",
+        "resource": "ai-prompts",
+        "fields": ["id", "serviceName", "promptNumber", "promptText", "fileLocation"],
+        "types": {},
+        "jsonb_defaults": {},
+        "field_defaults": {},
+        "select_options": {},
+        "readonly_fields": set(),
+    },
 }
 
 # Human-readable column headers for the Admin Database table viewer -
@@ -1018,6 +1048,9 @@ VIRTUAL_TABLE_LABELS = {
                               "billingUnit": "Paid Billing Unit", "apiAccess": "API Access",
                               "visibility": "Visibility", "systemConfig": "System Configuration", "image": "Image"},
     "doc_system_configs": {"id": "ID", "name": "System Name"},
+    "doc_messaging_settings": {"id": "Event Key", "event": "Event", "enabled": "Send Email/SMS"},
+    "doc_ai_prompts": {"id": "ID", "serviceName": "Service Name", "promptNumber": "Prompt #",
+                        "promptText": "Prompt", "fileLocation": "File Location"},
 }
 
 

@@ -3932,6 +3932,11 @@
                     });
                     persistPaymentHistory();
                     renderPaymentHistory();
+                    authFetch('/api/payment/notify-failed', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId: CURRENT_USER_ID, reason: (response.error && response.error.description) || '' })
+                    }).catch(() => {}); // best-effort - a failed notify-call shouldn't disrupt the UI
                 });
                 rzp.open();
 
@@ -11656,16 +11661,45 @@
 
             window.submitDeleteAccount = async function() {
                 const password = document.getElementById('deleteAccountPassword').value;
+                const codeInput = document.getElementById('deleteAccountCode');
                 const errBox = document.getElementById('deleteAccountError');
                 if (!password) {
                     if (errBox) { errBox.textContent = 'Please enter your password.'; errBox.style.display = 'block'; }
                     return;
                 }
+                // Not yet requested an OTP (or it's disabled) - ask first.
+                if (!codeInput) {
+                    try {
+                        const res = await authFetch('/api/auth/delete-account-request', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ userId: CURRENT_USER_ID, password: password })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error || 'Could not verify password.');
+                        if (data.otpRequired) {
+                            const wrapper = document.getElementById('deleteAccountPassword').closest('.password-field-wrapper');
+                            if (wrapper) {
+                                wrapper.insertAdjacentHTML('afterend',
+                                    `<div class="setup-group" style="margin-bottom:10px;">
+                                        <label>Verification code (sent to your email)</label>
+                                        <input type="text" id="deleteAccountCode" style="width:100%;" placeholder="Enter the code" />
+                                    </div>`);
+                            }
+                            if (errBox) errBox.style.display = 'none';
+                            return; // person now enters the code and clicks the button again
+                        }
+                        // OTP not required - fall through to the actual delete below.
+                    } catch (err) {
+                        if (errBox) { errBox.textContent = err.message || 'Could not verify password.'; errBox.style.display = 'block'; }
+                        return;
+                    }
+                }
                 try {
                     const res = await authFetch('/api/auth/delete-account', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ userId: CURRENT_USER_ID, password: password })
+                        body: JSON.stringify({ userId: CURRENT_USER_ID, password: password, code: codeInput ? codeInput.value.trim() : '' })
                     });
                     const data = await res.json();
                     if (!res.ok) throw new Error(data.error || 'Could not delete account.');

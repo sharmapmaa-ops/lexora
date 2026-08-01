@@ -765,6 +765,9 @@ ALLOWED_RESOURCES = {
     # System Configurations (item 15) - admin-manageable storage systems
     # list, feeds every service's System Configuration dropdown.
     "system-configs",
+    # Messaging Settings + AI Prompts (this message's items 1,2).
+    "messaging-settings",
+    "ai-prompts",
 }
 
 # json files that must never be served as static files (contain secrets).
@@ -1065,6 +1068,54 @@ def _load_smtp_expiry_minutes():
         return 10
 
 
+MESSAGING_EVENTS = [
+    ("password-change", "Password Change"),
+    ("login-otp", "Login OTP Verification"),
+    ("incorrect-otp", "Incorrect OTP"),
+    ("registration", "Registration"),
+    ("password-change-verification", "Password Change Verification"),
+    ("plan-change", "Plan Change"),
+    ("account-delete-otp", "Account Delete OTP"),
+    ("account-delete", "Account Delete"),
+    ("create-ticket", "Create Ticket"),
+    ("update-ticket", "Update Ticket"),
+    ("payment-received", "Payment Received"),
+    ("payment-rejected", "Payment Rejected"),
+]
+
+
+def _messaging_enabled(event_key):
+    """Item 1 - Admin > Messaging Settings table controls whether a
+    given email/SMS actually goes out. Defaults to True (sends) if the
+    table is empty/not yet seeded/this event isn't in it, so a blank
+    table never silently mutes every notification - only an explicit
+    "No" row stops one."""
+    if db is None or not db.is_enabled():
+        return True
+    try:
+        rows = db.list_documents("messaging-settings")
+    except Exception as err:  # noqa: BLE001
+        print(f"[messaging] could not read settings, defaulting to enabled: {err}")
+        return True
+    for row in rows:
+        if row.get("id") == event_key:
+            return row.get("enabled") != "No"
+    return True
+
+
+def _notify_incorrect_otp(user):
+    """New notification (item 1) - fires when someone enters a wrong
+    verification code for this account, as a lightweight security
+    heads-up. Gated like every other event in Messaging Settings."""
+    if not _messaging_enabled("incorrect-otp"):
+        return
+    email = user.get("email")
+    name = user.get("firstName") or "there"
+    message = "Someone just entered an incorrect verification code for your account. If this wasn't you, please check your account security."
+    if email:
+        _send_notification_email_async(email, name, "Incorrect verification code entered", message)
+
+
 def _send_email(to_email, subject, body, html_body=None):
     """Generic SMTP sender shared by the contact-us acknowledgement email
     and every verification-code email (register/login/reset). Uses
@@ -1153,6 +1204,9 @@ def _send_sms(to_number, body):
 
 
 def _send_verification_sms(to_mobile, purpose, code, expiry_minutes):
+    event_key = {"register": "registration", "login": "login-otp", "reset": "password-change-verification"}.get(purpose)
+    if event_key and not _messaging_enabled(event_key):
+        return
     company_name = _load_company_name()
     label = _VERIFICATION_PURPOSE_LABELS.get(purpose, "verify your account")
     # Same free-text "Mobile No" field the Profile page already has - not
@@ -1233,6 +1287,8 @@ def _html_email_wrapper(company_name, preheader, body_html):
 
 
 def _send_acknowledgement_email(to_email, user_name, ticket_id, msg_type, subject, message):
+    if not _messaging_enabled("create-ticket"):
+        return
     company_name = _load_company_name()
     plain_body = (
         f"Hi {user_name},\n\n"
@@ -1265,6 +1321,8 @@ Thanks for reaching out. We've received your <strong>{msg_type.lower()}</strong>
 
 
 def _send_ticket_update_email(to_email, user_name, ticket_id, status, response, subject):
+    if not _messaging_enabled("update-ticket"):
+        return
     company_name = _load_company_name()
     plain_body = (
         f"Hi {user_name},\n\n"
@@ -1407,6 +1465,7 @@ _VERIFICATION_PURPOSE_LABELS = {
     "login": "complete your login",
     "reset": "reset your password",
     "mobile-verify": "verify your mobile number",
+    "delete-account": "confirm your account deletion",
 }
 
 
@@ -1680,7 +1739,7 @@ def _donut_chart_drawing(credit_count, credit_amt, debit_count, debit_amt, neutr
     size = 1.75 * 72  # 1.75in in points, Drawing units are points
     cx = cy = size / 2
     outer_r = size / 2 - 4
-    inner_r = outer_r * 0.55  # matches the reference's ring thickness
+    inner_r = outer_r * 0.66  # thinner ring, larger center hole per the latest refinement
 
     d = Drawing(size, size)
 
@@ -1700,11 +1759,11 @@ def _donut_chart_drawing(credit_count, credit_amt, debit_count, debit_amt, neutr
         d.add(w)
         start_angle -= sweep
 
-    d.add(String(cx, cy + 13, "Total", fontSize=8, fontName="Helvetica",
+    d.add(String(cx, cy + 15, "Total", fontSize=8, fontName="Helvetica",
                  fillColor=colors.HexColor(_TEXT_MUTED), textAnchor="middle"))
-    d.add(String(cx, cy - 5, str(total_all), fontSize=19, fontName="Helvetica-Bold",
+    d.add(String(cx, cy - 4, str(total_all), fontSize=19, fontName="Helvetica-Bold",
                  fillColor=colors.HexColor(_NAVY), textAnchor="middle"))
-    d.add(String(cx, cy - 19, "Transactions", fontSize=7.2, fontName="Helvetica",
+    d.add(String(cx, cy - 18, "Transactions", fontSize=7.2, fontName="Helvetica",
                  fillColor=colors.HexColor(_TEXT_MUTED), textAnchor="middle"))
     return d
 
@@ -1834,7 +1893,7 @@ def _account_statement_page_decorator(logo_path, footer_note, from_name, from_mo
         canvas_obj.saveState()
 
         margin = 0.5 * inch
-        top = height - margin
+        top = height - margin - 3
 
         # ---- Small logo (left) + title (right), one compact row ----
         logo_size = 0.5 * inch
@@ -1857,9 +1916,9 @@ def _account_statement_page_decorator(logo_path, footer_note, from_name, from_mo
         card_w = width - 2 * margin
         _round_rect_with_shadow(canvas_obj, margin, card_top - card_h, card_w, card_h, radius=9)
 
-        pad = 0.18 * inch
+        pad = 0.25 * inch
         tx = margin + pad
-        ty = card_top - 0.26 * inch
+        ty = card_top - 0.3 * inch
         canvas_obj.setFont("Helvetica-Bold", 9)
         canvas_obj.setFillColor(colors.HexColor(_GREEN))
         canvas_obj.drawString(tx, ty, "From:")
@@ -1931,14 +1990,17 @@ def _account_statement_numbered_canvas(logo_path, footer_note, from_name, from_m
             margin = 0.5 * inch
             self.saveState()
             # Rounded card behind the whole footer strip.
-            _round_rect_with_shadow(self, margin, 0.35 * inch, width - 2 * margin, 0.52 * inch, radius=9, fill="#FFFFFF")
-            _draw_icon_glyph(self, "computer", margin + 0.28 * inch, 0.61 * inch, 0.24 * inch, colors.HexColor(_TEXT_MUTED))
+            card_h = 0.59 * inch
+            card_y = 0.35 * inch
+            _round_rect_with_shadow(self, margin, card_y, width - 2 * margin, card_h, radius=9, fill="#FFFFFF")
+            mid_y = card_y + card_h / 2
+            _draw_icon_glyph(self, "computer", margin + 0.28 * inch, mid_y + 0.04 * inch, 0.24 * inch, colors.HexColor(_TEXT_MUTED))
             self.setFont("Helvetica-Bold", 8.5)
             self.setFillColor(colors.HexColor(_TEXT_DARK))
-            self.drawString(margin + 0.46 * inch, 0.67 * inch, "Computer Rise Print")
+            self.drawString(margin + 0.46 * inch, mid_y + 0.06 * inch, "Computer Rise Print")
             self.setFont("Helvetica", 7.6)
             self.setFillColor(colors.HexColor(_TEXT_MUTED))
-            self.drawString(margin + 0.46 * inch, 0.53 * inch, footer_note)
+            self.drawString(margin + 0.46 * inch, mid_y - 0.1 * inch, footer_note)
             # Green rounded "Page X of Y" badge, right side, vertically
             # centered within the footer card.
             label = f"Page {page_num} of {total_pages}"
@@ -1946,7 +2008,7 @@ def _account_statement_numbered_canvas(logo_path, footer_note, from_name, from_m
             badge_w = self.stringWidth(label, "Helvetica-Bold", 8.5) + 0.4 * inch
             badge_h = 0.3 * inch
             badge_x = width - margin - 0.2 * inch - badge_w
-            badge_y = 0.35 * inch + (0.52 * inch - badge_h) / 2
+            badge_y = mid_y - badge_h / 2
             self.setFillColor(colors.HexColor(_GREEN))
             self.roundRect(badge_x, badge_y, badge_w, badge_h, badge_h / 2, stroke=0, fill=1)
             self.setFillColor(colors.white)
@@ -1973,21 +2035,21 @@ def _account_statement_numbered_canvas(logo_path, footer_note, from_name, from_m
             ]
             usable_width = width - 2 * margin
             col_w = usable_width / len(badges)
-            circle_y = 1.35 * inch
+            circle_y = 1.28 * inch
             self.saveState()
             for i, (icon_name, label) in enumerate(badges):
                 cx = margin + col_w * i + col_w / 2
                 if i > 0:
                     # Thin separator line between each icon column.
                     sep_x = margin + col_w * i
-                    self.setStrokeColor(colors.HexColor(_BORDER))
-                    self.setLineWidth(0.5)
+                    self.setStrokeColor(colors.HexColor("#C7CBD1"))
+                    self.setLineWidth(0.6)
                     self.line(sep_x, circle_y - 26, sep_x, circle_y + 16)
                 self.setStrokeColor(colors.HexColor(_GREEN))
                 self.setLineWidth(1.2)
                 self.setFillColor(colors.white)
-                self.circle(cx, circle_y, 15, stroke=1, fill=1)
-                _draw_icon_glyph(self, icon_name, cx, circle_y, 0.22 * inch, colors.HexColor(_GREEN))
+                self.circle(cx, circle_y, 15.75, stroke=1, fill=1)
+                _draw_icon_glyph(self, icon_name, cx, circle_y, 0.23 * inch, colors.HexColor(_GREEN))
                 self.setFont("Helvetica-Bold", 7.8)
                 self.setFillColor(colors.HexColor(_TEXT_DARK))
                 self.drawCentredString(cx, circle_y - 28, label)
@@ -2037,7 +2099,7 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
-        topMargin=1.85 * inch, bottomMargin=1.75 * inch,
+        topMargin=2.4 * inch, bottomMargin=1.75 * inch,
         leftMargin=0.5 * inch, rightMargin=0.5 * inch,
     )
     story = []
@@ -2085,10 +2147,10 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     donut = _donut_chart_drawing(credit_count, total_credit, debit_count, total_debit, neutral_count)
     legend_style = ParagraphStyle("StmtLegend", parent=label_style, fontSize=9, leading=13.5)
     legend_bits = [
-        Paragraph(f'<font color="{_GREEN}">\u25cf</font> Credit ({credit_count})<br/>'
+        Paragraph(f'<font color="{_GREEN}">\u25cf</font>&nbsp;&nbsp;Credit ({credit_count})<br/><br/>'
                   f'<b>{total_credit:,.2f}</b>', legend_style),
-        Spacer(1, 8),
-        Paragraph(f'<font color="{_RED}">\u25cf</font> Debit ({debit_count})<br/>'
+        Spacer(1, 16),
+        Paragraph(f'<font color="{_RED}">\u25cf</font>&nbsp;&nbsp;Debit ({debit_count})<br/><br/>'
                   f'<b>{total_debit:,.2f}</b>', legend_style),
     ]
     donut_row = Table([[donut, legend_bits]], colWidths=[1.75 * inch, 1.25 * inch], rowHeights=[BOX_BODY_HEIGHT])
@@ -2145,7 +2207,7 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     end_label = _date_fmt(end_date) if end_date else (_date_fmt(sorted(t.get('date') for t in txns if t.get('date'))[-1]) if txns else '')
     rows.append(["", _cell(end_label, True), "", _desc_right("Closing Balance"), "", "", _amount_cell(f"{running:,.2f}")])
 
-    col_widths = [0.24 * inch, 1.25 * inch, 1.4 * inch, 2.2 * inch, 0.68 * inch, 0.68 * inch, 0.82 * inch]
+    col_widths = [0.24 * inch, 1.35 * inch, 1.62 * inch, 1.88 * inch, 0.68 * inch, 0.68 * inch, 0.82 * inch]
     table = Table(rows, colWidths=col_widths, repeatRows=1)
     table_style = [
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(_NAVY)),
@@ -2154,8 +2216,9 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
         ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
         ("FONTSIZE", (0, 0), (-1, -1), 7.6),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-        ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 9.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 9.5),
+        ("TOPPADDING", (0, 0), (-1, 0), 12.5), ("BOTTOMPADDING", (0, 0), (-1, 0), 12.5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
         ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor(_BORDER)),
         ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor(_LIGHT_GREY)]),
         ("ALIGN", (0, 0), (0, -1), "CENTER"),
@@ -2166,6 +2229,7 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
         ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#EAECEF")),
         ("SPAN", (0, -1), (2, -1)),
         ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, -1), (-1, -1), 8.4),
     ]
     table.setStyle(TableStyle(table_style))
     story.append(table)
@@ -2173,11 +2237,11 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
 
     story.append(Table([[""]], colWidths=[7.27 * inch], rowHeights=[0.5],
                         style=TableStyle([("LINEABOVE", (0, 0), (-1, 0), 0.75, colors.HexColor(_BORDER))])))
-    story.append(Spacer(1, 8))
+    story.append(Spacer(1, 14))
     story.append(Paragraph(
-        f'<font color="{_GREEN}"><b>Amount in Words:</b></font> '
+        f'<font color="{_GREEN}"><b>Amount in Words:</b></font>&nbsp;&nbsp;&nbsp;'
         f'<font color="{_TEXT_DARK}">{escape_html(_amount_in_words(current_balance))}</font>',
-        ParagraphStyle("StmtWords", parent=label_style, fontSize=9.5)))
+        ParagraphStyle("StmtWords", parent=label_style, fontSize=9.8)))
 
     canvas_cls, draw_top = _account_statement_numbered_canvas(
         logo_path,
@@ -2493,6 +2557,9 @@ def _base_url_from_headers(headers):
 
 
 def _send_verification_email(to_email, user_name, code, purpose, expiry_minutes, base_url="", user_id=""):
+    event_key = {"register": "registration", "login": "login-otp", "reset": "password-change-verification"}.get(purpose)
+    if event_key and not _messaging_enabled(event_key):
+        return
     company_name = _load_company_name()
     label = _VERIFICATION_PURPOSE_LABELS.get(purpose, "verify your account")
     verify_link = f"{base_url}/?verifyCode={code}&verifyUserId={user_id}&verifyPurpose={purpose}" if base_url and user_id else ""
@@ -3259,6 +3326,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/rules/reject": self._handle_rules_reject,
             "/api/rules/delete-pending": self._handle_rules_delete_pending,
             "/api/rules/delete-approved": self._handle_rules_delete_approved,
+            "/api/admin/messaging-settings-seed": self._handle_messaging_settings_seed,
             "/api/rules/add-blank": self._handle_rules_add_blank,
             "/api/admin/services-catalog-seed": self._handle_services_catalog_seed,
             "/api/admin/services-catalog-reset-api-access": self._handle_services_catalog_reset_api_access,
@@ -3291,9 +3359,11 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/profile/send-mobile-otp": self._handle_profile_send_mobile_otp,
             "/api/profile/verify-mobile-otp": self._handle_profile_verify_mobile_otp,
             "/api/auth/logout": self._handle_auth_logout,
+            "/api/auth/delete-account-request": self._handle_auth_delete_account_request,
             "/api/auth/delete-account": self._handle_auth_delete_account,
             "/api/payment/create-order": self._handle_payment_create_order,
             "/api/payment/verify-payment": self._handle_payment_verify,
+            "/api/payment/notify-failed": self._handle_payment_notify_failed,
         }
 
         handler = routes.get(path)
@@ -3390,6 +3460,27 @@ class Handler(SimpleHTTPRequestHandler):
         }
 
     # ---- Razorpay: verify-payment (step 2) ----
+    def _handle_payment_notify_failed(self, body):
+        """Item 1 - Payment Rejected notification. Razorpay's own
+        payment.failed callback only fires in the browser (there's no
+        server-side webhook wired up for it), so the frontend calls this
+        right after it records the failed transaction locally - this
+        endpoint only sends the notification, it doesn't touch any
+        transaction data itself."""
+        if not _messaging_enabled("payment-rejected"):
+            return 200, {"ok": True}
+        user_id = _safe_id(self._resolve_user_id(body))
+        reason = (body.get("reason") or "").strip()[:300]
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if user and user.get("email"):
+            message = "Your recent payment could not be completed."
+            if reason:
+                message += f" Reason: {reason}"
+            message += " Please try again."
+            _send_notification_email_async(user["email"], user.get("firstName") or "there", "Payment failed", message)
+        return 200, {"ok": True}
+
     def _handle_payment_verify(self, body):
         """Checkout widget ke handler() se aata hai (razorpay_order_id,
         razorpay_payment_id, razorpay_signature). HMAC-SHA256 signature
@@ -3458,6 +3549,14 @@ class Handler(SimpleHTTPRequestHandler):
             "razorpayPaymentId": payment_id,
         }
         _append_payment_history_entry(entry)
+        if _messaging_enabled("payment-received"):
+            users = auth_store.load_users()
+            user = auth_store.find_user_by_id(users, user_id)
+            if user and user.get("email"):
+                _send_notification_email_async(
+                    user["email"], user.get("firstName") or "there", "Payment received",
+                    f"We've received your payment of {real_amount:,.2f} ({order.get('currency', 'INR')}). "
+                    f"Transaction ID: {entry['id']}.")
         return 200, {"ok": True, "transaction": entry}
 
     # ---- Section 2: profile photo storage ----
@@ -5439,6 +5538,28 @@ class Handler(SimpleHTTPRequestHandler):
             db.replace_documents("services-catalog", rows)
         return 200, {"ok": True, "changed": changed, "total": len(rows)}
 
+    def _handle_messaging_settings_seed(self, body):
+        """Admin table's "Seed Events" button - adds any of the 12 fixed
+        messaging events not already a row here, without touching
+        existing rows (so a re-seed after this table already has admin
+        edits never resets them). Login OTP Verification is seeded as
+        "No" specifically, per an explicit instruction for this feature -
+        every other event defaults to "Yes"."""
+        self._require_role(("Admin", "Developer"))
+        if db is None or not db.is_enabled():
+            raise ValueError("Database is not configured.")
+        rows = db.list_documents("messaging-settings")
+        existing_ids = {r.get("id") for r in rows}
+        added = 0
+        for key, label in MESSAGING_EVENTS:
+            if key in existing_ids:
+                continue
+            rows.append({"id": key, "event": label, "enabled": "No" if key == "login-otp" else "Yes"})
+            added += 1
+        if added:
+            db.replace_documents("messaging-settings", rows)
+        return 200, {"ok": True, "added": added, "total": len(rows)}
+
     def _handle_rules_add_blank(self, body):
         """Admin table's "+ Add Row" - creates a blank pending rule ready
         to be filled in and approved, same shape as an auto-discovered or
@@ -5691,6 +5812,7 @@ class Handler(SimpleHTTPRequestHandler):
         if auth_store.is_expired(user.get("verificationCodeExpiresAt")):
             raise ValueError("This code has expired. Please request a new one.")
         if code != str(user.get("verificationCode") or ""):
+            _notify_incorrect_otp(user)
             raise ValueError("Incorrect verification code.")
 
         user["emailVerified"] = "Yes"
@@ -5769,6 +5891,7 @@ class Handler(SimpleHTTPRequestHandler):
         if auth_store.is_expired(user.get("verificationCodeExpiresAt")):
             raise ValueError("This code has expired. Please request a new one.")
         if code != str(user.get("verificationCode") or ""):
+            _notify_incorrect_otp(user)
             raise ValueError("Incorrect verification code.")
 
         user["verificationCode"] = None
@@ -5785,13 +5908,14 @@ class Handler(SimpleHTTPRequestHandler):
             _destroy_session(auth_header[7:].strip())
         return 200, {"ok": True}
 
-    def _handle_auth_delete_account(self, body):
-        """Profile > Delete Account. Requires re-entering the password (the
-        same bar as a password change) since this is irreversible. Removes
-        the user record and destroys their session(s) - their historical
-        transactions/support tickets stay (same as any other account that's
-        gone but whose past activity is still referenced elsewhere), only
-        the login/profile itself is deleted."""
+    def _handle_auth_delete_account_request(self, body):
+        """Step 1 of Profile > Delete Account - verifies the password
+        first (same bar as before), then either sends a one-time code
+        (if Account Delete OTP is enabled in Messaging Settings) or
+        tells the frontend to go straight to the actual delete (if
+        that event is turned off) - so this stays a single-step flow
+        exactly like before when the toggle is off, and becomes a
+        two-step one when it's on."""
         user_id = _safe_id(self._resolve_user_id(body))
         password = body.get("password") or ""
         if not password:
@@ -5805,9 +5929,57 @@ class Handler(SimpleHTTPRequestHandler):
         if not auth_store.verify_password(password, user.get("password")):
             raise ValueError("Incorrect password.")
 
+        if not _messaging_enabled("account-delete-otp"):
+            return 200, {"ok": True, "otpRequired": False}
+
+        code = auth_store.generate_code()
+        expiry_minutes = _load_smtp_expiry_minutes()
+        user["deleteAccountCode"] = code
+        user["deleteAccountCodeExpiresAt"] = auth_store.make_expiry(expiry_minutes)
+        auth_store.save_users(users)
+        if user.get("email"):
+            _send_verification_email_async(user_id, user["email"], user.get("firstName") or "there",
+                                            code, "delete-account", expiry_minutes)
+        return 200, {"ok": True, "otpRequired": True, "expiresInMinutes": expiry_minutes}
+
+    def _handle_auth_delete_account(self, body):
+        """Profile > Delete Account - final step. Requires re-entering
+        the password (the same bar as a password change) since this is
+        irreversible, plus the OTP from the request step above if one
+        was actually sent (skipped entirely when Account Delete OTP is
+        turned off, so this stays exactly as before for that case).
+        Removes the user record and destroys their session(s) - their
+        historical transactions/support tickets stay (same as any other
+        account that's gone but whose past activity is still referenced
+        elsewhere), only the login/profile itself is deleted."""
+        user_id = _safe_id(self._resolve_user_id(body))
+        password = body.get("password") or ""
+        code = (body.get("code") or "").strip()
+        if not password:
+            raise ValueError("Please enter your password.")
+        _check_rate_limit(f"delete-account:{user_id}")
+
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            raise ValueError("Account not found.")
+        if not auth_store.verify_password(password, user.get("password")):
+            raise ValueError("Incorrect password.")
+
+        if user.get("deleteAccountCode"):
+            if auth_store.is_expired(user.get("deleteAccountCodeExpiresAt")):
+                raise ValueError("This code has expired. Please start over.")
+            if code != str(user.get("deleteAccountCode") or ""):
+                _notify_incorrect_otp(user)
+                raise ValueError("Incorrect verification code.")
+
+        email, name = user.get("email"), user.get("firstName") or "there"
         users = [u for u in users if u.get("id") != user_id]
         auth_store.save_users(users)
         _destroy_sessions_for_user(user_id)
+        if _messaging_enabled("account-delete") and email:
+            _send_notification_email_async(email, name, "Your account has been deleted",
+                                            "Your Lexora account has been permanently deleted, as you requested.")
         return 200, {"ok": True}
 
     def _handle_auth_forgot_password(self, body):
@@ -5852,6 +6024,7 @@ class Handler(SimpleHTTPRequestHandler):
         if auth_store.is_expired(user.get("verificationCodeExpiresAt")):
             raise ValueError("This code has expired. Please request a new one.")
         if code != str(user.get("verificationCode") or ""):
+            _notify_incorrect_otp(user)
             raise ValueError("Incorrect verification code.")
         return 200, {"ok": True}
 
@@ -5868,6 +6041,7 @@ class Handler(SimpleHTTPRequestHandler):
         if auth_store.is_expired(user.get("verificationCodeExpiresAt")):
             raise ValueError("This code has expired. Please request a new one.")
         if code != str(user.get("verificationCode") or ""):
+            _notify_incorrect_otp(user)
             raise ValueError("Incorrect verification code.")
 
         issues = auth_store.password_policy_issues(new_password)
@@ -5879,6 +6053,10 @@ class Handler(SimpleHTTPRequestHandler):
         user["verificationCodeExpiresAt"] = None
         user["verificationPurpose"] = None
         auth_store.save_users(users)
+        if _messaging_enabled("password-change") and user.get("email"):
+            _send_notification_email_async(
+                user["email"], user.get("firstName") or "there", "Your password was changed",
+                "Your Lexora account password was just changed. If this wasn't you, please contact support immediately.")
         return 200, {"ok": True}
 
     def _handle_auth_resend_code(self, body):
@@ -5948,8 +6126,14 @@ class Handler(SimpleHTTPRequestHandler):
             if user.get("verificationMethod") == "sms":
                 fields["verificationMethod"] = "email"
 
+        old_plan = user.get("plan")
         user.update(fields)
         auth_store.save_users(users)
+        new_plan = user.get("plan")
+        if "plan" in fields and new_plan and new_plan != old_plan and _messaging_enabled("plan-change") and user.get("email"):
+            _send_notification_email_async(
+                user["email"], user.get("firstName") or "there", "Your plan has changed",
+                f"Your Lexora plan was changed to {new_plan}.")
         return 200, {"ok": True, "user": auth_store.public_user_view(user)}
 
     # ------------------------------------------------------------------
@@ -6046,6 +6230,7 @@ class Handler(SimpleHTTPRequestHandler):
         if auth_store.is_expired(user.get("mobileOtpExpiresAt")):
             raise ValueError("This code has expired. Please request a new one.")
         if not code or code != str(user.get("mobileOtpCode") or ""):
+            _notify_incorrect_otp(user)
             raise ValueError("Incorrect verification code.")
 
         verified_number = user["mobileOtpPendingNumber"]
