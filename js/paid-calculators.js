@@ -404,8 +404,12 @@
       const outEl = document.getElementById('tCwOut');
       if (!topic) { outEl.value = ''; say2('tCwStatus', 'Describe the topic first.', 'error'); return false; }
 
-      const prompt = `Write a ${tone} ${type} about the following topic. Target length: ${length}. ` +
+      const defaultPrompt = `Write a ${tone} ${type} about the following topic. Target length: ${length}. ` +
         `Return only the finished content, no preamble or explanation.\n\nTopic: ${topic}`;
+      const template = window.getAiPrompt ? window.getAiPrompt('Content Writing Tool', 1, null) : null;
+      const prompt = template
+        ? template.replace('{tone}', tone).replace('{type}', type).replace('{length}', length).replace('{topic}', topic)
+        : defaultPrompt;
 
       const data = await window.lexoraProxyJson({
         model: CONTENT_MODEL,
@@ -457,10 +461,12 @@
       const outEl = document.getElementById('tHzOut');
       if (!input) { outEl.value = ''; say2('tHzStatus', 'Paste some text first.', 'error'); return false; }
 
-      const prompt = `Rewrite the following text so it reads more naturally and conversationally - ` +
+      const defaultPrompt = `Rewrite the following text so it reads more naturally and conversationally - ` +
         `vary sentence length and structure, avoid repetitive or overly formal AI-sounding phrasing, ` +
         `but keep the same meaning, facts, and length roughly the same. ` +
         `Return only the rewritten text, no preamble or explanation.\n\nTEXT:\n${input}`;
+      const template = window.getAiPrompt ? window.getAiPrompt('Humanize Document Tool', 1, null) : null;
+      const prompt = template ? template.replace('{input}', input) : defaultPrompt;
 
       const data = await window.lexoraProxyJson({
         model: CONTENT_MODEL,

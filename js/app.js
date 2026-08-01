@@ -329,11 +329,11 @@
                     // same rate field - flat per-document (the default/
                     // current setting) unless this service (or, failing
                     // that, the plan) is configured as per-page.
-                    const perUnit = plan.pricePerTranslation != null ? plan.pricePerTranslation : 1;
+                    const perUnit = plan.pricePerTranslation != null ? Number(plan.pricePerTranslation) || 0 : 1;
                     return unit === 'page' ? perUnit * Math.max(1, pageCount || 1) : perUnit;
                 }
                 // Lease Abstraction: flat per-document pricing.
-                const perUnit = plan.pricePerLeaseAbstraction != null ? plan.pricePerLeaseAbstraction : 1;
+                const perUnit = plan.pricePerLeaseAbstraction != null ? Number(plan.pricePerLeaseAbstraction) || 0 : 1;
                 return unit === 'page' ? perUnit * Math.max(1, pageCount || 1) : perUnit;
             }
 
@@ -406,8 +406,8 @@
                     perUnit = myPlan.pricePerLeaseAbstraction != null ? myPlan.pricePerLeaseAbstraction : 1;
                     unitLabel = (myPlan.billingUnit || 'document') === 'page' ? 'page' : 'document';
                 }
-                const total = selectedFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
-                return `💰 Rate: ${currencySymbol()}${perUnit.toFixed(2)}/${unitLabel} · Est. total: ${currencySymbol()}${total.toFixed(2)} for ${selectedFiles.length} selected file(s)`;
+                const total = selectedFiles.reduce((sum, f) => sum + (Number(getServicePrice(serviceId, f.pageCount)) || 0), 0);
+                return `💰 Rate: ${currencySymbol()}${(Number(perUnit) || 0).toFixed(2)}/${unitLabel} · Est. total: ${currencySymbol()}${total.toFixed(2)} for ${selectedFiles.length} selected file(s)`;
             }
 
             // Keeps the Est. charge line in sync the moment file selection

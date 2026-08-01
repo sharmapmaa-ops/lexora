@@ -1100,15 +1100,30 @@ AI_PROMPT_SEED = [
     ("BAI2", 2, "AI Prompts/bai2-2.txt"),
     ("Data Extraction", 1, "AI Prompts/data-extraction-1.txt"),
     ("Data Extraction", 2, "AI Prompts/data-extraction-2.txt"),
-    # Not yet wired to actually read from this table - the files exist
-    # (empty/placeholder for these, or the real text for Lease
-    # Abstraction) so an Admin can see and edit them ahead of that
-    # wiring landing.
-    ("Translation", 1, "AI Prompts/translation-1.txt"),
-    ("OCR", 1, "AI Prompts/ocr-1.txt"),
-    ("Lease Abstraction", 1, "AI Prompts/lease-abstraction-1.txt"),
+    # Content Writing / Humanize use {placeholder} tokens for their
+    # dynamic parts (tone/type/length/topic, or the input text) -
+    # replaced in JS after reading the file. Edit the wording freely,
+    # just keep the {placeholder} tokens themselves intact.
     ("Content Writing Tool", 1, "AI Prompts/content-writing-tool-1.txt"),
     ("Humanize Document Tool", 1, "AI Prompts/humanize-document-tool-1.txt"),
+    # Not yet wired to actually read from this table - all the real
+    # current prompt text has been extracted into these files though,
+    # so an Admin can review/edit them ahead of that wiring landing.
+    # Translation has 4 distinct prompts across its pipeline:
+    #  1 = line-by-line OCR extraction (extractApiPage)
+    #  2 = region-grounding OCR extraction (v14BuildExtractionPrompt)
+    #  3 = translation + typesetting (v14BuildTranslationPrompt)
+    #  4 = line-by-line translation of already-extracted OCR text
+    ("Translation", 1, "AI Prompts/translation-1.txt"),
+    ("Translation", 2, "AI Prompts/translation-2.txt"),
+    ("Translation", 3, "AI Prompts/translation-3.txt"),
+    ("Translation", 4, "AI Prompts/translation-4.txt"),
+    # OCR has no prompt of its own - it calls Translation's exact same
+    # pipeline with the target language locked to "original" (see the
+    # note inside ocr-1.txt). Editing translation-1/2.txt affects OCR
+    # too.
+    ("OCR", 1, "AI Prompts/ocr-1.txt"),
+    ("Lease Abstraction", 1, "AI Prompts/lease-abstraction-1.txt"),
 ]
 
 

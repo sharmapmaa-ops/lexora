@@ -1,0 +1,9 @@
+NOTE: The OCR service does not have its own separate prompt.
+
+It reuses Translation's exact same pipeline (buildHybridDocxBlob / buildOfflineDocxBlob in js/translation-offline.js), just with the target language locked to "original" (i.e. it extracts and rebuilds the layout, but skips the actual translation step).
+
+The prompts it actually uses at runtime are Translation's:
+- translation-1.txt (line-by-line OCR extraction) and/or
+- translation-2.txt (region-grounding OCR extraction)
+
+depending on which extraction mode is active. There is nothing to edit here specifically - edit the corresponding translation-*.txt file instead, and the change applies to OCR too.
