@@ -1083,6 +1083,16 @@ MESSAGING_EVENTS = [
     ("payment-rejected", "Payment Rejected"),
 ]
 
+# Item 2 (AI Prompts table) - every service that actually calls an AI
+# model somewhere in its pipeline. Seeded as placeholder rows by Run
+# Migration; the real prompt TEXT for each still needs to be pulled out
+# of the Python source and pasted in (a separate follow-up task from
+# just having the row exist).
+AI_PROMPT_SERVICES = [
+    "Translation", "OCR", "Lease Abstraction", "Data Extraction",
+    "BAI2", "Content Writing Tool", "Humanize Document Tool",
+]
+
 
 def _messaging_enabled(event_key):
     """Item 1 - Admin > Messaging Settings table controls whether a
@@ -1736,10 +1746,10 @@ def _donut_chart_drawing(credit_count, credit_amt, debit_count, debit_amt, neutr
 
     total_all = credit_count + debit_count + neutral_count
     chart_total = credit_count + debit_count  # grey/neutral slice removed from the visual ring per the design spec
-    size = 1.75 * 72  # 1.75in in points, Drawing units are points
+    size = 1.65 * 72  # 1.65in in points, Drawing units are points
     cx = cy = size / 2
     outer_r = size / 2 - 4
-    inner_r = outer_r * 0.66  # thinner ring, larger center hole per the latest refinement
+    inner_r = outer_r * 0.72  # even thinner ring, larger center hole per the latest refinement
 
     d = Drawing(size, size)
 
@@ -1847,6 +1857,28 @@ def _date_fmt(date_str):
         return d.strftime("%d %b %Y")
     except Exception:  # noqa: BLE001
         return str(date_str or "")
+
+
+def _time_fmt_24h(time_str):
+    """Normalizes any stored time (12h 'HH:MM AM/PM' or already-24h
+    'HH:MM') to 24-hour 'HH:MM' - the latest design-correction doc for
+    this PDF now explicitly and repeatedly requires 24-hour with no
+    AM/PM anywhere, reversing an earlier request that had asked for
+    12-hour specifically in this PDF."""
+    s = str(time_str or "").strip()
+    m = re.match(r"^(\d{1,2}):(\d{2})\s*(AM|PM)?$", s, re.IGNORECASE)
+    if not m:
+        return s
+    h = int(m.group(1))
+    minute = m.group(2)
+    if m.group(3):
+        ap = m.group(3).upper()
+        if ap == "PM" and h != 12:
+            h += 12
+        if ap == "AM" and h == 12:
+            h = 0
+        return f"{h:02d}:{minute}"
+    return f"{h:02d}:{minute}"
 
 
 def _time_fmt_12h(time_str):
@@ -2113,7 +2145,7 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     debit_count = sum(1 for t in txns if float(t.get("debit") or 0) > 0)
     neutral_count = len(txns) - credit_count - debit_count
 
-    BOX_BODY_HEIGHT = 1.95 * inch
+    BOX_BODY_HEIGHT = 1.85 * inch
 
     overview_rows = [
         ["Opening Balance", f"{opening_balance:,.2f}"],
@@ -2134,7 +2166,8 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
         ("FONTNAME", (0, 4), (1, 4), "Helvetica-Bold"),
         ("LINEABOVE", (0, 4), (1, 4), 0.75, colors.HexColor(_BORDER)),
     ]))
-    ov_box = Table([[Paragraph("ACCOUNT OVERVIEW", box_head_style)], [ov_table]], colWidths=[3.0 * inch])
+    ov_box = Table([[Paragraph("ACCOUNT OVERVIEW", box_head_style)], [ov_table]],
+                   colWidths=[3.0 * inch], rowHeights=[0.3 * inch, BOX_BODY_HEIGHT])
     ov_box.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (0, 0), colors.HexColor(_NAVY)),
         ("ROUNDEDCORNERS", [9, 9, 9, 9]),
@@ -2147,18 +2180,19 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     donut = _donut_chart_drawing(credit_count, total_credit, debit_count, total_debit, neutral_count)
     legend_style = ParagraphStyle("StmtLegend", parent=label_style, fontSize=9, leading=13.5)
     legend_bits = [
-        Paragraph(f'<font color="{_GREEN}">\u25cf</font>&nbsp;&nbsp;Credit ({credit_count})<br/><br/>'
+        Paragraph(f'<font color="{_GREEN}">\u25cf</font>&nbsp;&nbsp;&nbsp;Credit ({credit_count})<br/><br/>'
                   f'<b>{total_credit:,.2f}</b>', legend_style),
-        Spacer(1, 16),
-        Paragraph(f'<font color="{_RED}">\u25cf</font>&nbsp;&nbsp;Debit ({debit_count})<br/><br/>'
+        Spacer(1, 18),
+        Paragraph(f'<font color="{_RED}">\u25cf</font>&nbsp;&nbsp;&nbsp;Debit ({debit_count})<br/><br/>'
                   f'<b>{total_debit:,.2f}</b>', legend_style),
     ]
-    donut_row = Table([[donut, legend_bits]], colWidths=[1.75 * inch, 1.25 * inch], rowHeights=[BOX_BODY_HEIGHT])
+    donut_row = Table([[donut, legend_bits]], colWidths=[1.65 * inch, 1.35 * inch], rowHeights=[BOX_BODY_HEIGHT])
     donut_row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
     tx_box = Table([[Paragraph("TRANSACTION OVERVIEW", box_head_style)], [donut_row]],
                    colWidths=[3.0 * inch], rowHeights=[0.3 * inch, BOX_BODY_HEIGHT])
     tx_box.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (0, 0), colors.HexColor(_NAVY)),
+        ("ROUNDEDCORNERS", [9, 9, 9, 9]),
         ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor(_BORDER)),
         ("LEFTPADDING", (0, 0), (-1, -1), 12), ("RIGHTPADDING", (0, 0), (-1, -1), 12),
         ("TOPPADDING", (0, 0), (0, 0), 7), ("BOTTOMPADDING", (0, 0), (0, 0), 7),
@@ -2171,7 +2205,7 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     story.append(Spacer(1, 10))
 
     # ---- Transaction table ----
-    cell_style = ParagraphStyle("StmtCell", parent=label_style, fontSize=7.6, leading=10.5, wordWrap="CJK")
+    cell_style = ParagraphStyle("StmtCell", parent=label_style, fontSize=7.1, leading=9.2, wordWrap="CJK")
     bold_cell_style = ParagraphStyle("StmtCellBold", parent=cell_style, fontName="Helvetica-Bold")
     bold_right_style = ParagraphStyle("StmtCellBoldRight", parent=bold_cell_style, alignment=TA_RIGHT)
     bold_center_style = ParagraphStyle("StmtCellBoldCenter", parent=bold_cell_style, alignment=1)  # TA_CENTER
@@ -2185,51 +2219,54 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     def _desc_right(text):
         return Paragraph(escape_html(text), bold_right_style)
 
-    def _dt(t):
-        d = _date_fmt(t.get("date"))
-        tm = _time_fmt_12h(t.get("time"))
-        return f"{d} {tm}".strip()
+    def _dt_date(t):
+        return _date_fmt(t.get("date"))
 
-    rows = [["#", "Date & Time", "Transaction ID", "Description", "Credit", "Debit", "Balance"]]
-    rows.append(["", _cell(_date_fmt(start_date) if start_date else (_date_fmt(sorted(t.get('date') for t in txns if t.get('date'))[0]) if txns else ''), True),
-                 "", Paragraph(escape_html("Opening Balance"), bold_center_style), "", "", _amount_cell(f"{opening_balance:,.2f}")])
+    def _dt_time(t):
+        return _time_fmt_24h(t.get("time"))
+
+    rows = [["#", "Date", "Time", "Transaction ID", "Description", "Credit", "Debit", "Balance"]]
+    opening_date_label = _date_fmt(start_date) if start_date else (_date_fmt(sorted(t.get('date') for t in txns if t.get('date'))[0]) if txns else '')
+    rows.append(["", _cell(opening_date_label, True), "", "",
+                 Paragraph(escape_html("Opening Balance"), bold_center_style), "", "", _amount_cell(f"{opening_balance:,.2f}")])
     running = opening_balance
     for i, t in enumerate(txns, start=1):
         credit = float(t.get("credit") or 0)
         debit = float(t.get("debit") or 0)
         running += credit - debit
         rows.append([
-            str(i), _cell(_dt(t)), _cell(t.get("id") or ""), _cell(t.get("description") or ""),
+            str(i), _cell(_dt_date(t)), _cell(_dt_time(t)), _cell(t.get("id") or ""), _cell(t.get("description") or ""),
             f"{credit:,.2f}" if credit else "\u2013",
             f"{debit:,.2f}" if debit else "\u2013",
             f"{running:,.2f}",
         ])
     end_label = _date_fmt(end_date) if end_date else (_date_fmt(sorted(t.get('date') for t in txns if t.get('date'))[-1]) if txns else '')
-    rows.append(["", _cell(end_label, True), "", _desc_right("Closing Balance"), "", "", _amount_cell(f"{running:,.2f}")])
+    rows.append(["", _cell(end_label, True), "", "", _desc_right("Closing Balance"), "", "", _amount_cell(f"{running:,.2f}")])
 
-    col_widths = [0.24 * inch, 1.35 * inch, 1.62 * inch, 1.88 * inch, 0.68 * inch, 0.68 * inch, 0.82 * inch]
+    col_widths = [0.22 * inch, 0.68 * inch, 0.44 * inch, 1.35 * inch, 2.4 * inch, 0.66 * inch, 0.66 * inch, 0.75 * inch]
     table = Table(rows, colWidths=col_widths, repeatRows=1)
     table_style = [
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(_NAVY)),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-        ("FONTSIZE", (0, 0), (-1, -1), 7.6),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.1),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 9.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 9.5),
-        ("TOPPADDING", (0, 0), (-1, 0), 12.5), ("BOTTOMPADDING", (0, 0), (-1, 0), 12.5),
-        ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 5.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5.5),
+        ("TOPPADDING", (0, 0), (-1, 0), 8), ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
         ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor(_BORDER)),
         ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor(_LIGHT_GREY)]),
         ("ALIGN", (0, 0), (0, -1), "CENTER"),
-        ("ALIGN", (4, 0), (6, -1), "RIGHT"),
-        ("ALIGN", (1, 0), (3, -1), "LEFT"),
+        ("ALIGN", (1, 0), (2, -1), "LEFT"),
+        ("ALIGN", (5, 0), (7, -1), "RIGHT"),
+        ("ALIGN", (3, 0), (4, -1), "LEFT"),
         ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor(_LIGHT_GREY)),
-        ("SPAN", (0, 1), (2, 1)),
+        ("SPAN", (0, 1), (3, 1)),
         ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#EAECEF")),
-        ("SPAN", (0, -1), (2, -1)),
+        ("SPAN", (0, -1), (3, -1)),
         ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, -1), (-1, -1), 8.4),
+        ("FONTSIZE", (0, -1), (-1, -1), 8),
     ]
     table.setStyle(TableStyle(table_style))
     story.append(table)
@@ -3326,6 +3363,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/rules/reject": self._handle_rules_reject,
             "/api/rules/delete-pending": self._handle_rules_delete_pending,
             "/api/rules/delete-approved": self._handle_rules_delete_approved,
+            "/api/admin/run-migration": self._handle_run_migration,
             "/api/admin/messaging-settings-seed": self._handle_messaging_settings_seed,
             "/api/rules/add-blank": self._handle_rules_add_blank,
             "/api/admin/services-catalog-seed": self._handle_services_catalog_seed,
@@ -5537,6 +5575,57 @@ class Handler(SimpleHTTPRequestHandler):
         if changed:
             db.replace_documents("services-catalog", rows)
         return 200, {"ok": True, "changed": changed, "total": len(rows)}
+
+    def _handle_run_migration(self, body):
+        """THE single "Run Migration" button - covers every one-time
+        setup/seed step the app currently needs in one click. This
+        function is meant to grow in place: whenever a future change
+        needs its own migration/seed step, it gets ADDED here (another
+        block below, same pattern - read existing rows, only append
+        what's missing, replace_documents once), not a new button. All
+        the sub-steps here are safe to run repeatedly - existing rows
+        (including anything an Admin already edited) are never
+        touched, only whatever's missing gets added."""
+        self._require_role(("Admin", "Developer"))
+        if db is None or not db.is_enabled():
+            raise ValueError("Database is not configured.")
+        summary = []
+
+        # ---- Messaging Settings: seed the 12 fixed events ----
+        rows = db.list_documents("messaging-settings")
+        existing_ids = {r.get("id") for r in rows}
+        added = 0
+        for key, label in MESSAGING_EVENTS:
+            if key in existing_ids:
+                continue
+            rows.append({"id": key, "event": label, "enabled": "No" if key == "login-otp" else "Yes"})
+            added += 1
+        if added:
+            db.replace_documents("messaging-settings", rows)
+        summary.append(f"Messaging Settings: added {added} event(s)")
+
+        # ---- AI Prompts: seed one placeholder row per known AI-using
+        # service, so an Admin has somewhere to paste in the real
+        # prompt text - the actual prompt content itself still needs
+        # filling in by hand (or a future migration step once prompts
+        # are extracted from the Python source).
+        rows = db.list_documents("ai-prompts")
+        existing_keys = {(r.get("serviceName"), str(r.get("promptNumber"))) for r in rows}
+        added = 0
+        for service_name in AI_PROMPT_SERVICES:
+            key = (service_name, "1")
+            if key in existing_keys:
+                continue
+            rows.append({
+                "id": re.sub(r"[^a-z0-9]+", "-", service_name.lower()).strip("-") + "-1",
+                "serviceName": service_name, "promptNumber": 1, "promptText": "", "fileLocation": "",
+            })
+            added += 1
+        if added:
+            db.replace_documents("ai-prompts", rows)
+        summary.append(f"AI Prompts: added {added} placeholder row(s)")
+
+        return 200, {"ok": True, "summary": summary}
 
     def _handle_messaging_settings_seed(self, body):
         """Admin table's "Seed Events" button - adds any of the 12 fixed

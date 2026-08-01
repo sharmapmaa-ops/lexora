@@ -7861,8 +7861,27 @@
                     </div>`;
             }
 
+            window.runFullMigration = async function() {
+                showConfirm('\u2934 Run Migration', 'Run all pending one-time setup/seed steps (Messaging Settings, AI Prompts, and anything else added here in the future)? Existing data/edits are never touched, only what\'s missing gets added.', async function(confirmed) {
+                    if (!confirmed) return;
+                    try {
+                        const res = await authFetch('/api/admin/run-migration', { method: 'POST' });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error || 'Migration failed.');
+                        showMessage('✅ Migration Complete', (data.summary || []).join(' | ') || 'Nothing needed migrating.', ['OK']);
+                        if (dbActiveTable) dbTableLoad(dbActiveTable);
+                    } catch (err) {
+                        showWarning(err.message || 'Migration failed.');
+                    }
+                });
+            };
+
             function buildAdminFilesBody() {
                 return `
+                    <div class="admin-migration-row">
+                        <button class="admin-btn admin-btn-save" onclick="runFullMigration()">\u2934 Run Migration</button>
+                        <span style="font-size:0.78rem;color:rgba(0,0,0,0.5);">One button for every one-time setup step - click whenever asked to.</span>
+                    </div>
                     <div class="svc-strip">
                         <div class="svc-tabs">
                             <button type="button" class="svc-tab is-active" onclick="switchAdminTab(0, this)">\u{1F5C4} PostgreSQL</button>

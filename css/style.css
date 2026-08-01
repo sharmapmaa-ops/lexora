@@ -5135,6 +5135,13 @@
 
 .admin-toolbar-spacer { flex: 1; }
 
+.admin-migration-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
 /* ===== Notifications page (was entirely unstyled before) ===== */
 .notif-head {
     display: flex;
