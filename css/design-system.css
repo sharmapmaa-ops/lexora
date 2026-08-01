@@ -1222,7 +1222,7 @@ body, input, select, textarea, button {
     padding: 10px 12px;
     height: 42px;
 }
-.payment-history-table { table-layout: fixed; width: 100%; min-width: 1180px; }
+.payment-history-table { table-layout: fixed; width: 100%; min-width: 1240px; }
 
 /* Item 7,9 - fixed-priority columns get firm pixel widths (a minimum
    they can never shrink below); Description and Transaction ID share
@@ -1236,7 +1236,7 @@ body, input, select, textarea, button {
 .payment-history-table th:nth-child(4),  .payment-history-table td:nth-child(4)  { width: 62px; }
 .payment-history-table th:nth-child(5),  .payment-history-table td:nth-child(5)  { width: 88px; }
 .payment-history-table th:nth-child(6),  .payment-history-table td:nth-child(6)  { width: 150px; }
-.payment-history-table th:nth-child(7),  .payment-history-table td:nth-child(7)  { width: auto; }
+.payment-history-table th:nth-child(7),  .payment-history-table td:nth-child(7)  { width: 380px; }
 .payment-history-table th:nth-child(8),  .payment-history-table td:nth-child(8)  { width: 100px; }
 .payment-history-table th:nth-child(9),  .payment-history-table td:nth-child(9)  { width: 92px; }
 .payment-history-table th:nth-child(10), .payment-history-table td:nth-child(10) { width: 112px; }
@@ -1301,12 +1301,12 @@ body, input, select, textarea, button {
     transform: translateY(-1px);
 }
 
-/* Item 15 - responsive: amount/status/balance stay visible, ID and
-   description degrade gracefully instead of breaking the layout. */
-@media (max-width: 900px) {
-    .payment-history-table th:nth-child(6), .payment-history-table td:nth-child(6) { width: 11%; }
-    .payment-history-table th:nth-child(7), .payment-history-table td:nth-child(7) { width: 18%; }
-}
+/* Item 15 - responsive: the table's min-width (above) means it never
+   actually shrinks below its functional column widths - narrow
+   viewports scroll horizontally (.payment-history-scroll-outer)
+   instead, so there's no percentage-based override needed here
+   anymore. (A percentage override at this breakpoint would risk the
+   same header/body table mismatch that fixed-pixel widths avoid.) */
 
 /* status pills */
 .txn-status-pill {

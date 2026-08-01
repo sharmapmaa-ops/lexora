@@ -2034,11 +2034,17 @@
         .history-table th:nth-child(7),
         .history-table td:nth-child(7) { width: 8%; }
 
-        /* Payment History table has 9 columns (checkbox + 8 data columns) -
-           same underlying issue as Today's Transactions: percentage widths
-           above were only ever tuned for 7, and two independent <table>
-           elements (header vs body) need IDENTICAL explicit widths to stay
-           aligned while scrolling. */
+        /* Payment History table column widths now live entirely in
+           design-system.css (.payment-history-table th/td:nth-child),
+           using fixed pixel widths on every column so the two
+           independent <table> elements (header vs body) always compute
+           identical widths and stay aligned. The old width:1200px /
+           9-column pixel rules that used to live here (selector
+           "table.payment-history-table", which has HIGHER specificity
+           than the class-only selector used everywhere else) were
+           silently overriding every later fix regardless of source
+           order - removed for that reason. Don't reintroduce an
+           element-qualified ("table.foo") version of this selector. */
         .payment-history-scroll-outer {
             display: flex;
             flex-direction: column;
@@ -2049,28 +2055,6 @@
         .payment-history-scroll-outer .history-table-wrapper {
             overflow-x: visible;
         }
-
-        table.payment-history-table {
-            table-layout: fixed;
-            width: 1200px;
-        }
-
-        table.payment-history-table th,
-        table.payment-history-table td {
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        table.payment-history-table th:nth-child(1), table.payment-history-table td:nth-child(1) { width: 36px; }
-        table.payment-history-table th:nth-child(2), table.payment-history-table td:nth-child(2) { width: 150px; }
-        table.payment-history-table th:nth-child(3), table.payment-history-table td:nth-child(3) { width: 130px; }
-        table.payment-history-table th:nth-child(4), table.payment-history-table td:nth-child(4) { width: 100px; }
-        table.payment-history-table th:nth-child(5), table.payment-history-table td:nth-child(5) { width: 150px; }
-        table.payment-history-table th:nth-child(6), table.payment-history-table td:nth-child(6) { width: 314px; }
-        table.payment-history-table th:nth-child(7), table.payment-history-table td:nth-child(7) { width: 110px; }
-        table.payment-history-table th:nth-child(8), table.payment-history-table td:nth-child(8) { width: 110px; }
-        table.payment-history-table th:nth-child(9), table.payment-history-table td:nth-child(9) { width: 100px; }
 
         #historyTableHeader {
             border: 1px solid rgba(0,0,139,0.1);
