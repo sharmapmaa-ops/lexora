@@ -96,12 +96,14 @@
   }
 
   async function transcribe(dataUrl) {
+    const defaultPrompt = 'Transcribe ALL readable text from this bank statement page exactly as written, preserving reading order, row alignment and line breaks. Return the transcription only.';
+    const prompt = window.getAiPrompt ? window.getAiPrompt('BAI2', 2, defaultPrompt) : defaultPrompt;
     const data = await window.lexoraProxyJson({
       model: MODEL,
       messages: [{
         role: 'user',
         content: [
-          { type: 'text', text: 'Transcribe ALL readable text from this bank statement page exactly as written, preserving reading order, row alignment and line breaks. Return the transcription only.' },
+          { type: 'text', text: prompt },
           { type: 'image_url', image_url: { url: dataUrl } }
         ]
       }]
@@ -112,7 +114,7 @@
 
   // ── extracting structured transactions ─────────────────────────────
   function extractionPrompt() {
-    return `You are a precise bank-statement parser.
+    const defaultPrompt = `You are a precise bank-statement parser.
 
 From the statement text below, extract the account details and every transaction line.
 
@@ -138,6 +140,7 @@ Return ONLY this JSON, nothing else:
     { "date": "YYYY-MM-DD", "description": "...", "reference": "", "amount": "0.00", "type": "credit|debit", "balance": "" }
   ]
 }`;
+    return window.getAiPrompt ? window.getAiPrompt('BAI2', 1, defaultPrompt) : defaultPrompt;
   }
 
   async function extract(text) {

@@ -219,18 +219,23 @@
       return `${i + 1}. "${f.header}"${f.description ? ' — ' + f.description : ''}`;
     }).join('\n');
 
-    return `You are a precise document data-extraction engine.
+    const defaultIntro = `You are a precise document data-extraction engine.
 
-You will be given the full text of one document. Extract ONLY the fields listed below.
+You will be given the full text of one document. Extract ONLY the fields listed below.`;
+    const defaultRules = `RULES
+- Return the value EXACTLY as it appears in the document. Do not reformat dates, do not convert currencies or units, do not recalculate anything, do not translate.
+- If a field genuinely does not appear in the document, return an empty string "" for it. Never guess, never invent a plausible-looking value, and never carry a value over from a different field.
+- If a field appears more than once with the same meaning, use the most complete/primary occurrence.
+- Keep values short and literal - the value only, without its surrounding label text.`;
+    const intro = window.getAiPrompt ? window.getAiPrompt('Data Extraction', 1, defaultIntro) : defaultIntro;
+    const rules = window.getAiPrompt ? window.getAiPrompt('Data Extraction', 2, defaultRules) : defaultRules;
+
+    return `${intro}
 
 FIELDS TO EXTRACT:
 ${list}
 
-RULES
-- Return the value EXACTLY as it appears in the document. Do not reformat dates, do not convert currencies or units, do not recalculate anything, do not translate.
-- If a field genuinely does not appear in the document, return an empty string "" for it. Never guess, never invent a plausible-looking value, and never carry a value over from a different field.
-- If a field appears more than once with the same meaning, use the most complete/primary occurrence.
-- Keep values short and literal - the value only, without its surrounding label text.
+${rules}
 
 Return ONLY this JSON shape, nothing else:
 {

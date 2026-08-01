@@ -1071,6 +1071,7 @@ def _load_smtp_expiry_minutes():
 MESSAGING_EVENTS = [
     ("password-change", "Password Change"),
     ("login-otp", "Login OTP Verification"),
+    ("new-login", "New Login Notification"),
     ("incorrect-otp", "Incorrect OTP"),
     ("registration", "Registration"),
     ("password-change-verification", "Password Change Verification"),
@@ -1088,9 +1089,50 @@ MESSAGING_EVENTS = [
 # Migration; the real prompt TEXT for each still needs to be pulled out
 # of the Python source and pasted in (a separate follow-up task from
 # just having the row exist).
-AI_PROMPT_SERVICES = [
-    "Translation", "OCR", "Lease Abstraction", "Data Extraction",
-    "BAI2", "Content Writing Tool", "Humanize Document Tool",
+AI_PROMPT_SEED = [
+    ("BAI2", 1, """You are a precise bank-statement parser.
+
+From the statement text below, extract the account details and every transaction line.
+
+RULES
+- Copy values EXACTLY as printed. Do not reformat numbers, do not convert currencies, do not recalculate balances.
+- "amount" must be a positive number with no currency symbol, thousands separator or sign. Use "type" to say whether money came in or went out.
+- "type" is "credit" when money went INTO the account, "debit" when money left it.
+- "date" must be ISO format YYYY-MM-DD. Work out the correct order from the statement's own date format; if the year is not printed on a line, take it from the statement period.
+- If a field genuinely is not shown anywhere, return an empty string "". Never guess an account number, a balance or a date.
+- Include every transaction row, in the order they appear.
+
+Return ONLY this JSON, nothing else:
+{
+  "account_number": "...",
+  "account_name": "...",
+  "bank_name": "...",
+  "currency": "...",
+  "statement_start": "YYYY-MM-DD",
+  "statement_end": "YYYY-MM-DD",
+  "opening_balance": "",
+  "closing_balance": "",
+  "transactions": [
+    { "date": "YYYY-MM-DD", "description": "...", "reference": "", "amount": "0.00", "type": "credit|debit", "balance": "" }
+  ]
+}""", ""),
+    ("BAI2", 2, "Transcribe ALL readable text from this bank statement page exactly as written, preserving reading order, row alignment and line breaks. Return the transcription only.", ""),
+    ("Data Extraction", 1, """You are a precise document data-extraction engine.
+
+You will be given the full text of one document. Extract ONLY the fields listed below.""", ""),
+    ("Data Extraction", 2, """RULES
+- Return the value EXACTLY as it appears in the document. Do not reformat dates, do not convert currencies or units, do not recalculate anything, do not translate.
+- If a field genuinely does not appear in the document, return an empty string "" for it. Never guess, never invent a plausible-looking value, and never carry a value over from a different field.
+- If a field appears more than once with the same meaning, use the most complete/primary occurrence.
+- Keep values short and literal - the value only, without its surrounding label text.""", ""),
+    # Not yet wired to actually read from this table - placeholder rows
+    # only, so an Admin can see what's still pending and paste in text
+    # ahead of that wiring.
+    ("Translation", 1, "", "js/translation-offline.js"),
+    ("OCR", 1, "", "js/ocr-service.js"),
+    ("Lease Abstraction", 1, "", "json/extraction_prompt.txt"),
+    ("Content Writing Tool", 1, "", ""),
+    ("Humanize Document Tool", 1, "", ""),
 ]
 
 
@@ -1928,7 +1970,7 @@ def _account_statement_page_decorator(logo_path, footer_note, from_name, from_mo
         top = height - margin - 3
 
         # ---- Small logo (left) + title (right), one compact row ----
-        logo_size = 0.5 * inch
+        logo_size = 1.5 * inch
         if logo_reader is not None:
             try:
                 canvas_obj.drawImage(logo_reader, margin, top - logo_size,
@@ -1959,7 +2001,10 @@ def _account_statement_page_decorator(logo_path, footer_note, from_name, from_mo
         canvas_obj.drawString(tx, ty - 0.22 * inch, from_name)
         canvas_obj.setFont("Helvetica", 8.8)
         canvas_obj.setFillColor(colors.HexColor(_TEXT_MUTED))
-        canvas_obj.drawString(tx, ty - 0.44 * inch, f"Mobile: {from_mobile}   |   Email: {from_email}")
+        contact_line = f"Email: {from_email}"
+        if from_mobile and from_mobile != "-":
+            contact_line += f"   |   Mobile: {from_mobile}"
+        canvas_obj.drawString(tx, ty - 0.44 * inch, contact_line)
 
         meta_x = margin + card_w * 0.52
         label_x2 = meta_x + 1.15 * inch
@@ -2131,7 +2176,7 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
-        topMargin=2.4 * inch, bottomMargin=1.75 * inch,
+        topMargin=3.35 * inch, bottomMargin=1.75 * inch,
         leftMargin=0.5 * inch, rightMargin=0.5 * inch,
     )
     story = []
@@ -5604,21 +5649,33 @@ class Handler(SimpleHTTPRequestHandler):
             db.replace_documents("messaging-settings", rows)
         summary.append(f"Messaging Settings: added {added} event(s)")
 
-        # ---- AI Prompts: seed one placeholder row per known AI-using
-        # service, so an Admin has somewhere to paste in the real
-        # prompt text - the actual prompt content itself still needs
-        # filling in by hand (or a future migration step once prompts
-        # are extracted from the Python source).
+        # ---- AI Prompts: seed the real current prompt text for every
+        # service already wired to read from this table (BAI2, Data
+        # Extraction), and a placeholder row for the rest so an Admin
+        # can see what's still pending. Never overwrites a row that's
+        # already there, even to "fix" it back to the shipped default -
+        # once an Admin has edited a prompt, migration leaves it alone.
         rows = db.list_documents("ai-prompts")
         existing_keys = {(r.get("serviceName"), str(r.get("promptNumber"))) for r in rows}
         added = 0
-        for service_name in AI_PROMPT_SERVICES:
-            key = (service_name, "1")
+        for service_name, prompt_number, prompt_text, file_location in AI_PROMPT_SEED:
+            key = (service_name, str(prompt_number))
             if key in existing_keys:
                 continue
+            slug = re.sub(r"[^a-z0-9]+", "-", service_name.lower()).strip("-")
+            # Lease Abstraction's real prompt lives in its own text file
+            # rather than inline in Python - read it in directly so this
+            # row is immediately useful, not blank.
+            if not prompt_text and file_location and file_location.endswith(".txt"):
+                try:
+                    with open(os.path.join(ROOT_DIR, file_location), "r", encoding="utf-8") as f:
+                        prompt_text = f.read()
+                except Exception as err:  # noqa: BLE001
+                    print(f"[migration] could not read {file_location}: {err}")
             rows.append({
-                "id": re.sub(r"[^a-z0-9]+", "-", service_name.lower()).strip("-") + "-1",
-                "serviceName": service_name, "promptNumber": 1, "promptText": "", "fileLocation": "",
+                "id": f"{slug}-{prompt_number}",
+                "serviceName": service_name, "promptNumber": prompt_number,
+                "promptText": prompt_text, "fileLocation": file_location,
             })
             added += 1
         if added:
@@ -5957,14 +6014,15 @@ class Handler(SimpleHTTPRequestHandler):
         # account access even without 2FA turned on. Routed through
         # _dispatch_user_notification so it honours Notify On (SMS) same
         # as every other account alert.
-        _dispatch_user_notification(
-            user["id"], user["email"], user["firstName"],
-            "New login to your account",
-            f"We noticed a new login to your {_load_company_name()} account just now. "
-            f"If this was you, no action is needed.\n\n"
-            f"If you don't recognize this login, please reset your password immediately "
-            f"and consider turning on 2-Step Verification in your Profile settings.",
-        )
+        if _messaging_enabled("new-login"):
+            _dispatch_user_notification(
+                user["id"], user["email"], user["firstName"],
+                "New login to your account",
+                f"We noticed a new login to your {_load_company_name()} account just now. "
+                f"If this was you, no action is needed.\n\n"
+                f"If you don't recognize this login, please reset your password immediately "
+                f"and consider turning on 2-Step Verification in your Profile settings.",
+            )
         return 200, {"ok": True, "requires2FA": False, "userId": user["id"], "token": token}
 
     def _handle_auth_verify_login(self, body):
@@ -5989,6 +6047,15 @@ class Handler(SimpleHTTPRequestHandler):
         user["sessionStatus"] = "Online"
         auth_store.save_users(users)
         token = _create_session(user_id)
+        if _messaging_enabled("new-login"):
+            _dispatch_user_notification(
+                user["id"], user["email"], user["firstName"],
+                "New login to your account",
+                f"We noticed a new login to your {_load_company_name()} account just now. "
+                f"If this was you, no action is needed.\n\n"
+                f"If you don't recognize this login, please reset your password immediately "
+                f"and consider turning on 2-Step Verification in your Profile settings.",
+            )
         return 200, {"ok": True, "userId": user_id, "token": token}
 
     def _handle_auth_logout(self, body):

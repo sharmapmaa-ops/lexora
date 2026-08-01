@@ -252,6 +252,18 @@
             // breaks anything.
             let SERVICES_CATALOG = {};
             window.SERVICES_CATALOG = SERVICES_CATALOG;
+            // Item 2 - AI Prompts table (Admin > PostgreSQL). Each
+            // service checks this FIRST before falling back to its own
+            // hardcoded default, so an empty/partial table never
+            // breaks anything - only a row with real promptText in it
+            // actually changes behavior.
+            let AI_PROMPTS_DB = [];
+            window.AI_PROMPTS_DB = AI_PROMPTS_DB;
+            window.getAiPrompt = function(serviceName, promptNumber, defaultText) {
+                const row = (window.AI_PROMPTS_DB || []).find(r =>
+                    r.serviceName === serviceName && String(r.promptNumber) === String(promptNumber));
+                return (row && row.promptText && row.promptText.trim()) ? row.promptText : defaultText;
+            };
             // Item 15 - admin-manageable "System Configuration" systems
             // list (Desktop is always available; everything else comes
             // from the doc_system_configs table, fetched at login).
@@ -388,10 +400,10 @@
                 const myPlan = getMyPlan();
                 let perUnit, unitLabel;
                 if (serviceId === 'translation') {
-                    perUnit = parseFloat(myPlan.pricePerTranslation) || 1;
+                    perUnit = myPlan.pricePerTranslation != null ? myPlan.pricePerTranslation : 1;
                     unitLabel = 'page';
                 } else {
-                    perUnit = parseFloat(myPlan.pricePerLeaseAbstraction) || 1;
+                    perUnit = myPlan.pricePerLeaseAbstraction != null ? myPlan.pricePerLeaseAbstraction : 1;
                     unitLabel = (myPlan.billingUnit || 'document') === 'page' ? 'page' : 'document';
                 }
                 const total = selectedFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
@@ -577,7 +589,7 @@
             // app registered in .env - see verifySystemConnection()). The
             // rest are browser-managed via js/storage-destinations.js (the
             // person pastes their own token, nothing registered server-side).
-            const SYSTEM_CONFIG_BASE = ['Desktop', 'Sharefile', 'Sharepoint'];
+            const SYSTEM_CONFIG_BASE = ['Desktop'];
             // Item 16 - a name -> browser-provider mapping, built both
             // from the fixed browser-storage providers AND by loosely
             // matching admin-entered System Configuration names (so
@@ -10697,7 +10709,8 @@
                     plansData,
                     planHistoryData,
                     servicesCatalogData,
-                    systemConfigsData
+                    systemConfigsData,
+                    aiPromptsData
                 ] = await Promise.all([
                     fetchJSON('/api/data/payment-methods'),
                     // Postgres chalu ho to ye route DB se deta hai,
@@ -10716,7 +10729,8 @@
                     fetchJSON('/api/data/plans'),
                     fetchJSON('/api/data/plan-history'),
                     fetchJSON('/api/data/services-catalog').catch(() => []),
-                    fetchJSON('/api/data/system-configs').catch(() => [])
+                    fetchJSON('/api/data/system-configs').catch(() => []),
+                    fetchJSON('/api/data/ai-prompts').catch(() => [])
                 ]);
                 PLANS_DATA = plansData || [];
                 planHistory = planHistoryData || [];
@@ -10725,6 +10739,8 @@
                 window.SERVICES_CATALOG = SERVICES_CATALOG;
                 SYSTEM_CONFIGS_DB = systemConfigsData || [];
                 window.SYSTEM_CONFIGS_DB = SYSTEM_CONFIGS_DB;
+                AI_PROMPTS_DB = aiPromptsData || [];
+                window.AI_PROMPTS_DB = AI_PROMPTS_DB;
 
                 paymentMethods = paymentMethodsData;
                 paymentHistory = paymentHistoryData;

@@ -626,6 +626,104 @@ stack. Both are now plain iterative `for`/`continue` loops instead of
 recursion - there's no longer any call depth that scales with file count
 at all.
 
+## Major additions: Account Statement, System Configuration, Messaging Settings, AI Prompts
+
+### Account Statement & Receipt PDFs
+- New "Download Account Statement" button (Payment Summary) and a per-row
+  receipt download icon (Payment History, any row with a Credit amount) -
+  both server-side reportlab PDFs (`_build_account_statement_pdf` /
+  `_build_receipt_pdf` in `py/server.py`).
+- Rounded cards with a simulated soft shadow, a real doughnut chart (built
+  from `Wedge(..., radius1=inner_r, annular=True)` - note `innerRadius=`
+  is **not** a real Wedge parameter and is silently ignored; `radius1` +
+  `annular=True` is the actual API), navy/green/red/grey exact palette,
+  repeating header + customer-info card on every page, "To be
+  continued..." / 4 closing feature-badges, and a green rounded
+  page-number badge.
+- Dates print as `DD Mon YYYY`, times as 24-hour `HH:MM` (no AM/PM)
+  throughout this PDF.
+- Summary Period falls back to the actual min→max date span of the listed
+  transactions when no explicit filter range was given, instead of a
+  vague "As on Today".
+
+### System Configuration (per-service storage destination)
+- **Services Catalog** table gained a `systemConfig` Yes/No column - only
+  services with this set to `Yes` show a "System Configuration" dropdown
+  in their Setup card at all.
+- **System Configurations** table (`doc_system_configs`) is the
+  admin-managed list of systems offered in that dropdown. `Desktop` is
+  the only hardcoded/always-present entry - everything else (Google
+  Drive, Dropbox, Sharefile, a plain "Email" label, etc.) comes purely
+  from this table; don't hardcode more names into `SYSTEM_CONFIG_BASE`
+  in `js/app.js`.
+- Selecting a browser-managed provider (Google Drive/Dropbox/Box/
+  OneDrive/WebDAV/SFTP - matched by name in `KNOWN_BROWSER_PROVIDERS`)
+  opens `StorageDestinations.openConfig()` for a pasted-credential setup;
+  anything else falls through to the server-managed OAuth check
+  (Sharefile/Sharepoint's real registered app).
+- When System Configuration is present on a service, a finished file
+  shows a **download link** to click (`showDownloadLinkModal`) instead
+  of auto-downloading; without it, direct download is unchanged. Wired
+  into Lease Abstraction (`downloadSessionBlob`) and every ServiceRunner
+  free tool (`smartDownload` in `js/service-runner.js`).
+
+### Messaging Settings (per-event notification on/off)
+- New **Messaging Settings** table (`doc_messaging_settings`) - 13 fixed
+  events (Password Change, Login OTP Verification, New Login
+  Notification, Incorrect OTP, Registration, Password Change
+  Verification, Plan Change, Account Delete OTP, Account Delete, Create
+  Ticket, Update Ticket, Payment Received, Payment Rejected), each a
+  Yes/No row. `_messaging_enabled(event_key)` in `py/server.py` is the
+  gate every real send checks first; defaults to `True` (sends) if the
+  table's empty or the event isn't in it yet, so a blank table never
+  silently mutes everything.
+- Several of these events didn't have a real send-path before and were
+  added: Password Change confirmation, Plan Change notice, Payment
+  Received/Rejected, and a proper 2-step Account Delete flow
+  (`/api/auth/delete-account-request` then `/api/auth/delete-account`,
+  the OTP step only appearing when Account Delete OTP is turned on).
+  Incorrect OTP is checked at all 5 places a code gets verified
+  (register/login/reset/reset-password/mobile).
+
+### AI Prompts (admin-editable prompt text)
+- New **AI Prompts** table (`doc_ai_prompts`): Service Name, Prompt #,
+  Prompt Text, File Location. `window.getAiPrompt(serviceName,
+  promptNumber, defaultText)` in `js/app.js` is the lookup every wired
+  service calls - DB text wins only if it's actually non-empty, so an
+  unedited/empty table changes nothing.
+- **Wired so far:** BAI2 (2 prompts), Data Extraction (2 prompts, split
+  into an editable intro/rules portion and a code-generated
+  fields-list portion that must stay dynamic).
+- **Not yet wired** (still hardcoded in Python/JS, seeded as empty
+  placeholder rows pointing at the real file so the next pass knows
+  where to look): Translation (`js/translation-offline.js`), OCR
+  (`js/ocr-service.js`), Content Writing Tool, Humanize Document Tool.
+  Lease Abstraction's prompt is a special case - its real text lives in
+  `json/extraction_prompt.txt` and gets read into the AI Prompts row at
+  migration time so it's visible/editable there, but `lease_engine.py`
+  itself still reads the `.txt` file directly rather than the DB row.
+
+### Run Migration (one button, reused going forward)
+- A single **"⤴ Run Migration"** button above the Admin PostgreSQL tab
+  strip, calling `_handle_run_migration` in `py/server.py`. Seeds
+  Messaging Settings' 12 fixed events and AI Prompts' placeholder/real
+  rows in one click; safe to run repeatedly since it only ever appends
+  what's missing, never touches an existing (possibly admin-edited) row.
+  **Any future one-time setup/seed step should be added as another block
+  inside this same function, not a new button.**
+
+### Notable bugs found and fixed along the way
+- The Account Overview / Transaction Overview cards had a real asymmetry
+  bug - `ov_box` was missing the `rowHeights=` that `tx_box` had, and
+  `tx_box` was missing the `ROUNDEDCORNERS` that `ov_box` had - so they
+  could render at slightly different heights despite the shared
+  `BOX_BODY_HEIGHT` constant. Both Tables now specify identical
+  `rowHeights` and style commands.
+- ServiceRunner's drag-and-drop zone (`.drop-zone`, "Drag & drop files
+  here") had no `ondragover`/`ondrop` handlers wired to it at all - the
+  text invited dragging but nothing happened. Fixed in
+  `js/service-runner.js` (`onDrop`/`onDragOver`/`onDragLeave`).
+
 ## Known fixes in this revision
 - **Clear Files** no longer writes an "All files ... cleared" activity
   log entry — the log is simply emptied.
