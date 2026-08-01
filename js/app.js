@@ -388,10 +388,10 @@
                 const myPlan = getMyPlan();
                 let perUnit, unitLabel;
                 if (serviceId === 'translation') {
-                    perUnit = myPlan.pricePerTranslation != null ? myPlan.pricePerTranslation : 1;
+                    perUnit = parseFloat(myPlan.pricePerTranslation) || 1;
                     unitLabel = 'page';
                 } else {
-                    perUnit = myPlan.pricePerLeaseAbstraction != null ? myPlan.pricePerLeaseAbstraction : 1;
+                    perUnit = parseFloat(myPlan.pricePerLeaseAbstraction) || 1;
                     unitLabel = (myPlan.billingUnit || 'document') === 'page' ? 'page' : 'document';
                 }
                 const total = selectedFiles.reduce((sum, f) => sum + getServicePrice(serviceId, f.pageCount), 0);
