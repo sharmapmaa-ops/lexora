@@ -1020,7 +1020,7 @@ VIRTUAL_TABLES = {
     "doc_ai_prompts": {
         "kind": "document",
         "resource": "ai-prompts",
-        "fields": ["id", "serviceName", "promptNumber", "promptText", "fileLocation"],
+        "fields": ["id", "serviceName", "promptNumber", "fileLocation"],
         "types": {},
         "jsonb_defaults": {},
         "field_defaults": {},
@@ -1050,7 +1050,7 @@ VIRTUAL_TABLE_LABELS = {
     "doc_system_configs": {"id": "ID", "name": "System Name"},
     "doc_messaging_settings": {"id": "Event Key", "event": "Event", "enabled": "Send Email/SMS"},
     "doc_ai_prompts": {"id": "ID", "serviceName": "Service Name", "promptNumber": "Prompt #",
-                        "promptText": "Prompt", "fileLocation": "File Location"},
+                        "fileLocation": "File Location"},
 }
 
 

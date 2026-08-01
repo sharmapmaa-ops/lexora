@@ -48,6 +48,7 @@ import time
 import uuid
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, quote as url_quote, urlencode
 import urllib.request
@@ -1090,49 +1091,24 @@ MESSAGING_EVENTS = [
 # of the Python source and pasted in (a separate follow-up task from
 # just having the row exist).
 AI_PROMPT_SEED = [
-    ("BAI2", 1, """You are a precise bank-statement parser.
-
-From the statement text below, extract the account details and every transaction line.
-
-RULES
-- Copy values EXACTLY as printed. Do not reformat numbers, do not convert currencies, do not recalculate balances.
-- "amount" must be a positive number with no currency symbol, thousands separator or sign. Use "type" to say whether money came in or went out.
-- "type" is "credit" when money went INTO the account, "debit" when money left it.
-- "date" must be ISO format YYYY-MM-DD. Work out the correct order from the statement's own date format; if the year is not printed on a line, take it from the statement period.
-- If a field genuinely is not shown anywhere, return an empty string "". Never guess an account number, a balance or a date.
-- Include every transaction row, in the order they appear.
-
-Return ONLY this JSON, nothing else:
-{
-  "account_number": "...",
-  "account_name": "...",
-  "bank_name": "...",
-  "currency": "...",
-  "statement_start": "YYYY-MM-DD",
-  "statement_end": "YYYY-MM-DD",
-  "opening_balance": "",
-  "closing_balance": "",
-  "transactions": [
-    { "date": "YYYY-MM-DD", "description": "...", "reference": "", "amount": "0.00", "type": "credit|debit", "balance": "" }
-  ]
-}""", ""),
-    ("BAI2", 2, "Transcribe ALL readable text from this bank statement page exactly as written, preserving reading order, row alignment and line breaks. Return the transcription only.", ""),
-    ("Data Extraction", 1, """You are a precise document data-extraction engine.
-
-You will be given the full text of one document. Extract ONLY the fields listed below.""", ""),
-    ("Data Extraction", 2, """RULES
-- Return the value EXACTLY as it appears in the document. Do not reformat dates, do not convert currencies or units, do not recalculate anything, do not translate.
-- If a field genuinely does not appear in the document, return an empty string "" for it. Never guess, never invent a plausible-looking value, and never carry a value over from a different field.
-- If a field appears more than once with the same meaning, use the most complete/primary occurrence.
-- Keep values short and literal - the value only, without its surrounding label text.""", ""),
-    # Not yet wired to actually read from this table - placeholder rows
-    # only, so an Admin can see what's still pending and paste in text
-    # ahead of that wiring.
-    ("Translation", 1, "", "js/translation-offline.js"),
-    ("OCR", 1, "", "js/ocr-service.js"),
-    ("Lease Abstraction", 1, "", "json/extraction_prompt.txt"),
-    ("Content Writing Tool", 1, "", ""),
-    ("Humanize Document Tool", 1, "", ""),
+    # (serviceName, promptNumber, fileLocation) - the file itself (in
+    # the "AI Prompts/" folder at the project root) holds the real
+    # prompt text; this table only points at it. Wired services read
+    # the file this row names, falling back to their own hardcoded
+    # default only if the DB row/file genuinely doesn't exist.
+    ("BAI2", 1, "AI Prompts/bai2-1.txt"),
+    ("BAI2", 2, "AI Prompts/bai2-2.txt"),
+    ("Data Extraction", 1, "AI Prompts/data-extraction-1.txt"),
+    ("Data Extraction", 2, "AI Prompts/data-extraction-2.txt"),
+    # Not yet wired to actually read from this table - the files exist
+    # (empty/placeholder for these, or the real text for Lease
+    # Abstraction) so an Admin can see and edit them ahead of that
+    # wiring landing.
+    ("Translation", 1, "AI Prompts/translation-1.txt"),
+    ("OCR", 1, "AI Prompts/ocr-1.txt"),
+    ("Lease Abstraction", 1, "AI Prompts/lease-abstraction-1.txt"),
+    ("Content Writing Tool", 1, "AI Prompts/content-writing-tool-1.txt"),
+    ("Humanize Document Tool", 1, "AI Prompts/humanize-document-tool-1.txt"),
 ]
 
 
@@ -1200,6 +1176,83 @@ def _send_email(to_email, subject, body, html_body=None):
             server.sendmail(sender, [to_email], mime_msg.as_string())
     else:
         with smtplib.SMTP(host, port, timeout=6) as server:
+            if use_tls:
+                server.starttls(context=ssl.create_default_context())
+            if username and password:
+                server.login(username, password)
+            server.sendmail(sender, [to_email], mime_msg.as_string())
+
+
+def _read_ai_prompt_file(file_location):
+    """Item 1/2 - reads the actual prompt text out of the file an AI
+    Prompts row points at (relative to the project root). Returns ''
+    on any problem (missing file, path escaping the project root,
+    etc.) rather than raising, since a broken fileLocation should fall
+    back to a service's hardcoded default, not break the page."""
+    if not file_location:
+        return ""
+    full_path = os.path.normpath(os.path.join(ROOT_DIR, file_location))
+    if not full_path.startswith(os.path.normpath(ROOT_DIR) + os.sep):
+        return ""  # someone pointed this at a file outside the project - refuse
+    try:
+        with open(full_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _get_ai_prompt(service_name, prompt_number, default_text):
+    """Python-side equivalent of js/app.js's window.getAiPrompt() - looks
+    up this service's AI Prompts row, reads the file it points at, and
+    uses that text only if it's actually non-empty. Falls back to
+    default_text on any failure (DB down, row missing, file missing) so
+    this never breaks a live pipeline."""
+    if db is None or not db.is_enabled():
+        return default_text
+    try:
+        rows = db.list_documents("ai-prompts")
+    except Exception as err:  # noqa: BLE001
+        print(f"[ai-prompts] could not read table, using default: {err}")
+        return default_text
+    for row in rows:
+        if row.get("serviceName") == service_name and str(row.get("promptNumber")) == str(prompt_number):
+            text = _read_ai_prompt_file(row.get("fileLocation"))
+            return text if text.strip() else default_text
+    return default_text
+
+
+def _send_email_with_attachment(to_email, subject, body, attachment_bytes, attachment_filename):
+    """Item 5 - "System Configuration: Email" delivery. Same SMTP
+    account/connection pattern as _send_email() above, but attaches a
+    file (the finished document) instead of just linking to it - there's
+    no separate app/OAuth registration needed for this option since it's
+    just an email with an attachment, sent to the account's own address
+    already on file."""
+    account = _primary_smtp_account()
+    host = account["host"]
+    port = int(account.get("port", 465))
+    username = account.get("username")
+    password = account.get("password")
+    sender = account.get("sender_email", username)
+    use_tls = bool(account.get("use_tls", False))
+
+    mime_msg = MIMEMultipart("mixed")
+    mime_msg.attach(MIMEText(body, "plain", "utf-8"))
+    part = MIMEApplication(attachment_bytes, Name=attachment_filename)
+    part["Content-Disposition"] = f'attachment; filename="{attachment_filename}"'
+    mime_msg.attach(part)
+    mime_msg["Subject"] = subject
+    mime_msg["From"] = sender
+    mime_msg["To"] = to_email
+
+    if port == 465:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as server:
+            if username and password:
+                server.login(username, password)
+            server.sendmail(sender, [to_email], mime_msg.as_string())
+    else:
+        with smtplib.SMTP(host, port, timeout=15) as server:
             if use_tls:
                 server.starttls(context=ssl.create_default_context())
             if username and password:
@@ -1969,26 +2022,44 @@ def _account_statement_page_decorator(logo_path, footer_note, from_name, from_mo
         margin = 0.5 * inch
         top = height - margin - 3
 
-        # ---- Small logo (left) + title (right), one compact row ----
-        logo_size = 1.5 * inch
-        if logo_reader is not None:
-            try:
-                canvas_obj.drawImage(logo_reader, margin, top - logo_size,
-                                      width=logo_size, height=logo_size,
-                                      preserveAspectRatio=True, mask="auto")
-            except Exception:  # noqa: BLE001
-                pass
+        # ---- Logo (left) + title (right) ----
+        # logo_layout_size is what EVERYTHING below (title baseline,
+        # card position, etc.) is positioned relative to - it stays at
+        # the original small-logo size on purpose, so tripling the
+        # logo's actual drawn size is a purely cosmetic change that
+        # never moves the header height, the card, the table, or
+        # anything else. The bigger image is centered on the same spot
+        # the small one occupied and drawn LAST (after the card), so it
+        # overlaps forward instead of being clipped by the card's
+        # background if it extends slightly beyond its original slot.
+        logo_layout_size = 0.5 * inch
+        logo_draw_size = logo_layout_size * 3
+        logo_center_y = top - logo_layout_size / 2
+        logo_draw_x = margin
+        logo_draw_y = logo_center_y - logo_draw_size / 2
+
         canvas_obj.setFont("Helvetica-Bold", 17)
         canvas_obj.setFillColor(colors.HexColor(_NAVY))
-        canvas_obj.drawRightString(width - margin, top - logo_size + 4, "ACCOUNT STATEMENT")
+        canvas_obj.drawRightString(width - margin, top - logo_layout_size + 4, "ACCOUNT STATEMENT")
 
-        header_bottom = top - logo_size
+        header_bottom = top - logo_layout_size
 
         # ---- Customer info card ----
         card_top = header_bottom - 0.15 * inch
         card_h = 0.95 * inch
         card_w = width - 2 * margin
         _round_rect_with_shadow(canvas_obj, margin, card_top - card_h, card_w, card_h, radius=9)
+
+        # Logo drawn last (on top of the card background) so growing it
+        # 3x never gets clipped even though it now slightly overlaps the
+        # card's top edge - nothing else on the page moved to make room.
+        if logo_reader is not None:
+            try:
+                canvas_obj.drawImage(logo_reader, logo_draw_x, logo_draw_y,
+                                      width=logo_draw_size, height=logo_draw_size,
+                                      preserveAspectRatio=True, mask="auto")
+            except Exception:  # noqa: BLE001
+                pass
 
         pad = 0.25 * inch
         tx = margin + pad
@@ -2176,7 +2247,7 @@ def _build_account_statement_pdf(company_name, logo_path, user, txns,
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
-        topMargin=3.35 * inch, bottomMargin=1.75 * inch,
+        topMargin=2.4 * inch, bottomMargin=1.75 * inch,
         leftMargin=0.5 * inch, rightMargin=0.5 * inch,
     )
     story = []
@@ -2962,6 +3033,11 @@ class Handler(SimpleHTTPRequestHandler):
         # na bani ho).
         if db is not None and db.is_enabled():
             try:
+                if name == "ai-prompts":
+                    rows = db.list_resource(name)
+                    for row in rows:
+                        row["promptText"] = _read_ai_prompt_file(row.get("fileLocation"))
+                    return self._send_json(200, rows)
                 if name in db.DB_BACKED_RESOURCES:
                     return self._send_json(200, db.list_resource(name))
                 if name in db.SETTINGS_RESOURCES:
@@ -3446,6 +3522,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/auth/delete-account": self._handle_auth_delete_account,
             "/api/payment/create-order": self._handle_payment_create_order,
             "/api/payment/verify-payment": self._handle_payment_verify,
+            "/api/system-config/email-file": self._handle_system_config_email_file,
             "/api/payment/notify-failed": self._handle_payment_notify_failed,
         }
 
@@ -3543,6 +3620,36 @@ class Handler(SimpleHTTPRequestHandler):
         }
 
     # ---- Razorpay: verify-payment (step 2) ----
+    def _handle_system_config_email_file(self, body):
+        """Item 5 - System Configuration: "Email" delivery. Sends the
+        finished file as an attachment to the CURRENT USER'S OWN email
+        address on file (never an address passed in the request - that
+        would let anyone email a file to an arbitrary inbox), so there's
+        nothing to "register" or "connect" for this option at all."""
+        user_id = _safe_id(self._resolve_user_id(body))
+        filename = (body.get("filename") or "file.pdf").strip()
+        file_b64 = body.get("fileData") or ""
+        if not file_b64:
+            raise ValueError("No file data was provided.")
+        try:
+            file_bytes = base64.b64decode(file_b64)
+        except Exception as err:  # noqa: BLE001
+            raise ValueError(f"Could not decode the file data: {err}")
+        if len(file_bytes) > 20 * 1024 * 1024:
+            raise ValueError("That file is too large to email (over 20MB).")
+
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user or not user.get("email"):
+            raise ValueError("No email address is on file for this account.")
+
+        _send_email_with_attachment(
+            user["email"], f"Your file: {filename}",
+            f"Hi {user.get('firstName') or 'there'},\n\nYour finished file is attached.\n\n- {_load_company_name()}",
+            file_bytes, filename,
+        )
+        return 200, {"ok": True, "emailedTo": user["email"]}
+
     def _handle_payment_notify_failed(self, body):
         """Item 1 - Payment Rejected notification. Razorpay's own
         payment.failed callback only fires in the browser (there's no
@@ -5649,33 +5756,24 @@ class Handler(SimpleHTTPRequestHandler):
             db.replace_documents("messaging-settings", rows)
         summary.append(f"Messaging Settings: added {added} event(s)")
 
-        # ---- AI Prompts: seed the real current prompt text for every
-        # service already wired to read from this table (BAI2, Data
-        # Extraction), and a placeholder row for the rest so an Admin
-        # can see what's still pending. Never overwrites a row that's
-        # already there, even to "fix" it back to the shipped default -
-        # once an Admin has edited a prompt, migration leaves it alone.
+        # ---- AI Prompts: seed a row per known service, pointing at its
+        # prompt file under "AI Prompts/" at the project root. Never
+        # overwrites a row that's already there, even to "fix" it back
+        # to the shipped default - once an Admin has edited fileLocation
+        # (e.g. pointed it at a different file), migration leaves it
+        # alone.
         rows = db.list_documents("ai-prompts")
         existing_keys = {(r.get("serviceName"), str(r.get("promptNumber"))) for r in rows}
         added = 0
-        for service_name, prompt_number, prompt_text, file_location in AI_PROMPT_SEED:
+        for service_name, prompt_number, file_location in AI_PROMPT_SEED:
             key = (service_name, str(prompt_number))
             if key in existing_keys:
                 continue
             slug = re.sub(r"[^a-z0-9]+", "-", service_name.lower()).strip("-")
-            # Lease Abstraction's real prompt lives in its own text file
-            # rather than inline in Python - read it in directly so this
-            # row is immediately useful, not blank.
-            if not prompt_text and file_location and file_location.endswith(".txt"):
-                try:
-                    with open(os.path.join(ROOT_DIR, file_location), "r", encoding="utf-8") as f:
-                        prompt_text = f.read()
-                except Exception as err:  # noqa: BLE001
-                    print(f"[migration] could not read {file_location}: {err}")
             rows.append({
                 "id": f"{slug}-{prompt_number}",
                 "serviceName": service_name, "promptNumber": prompt_number,
-                "promptText": prompt_text, "fileLocation": file_location,
+                "fileLocation": file_location,
             })
             added += 1
         if added:

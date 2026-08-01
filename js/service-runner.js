@@ -68,6 +68,19 @@
     const st = state(id);
     const selected = st.systemConfig || 'Desktop';
     try {
+      if (selected.trim().toLowerCase() === 'email' && window.blobToBase64 && window.authFetch && window.getCurrentUserId) {
+        const b64 = await window.blobToBase64(blob);
+        const res = await window.authFetch('/api/system-config/email-file', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: window.getCurrentUserId(), filename: filename, fileData: b64 })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not email that file.');
+        addLog(id, `System > Emailed to ${data.emailedTo}`, 'Success');
+        refresh(id);
+        return;
+      }
       if (window.systemConfigProviderId && window.StorageDestinations) {
         const providerId = window.systemConfigProviderId(selected);
         if (providerId) {
@@ -184,6 +197,13 @@
 
     if (selected === 'Desktop') {
       st.systemConfig = 'Desktop';
+      st.connectionStatus = 'connected';
+      refresh(id);
+      return;
+    }
+
+    if (selected.trim().toLowerCase() === 'email') {
+      st.systemConfig = selected;
       st.connectionStatus = 'connected';
       refresh(id);
       return;

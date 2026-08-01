@@ -68,6 +68,7 @@
     accept: 'application/pdf',
     backTo: "FreeServices.open('other-services')",
     description: 'Pull selected pages out of a PDF into a new file.',
+    batch: true,
     setupHtml: function () {
       return `
         <div class="setup-group">
@@ -92,54 +93,65 @@
       const spec = ((document.getElementById('fsSplitRange') || {}).value || '').trim();
       const modeEl = document.querySelector('input[name="fsSplitMode"]:checked');
       const mode = modeEl ? modeEl.value : 'merge';
-      const f = files[0];
-      const src = await PDFLib.PDFDocument.load(await f.arrayBuffer(), { ignoreEncryption: true });
-      const total = src.getPageCount();
-      const stem = baseName(f.name);
-      if (ctx.pages) ctx.pages(total);
-      ctx.log(`${label} > Pages found = ${total}`, 'Info');
+      if (typeof JSZip === 'undefined') throw new Error('JSZip failed to load - please refresh the page.');
 
+      // No range at all -> each file gets fully decomposed into one PDF
+      // per page. That naturally produces MANY files per input, so each
+      // source file gets its OWN zip, delivered as soon as that file's
+      // done (not held back waiting for the rest of the batch).
       if (!spec) {
-        if (typeof JSZip === 'undefined') throw new Error('JSZip failed to load - please refresh the page.');
-        const zip = new JSZip();
-        for (let i = 0; i < total; i++) {
-          const out = await PDFLib.PDFDocument.create();
-          const [pg] = await out.copyPages(src, [i]);
-          out.addPage(pg);
-          zip.file(`${stem}_page_${i + 1}.pdf`, await out.save());
-          if (ctx.progress) ctx.progress(((i + 1) / total) * 100);
+        for (let fi = 0; fi < files.length; fi++) {
+          const f = files[fi];
+          const src = await PDFLib.PDFDocument.load(await f.arrayBuffer(), { ignoreEncryption: true });
+          const total = src.getPageCount();
+          const stem = baseName(f.name);
+          if (ctx.pages) ctx.pages(total);
+          ctx.log(`${label} > ${f.name} > Pages found = ${total}`, 'Info');
+          const zip = new JSZip();
+          for (let i = 0; i < total; i++) {
+            const out = await PDFLib.PDFDocument.create();
+            const [pg] = await out.copyPages(src, [i]);
+            out.addPage(pg);
+            zip.file(`${stem}_page_${i + 1}.pdf`, await out.save());
+            if (ctx.progress) ctx.progress(((i + 1) / total) * 100);
+          }
+          ctx.download(await zip.generateAsync({ type: 'blob' }), `${stem}_split_pages.zip`);
+          ctx.log(`${label} > ${f.name} > Generate Output > ${stem}_split_pages.zip (${total} file(s))`, 'Success');
         }
-        ctx.download(await zip.generateAsync({ type: 'blob' }), `${stem}_split_pages.zip`);
-        ctx.log(`${label} > Generate Output > ${stem}_split_pages.zip (${total} file(s))`, 'Success');
         return;
       }
 
-      const idx = parsePageRanges(spec, total);
+      // A range was given -> each file produces exactly ONE output (the
+      // extracted range, either as a single combined PDF or as
+      // individually-separated pages depending on the radio choice).
+      // Since it's one predictable output per file either way, the
+      // whole batch bundles into a SINGLE zip instead of one per file.
+      const batchZip = new JSZip();
+      for (let fi = 0; fi < files.length; fi++) {
+        const f = files[fi];
+        const src = await PDFLib.PDFDocument.load(await f.arrayBuffer(), { ignoreEncryption: true });
+        const total = src.getPageCount();
+        const stem = baseName(f.name);
+        if (ctx.pages) ctx.pages(total);
+        const idx = parsePageRanges(spec, total);
 
-      // Same "specific pages" selection, two different outputs: either
-      // extract them as one combined PDF (default, unchanged from before),
-      // or - the new option - keep each selected page as its own separate
-      // PDF file (ZIP), same as the "leave empty" path above but limited
-      // to just the pages the user picked.
-      if (mode === 'separate') {
-        if (typeof JSZip === 'undefined') throw new Error('JSZip failed to load - please refresh the page.');
-        const zip = new JSZip();
-        for (let i = 0; i < idx.length; i++) {
+        if (mode === 'separate') {
+          for (let i = 0; i < idx.length; i++) {
+            const out = await PDFLib.PDFDocument.create();
+            const [pg] = await out.copyPages(src, [idx[i]]);
+            out.addPage(pg);
+            batchZip.file(`${stem}_page_${idx[i] + 1}.pdf`, await out.save());
+          }
+        } else {
           const out = await PDFLib.PDFDocument.create();
-          const [pg] = await out.copyPages(src, [idx[i]]);
-          out.addPage(pg);
-          zip.file(`${stem}_page_${idx[i] + 1}.pdf`, await out.save());
-          if (ctx.progress) ctx.progress(((i + 1) / idx.length) * 100);
+          (await out.copyPages(src, idx)).forEach(function (p) { out.addPage(p); });
+          batchZip.file(`${stem}_split.pdf`, await out.save());
         }
-        ctx.download(await zip.generateAsync({ type: 'blob' }), `${stem}_split_pages.zip`);
-        ctx.log(`${label} > Generate Output > ${stem}_split_pages.zip (${idx.length} file(s))`, 'Success');
-        return;
+        ctx.log(`${label} > ${f.name} > Extracted ${idx.length} page(s)`, 'Success');
+        if (ctx.progress) ctx.progress(((fi + 1) / files.length) * 100);
       }
-
-      const out = await PDFLib.PDFDocument.create();
-      (await out.copyPages(src, idx)).forEach(function (p) { out.addPage(p); });
-      ctx.download(new Blob([await out.save()], { type: 'application/pdf' }), `${stem}_split.pdf`);
-      ctx.log(`${label} > Generate Output > ${stem}_split.pdf (${idx.length} page(s))`, 'Success');
+      ctx.download(await batchZip.generateAsync({ type: 'blob' }), `split_batch_${files.length}_files.zip`);
+      ctx.log(`${label} > Generate Output > split_batch_${files.length}_files.zip`, 'Success');
     }
   });
 

@@ -56,6 +56,10 @@ import os
 import re
 import urllib.request
 import urllib.error
+try:
+    import db as _db_module
+except Exception:  # noqa: BLE001
+    _db_module = None
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
@@ -298,8 +302,19 @@ def _resolve_provider_cfg(llm_config, provider):
 
 
 def load_extraction_prompt():
+    prompt_path = EXTRACTION_PROMPT_PATH
+    if _db_module is not None and _db_module.is_enabled():
+        try:
+            for row in _db_module.list_documents("ai-prompts"):
+                if row.get("serviceName") == "Lease Abstraction" and str(row.get("promptNumber")) == "1":
+                    custom_location = row.get("fileLocation")
+                    if custom_location:
+                        prompt_path = os.path.join(ROOT_DIR, custom_location)
+                    break
+        except Exception as err:  # noqa: BLE001
+            print(f"[ai-prompts] could not check custom Lease Abstraction prompt location, using default: {err}")
     try:
-        with open(EXTRACTION_PROMPT_PATH, "r", encoding="utf-8") as f:
+        with open(prompt_path, "r", encoding="utf-8") as f:
             base_prompt = f.read()
     except OSError:
         return None

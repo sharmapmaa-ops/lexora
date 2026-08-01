@@ -450,6 +450,7 @@
             // authenticated one, fetched fresh via GET /api/auth/me after
             // login - see the AUTH section further down.
             let CURRENT_USER_ID = null;
+            window.getCurrentUserId = () => CURRENT_USER_ID;
             let profileData = null;
 
             // Simulated server-side storage layout per the project's folder
@@ -2674,6 +2675,15 @@
             // immediately. showMessage() can't embed a real link (it
             // renders via textContent, not innerHTML), so this is a
             // small dedicated modal instead.
+            window.blobToBase64 = function(blob) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(String(reader.result).split(',')[1] || '');
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                });
+            };
+
             window.showDownloadLinkModal = function(filename, blobUrl) {
                 const existing = document.getElementById('downloadLinkOverlay');
                 if (existing) existing.remove();
@@ -2703,6 +2713,19 @@
                 const svcId = isLeaseFile ? 'lease-abstraction' : 'translation';
                 const hasSystemConfig = SERVICES_CATALOG[svcId] && SERVICES_CATALOG[svcId].systemConfig === 'Yes';
                 try {
+                    if (hasSystemConfig && currentSystemConfig.trim().toLowerCase() === 'email') {
+                        const filename = entry.name || 'Lease_Abstraction.docx';
+                        const b64 = await blobToBase64(entry.blob);
+                        const res = await authFetch('/api/system-config/email-file', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ userId: CURRENT_USER_ID, filename: filename, fileData: b64 })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error || 'Could not email that file.');
+                        showMessage('✅ Emailed', `${filename} was emailed to ${data.emailedTo}.`, ['OK']);
+                        return;
+                    }
                     if (hasSystemConfig && window.StorageDestinations) {
                         const providerId = systemConfigProviderId(currentSystemConfig);
                         if (providerId) {
@@ -2884,6 +2907,16 @@
                 if (selected === 'Desktop') {
                     connectionStatus = 'connected';
                     currentSystemConfig = 'Desktop';
+                    refreshServicePage(activeSubItemId || 'lease-abstraction');
+                    return;
+                }
+
+                // Item 5 - "Email" needs no setup/OAuth at all: the
+                // account's own profile email is already known, so this
+                // is always "connected".
+                if (selected.trim().toLowerCase() === 'email') {
+                    connectionStatus = 'connected';
+                    currentSystemConfig = selected;
                     refreshServicePage(activeSubItemId || 'lease-abstraction');
                     return;
                 }
@@ -3674,6 +3707,10 @@
                 if (plan.name === getMyPlan().name) return;
 
                 const isDowngrade = plan.monthlyPrice < getMyPlan().monthlyPrice;
+                if (isDowngrade) {
+                    showWarning('A plan can only move to a cheaper tier automatically when your current plan expires, not by switching manually.');
+                    return;
+                }
 
                 // Item 7 - an upgrade is real money, so it goes through
                 // the actual Payment/Razorpay flow (pre-filled with this
@@ -3682,7 +3719,7 @@
                 // there. The plan only actually switches once that
                 // payment genuinely succeeds - see pendingPlanUpgrade
                 // below, checked from the Razorpay success handler.
-                if (!isDowngrade && plan.monthlyPrice > 0) {
+                if (plan.monthlyPrice > 0) {
                     pendingPlanUpgrade = plan;
                     lexoraNavigate('payment');
                     let tries = 0;
@@ -3702,10 +3739,7 @@
                     return;
                 }
 
-                const confirmMsg = isDowngrade
-                    ? `Downgrade to the ${plan.name} plan? This is free - no charge will be made.`
-                    : `Switch to the ${plan.name} plan? This plan has no monthly charge.`;
-                showConfirm('Confirm Plan Change', confirmMsg, (confirmed) => {
+                showConfirm('Confirm Plan Change', `Switch to the ${plan.name} plan? This plan has no monthly charge.`, (confirmed) => {
                     if (confirmed) _doSwitchPlan(plan);
                 });
             };
@@ -10123,7 +10157,7 @@
                                 const isDowngrade = plan.monthlyPrice < myPlan.monthlyPrice;
                                 let ctaLabel;
                                 if (isMine) ctaLabel = '\u2713 Current Plan';
-                                else if (isDowngrade) ctaLabel = 'Downgrade Now';
+                                else if (isDowngrade) ctaLabel = 'Available after current plan expires';
                                 else if (plan.monthlyPrice > 0) ctaLabel = 'Upgrade Now';
                                 else ctaLabel = 'Get Started';
                                 return `
@@ -10139,7 +10173,7 @@
                                         ${plan.supportFeature === 'Yes' ? `<li>${tick}Email Support</li>` : ''}
                                         ${plan.apiFeature === 'Yes' ? `<li>${tick}API Documentation Access</li>` : ''}
                                     </ul>
-                                    <button class="plan-cta-btn ${isMine ? 'is-current' : ''}" ${isMine ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
+                                    <button class="plan-cta-btn ${isMine ? 'is-current' : ''}" ${(isMine || isDowngrade) ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
                                         ${ctaLabel}
                                     </button>
                                 </div>`;
