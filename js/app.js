@@ -2735,6 +2735,21 @@
                     try { await refreshServicesCatalog(); } catch (e) { /* fall back to whatever's cached */ }
                 }
                 const hasSystemConfig = SERVICES_CATALOG[svcId] && SERVICES_CATALOG[svcId].systemConfig === 'Yes';
+                // Desktop means "download straight to this computer" - it
+                // should behave exactly like the no-System-Configuration
+                // path (immediate browser download), not show the
+                // click-to-download modal meant for the other destinations.
+                if (hasSystemConfig && currentSystemConfig.trim().toLowerCase() === 'desktop') {
+                    const url = URL.createObjectURL(entry.blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = entry.name || 'Translation.docx';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                    return;
+                }
                 try {
                     if (hasSystemConfig && currentSystemConfig.trim().toLowerCase() === 'email') {
                         const filename = entry.name || 'Lease_Abstraction.docx';
@@ -3309,12 +3324,12 @@
 
             // "H:MM AM/PM" (most rows) ya "HH:MM" (kuch purani rows) - dono
             // ko ek hi 24-hour "MM/DD/YYYY HH:MM" me badal deta hai.
+            const _TXN_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
             function formatTxnDate(dateStr) {
                 const d = new Date(dateStr);
-                const mm = String(d.getMonth() + 1).padStart(2, '0');
+                if (isNaN(d.getTime())) return String(dateStr || '');
                 const dd = String(d.getDate()).padStart(2, '0');
-                const yyyy = d.getFullYear();
-                return `${mm}/${dd}/${yyyy}`;
+                return `${dd} ${_TXN_MONTHS[d.getMonth()]} ${d.getFullYear()}`;
             }
 
             function formatTxnTime(timeStr) {
@@ -3645,7 +3660,9 @@
                                     <thead>
                                         <tr>
                                             <th style="width:36px;"><input type="checkbox" id="historySelectAll" onchange="toggleSelectAllTransactions(this.checked)" /></th>
-                                            <th style="width:44px;">Download</th>
+                                            <th style="width:40px;text-align:center;" title="Download Receipt">
+                                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
+                                            </th>
                                             <th>Date</th>
                                             <th>Time</th>
                                             <th>Type</th>

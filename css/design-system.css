@@ -1219,30 +1219,39 @@ body, input, select, textarea, button {
     background: #eef2fa;
     color: #46557a;
     font-weight: 700;
-    padding: 10px 12px;
+    padding: 10px 14px;
     height: 42px;
+    vertical-align: middle;
+    /* Reclaimed from style.css's generic ".history-table thead th" -
+       that rule shares this exact selector specificity, so without
+       re-declaring these properties here they'd silently keep
+       truncating every header (that's what was cutting "Download"
+       down to "D..."). */
+    white-space: nowrap;
+    overflow: visible;
+    text-overflow: clip;
 }
-.payment-history-table { table-layout: fixed; width: 100%; min-width: 1240px; }
+.payment-history-table { table-layout: fixed; width: 100%; min-width: 1330px; }
 
-/* Item 7,9 - fixed-priority columns get firm pixel widths (a minimum
-   they can never shrink below); Description and Transaction ID share
-   whatever's left, with Description getting by far the larger share
-   since it's the least predictable in length. The table's min-width
-   above plus overflow-x:auto on the wrapper (below) means narrow
-   containers scroll horizontally instead of crushing any column. */
-.payment-history-table th:nth-child(1),  .payment-history-table td:nth-child(1)  { width: 32px; }
-.payment-history-table th:nth-child(2),  .payment-history-table td:nth-child(2)  { width: 44px; }
-.payment-history-table th:nth-child(3),  .payment-history-table td:nth-child(3)  { width: 92px; }
-.payment-history-table th:nth-child(4),  .payment-history-table td:nth-child(4)  { width: 62px; }
-.payment-history-table th:nth-child(5),  .payment-history-table td:nth-child(5)  { width: 88px; }
-.payment-history-table th:nth-child(6),  .payment-history-table td:nth-child(6)  { width: 150px; }
-.payment-history-table th:nth-child(7),  .payment-history-table td:nth-child(7)  { width: 380px; }
+/* Item 7,8,9 - column widths follow the requested priority order:
+   Description largest, Transaction ID large, Date/Balance/User ID
+   medium, Amount/Status/Type/Time fixed, Download/checkbox small.
+   The table's min-width above plus overflow-x:auto on the wrapper
+   (below) means narrow containers scroll horizontally instead of
+   crushing any column below a readable width. */
+.payment-history-table th:nth-child(1),  .payment-history-table td:nth-child(1)  { width: 36px; }
+.payment-history-table th:nth-child(2),  .payment-history-table td:nth-child(2)  { width: 40px; }
+.payment-history-table th:nth-child(3),  .payment-history-table td:nth-child(3)  { width: 115px; }
+.payment-history-table th:nth-child(4),  .payment-history-table td:nth-child(4)  { width: 64px; }
+.payment-history-table th:nth-child(5),  .payment-history-table td:nth-child(5)  { width: 100px; }
+.payment-history-table th:nth-child(6),  .payment-history-table td:nth-child(6)  { width: 200px; }
+.payment-history-table th:nth-child(7),  .payment-history-table td:nth-child(7)  { width: 340px; }
 .payment-history-table th:nth-child(8),  .payment-history-table td:nth-child(8)  { width: 100px; }
-.payment-history-table th:nth-child(9),  .payment-history-table td:nth-child(9)  { width: 92px; }
-.payment-history-table th:nth-child(10), .payment-history-table td:nth-child(10) { width: 112px; }
-.payment-history-table th:nth-child(11), .payment-history-table td:nth-child(11) { width: 82px; }
+.payment-history-table th:nth-child(9),  .payment-history-table td:nth-child(9)  { width: 110px; }
+.payment-history-table th:nth-child(10), .payment-history-table td:nth-child(10) { width: 130px; }
+.payment-history-table th:nth-child(11), .payment-history-table td:nth-child(11) { width: 110px; }
 
-/* Item 6 - the Upload/Download header shows a small icon instead of
+/* Item 1 - the Download header shows a small icon instead of
    truncated text, with a tooltip for clarity. */
 .payment-history-table th:nth-child(2) { text-align: center; }
 
@@ -1254,35 +1263,65 @@ body, input, select, textarea, button {
     overflow-x: auto;
 }
 
-/* Item 10,11 - compact rows (~4px shorter than before), everything in
-   a row vertically centered. */
-.payment-history-table td {
-    padding: 8px 12px;
+/* Item 9,10 - compact rows, everything in a row vertically centered.
+   overflow/text-overflow are reclaimed here for the same reason as
+   the header rule above - style.css's generic ".history-table tbody
+   td" shares this selector's specificity and was forcing
+   overflow:hidden + ellipsis onto every column that didn't already
+   have its own more-specific override, which is what was truncating
+   Date/Time/Status/Balance/User ID even though their columns were
+   wide enough. */
+.payment-history-table tbody td {
+    padding: 8px 14px;
     vertical-align: middle;
     height: 40px;
+    white-space: nowrap;
+    overflow: visible;
+    text-overflow: clip;
 }
 
-/* Item 5 - descriptions wrap onto a second line instead of being
-   truncated, but never break the table layout. */
+/* Item 2,3,5,6,7 - Date, Time, Status and Balance always show in
+   full (their columns are sized generously enough above that this
+   never needs to fall back to ellipsis). */
+.payment-history-table td:nth-child(3),
+.payment-history-table td:nth-child(4),
+.payment-history-table td:nth-child(9),
+.payment-history-table td:nth-child(10) {
+    white-space: nowrap;
+}
+
+/* Item 8 - Description wraps onto a second line instead of being
+   truncated, but never breaks the table layout. */
 .payment-history-table td:nth-child(7) {
     white-space: normal;
     word-break: break-word;
     line-height: 1.35;
 }
 
-/* Item 4 - Transaction ID never wraps/truncates awkwardly. */
+/* Item 4 - Transaction ID shows in full now that its column is wide
+   enough; ellipsis is kept only as the genuine last-resort fallback
+   for a still-narrower custom viewport. */
 .payment-history-table td:nth-child(6) {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-/* Item 14 - subtle row hover. */
+/* Item 7 - User ID: full value when it fits, otherwise ellipsis
+   (its column is wide enough in practice to show it in full). */
+.payment-history-table td:nth-child(11) {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Item 11 - premium hover effect: light grey background, smooth
+   150-200ms transition. */
 .payment-history-table tbody tr {
     transition: background-color 180ms ease;
 }
 .payment-history-table tbody tr:hover {
-    background-color: #f5f8ff;
+    background-color: #f4f4f6;
 }
 
 /* Item 16 - Download icon: centered, consistent size/color, clear

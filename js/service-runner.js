@@ -73,6 +73,18 @@
 
     const st = state(id);
     const selected = st.systemConfig || 'Desktop';
+
+    // Desktop means "download straight to this computer" - it should
+    // behave exactly like the no-System-Configuration path (immediate
+    // browser download), not the click-to-download modal meant for
+    // the other destinations.
+    if (selected.trim().toLowerCase() === 'desktop') {
+      downloadBlob(blob, filename);
+      addLog(id, `System > Downloaded to Desktop`, 'Success');
+      refresh(id);
+      return;
+    }
+
     try {
       if (selected.trim().toLowerCase() === 'email' && window.blobToBase64 && window.authFetch && window.getCurrentUserId) {
         const b64 = await window.blobToBase64(blob);
@@ -84,6 +96,7 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Could not email that file.');
         addLog(id, `System > Emailed to ${data.emailedTo}`, 'Success');
+        if (window.showMessage) window.showMessage('✅ Emailed', `${filename} was emailed to ${data.emailedTo}.`, ['OK']);
         refresh(id);
         return;
       }
@@ -93,6 +106,7 @@
           const result = await StorageDestinations.saveFileToProvider(providerId, blob, filename);
           if (result.provider !== 'local') {
             addLog(id, `System > Saved to ${selected}`, 'Success');
+            if (window.showMessage) window.showMessage('✅ Saved', `${filename} was saved to ${selected}.`, ['OK']);
             refresh(id);
             return;
           }
@@ -101,8 +115,10 @@
     } catch (err) {
       addLog(id, `System > Could not save to ${selected} - ${err.message || err}`, 'Failed');
     }
-    // Desktop (or a provider that wasn't actually configured) - a
-    // click-to-download link rather than an immediate auto-download.
+    // A provider was selected but turned out not to actually be
+    // configured (fell back to local) - show the click-to-download
+    // link so the user knows it didn't go where expected and can
+    // still grab the file.
     const url = URL.createObjectURL(blob);
     if (window.showDownloadLinkModal) {
       window.showDownloadLinkModal(filename, url);

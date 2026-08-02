@@ -2500,7 +2500,7 @@ def _build_receipt_pdf(company_name, logo_path, user, txn):
     amount = float(txn.get("credit") or 0)
     date_time = _date_fmt(txn.get("date"))
     if txn.get("time"):
-        date_time = f"{date_time} {_time_fmt_12h(txn.get('time'))}"
+        date_time = f"{date_time} {_time_fmt_24h(txn.get('time'))}"
     receipt_no = "RCP-" + str(txn.get("id") or "")
     receipt_date = datetime.date.today().strftime("%d %b %Y")
 
@@ -2510,61 +2510,75 @@ def _build_receipt_pdf(company_name, logo_path, user, txn):
         margin = 0.5 * inch
         top = height - margin - 3
 
+        # Logo sizing/positioning matches the Account Statement exactly
+        # (item 1/14): logo_layout_size is what the title baseline and
+        # card position are measured against, so tripling the drawn
+        # image is a purely cosmetic change that never moves anything
+        # else or increases header height.
         logo_layout_size = 0.5 * inch
         logo_draw_size = logo_layout_size * 3
-        if logo_path:
-            try:
-                logo_center_y = top - logo_layout_size / 2
-                canvas_obj.drawImage(logo_path, margin, logo_center_y - logo_draw_size / 2,
-                                      width=logo_draw_size, height=logo_draw_size,
-                                      preserveAspectRatio=True, mask="auto")
-            except Exception:  # noqa: BLE001
-                pass
+        logo_center_y = top - logo_layout_size / 2
+        logo_draw_x = margin
+        logo_draw_y = logo_center_y - logo_draw_size / 2
+
         canvas_obj.setFont("Helvetica-Bold", 22)
         canvas_obj.setFillColor(colors.HexColor(_NAVY))
         canvas_obj.drawRightString(width - margin, top - logo_layout_size + 4, "RECEIPT")
 
         header_bottom = top - logo_layout_size
 
-        # ---- Customer info card (rounded, with phone/mail icons) ----
+        # ---- Received From / Receipt info card - reuses the exact
+        # Account Statement "From" card: one full-width card, customer
+        # name + a single "Email: x | Mobile: y" line (no icons) on
+        # the left, Receipt No./Receipt Date on the right, at the same
+        # proportions, spacing, padding and typography (item 14). ----
         card_top = header_bottom - 0.15 * inch
-        card_h = 1.15 * inch
-        card_w = 3.6 * inch
+        card_h = 0.95 * inch
+        card_w = width - 2 * margin
         _round_rect_with_shadow(canvas_obj, margin, card_top - card_h, card_w, card_h, radius=9)
 
-        pad = 0.22 * inch
+        # Logo drawn last (on top of the card background), same as the
+        # Account Statement, so it never gets clipped by the card.
+        if logo_path:
+            try:
+                canvas_obj.drawImage(logo_path, logo_draw_x, logo_draw_y,
+                                      width=logo_draw_size, height=logo_draw_size,
+                                      preserveAspectRatio=True, mask="auto")
+            except Exception:  # noqa: BLE001
+                pass
+
+        pad = 0.25 * inch
         tx = margin + pad
-        ty = card_top - 0.28 * inch
+        ty = card_top - 0.3 * inch
         canvas_obj.setFont("Helvetica-Bold", 9)
         canvas_obj.setFillColor(colors.HexColor(_GREEN))
         canvas_obj.drawString(tx, ty, "Received From:")
-        canvas_obj.setFont("Helvetica-Bold", 14)
+        canvas_obj.setFont("Helvetica-Bold", 13)
         canvas_obj.setFillColor(colors.HexColor(_TEXT_DARK))
-        canvas_obj.drawString(tx, ty - 0.26 * inch, full_name)
-
-        icon_x = tx + 0.09 * inch
-        canvas_obj.setFont("Helvetica", 9.3)
+        canvas_obj.drawString(tx, ty - 0.22 * inch, full_name)
+        canvas_obj.setFont("Helvetica", 8.8)
         canvas_obj.setFillColor(colors.HexColor(_TEXT_MUTED))
+        contact_line = f"Email: {user.get('email') or '-'}"
         mobile = user.get("mobile") or ""
         if mobile and mobile != "-":
-            _draw_icon_glyph(canvas_obj, "phone", icon_x, ty - 0.56 * inch, 0.13 * inch, colors.HexColor(_GREEN))
-            canvas_obj.drawString(tx + 0.24 * inch, ty - 0.6 * inch, mobile)
-        _draw_icon_glyph(canvas_obj, "mail", icon_x, ty - 0.82 * inch, 0.13 * inch, colors.HexColor(_GREEN))
-        canvas_obj.drawString(tx + 0.24 * inch, ty - 0.86 * inch, user.get("email") or "-")
+            contact_line += f"   |   Mobile: {mobile}"
+        canvas_obj.drawString(tx, ty - 0.44 * inch, contact_line)
 
-        # ---- Receipt No. / Receipt Date, right side ----
-        meta_x = margin + card_w + 0.35 * inch
-        label_x2 = meta_x + 1.1 * inch
-        val_x = meta_x + 1.25 * inch
+        # ---- Receipt No. / Receipt Date, right side (same
+        # proportional position + row spacing as the Account
+        # Statement's info block, just without Total Transactions). ----
+        meta_x = margin + card_w * 0.52
+        label_x2 = meta_x + 1.15 * inch
+        val_x = meta_x + 1.28 * inch
         my = ty
         for label, value in [("Receipt No.", receipt_no), ("Receipt Date", receipt_date)]:
-            canvas_obj.setFont("Helvetica-Bold", 10)
+            canvas_obj.setFont("Helvetica-Bold", 9)
             canvas_obj.setFillColor(colors.HexColor(_TEXT_DARK))
             canvas_obj.drawString(meta_x, my, label)
             canvas_obj.drawString(label_x2, my, ":")
-            canvas_obj.setFont("Helvetica", 10)
+            canvas_obj.setFont("Helvetica", 9)
             canvas_obj.drawString(val_x, my, value)
-            my -= 0.32 * inch
+            my -= 0.24 * inch
 
         # ---- Received Amount split panel ----
         panel_top = card_top - card_h - 0.2 * inch
@@ -2575,26 +2589,37 @@ def _build_receipt_pdf(company_name, logo_path, user, txn):
 
         circle_cx = margin + 0.55 * inch
         circle_cy = panel_top - panel_h / 2
+        # Item 2 - tick icon enlarged ~6% and the checkmark stroke
+        # scaled to match so it still sits centered inside the circle.
+        tick_scale = 1.06
+        circle_r = 0.32 * inch * tick_scale
         canvas_obj.setFillColor(colors.HexColor(_GREEN))
-        canvas_obj.circle(circle_cx, circle_cy, 0.32 * inch, stroke=0, fill=1)
+        canvas_obj.circle(circle_cx, circle_cy, circle_r, stroke=0, fill=1)
         canvas_obj.setStrokeColor(colors.white)
         canvas_obj.setLineWidth(2.4)
-        canvas_obj.line(circle_cx - 0.13 * inch, circle_cy, circle_cx - 0.03 * inch, circle_cy - 0.1 * inch)
-        canvas_obj.line(circle_cx - 0.03 * inch, circle_cy - 0.1 * inch, circle_cx + 0.16 * inch, circle_cy + 0.13 * inch)
+        canvas_obj.line(circle_cx - 0.13 * inch * tick_scale, circle_cy,
+                         circle_cx - 0.03 * inch * tick_scale, circle_cy - 0.1 * inch * tick_scale)
+        canvas_obj.line(circle_cx - 0.03 * inch * tick_scale, circle_cy - 0.1 * inch * tick_scale,
+                         circle_cx + 0.16 * inch * tick_scale, circle_cy + 0.13 * inch * tick_scale)
 
         amt_x = margin + 1.15 * inch
         canvas_obj.setFont("Helvetica-Bold", 11)
         canvas_obj.setFillColor(colors.HexColor(_GREEN))
         canvas_obj.drawString(amt_x, circle_cy + 0.22 * inch, "RECEIVED AMOUNT")
-        _draw_rupee_amount(canvas_obj, amt_x, circle_cy - 0.2 * inch, amount, "Helvetica-Bold", 26, colors.HexColor(_NAVY))
+        # Item 2 - amount font size bumped slightly (26 -> 28).
+        _draw_rupee_amount(canvas_obj, amt_x, circle_cy - 0.2 * inch, amount, "Helvetica-Bold", 28, colors.HexColor(_NAVY))
 
         divider_x = margin + panel_w * 0.55
         canvas_obj.setStrokeColor(colors.HexColor(_BORDER))
         canvas_obj.setLineWidth(0.75)
         canvas_obj.line(divider_x, panel_top - 0.18 * inch, divider_x, panel_top - panel_h + 0.18 * inch)
 
+        # Item 2 - document icon enlarged ~10% and centered on the
+        # 3-line text block next to it (heading + 2 lines span
+        # circle_cy+0.18in to circle_cy-0.18in, so the icon's own
+        # center now sits exactly on circle_cy instead of +0.05in off).
         icon2_x = divider_x + 0.45 * inch
-        _draw_icon_glyph(canvas_obj, "detailed", icon2_x, circle_cy + 0.05 * inch, 0.26 * inch, colors.HexColor(_GREEN))
+        _draw_icon_glyph(canvas_obj, "detailed", icon2_x, circle_cy, 0.286 * inch, colors.HexColor(_GREEN))
         canvas_obj.setFont("Helvetica-Bold", 11)
         canvas_obj.setFillColor(colors.HexColor(_GREEN))
         canvas_obj.drawString(icon2_x + 0.3 * inch, circle_cy + 0.18 * inch, "Thank you for your payment.")
@@ -2628,7 +2653,7 @@ def _build_receipt_pdf(company_name, logo_path, user, txn):
         ("Description", txn.get("description") or ""),
         ("Amount Received", None),  # rendered specially below (rupee-safe font)
         ("Amount in Words", _amount_in_words(amount, include_rupees=True)),
-        ("Payment Method", txn.get("paymentMode") or "Razorpay"),
+        ("Payment Method", txn.get("paymentMode") or "Online Payment"),
     ]
     for label, value in detail_rows:
         if label == "Amount Received":
@@ -2637,7 +2662,7 @@ def _build_receipt_pdf(company_name, logo_path, user, txn):
             value_html = escape_html(value)
         rows.append([Paragraph(escape_html(label), label_cell_style), Paragraph(value_html, cell_style)])
 
-    table = Table(rows, colWidths=[2.3 * inch, 4.47 * inch])
+    table = Table(rows, colWidths=[2.5 * inch, 4.27 * inch])
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(_NAVY)),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -2648,15 +2673,17 @@ def _build_receipt_pdf(company_name, logo_path, user, txn):
         ("BACKGROUND", (1, 1), (1, -1), colors.white),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor(_BORDER)),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 9), ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
-        ("LEFTPADDING", (0, 0), (-1, -1), 12), ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ("TOPPADDING", (0, 0), (-1, -1), 14), ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
+        ("LEFTPADDING", (0, 0), (-1, -1), 15), ("RIGHTPADDING", (0, 0), (-1, -1), 15),
+        # Item 12 - same corner radius as the other cards on the page.
+        ("ROUNDEDCORNERS", [9, 9, 9, 9]),
     ]))
     story.append(table)
-    story.append(Spacer(1, 18))
+    story.append(Spacer(1, 12))
 
     story.append(Table([[""]], colWidths=[6.77 * inch], rowHeights=[0.5],
                         style=TableStyle([("LINEABOVE", (0, 0), (-1, 0), 0.75, colors.HexColor(_BORDER), None, (2, 2))])))
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 8))
     story.append(Paragraph("If you have any questions, feel free to contact us.",
                             ParagraphStyle("RcptFooterNote", parent=label_style, alignment=1, fontSize=9.5,
                                            textColor=colors.HexColor(_TEXT_MUTED))))
@@ -2667,22 +2694,22 @@ def _build_receipt_pdf(company_name, logo_path, user, txn):
         canvas_obj.saveState()
         # Footer card: computer icon + disclaimer + green page badge.
         card_h = 0.59 * inch
-        card_y = 1.05 * inch
+        card_y = 1.85 * inch
         _round_rect_with_shadow(canvas_obj, margin, card_y, width - 2 * margin, card_h, radius=9, fill="#FFFFFF")
         mid_y = card_y + card_h / 2
-        _draw_icon_glyph(canvas_obj, "computer", margin + 0.28 * inch, mid_y + 0.04 * inch, 0.24 * inch, colors.HexColor(_TEXT_MUTED))
+        _draw_icon_glyph(canvas_obj, "computer", margin + 0.32 * inch, mid_y + 0.04 * inch, 0.24 * inch, colors.HexColor(_TEXT_MUTED))
         canvas_obj.setFont("Helvetica-Bold", 8.5)
         canvas_obj.setFillColor(colors.HexColor(_TEXT_DARK))
-        canvas_obj.drawString(margin + 0.46 * inch, mid_y + 0.06 * inch, "Computer Rise Print")
+        canvas_obj.drawString(margin + 0.5 * inch, mid_y + 0.06 * inch, "Computer Rise Print")
         canvas_obj.setFont("Helvetica", 7.6)
         canvas_obj.setFillColor(colors.HexColor(_TEXT_MUTED))
-        canvas_obj.drawString(margin + 0.46 * inch, mid_y - 0.1 * inch,
+        canvas_obj.drawString(margin + 0.5 * inch, mid_y - 0.1 * inch,
                                "This is a computer generated printout and does not require signature.")
         label = "Page 1 of 1"
         canvas_obj.setFont("Helvetica-Bold", 8.5)
-        badge_w = canvas_obj.stringWidth(label, "Helvetica-Bold", 8.5) + 0.4 * inch
+        badge_w = canvas_obj.stringWidth(label, "Helvetica-Bold", 8.5) + 0.46 * inch
         badge_h = 0.3 * inch
-        badge_x = width - margin - 0.2 * inch - badge_w
+        badge_x = width - margin - 0.24 * inch - badge_w
         badge_y = mid_y - badge_h / 2
         canvas_obj.setFillColor(colors.HexColor(_GREEN))
         canvas_obj.roundRect(badge_x, badge_y, badge_w, badge_h, badge_h / 2, stroke=0, fill=1)
@@ -2698,19 +2725,25 @@ def _build_receipt_pdf(company_name, logo_path, user, txn):
         ]
         usable_width = width - 2 * margin
         col_w = usable_width / len(badges)
-        circle_y = card_y + card_h + 0.55 * inch
+        # Item 13 - the badge row sits closer to the card now (was
+        # +0.55in), which also closes most of the unused white space
+        # between the "contact us" line above and this row.
+        circle_y = card_y + card_h + 0.35 * inch
         for i, (icon_name, line1, line2) in enumerate(badges):
             cx = margin + col_w * i + col_w / 2
             if i > 0:
+                # Item 8 - darker, full-height, centered separator
+                # spanning from just above the icon circle to just
+                # below the subtitle text, equally on both sides.
                 sep_x = margin + col_w * i
-                canvas_obj.setStrokeColor(colors.HexColor("#C7CBD1"))
-                canvas_obj.setLineWidth(0.6)
-                canvas_obj.line(sep_x, circle_y - 26, sep_x, circle_y + 16)
+                canvas_obj.setStrokeColor(colors.HexColor("#9CA3AF"))
+                canvas_obj.setLineWidth(0.7)
+                canvas_obj.line(sep_x, circle_y - 40, sep_x, circle_y + 20)
             canvas_obj.setStrokeColor(colors.HexColor(_GREEN))
             canvas_obj.setLineWidth(1.2)
             canvas_obj.setFillColor(colors.white)
-            canvas_obj.circle(cx, circle_y, 15.75, stroke=1, fill=1)
-            _draw_icon_glyph(canvas_obj, icon_name, cx, circle_y, 0.23 * inch, colors.HexColor(_GREEN))
+            canvas_obj.circle(cx, circle_y, 16.5, stroke=1, fill=1)
+            _draw_icon_glyph(canvas_obj, icon_name, cx, circle_y, 0.242 * inch, colors.HexColor(_GREEN))
             canvas_obj.setFont("Helvetica-Bold", 8.6)
             canvas_obj.setFillColor(colors.HexColor(_TEXT_DARK))
             canvas_obj.drawCentredString(cx, circle_y - 24, line1)
@@ -2749,8 +2782,11 @@ def _amount_in_words(amount, include_rupees=False):
             return (ones[n // 100] + " Hundred" + (" " + two_digits(n % 100) if n % 100 else "")).strip()
         return two_digits(n)
 
-    suffix = " Rupees Only" if include_rupees else " Only"
     n = int(round(abs(amount)))
+    if include_rupees:
+        suffix = " Rupee Only" if n == 1 else " Rupees Only"
+    else:
+        suffix = " Only"
     if n == 0:
         return "Zero" + suffix
 
