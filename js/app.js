@@ -692,9 +692,13 @@
                     // server download nahi. Blob is session me ho to usse download.
                     const isSessionDl = file.sessionDownload && translationBlobStore[file.id];
                     const actionLink = file.status === 'completed' ?
-                        (isSessionDl
-                          ? `<a class="file-action-link" onclick="downloadSessionBlob('${file.id}', '${file._serviceOrigin || ''}')" title="Download"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`
-                          : `<a class="file-action-link" onclick="downloadFile('${dlFile}', '${docFolder.replace(/'/g, "\\'")}', '${downloadKind}')" title="Download"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`) :
+                        (file.deliveredEmailTo
+                          ? `<span class="file-action-link done-label" title="Emailed to ${file.deliveredEmailTo}">Done</span>`
+                          : file.autoDelivered
+                          ? `<span class="file-action-link done-label" title="Downloaded to your computer">Done</span>`
+                          : (isSessionDl
+                              ? `<a class="file-action-link" onclick="downloadSessionBlob('${file.id}', '${file._serviceOrigin || ''}')" title="Download"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`
+                              : `<a class="file-action-link" onclick="downloadFile('${dlFile}', '${docFolder.replace(/'/g, "\\'")}', '${downloadKind}')" title="Download"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`)) :
                         file.status === 'needs_review' ?
                         `<a class="file-action-link review-link" onclick="openLeaseReviewModal('${file.id}')">🔍 Review</a>` :
                         file.status === 'error' ?
@@ -2080,6 +2084,71 @@
             // extraction -> real LLM translation -> real saved output +
             // downloadable PDF).
             // ============================================================
+            // Item - when System Configuration = Email OR Desktop, a file
+            // should be delivered the moment IT finishes, not require the
+            // user to click a download icon (which used to be the only
+            // trigger). Email sends it server-side; Desktop fires a real
+            // browser download via a synthetic anchor click - same as if
+            // the user had clicked the download icon themselves, just
+            // automatic. Either way the file is marked delivered so the
+            // Action column can show "Done" instead of a download icon
+            // (see buildFileTableRows) - there's nothing left to click.
+            async function autoDeliverBySystemConfig(serviceId, file, getBlobEntry) {
+                if (window.refreshServicesCatalog) {
+                    try { await refreshServicesCatalog(); } catch (e) { /* use whatever's cached */ }
+                }
+                const hasSystemConfig = SERVICES_CATALOG[serviceId] && SERVICES_CATALOG[serviceId].systemConfig === 'Yes';
+                // No System Configuration option for this service just
+                // means there's nothing to choose Email/a provider from -
+                // it still defaults to "download to this computer"
+                // automatically, same as Desktop.
+                const selected = hasSystemConfig ? currentSystemConfig.trim().toLowerCase() : 'desktop';
+
+                if (selected === 'desktop') {
+                    try {
+                        const entry = await getBlobEntry();
+                        if (!entry || !entry.blob) return false;
+                        const url = URL.createObjectURL(entry.blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = entry.name || 'Output';
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        setTimeout(() => URL.revokeObjectURL(url), 1000);
+                        file.autoDelivered = true;
+                        addActivity(serviceId, `System > Downloaded ${entry.name} to Desktop`, 'Success');
+                        return true;
+                    } catch (err) {
+                        addActivity(serviceId, `System > Could not download ${file.name} - ${err.message || err}`, 'Failed');
+                        return false;
+                    }
+                }
+
+                if (selected === 'email') {
+                    try {
+                        const entry = await getBlobEntry();
+                        if (!entry || !entry.blob) return false;
+                        const b64 = await blobToBase64(entry.blob);
+                        const res = await authFetch('/api/system-config/email-file', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ userId: CURRENT_USER_ID, filename: entry.name, fileData: b64 })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error || 'Could not email that file.');
+                        file.deliveredEmailTo = data.emailedTo;
+                        addActivity(serviceId, `System > Emailed ${entry.name} to ${data.emailedTo}`, 'Success');
+                        return true;
+                    } catch (err) {
+                        addActivity(serviceId, `System > Could not email ${file.name} - ${err.message || err}`, 'Failed');
+                        return false;
+                    }
+                }
+
+                return false;
+            }
+
             async function runTranslationPipeline() {
                 if (processState.stopped) return;
                 processTranslationFileAt(0);
@@ -2098,10 +2167,16 @@
                         refreshServicePage('translation');
                         persistServiceFiles('translation');
                         const hasErrors = myFiles.some(f => f.status === 'error');
+                        const emailedFile = myFiles.find(f => f.deliveredEmailTo);
+                        const desktopDelivered = !emailedFile && myFiles.some(f => f.autoDelivered);
                         showMessage(hasErrors ? '⚠️ Finished with Errors' : '✅ Complete',
                             hasErrors ?
                             'Processing finished, but one or more files could not be completed. Check the Action column for details.' :
-                            'All files have been processed successfully!', ['OK']);
+                            (emailedFile
+                                ? `Process Completed. File(s) shared on following email: ${emailedFile.deliveredEmailTo}`
+                                : desktopDelivered
+                                ? 'Process Completed. File(s) have been downloaded to your computer.'
+                                : 'All files have been processed successfully!'), ['OK']);
                         return;
                     }
 
@@ -2380,6 +2455,7 @@
                             if (totalCharged > 0) {
                                 notifyProcessCompletion('Translation', file.name, totalCharged, fileTxnId);
                             }
+                            await autoDeliverBySystemConfig('translation', file, async () => translationBlobStore[file.id]);
                             file.status = 'completed';
                             activeAgentId = null;
                             // NOTE: previously deleted translationFileBlobs[file.id]
@@ -2582,6 +2658,16 @@
 
                         addActivity('translation', `${fl}File Processing > ${file.name}`, 'Finished');
                         notifyProcessCompletion('Translation', file.name, chargeAmount, txnId);
+
+                        await autoDeliverBySystemConfig('translation', file, async () => {
+                            const dlFormat = file.outputFormat === 'pdf' ? 'pdf' : 'docx';
+                            const dlFile = dlFormat === 'docx' ? 'Output.docx' : 'Output.pdf';
+                            const url = '/api/translation/download?userId=' + encodeURIComponent(CURRENT_USER_ID) +
+                                '&docName=' + encodeURIComponent(file.docName) + '&fileName=' + encodeURIComponent(dlFile);
+                            const res = await authFetch(url);
+                            if (!res.ok) throw new Error('Could not fetch output file for emailing.');
+                            return { blob: await res.blob(), name: dlFile };
+                        });
 
                         file.status = 'completed';
                         activeAgentId = null;
@@ -5640,12 +5726,26 @@
                     addActivity('lease-abstraction', `${fl}File Processing > ${file.name}`, 'Finished');
                     notifyProcessCompletion('Lease Abstraction', file.name, file.chargeAmount || getServicePrice('lease-abstraction'), file.chargeTxnId || '');
 
+                    await autoDeliverBySystemConfig('lease-abstraction', file, async () => {
+                        const dlFile = 'Output.pdf';
+                        const url = '/api/lease/download?userId=' + encodeURIComponent(CURRENT_USER_ID) +
+                            '&leaseName=' + encodeURIComponent(leaseName) + '&fileName=' + encodeURIComponent(dlFile);
+                        const res = await authFetch(url);
+                        if (!res.ok) throw new Error('Could not fetch output file for delivery.');
+                        return { blob: await res.blob(), name: dlFile };
+                    });
+
                     file.status = 'completed';
                     file.progress = '100';
                     closeLeaseReviewModal();
                     refreshServicePage('lease-abstraction');
                     persistServiceFiles('lease-abstraction');
-                    showMessage('✅ Approved', 'The reviewed lease has been finalized and the Output.pdf generated.', ['OK']);
+                    showMessage('✅ Approved',
+                        file.deliveredEmailTo
+                            ? `The reviewed lease has been finalized. File(s) shared on following email: ${file.deliveredEmailTo}`
+                            : file.autoDelivered
+                            ? 'The reviewed lease has been finalized and downloaded to your computer.'
+                            : 'The reviewed lease has been finalized and the Output.pdf generated.', ['OK']);
                 } catch (err) {
                     showWarning(err.message || 'Could not finalize this lease. Please try again.');
                 }

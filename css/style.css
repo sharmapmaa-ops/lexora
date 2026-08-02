@@ -726,6 +726,13 @@
             color: #e74c3c;
         }
 
+        .file-table .file-action-link.done-label {
+            color: #15803d;
+            text-decoration: none;
+            cursor: default;
+            font-weight: 600;
+        }
+
         /* ===== PROGRESS BAR ===== */
         .progress-bar-container {
             display: flex;
