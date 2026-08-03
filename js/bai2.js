@@ -41,17 +41,10 @@
     el.textContent = msg || '';
   }
 
-  async function download(blob, name) {
-    if (window.StorageDestinations) {
-      try {
-        const result = await StorageDestinations.saveFile('bai2Destination', blob, name);
-        if (result.provider !== 'local') {
-          setStatus(`Saved to ${StorageDestinations.labelFor(result.provider)}.`, 'ok');
-          return;
-        }
-      } catch (err) {
-        setStatus((err.message || 'Could not save to that destination') + ' - downloading locally instead.', 'error');
-      }
+  function download(blob, name) {
+    if (window.standaloneSmartDownload) {
+      window.standaloneSmartDownload('bai2', blob, name);
+      return;
     }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -285,6 +278,18 @@ Return ONLY this JSON, nothing else:
     }
   }
 
+  function _buildOutputBlobForResult(r, fmt, stem) {
+    if (fmt === 'bai2') return { blob: new Blob([buildBai2([r])], { type: 'text/plain' }), name: `${stem}.bai` };
+    if (fmt === 'json') return { blob: new Blob([JSON.stringify(r, null, 2)], { type: 'application/json' }), name: `${stem}.json` };
+    const rows = flatRows().filter(function (x) { return x.File === r.file; });
+    const heads = Object.keys(rows[0] || { File: '' });
+    const cell = (v) => /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+    const lines = [heads.join(',')].concat(rows.map(function (x) {
+      return heads.map(function (h) { return cell(x[h]); }).join(',');
+    }));
+    return { blob: new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), name: `${stem}.csv` };
+  }
+
   function downloadOne(uid) {
     const entry = STATE.files.find(function (f) { return f.uid === uid; });
     if (!entry) return;
@@ -292,17 +297,8 @@ Return ONLY this JSON, nothing else:
     if (!r) return setStatus('That file has no extracted data yet.', 'error');
     const fmt = (document.getElementById('baiFormat') || {}).value || 'bai2';
     const stem = entry.file.name.replace(/\.[^.]+$/, '');
-    if (fmt === 'bai2') download(new Blob([buildBai2([r])], { type: 'text/plain' }), `${stem}.bai`);
-    else if (fmt === 'json') download(new Blob([JSON.stringify(r, null, 2)], { type: 'application/json' }), `${stem}.json`);
-    else {
-      const rows = flatRows().filter(function (x) { return x.File === entry.file.name; });
-      const heads = Object.keys(rows[0] || { File: '' });
-      const cell = (v) => /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
-      const lines = [heads.join(',')].concat(rows.map(function (x) {
-        return heads.map(function (h) { return cell(x[h]); }).join(',');
-      }));
-      download(new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), `${stem}.csv`);
-    }
+    const out = _buildOutputBlobForResult(r, fmt, stem);
+    download(out.blob, out.name);
   }
 
   // ── processing ─────────────────────────────────────────────────────
@@ -333,6 +329,9 @@ Return ONLY this JSON, nothing else:
     if (window.setVisionAuthToken) window.setVisionAuthToken(window.__lexoraAuthToken || '');
     log(`System > ${useOcr ? 'With OCR' : 'Without OCR'}`, 'Success');
     rerender();
+
+    const runCtx = window.createStandaloneRunCtx ? await window.createStandaloneRunCtx('bai2') : null;
+    const outputFmt = (document.getElementById('baiFormat') || {}).value || 'bai2';
 
     for (let i = 0; i < selected.length; i++) {
       const entry = selected[i];
@@ -372,6 +371,11 @@ Return ONLY this JSON, nothing else:
         STATE.results.push({ file: entry.file.name, account: account, transactions: account.transactions });
         entry.status = 'Success';
         entry.progress = 100;
+        if (runCtx) {
+            const stem = entry.file.name.replace(/\.[^.]+$/, '');
+            const out = _buildOutputBlobForResult({ file: entry.file.name, account: account, transactions: account.transactions }, outputFmt, stem);
+            await runCtx.download(out.blob, out.name);
+        }
 
         // Per-document plans: one flat charge for the whole file now
         // that it's done, regardless of page count.
@@ -395,6 +399,7 @@ Return ONLY this JSON, nothing else:
     }
 
     STATE.running = false;
+    if (runCtx) await runCtx.finalize();
     log(`Generate Output > ${STATE.results.length} statement(s) ready`, 'Success');
     rerender();
   }
@@ -519,6 +524,7 @@ Return ONLY this JSON, nothing else:
           <div class="service-card">
             <h3>⚙️ Setup</h3>
             <div class="card-body">
+              ${window.buildStandaloneSystemConfigHtml ? window.buildStandaloneSystemConfigHtml('bai2') : ''}
               <div id="baiSetup">
               <div class="setup-group">
                 <label>Output Format</label>

@@ -43,6 +43,10 @@
   }
 
   function download(blob, name) {
+    if (window.standaloneSmartDownload) {
+      window.standaloneSmartDownload('ocr', blob, name);
+      return;
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = name;
@@ -83,6 +87,8 @@
     if (window.setVisionStopCheck) window.setVisionStopCheck(function () { return STATE.stopped; });
     log(`System > ${useOcr ? 'With OCR' : 'Without OCR'} + Without Translation`, 'Success');
     rerender();
+
+    const runCtx = window.createStandaloneRunCtx ? await window.createStandaloneRunCtx('ocr') : null;
 
     for (let i = 0; i < selected.length; i++) {
       const entry = selected[i];
@@ -137,6 +143,7 @@
         const ext = useOcr ? '.doc' : '.docx';
         const name = entry.file.name.replace(/\.[^.]+$/, '') + ' OCR' + ext;
         STATE.blobs[entry.uid] = { blob: blob, name: name };
+        if (runCtx) await runCtx.download(blob, name);
 
         entry.status = 'Success';
         entry.progress = 100;
@@ -164,6 +171,7 @@
     }
 
     if (window.setPipelineEventHandler) window.setPipelineEventHandler(null);
+    if (runCtx) await runCtx.finalize();
     STATE.running = false;
     rerender();
   }
@@ -171,17 +179,6 @@
   async function downloadOne(uid) {
     const item = STATE.blobs[uid];
     if (!item) return setStatus('That file has not been processed yet.', 'error');
-    if (window.StorageDestinations) {
-      try {
-        const result = await StorageDestinations.saveFile('ocrDestination', item.blob, item.name);
-        if (result.provider !== 'local') {
-          setStatus(`Saved to ${StorageDestinations.labelFor(result.provider)}.`, 'ok');
-          return;
-        }
-      } catch (err) {
-        setStatus((err.message || 'Could not save to that destination') + ' - downloading locally instead.', 'error');
-      }
-    }
     download(item.blob, item.name);
   }
 
@@ -287,6 +284,7 @@
           <div class="service-card">
             <h3>⚙️ Setup</h3>
             <div class="card-body">
+              ${window.buildStandaloneSystemConfigHtml ? window.buildStandaloneSystemConfigHtml('ocr') : ''}
               <div class="setup-group">
                 <div style="font-size:0.84rem;color:rgba(0,0,0,0.6);">
                   Rebuilds your PDF as an editable Word document with the original

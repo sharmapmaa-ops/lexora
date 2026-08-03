@@ -614,6 +614,194 @@
             }
             window.getSystemConfigs = getSystemConfigs;
             window.systemConfigProviderId = systemConfigProviderId;
+
+            // Item: standalone modules (OCR, BAI2, Data Extraction) each
+            // have their own Setup card outside ServiceRunner's state
+            // system - this gives them the exact same System
+            // Configuration selector + Desktop/Email/cloud-provider
+            // behavior as everywhere else, with its own tiny per-service
+            // state store instead of piggybacking on ServiceRunner's.
+            const _standaloneSysConfigState = {};
+            window.buildStandaloneSystemConfigHtml = function(serviceId) {
+                const catalogEntry = window.SERVICES_CATALOG && window.SERVICES_CATALOG[serviceId];
+                if (!catalogEntry || catalogEntry.systemConfig !== 'Yes') return '';
+                if (!_standaloneSysConfigState[serviceId]) _standaloneSysConfigState[serviceId] = { systemConfig: 'Desktop', connectionStatus: 'idle' };
+                const st = _standaloneSysConfigState[serviceId];
+                const options = getSystemConfigs().map(name =>
+                    `<option value="${escapeHtml(name)}" ${name === st.systemConfig ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('');
+                const statusHtml = st.connectionStatus === 'connected'
+                    ? '<span class="connection-status connected">\u25cf Connected</span>'
+                    : (st.connectionStatus === 'disconnected' ? '<span class="connection-status disconnected">\u25cf Not Connected</span>' : '');
+                return `
+                    <div class="setup-group">
+                        <label>System Configuration</label>
+                        <div class="system-config-row">
+                            <select id="standaloneSysConfig_${serviceId}" onchange="verifyStandaloneSystemConfig('${serviceId}')">
+                                ${options}
+                            </select>
+                            <span id="standaloneSysConfigStatus_${serviceId}">${statusHtml}</span>
+                        </div>
+                    </div>`;
+            };
+
+            window.verifyStandaloneSystemConfig = function(serviceId) {
+                const select = document.getElementById('standaloneSysConfig_' + serviceId);
+                const statusSpan = document.getElementById('standaloneSysConfigStatus_' + serviceId);
+                if (!select) return;
+                const selected = select.value;
+                const st = _standaloneSysConfigState[serviceId] || (_standaloneSysConfigState[serviceId] = {});
+
+                const applyStatus = () => {
+                    if (!statusSpan) return;
+                    statusSpan.innerHTML = st.connectionStatus === 'connected'
+                        ? '<span class="connection-status connected">\u25cf Connected</span>'
+                        : (st.connectionStatus === 'disconnected' ? '<span class="connection-status disconnected">\u25cf Not Connected</span>' : '');
+                };
+
+                if (selected === 'Desktop') {
+                    st.systemConfig = 'Desktop';
+                    st.connectionStatus = 'connected';
+                    applyStatus();
+                    return;
+                }
+                if (selected.trim().toLowerCase() === 'email') {
+                    st.systemConfig = selected;
+                    st.connectionStatus = 'connected';
+                    applyStatus();
+                    return;
+                }
+                const providerId = systemConfigProviderId(selected);
+                if (providerId && window.StorageDestinations) {
+                    StorageDestinations.openConfig(providerId, null);
+                    const check = setInterval(() => {
+                        if (document.getElementById('storageConfigOverlay')) return; // still open
+                        clearInterval(check);
+                        if (StorageDestinations.isConfigured(providerId)) {
+                            st.systemConfig = selected;
+                            st.connectionStatus = 'connected';
+                        } else {
+                            st.systemConfig = 'Desktop';
+                            st.connectionStatus = 'idle';
+                            select.value = 'Desktop';
+                        }
+                        applyStatus();
+                    }, 400);
+                    return;
+                }
+                // Sharefile/Sharepoint - same server-managed OAuth check
+                // used everywhere else.
+                (async function () {
+                    try {
+                        const statusRes = await authFetch(`/api/integrations/status?provider=${selected.toLowerCase()}`);
+                        const status = await statusRes.json();
+                        if (!status.configured) {
+                            st.systemConfig = 'Desktop';
+                            st.connectionStatus = 'disconnected';
+                            select.value = 'Desktop';
+                            applyStatus();
+                            showMessage('⚙️ Not Set Up Yet', `${selected} isn't connected yet - ask your Developer to register it first. Switched back to Desktop for now.`, ['OK']);
+                            return;
+                        }
+                        window.open(status.authUrl, '_blank', 'width=520,height=640');
+                        select.value = 'Desktop';
+                        st.systemConfig = 'Desktop';
+                        applyStatus();
+                    } catch (err) {
+                        select.value = 'Desktop';
+                        st.systemConfig = 'Desktop';
+                        applyStatus();
+                    }
+                })();
+            };
+
+            window.getStandaloneSystemConfig = function(serviceId) {
+                const st = _standaloneSysConfigState[serviceId];
+                return st ? st.systemConfig : 'Desktop';
+            };
+
+            window.createStandaloneRunCtx = async function(serviceId) {
+                if (window.refreshServicesCatalog) {
+                    try { await refreshServicesCatalog(); } catch (e) { /* fall back to whatever's cached */ }
+                }
+                const catalogEntry = SERVICES_CATALOG[serviceId];
+                const hasSystemConfig = !!(catalogEntry && catalogEntry.systemConfig === 'Yes');
+                const selected = hasSystemConfig ? getStandaloneSystemConfig(serviceId) : 'Desktop';
+                const isEmailRun = hasSystemConfig && selected.trim().toLowerCase() === 'email';
+                const pendingEmailFiles = [];
+
+                async function download(blob, filename) {
+                    if (isEmailRun) {
+                        pendingEmailFiles.push({ blob: blob, filename: filename });
+                        return;
+                    }
+                    if (!hasSystemConfig || selected.trim().toLowerCase() === 'desktop') {
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url; a.download = filename;
+                        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                        setTimeout(() => URL.revokeObjectURL(url), 4000);
+                        return;
+                    }
+                    // Cloud-provider destination - unchanged per-file behavior.
+                    try {
+                        const providerId = systemConfigProviderId(selected);
+                        if (providerId && window.StorageDestinations) {
+                            const result = await StorageDestinations.saveFileToProvider(providerId, blob, filename);
+                            if (result.provider !== 'local') {
+                                showMessage('✅ Saved', `${filename} was saved to ${selected}.`, ['OK']);
+                                return;
+                            }
+                        }
+                    } catch (err) {
+                        showWarning((err.message || 'Could not save to that destination') + ' - showing a download link instead.');
+                    }
+                    const url = URL.createObjectURL(blob);
+                    showDownloadLinkModal(filename, url);
+                }
+
+                async function finalize() {
+                    if (isEmailRun) {
+                        if (!pendingEmailFiles.length) return;
+                        try {
+                            let attachmentBlob = pendingEmailFiles[0].blob;
+                            let attachmentName = pendingEmailFiles[0].filename;
+                            if (pendingEmailFiles.length > 1 && window.JSZip) {
+                                const zip = new JSZip();
+                                pendingEmailFiles.forEach(f => zip.file(f.filename, f.blob));
+                                attachmentBlob = await zip.generateAsync({ type: 'blob' });
+                                attachmentName = `${serviceId}_output_files.zip`;
+                            }
+                            const b64 = await blobToBase64(attachmentBlob);
+                            const res = await authFetch('/api/system-config/email-file', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ userId: CURRENT_USER_ID, filename: attachmentName, fileData: b64 })
+                            });
+                            const data = await res.json();
+                            if (!res.ok) throw new Error(data.error || 'Could not email those files.');
+                            showMessage('✅ All Files Sent', 'All Files sent on email', ['OK']);
+                        } catch (err) {
+                            showWarning(err.message || 'Could not email the output files.');
+                        }
+                        return;
+                    }
+                    if (!hasSystemConfig || selected.trim().toLowerCase() === 'desktop') {
+                        showMessage('✅ Done', 'Process Completed', ['OK']);
+                    }
+                }
+
+                return { download: download, finalize: finalize };
+            };
+
+            // One-shot convenience wrapper (e.g. a manual "download again"
+            // click after the batch already finished) - not part of a
+            // multi-file run, so it finalizes immediately after itself.
+            window.standaloneSmartDownload = async function(serviceId, blob, filename) {
+                const runCtx = await createStandaloneRunCtx(serviceId);
+                await runCtx.download(blob, filename);
+                await runCtx.finalize();
+            };
+
             let currentSystemConfig = 'Desktop';
             let connectionStatus = 'idle'; // 'idle', 'connected', 'disconnected'
 
@@ -1674,6 +1862,7 @@
                 activeAgentId = null;
                 refreshServicePage('lease-abstraction');
 
+                _leaseTranslationRunCtx['lease-abstraction'] = await createLeaseTranslationRunCtx('lease-abstraction');
                 processLeaseFileAt(0);
             }
 
@@ -1702,10 +1891,16 @@
                             refreshServicePage('lease-abstraction');
                             persistServiceFiles('lease-abstraction');
                             const hasErrors = myLeaseFiles.some(f => f.status === 'error');
-                            showMessage(hasErrors ? '⚠️ Finished with Errors' : '✅ Complete',
-                                hasErrors ?
-                                'Processing finished, but one or more files could not be completed. Check the Action column for details.' :
-                                'All files have been processed successfully!', ['OK']);
+                            const runCtx = _leaseTranslationRunCtx['lease-abstraction'];
+                            _leaseTranslationRunCtx['lease-abstraction'] = null;
+                            let emailHandledMessage = false;
+                            if (runCtx && !hasErrors) emailHandledMessage = await runCtx.finalize();
+                            if (!emailHandledMessage) {
+                                showMessage(hasErrors ? '⚠️ Finished with Errors' : '✅ Complete',
+                                    hasErrors ?
+                                    'Processing finished, but one or more files could not be completed. Check the Action column for details.' :
+                                    'Process Completed', ['OK']);
+                            }
                         } else {
                             refreshServicePage('lease-abstraction');
                             persistServiceFiles('lease-abstraction');
@@ -2093,7 +2288,106 @@
             // automatic. Either way the file is marked delivered so the
             // Action column can show "Done" instead of a download icon
             // (see buildFileTableRows) - there's nothing left to click.
+            // Item: batch-aware auto-delivery for Lease Abstraction /
+            // Translation (which share currentSystemConfig, unlike the
+            // standalone modules which have their own per-service state).
+            // A run context is created once when a pipeline starts and
+            // referenced here by serviceId for the whole run - Desktop/
+            // no-config downloads each file as it completes; Email
+            // collects every file and sends ONE email (zipped together
+            // if there's more than one) once the run finishes.
+            const _leaseTranslationRunCtx = {};
+
+            async function createLeaseTranslationRunCtx(serviceId) {
+                if (window.refreshServicesCatalog) {
+                    try { await refreshServicesCatalog(); } catch (e) { /* use whatever's cached */ }
+                }
+                const hasSystemConfig = !!(SERVICES_CATALOG[serviceId] && SERVICES_CATALOG[serviceId].systemConfig === 'Yes');
+                const selected = hasSystemConfig ? currentSystemConfig.trim().toLowerCase() : 'desktop';
+                const isEmailRun = selected === 'email';
+                const pendingEmailFiles = [];
+
+                async function deliver(file, entry) {
+                    if (isEmailRun) {
+                        pendingEmailFiles.push({ blob: entry.blob, filename: entry.name || 'Output' });
+                        addActivity(serviceId, `System > Queued ${entry.name} for the batch email`, 'Info');
+                        return true;
+                    }
+                    if (selected === 'desktop' || !hasSystemConfig) {
+                        const url = URL.createObjectURL(entry.blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = entry.name || 'Output';
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        setTimeout(() => URL.revokeObjectURL(url), 1000);
+                        file.autoDelivered = true;
+                        addActivity(serviceId, `System > Downloaded ${entry.name}`, 'Success');
+                        return true;
+                    }
+                    // Cloud-provider destination - unchanged per-file behavior.
+                    try {
+                        const providerId = systemConfigProviderId(currentSystemConfig);
+                        if (providerId && window.StorageDestinations) {
+                            const result = await StorageDestinations.saveFileToProvider(providerId, entry.blob, entry.name);
+                            if (result.provider !== 'local') {
+                                addActivity(serviceId, `System > Saved ${entry.name} to ${currentSystemConfig}`, 'Success');
+                                return true;
+                            }
+                        }
+                    } catch (err) {
+                        addActivity(serviceId, `System > Could not save ${entry.name} to ${currentSystemConfig} - ${err.message || err}`, 'Failed');
+                    }
+                    return false;
+                }
+
+                async function finalize() {
+                    if (isEmailRun) {
+                        if (!pendingEmailFiles.length) return;
+                        try {
+                            let attachmentBlob = pendingEmailFiles[0].blob;
+                            let attachmentName = pendingEmailFiles[0].filename;
+                            if (pendingEmailFiles.length > 1 && window.JSZip) {
+                                const zip = new JSZip();
+                                pendingEmailFiles.forEach(f => zip.file(f.filename, f.blob));
+                                attachmentBlob = await zip.generateAsync({ type: 'blob' });
+                                attachmentName = `${serviceId}_output_files.zip`;
+                            }
+                            const b64 = await blobToBase64(attachmentBlob);
+                            const res = await authFetch('/api/system-config/email-file', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ userId: CURRENT_USER_ID, filename: attachmentName, fileData: b64 })
+                            });
+                            const data = await res.json();
+                            if (!res.ok) throw new Error(data.error || 'Could not email those files.');
+                            addActivity(serviceId, `System > All files emailed to ${data.emailedTo}`, 'Success');
+                            showMessage('✅ All Files Sent', 'All Files sent on email', ['OK']);
+                        } catch (err) {
+                            addActivity(serviceId, `System > Could not email the output files - ${err.message || err}`, 'Failed');
+                            showWarning(err.message || 'Could not email the output files.');
+                        }
+                        return true; // this function already showed its own completion message
+                    }
+                    return false; // caller should show its own "Process Completed" style message
+                }
+
+                return { deliver: deliver, finalize: finalize };
+            }
+
             async function autoDeliverBySystemConfig(serviceId, file, getBlobEntry) {
+                // If a batch run is in progress for this service, route
+                // through it (so Email gets batched instead of firing once
+                // per file) - otherwise fall back to the old immediate,
+                // single-file behavior for any caller outside a tracked run.
+                const runCtx = _leaseTranslationRunCtx[serviceId];
+                if (runCtx) {
+                    const entry = await getBlobEntry();
+                    if (!entry || !entry.blob) return false;
+                    return runCtx.deliver(file, entry);
+                }
+
                 if (window.refreshServicesCatalog) {
                     try { await refreshServicesCatalog(); } catch (e) { /* use whatever's cached */ }
                 }
@@ -2151,6 +2445,7 @@
 
             async function runTranslationPipeline() {
                 if (processState.stopped) return;
+                _leaseTranslationRunCtx['translation'] = await createLeaseTranslationRunCtx('translation');
                 processTranslationFileAt(0);
             }
 
@@ -2167,16 +2462,16 @@
                         refreshServicePage('translation');
                         persistServiceFiles('translation');
                         const hasErrors = myFiles.some(f => f.status === 'error');
-                        const emailedFile = myFiles.find(f => f.deliveredEmailTo);
-                        const desktopDelivered = !emailedFile && myFiles.some(f => f.autoDelivered);
-                        showMessage(hasErrors ? '⚠️ Finished with Errors' : '✅ Complete',
-                            hasErrors ?
-                            'Processing finished, but one or more files could not be completed. Check the Action column for details.' :
-                            (emailedFile
-                                ? `Process Completed. File(s) shared on following email: ${emailedFile.deliveredEmailTo}`
-                                : desktopDelivered
-                                ? 'Process Completed. File(s) have been downloaded to your computer.'
-                                : 'All files have been processed successfully!'), ['OK']);
+                        const runCtx = _leaseTranslationRunCtx['translation'];
+                        _leaseTranslationRunCtx['translation'] = null;
+                        let emailHandledMessage = false;
+                        if (runCtx && !hasErrors) emailHandledMessage = await runCtx.finalize();
+                        if (!emailHandledMessage) {
+                            showMessage(hasErrors ? '⚠️ Finished with Errors' : '✅ Complete',
+                                hasErrors ?
+                                'Processing finished, but one or more files could not be completed. Check the Action column for details.' :
+                                'Process Completed', ['OK']);
+                        }
                         return;
                     }
 
@@ -9665,11 +9960,13 @@
 
             function updateContent(data, breadcrumb) {
                 const bodyContent = typeof data.body === 'function' ? data.body() : data.body;
-                contentBody.innerHTML = bodyContent || '';
+                const breadcrumbLabel = breadcrumb || 'Dashboard';
+                const breadcrumbHtml = `<div class="section-breadcrumb-bar">${escapeHtml(breadcrumbLabel)}</div>`;
+                contentBody.innerHTML = breadcrumbHtml + (bodyContent || '');
                 upgradeCardHeaders(contentBody);
                 applyCardLayout();
                 enhanceServicePage(contentBody);
-                currentMenuDisplay.textContent = breadcrumb || 'Dashboard';
+                currentMenuDisplay.textContent = breadcrumbLabel;
 
                 if (breadcrumb && breadcrumb.includes('Payment Mode')) {
                     setTimeout(() => {

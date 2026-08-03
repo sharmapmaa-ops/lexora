@@ -60,71 +60,113 @@
   // or a click-to-download link) instead of firing the browser's
   // download immediately. Anything without systemConfig keeps the
   // original direct-download behavior, unchanged.
-  async function smartDownload(id, blob, filename) {
-    // Re-check the catalog fresh, not whatever was cached when this
-    // page loaded - an Admin toggling System Configuration for this
-    // service should take effect on the very next download.
+  async function _resolveRunConfig(id) {
     if (window.refreshServicesCatalog) {
       try { await window.refreshServicesCatalog(); } catch (e) { /* fall back to whatever's cached */ }
     }
     const catalogEntry = window.SERVICES_CATALOG && window.SERVICES_CATALOG[id];
     const hasSystemConfig = !!(catalogEntry && catalogEntry.systemConfig === 'Yes');
-    if (!hasSystemConfig) { downloadBlob(blob, filename); return; }
-
     const st = state(id);
-    const selected = st.systemConfig || 'Desktop';
+    const selected = hasSystemConfig ? (st.systemConfig || 'Desktop') : 'Desktop';
+    return { hasSystemConfig: hasSystemConfig, selected: selected };
+  }
 
-    // Desktop means "download straight to this computer" - it should
-    // behave exactly like the no-System-Configuration path (immediate
-    // browser download), not the click-to-download modal meant for
-    // the other destinations.
-    if (selected.trim().toLowerCase() === 'desktop') {
-      downloadBlob(blob, filename);
-      addLog(id, `System > Downloaded to Desktop`, 'Success');
-      refresh(id);
-      return;
-    }
+  // Item: exact 3-case spec -
+  //   System Configuration available + Desktop -> every file downloads
+  //     individually as it completes; one "Process Completed" message
+  //     once the whole run finishes.
+  //   System Configuration available + Email -> nothing is emailed per
+  //     file; every output file from this run is collected and sent in
+  //     ONE email (zipped together if there's more than one) once the
+  //     whole run finishes, then "All Files sent on email".
+  //   System Configuration not available -> same as Desktop.
+  // Cloud-provider destinations (Google Drive etc.) aren't part of this
+  // spec and keep their existing per-file upload + message behavior.
+  function _createRunCtx(id, runConfig) {
+    const pendingEmailFiles = [];
+    const isEmailRun = runConfig.hasSystemConfig && runConfig.selected.trim().toLowerCase() === 'email';
 
-    try {
-      if (selected.trim().toLowerCase() === 'email' && window.blobToBase64 && window.authFetch && window.getCurrentUserId) {
-        const b64 = await window.blobToBase64(blob);
-        const res = await window.authFetch('/api/system-config/email-file', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: window.getCurrentUserId(), filename: filename, fileData: b64 })
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Could not email that file.');
-        addLog(id, `System > Emailed to ${data.emailedTo}`, 'Success');
-        if (window.showMessage) window.showMessage('✅ Emailed', `${filename} was emailed to ${data.emailedTo}.`, ['OK']);
-        refresh(id);
+    async function download(blob, filename) {
+      if (isEmailRun) {
+        pendingEmailFiles.push({ blob: blob, filename: filename });
+        addLog(id, `System > Queued ${filename} for the batch email`, 'Info');
         return;
       }
-      if (window.systemConfigProviderId && window.StorageDestinations) {
-        const providerId = window.systemConfigProviderId(selected);
-        if (providerId) {
-          const result = await StorageDestinations.saveFileToProvider(providerId, blob, filename);
-          if (result.provider !== 'local') {
-            addLog(id, `System > Saved to ${selected}`, 'Success');
-            if (window.showMessage) window.showMessage('✅ Saved', `${filename} was saved to ${selected}.`, ['OK']);
-            refresh(id);
-            return;
+      if (!runConfig.hasSystemConfig || runConfig.selected.trim().toLowerCase() === 'desktop') {
+        downloadBlob(blob, filename);
+        addLog(id, `System > Downloaded ${filename}`, 'Success');
+        return;
+      }
+      // Cloud-provider destination - unchanged per-file behavior.
+      try {
+        if (window.systemConfigProviderId && window.StorageDestinations) {
+          const providerId = window.systemConfigProviderId(runConfig.selected);
+          if (providerId) {
+            const result = await StorageDestinations.saveFileToProvider(providerId, blob, filename);
+            if (result.provider !== 'local') {
+              addLog(id, `System > Saved to ${runConfig.selected}`, 'Success');
+              if (window.showMessage) window.showMessage('✅ Saved', `${filename} was saved to ${runConfig.selected}.`, ['OK']);
+              return;
+            }
           }
         }
+      } catch (err) {
+        addLog(id, `System > Could not save to ${runConfig.selected} - ${err.message || err}`, 'Failed');
       }
-    } catch (err) {
-      addLog(id, `System > Could not save to ${selected} - ${err.message || err}`, 'Failed');
+      const url = URL.createObjectURL(blob);
+      if (window.showDownloadLinkModal) {
+        window.showDownloadLinkModal(filename, url);
+      } else {
+        downloadBlob(blob, filename);
+      }
     }
-    // A provider was selected but turned out not to actually be
-    // configured (fell back to local) - show the click-to-download
-    // link so the user knows it didn't go where expected and can
-    // still grab the file.
-    const url = URL.createObjectURL(blob);
-    if (window.showDownloadLinkModal) {
-      window.showDownloadLinkModal(filename, url);
-    } else {
-      downloadBlob(blob, filename);
+
+    async function finalize() {
+      if (isEmailRun) {
+        if (!pendingEmailFiles.length) return;
+        try {
+          let attachmentBlob = pendingEmailFiles[0].blob;
+          let attachmentName = pendingEmailFiles[0].filename;
+          if (pendingEmailFiles.length > 1 && window.JSZip) {
+            const zip = new JSZip();
+            pendingEmailFiles.forEach(f => zip.file(f.filename, f.blob));
+            attachmentBlob = await zip.generateAsync({ type: 'blob' });
+            attachmentName = `${id}_output_files.zip`;
+          }
+          const b64 = await window.blobToBase64(attachmentBlob);
+          const res = await window.authFetch('/api/system-config/email-file', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: window.getCurrentUserId(), filename: attachmentName, fileData: b64 })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Could not email those files.');
+          addLog(id, `System > All files emailed to ${data.emailedTo}`, 'Success');
+          if (window.showMessage) window.showMessage('✅ All Files Sent', 'All Files sent on email', ['OK']);
+        } catch (err) {
+          addLog(id, `System > Could not email the output files - ${err.message || err}`, 'Failed');
+          if (window.showWarning) window.showWarning(err.message || 'Could not email the output files.');
+        }
+        return;
+      }
+      if (!runConfig.hasSystemConfig || runConfig.selected.trim().toLowerCase() === 'desktop') {
+        if (window.showMessage) window.showMessage('✅ Done', 'Process Completed', ['OK']);
+      }
     }
+
+    return { download: download, finalize: finalize };
+  }
+
+  // Convenience wrapper for single-shot callers outside the normal
+  // start()/startBatch() loop (e.g. the PDF form filler, which produces
+  // one file directly rather than looping over a file list) - treats it
+  // as a one-file "batch": download (or queue-for-email), then finalize
+  // immediately.
+  async function smartDownload(id, blob, filename) {
+    const runConfig = await _resolveRunConfig(id);
+    const runCtx = _createRunCtx(id, runConfig);
+    await runCtx.download(blob, filename);
+    await runCtx.finalize();
   }
 
   // ── rendering ──────────────────────────────────────────────────────
@@ -495,9 +537,11 @@
     st.running = true; st.stopped = false;
     refresh(id);
 
+    const runConfig = await _resolveRunConfig(id);
+    const runCtx = _createRunCtx(id, runConfig);
     const ctx = {
       log: function (msg, status) { addLog(id, msg, status); refresh(id); },
-      download: function (blob, filename) { return smartDownload(id, blob, filename); },
+      download: function (blob, filename) { return runCtx.download(blob, filename); },
       shouldStop: function () { return st.stopped; }
     };
 
@@ -523,6 +567,7 @@
         }
         refresh(id);
       }
+      await runCtx.finalize();
     } finally {
       st.running = false;
       refresh(id);
@@ -542,9 +587,11 @@
     }
     st.running = true; st.stopped = false;
     refresh(id);
+    const runConfig = await _resolveRunConfig(id);
+    const runCtx = _createRunCtx(id, runConfig);
     const ctx = {
       log: function (msg, status) { addLog(id, msg, status); refresh(id); },
-      download: function (blob, filename) { return smartDownload(id, blob, filename); },
+      download: function (blob, filename) { return runCtx.download(blob, filename); },
       shouldStop: function () { return st.stopped; }
     };
     try {
@@ -558,6 +605,7 @@
       refresh(id);
       await svc.process(selected, ctx, 'Batch');
       st.files.forEach(function (f) { if (f.selected !== false) { f.status = 'Success'; f.progress = 100; } });
+      await runCtx.finalize();
     } catch (e) {
       ctx.log(`Error > ${e.message || 'Processing failed'}`, 'Failed');
       st.files.forEach(function (f) { if (f.selected !== false) { f.status = 'Failed'; f.error = e.message; } });

@@ -71,6 +71,20 @@ body {
 .current-menu-name       { font-size: .82rem; color: rgba(255,255,255,.62); }
 .current-menu-name span  { color: #fff; font-weight: 600; }
 
+/* The current-section label moved to the top of each section's own
+   content area (.section-breadcrumb-bar) instead of sitting next to
+   the logo in the header - hide the old header copy (and its leading
+   separator) rather than showing it twice. */
+#currentMenuLabel, #separator { display: none; }
+
+.section-breadcrumb-bar {
+    font-size: .85rem;
+    font-weight: 600;
+    color: var(--ds-navy, #0b1330);
+    padding: 2px 0 12px;
+    margin-bottom: 4px;
+}
+
 /* Nav sits in the middle, the user chip is pinned right - matches the
    mockups, and works without touching the existing markup. */
 .menu-wrapper { flex: 1; display: flex; align-items: center; justify-content: flex-start; }

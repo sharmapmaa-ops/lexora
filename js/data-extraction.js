@@ -281,17 +281,10 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     return { heads: heads, body: body };
   }
 
-  async function download(blob, name) {
-    if (window.StorageDestinations) {
-      try {
-        const result = await StorageDestinations.saveFile('deDestination', blob, name);
-        if (result.provider !== 'local') {
-          setStatus(`Saved to ${StorageDestinations.labelFor(result.provider)}.`, 'ok');
-          return;
-        }
-      } catch (err) {
-        setStatus((err.message || 'Could not save to that destination') + ' - downloading locally instead.', 'error');
-      }
+  function download(blob, name) {
+    if (window.standaloneSmartDownload) {
+      window.standaloneSmartDownload('data-extraction', blob, name);
+      return;
     }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -324,7 +317,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     exportRows(STATE.rows, 'extracted_data_' + new Date().toISOString().slice(0, 10));
   }
 
-  function exportRows(rows, stem) {
+  function _buildExportBlob(rows, stem) {
     const fmt = (document.getElementById('deFormat') || {}).value || 'json';
     const heads = ['File'].concat(headersList());
     const body = rows.map(function (r) {
@@ -333,29 +326,37 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
 
     if (fmt === 'json') {
       const payload = rows.map(function (r) { return Object.assign({ File: r.file }, r.values); });
-      download(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), `${stem}.json`);
-    } else if (fmt === 'csv') {
+      return { blob: new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), name: `${stem}.json` };
+    }
+    if (fmt === 'csv') {
       const lines = [heads.map(csvCell).join(',')].concat(body.map(function (row) { return row.map(csvCell).join(','); }));
       // BOM so Excel opens UTF-8 accented/non-Latin text correctly.
-      download(new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), `${stem}.csv`);
-    } else if (fmt === 'excel') {
-      if (typeof XLSX === 'undefined') return setStatus('The spreadsheet library failed to load - please refresh.', 'error');
+      return { blob: new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), name: `${stem}.csv` };
+    }
+    if (fmt === 'excel') {
+      if (typeof XLSX === 'undefined') { setStatus('The spreadsheet library failed to load - please refresh.', 'error'); return null; }
       const ws = XLSX.utils.aoa_to_sheet([heads].concat(body));
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Extracted Data');
       const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-      download(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `${stem}.xlsx`);
-    } else if (fmt === 'word') {
-      const table = `<table border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse;font-family:Calibri,Arial,sans-serif;font-size:11pt;">
-        <thead><tr>${heads.map(function (h) { return `<th style="background:#eee;text-align:left;">${esc(h)}</th>`; }).join('')}</tr></thead>
-        <tbody>${body.map(function (row) {
-          return `<tr>${row.map(function (c) { return `<td>${esc(c)}</td>`; }).join('')}</tr>`;
-        }).join('')}</tbody></table>`;
-      const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-        <head><meta charset="utf-8"><title>Extracted Data</title></head>
-        <body><h2 style="font-family:Calibri,Arial,sans-serif;">Extracted Data</h2>${table}</body></html>`;
-      download(new Blob(['\uFEFF' + html], { type: 'application/msword' }), `${stem}.doc`);
+      return { blob: new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name: `${stem}.xlsx` };
     }
+    // word
+    const table = `<table border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse;font-family:Calibri,Arial,sans-serif;font-size:11pt;">
+      <thead><tr>${heads.map(function (h) { return `<th style="background:#eee;text-align:left;">${esc(h)}</th>`; }).join('')}</tr></thead>
+      <tbody>${body.map(function (row) {
+        return `<tr>${row.map(function (c) { return `<td>${esc(c)}</td>`; }).join('')}</tr>`;
+      }).join('')}</tbody></table>`;
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+      <head><meta charset="utf-8"><title>Extracted Data</title></head>
+      <body><h2 style="font-family:Calibri,Arial,sans-serif;">Extracted Data</h2>${table}</body></html>`;
+    return { blob: new Blob(['\uFEFF' + html], { type: 'application/msword' }), name: `${stem}.doc` };
+  }
+
+  function exportRows(rows, stem) {
+    const out = _buildExportBlob(rows, stem);
+    if (!out) return;
+    download(out.blob, out.name);
     setStatus('Output downloaded.', 'ok');
   }
 
@@ -397,6 +398,8 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     if (window.setVisionAuthToken) window.setVisionAuthToken(window.__lexoraAuthToken || '');
     log(`System > ${useOcr ? 'With OCR' : 'Without OCR'} + ${fields.length} field(s)`, 'Success');
     rerender();
+
+    const runCtx = window.createStandaloneRunCtx ? await window.createStandaloneRunCtx('data-extraction') : null;
 
     for (let i = 0; i < selected.length; i++) {
       const entry = selected[i];
@@ -441,6 +444,11 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
         STATE.rows.push({ file: entry.file.name, values: values });
         entry.status = 'Success';
         entry.progress = 100;
+        if (runCtx) {
+            const stem = entry.file.name.replace(/\.[^.]+$/, '');
+            const out = _buildExportBlob([{ file: entry.file.name, values: values }], stem);
+            if (out) await runCtx.download(out.blob, out.name);
+        }
 
         // Per-document plans: one flat charge for the whole file now
         // that it's done, regardless of page count.
@@ -465,6 +473,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     }
 
     STATE.running = false;
+    if (runCtx) await runCtx.finalize();
     log(`Generate Output > ${STATE.rows.length} row(s) ready - choose a format and click Download`, 'Success');
     rerender();
   }
@@ -639,6 +648,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
           <div class="service-card">
             <h3>⚙️ Setup</h3>
             <div class="card-body">
+              ${window.buildStandaloneSystemConfigHtml ? window.buildStandaloneSystemConfigHtml('data-extraction') : ''}
               <div id="deSetup">
               <div class="setup-group">
                 <div style="display:flex;gap:12px;align-items:flex-start;">
