@@ -3903,11 +3903,7 @@
                 historyPage = 1;
                 const fromInput = document.getElementById('historyFromDate');
                 const toInput = document.getElementById('historyToDate');
-                if (!fromInput.value || !toInput.value) {
-                    showWarning('Please select both From and To dates.');
-                    return;
-                }
-                if (fromInput.value > toInput.value) {
+                if (fromInput.value && toInput.value && fromInput.value > toInput.value) {
                     showWarning('"From" date cannot be after "To" date.');
                     return;
                 }
@@ -4006,11 +4002,11 @@
                             <div class="history-filter-bar">
                                 <div class="filter-group">
                                     <label>From Date</label>
-                                    <input type="date" id="historyFromDate" />
+                                    <input type="date" id="historyFromDate" onchange="applyHistoryFilter()" />
                                 </div>
                                 <div class="filter-group">
                                     <label>To Date</label>
-                                    <input type="date" id="historyToDate" />
+                                    <input type="date" id="historyToDate" onchange="applyHistoryFilter()" />
                                 </div>
                                 ${isAdminOrDeveloper() ? `
                                     <div class="filter-group filter-group-search">
@@ -4018,10 +4014,6 @@
                                         <input type="text" id="historyUserFilter" placeholder="User ID or email" oninput="applyHistoryFilter()" />
                                     </div>
                                 ` : ''}
-                                <button class="filter-btn is-primary" onclick="applyHistoryFilter()">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
-                                    Filter
-                                </button>
                                 <button class="filter-btn reset-btn" onclick="clearHistoryFilter()">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
                                     Clear
@@ -6342,10 +6334,12 @@
                                             <div class="form-group">
                                                 <label>&nbsp;</label>
                                                 <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+                                                    ${(COMPANY_INFO && COMPANY_INFO.twoFactorAvailable === 'No') ? '<span></span>' : `
                                                     <label class="checkbox-label">
                                                         <input type="checkbox" id="profileTwoFactorAuth" ${profileData.twoFactorAuth === 'Yes' ? 'checked' : ''} />
                                                         Enable 2FA
                                                     </label>
+                                                    `}
                                                     <button class="submit-btn" onclick="saveProfile()">Submit</button>
                                                 </div>
                                             </div>
@@ -6355,7 +6349,9 @@
                             </div>
                         </div>
 
-                        <div class="payment-card profile-danger-card">
+                        </div>
+
+                        <div class="payment-card profile-danger-card profile-danger-card-full">
                             <h3>⚠️ Delete Account</h3>
                             <div class="card-body">
                                 <p style="font-size:0.86rem;color:rgba(0,0,0,0.6);margin:0 0 12px;">
@@ -6363,8 +6359,6 @@
                                 </p>
                                 <button class="submit-btn profile-danger-btn" onclick="confirmDeleteAccount()">Delete My Account</button>
                             </div>
-                        </div>
-
                         </div>
                     </div>
                 `;
@@ -6506,7 +6500,8 @@
                 profileData.birthdate = document.getElementById('profileBirthdate').value;
                 profileData.mobile = newMobile;
                 profileData.verificationMethod = newVerificationMethod;
-                profileData.twoFactorAuth = document.getElementById('profileTwoFactorAuth').checked ? 'Yes' : 'No';
+                const twoFactorCheckbox = document.getElementById('profileTwoFactorAuth');
+                profileData.twoFactorAuth = twoFactorCheckbox ? (twoFactorCheckbox.checked ? 'Yes' : 'No') : 'No';
 
                 const changedFields = Object.keys(before).filter(k => before[k] !== profileData[k]);
                 const detailsChanged = changedFields.length > 0 || passwordChanged;

@@ -2138,7 +2138,7 @@ def _account_statement_page_decorator(logo_path, footer_note, from_name, from_mo
         ty = card_top - 0.3 * inch
         canvas_obj.setFont("Helvetica-Bold", 9)
         canvas_obj.setFillColor(colors.HexColor(_GREEN))
-        canvas_obj.drawString(tx, ty, "From:")
+        canvas_obj.drawString(tx, ty, "Account Details:")
         canvas_obj.setFont("Helvetica-Bold", 13)
         canvas_obj.setFillColor(colors.HexColor(_TEXT_DARK))
         canvas_obj.drawString(tx, ty - 0.22 * inch, from_name)
@@ -2716,40 +2716,32 @@ def _build_receipt_pdf(company_name, logo_path, user, txn):
         canvas_obj.setFillColor(colors.white)
         canvas_obj.drawCentredString(badge_x + badge_w / 2, badge_y + badge_h / 2 - 3, label)
 
-        # 4 feature badges with separators, above the footer card.
+        # 4 feature badges with separators, above the footer card - same
+        # single-line label format as the Account Statement PDF.
         badges = [
-            ("detailed", "Detailed", "Transaction Records"),
-            ("clear", "Clear", "Account Overview"),
-            ("secure", "Secure", "& Reliable"),
-            ("download", "Download", "Anytime"),
+            ("detailed", "Detailed Transaction Records"),
+            ("clear", "Clear Account Overview"),
+            ("secure", "Secure & Reliable"),
+            ("download", "Download Anytime"),
         ]
         usable_width = width - 2 * margin
         col_w = usable_width / len(badges)
-        # Item 13 - the badge row sits closer to the card now (was
-        # +0.55in), which also closes most of the unused white space
-        # between the "contact us" line above and this row.
         circle_y = card_y + card_h + 0.35 * inch
-        for i, (icon_name, line1, line2) in enumerate(badges):
+        for i, (icon_name, label) in enumerate(badges):
             cx = margin + col_w * i + col_w / 2
             if i > 0:
-                # Item 8 - darker, full-height, centered separator
-                # spanning from just above the icon circle to just
-                # below the subtitle text, equally on both sides.
                 sep_x = margin + col_w * i
-                canvas_obj.setStrokeColor(colors.HexColor("#9CA3AF"))
-                canvas_obj.setLineWidth(0.7)
-                canvas_obj.line(sep_x, circle_y - 40, sep_x, circle_y + 20)
+                canvas_obj.setStrokeColor(colors.HexColor("#C7CBD1"))
+                canvas_obj.setLineWidth(0.6)
+                canvas_obj.line(sep_x, circle_y - 26, sep_x, circle_y + 16)
             canvas_obj.setStrokeColor(colors.HexColor(_GREEN))
             canvas_obj.setLineWidth(1.2)
             canvas_obj.setFillColor(colors.white)
-            canvas_obj.circle(cx, circle_y, 16.5, stroke=1, fill=1)
-            _draw_icon_glyph(canvas_obj, icon_name, cx, circle_y, 0.242 * inch, colors.HexColor(_GREEN))
-            canvas_obj.setFont("Helvetica-Bold", 8.6)
+            canvas_obj.circle(cx, circle_y, 15.75, stroke=1, fill=1)
+            _draw_icon_glyph(canvas_obj, icon_name, cx, circle_y, 0.23 * inch, colors.HexColor(_GREEN))
+            canvas_obj.setFont("Helvetica-Bold", 7.8)
             canvas_obj.setFillColor(colors.HexColor(_TEXT_DARK))
-            canvas_obj.drawCentredString(cx, circle_y - 24, line1)
-            canvas_obj.setFont("Helvetica", 7.6)
-            canvas_obj.setFillColor(colors.HexColor(_TEXT_MUTED))
-            canvas_obj.drawCentredString(cx, circle_y - 34, line2)
+            canvas_obj.drawCentredString(cx, circle_y - 28, label)
         canvas_obj.restoreState()
 
     def _draw_all(canvas_obj, doc):

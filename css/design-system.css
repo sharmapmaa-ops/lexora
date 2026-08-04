@@ -78,8 +78,8 @@ body {
 #currentMenuLabel, #separator { display: none; }
 
 .section-breadcrumb-bar {
-    font-size: .85rem;
-    font-weight: 600;
+    font-size: 1.15rem;
+    font-weight: 700;
     color: var(--ds-navy, #0b1330);
     padding: 2px 0 12px;
     margin-bottom: 4px;

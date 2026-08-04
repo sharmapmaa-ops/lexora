@@ -5139,6 +5139,10 @@
     color: #92400E;
 }
 
+.profile-danger-card-full {
+    grid-column: 1 / -1;
+}
+
 /* ===== Notifications page (was entirely unstyled before) ===== */
 .notif-head {
     display: flex;
