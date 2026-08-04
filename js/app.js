@@ -4037,6 +4037,7 @@
                                 </button>
                             </div>
                             <div class="card-body payment-history-scroll-outer">
+                                <div class="history-table-header-wrapper" id="historyTableHeaderWrapper">
                                 <table class="history-table payment-history-table" id="historyTableHeader">
                                     <thead>
                                         <tr>
@@ -4056,6 +4057,7 @@
                                         </tr>
                                     </thead>
                                 </table>
+                                </div>
                                 <div class="history-table-wrapper" id="historyTableWrapper">
                                     <table class="history-table payment-history-table" id="historyTable">
                                         <tbody id="historyTableBody"></tbody>
@@ -4174,6 +4176,11 @@
                 // payment genuinely succeeds - see pendingPlanUpgrade
                 // below, checked from the Razorpay success handler.
                 if (plan.monthlyPrice > 0) {
+                    if (!(profileData && profileData.mobileVerified && profileData.mobileVerifiedNumber === (profileData.mobile || '').trim())) {
+                        showWarning('Please verify your Mobile No first (Profile > Mobile No > Verify) before upgrading your plan.');
+                        if (window.handleUserAction) handleUserAction('Profile');
+                        return;
+                    }
                     pendingPlanUpgrade = plan;
                     lexoraNavigate('payment');
                     let tries = 0;
@@ -5758,6 +5765,7 @@
                 } else {
                     renderHistoryRows(tbody, todayList);
                 }
+                wireSplitTableScrollSync(document);
 
                 // Wallet balance poore history par, baaki teen tiles sirf
                 // aaj ke transactions par - mockup me labels "Today's ..."
@@ -9959,6 +9967,22 @@
                 URL.revokeObjectURL(url);
             };
 
+            function wireSplitTableScrollSync(container) {
+                const pairs = [
+                    ['historyTableHeaderWrapper', 'historyTableWrapper'],
+                    ['todayTableHeaderWrapper', 'todayTableWrapper'],
+                ];
+                pairs.forEach(([headerId, bodyId]) => {
+                    const headerWrap = document.getElementById(headerId);
+                    const bodyWrap = document.getElementById(bodyId);
+                    if (!headerWrap || !bodyWrap || bodyWrap._scrollSyncWired) return;
+                    bodyWrap._scrollSyncWired = true;
+                    bodyWrap.addEventListener('scroll', () => {
+                        headerWrap.scrollLeft = bodyWrap.scrollLeft;
+                    });
+                });
+            }
+
             function updateContent(data, breadcrumb) {
                 const bodyContent = typeof data.body === 'function' ? data.body() : data.body;
                 const breadcrumbLabel = breadcrumb || 'Dashboard';
@@ -9968,6 +9992,7 @@
                 applyCardLayout();
                 enhanceServicePage(contentBody);
                 currentMenuDisplay.textContent = breadcrumbLabel;
+                wireSplitTableScrollSync(contentBody);
 
                 if (breadcrumb && breadcrumb.includes('Payment Mode')) {
                     setTimeout(() => {
@@ -10455,10 +10480,13 @@
                                     <button class="dash-view-all" onclick="lexoraNavigatePaymentTab('history')">View All Transactions <span>\u2192</span></button>
                                 </div>
                                 <div class="card-body today-table-scroll-outer">
+                                    <div class="history-table-header-wrapper" id="todayTableHeaderWrapper">
                                     <table class="history-table today-table payment-history-table" id="todayTableHeader">
                                         <thead>
                                             <tr>
-                                                <th style="width:44px;">Download</th>
+                                                <th style="width:44px;text-align:center;" title="Download Receipt">
+                                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
+                                                </th>
                                                 <th>Date</th>
                                                 <th>Time</th>
                                                 <th>Type</th>
@@ -10471,6 +10499,7 @@
                                             </tr>
                                         </thead>
                                     </table>
+                                    </div>
                                     <div class="history-table-wrapper" id="todayTableWrapper">
                                         <table class="history-table today-table payment-history-table" id="todayTable">
                                             <tbody id="todayTableBody">

@@ -5744,7 +5744,7 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
    the (teesra card sirf icon dikhata tha, text ghayab ho jata tha). */
 .payment-balance-summary {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     gap: 14px;
     border: 2px solid blue;
     border-radius: 8px;
@@ -5753,8 +5753,11 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
 
 .payment-balance-item {
     display: flex;
-    align-items: center;
-    gap: 12px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
 }
 
 .payment-balance-icon {

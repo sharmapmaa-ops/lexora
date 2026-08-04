@@ -1285,24 +1285,28 @@ body, input, select, textarea, button {
 .today-table.payment-history-table th:nth-child(9),  .today-table.payment-history-table td:nth-child(9)  { width: 130px; }
 .today-table.payment-history-table th:nth-child(10), .today-table.payment-history-table td:nth-child(10) { width: 110px; }
 
-/* Item 10 - a narrow container scrolls horizontally instead of
-   crushing columns below their functional minimum. Scoped to the
-   shared outer wrapper (holds both the header table and the body
-   table) so they always scroll together, never out of sync. */
-.payment-history-scroll-outer {
-    overflow-x: auto;
-}
-
-.payment-history-scroll-outer .history-table-wrapper {
-    overflow-x: visible;
-}
-
+/* Item 6 (old req) - the header and body are separate <table>
+   elements (so the header can stay put while only the body scrolls
+   vertically) - JS (wireSplitTableScrollSync) keeps them in sync
+   horizontally too: the body wrapper is the one that actually
+   scrolls, and the header wrapper's scrollLeft gets forced to match
+   on every scroll event. A pure-CSS "shared outer container" approach
+   was tried here before and didn't reliably keep them aligned, so
+   don't reintroduate overflow-x:auto on the outer wrapper below. */
+.payment-history-scroll-outer,
 .today-table-scroll-outer {
-    overflow-x: auto;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
 }
 
+.history-table-header-wrapper {
+    overflow-x: hidden;
+}
+
+.payment-history-scroll-outer .history-table-wrapper,
 .today-table-scroll-outer .history-table-wrapper {
-    overflow-x: visible;
+    overflow-x: auto;
 }
 
 /* Item 9,10 - compact rows, everything in a row vertically centered.
