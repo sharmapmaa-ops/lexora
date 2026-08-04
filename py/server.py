@@ -3913,12 +3913,12 @@ class Handler(SimpleHTTPRequestHandler):
         reason = (body.get("reason") or "").strip()[:300]
         users = auth_store.load_users()
         user = auth_store.find_user_by_id(users, user_id)
-        if user and user.get("email"):
+        if user:
             message = "Your recent payment could not be completed."
             if reason:
                 message += f" Reason: {reason}"
             message += " Please try again."
-            _send_notification_email_async(user["email"], user.get("firstName") or "there", "Payment failed", message)
+            _dispatch_user_notification(user_id, user.get("email"), user.get("firstName") or "there", "Payment failed", message)
         return 200, {"ok": True}
 
     def _handle_payment_verify(self, body):
@@ -3992,35 +3992,45 @@ class Handler(SimpleHTTPRequestHandler):
         if _messaging_enabled("payment-received"):
             users = auth_store.load_users()
             user = auth_store.find_user_by_id(users, user_id)
-            if user and user.get("email"):
-                def _send_receipt_email_worker(user=user, entry=entry):
-                    try:
-                        company = _load_company_info()
-                        company_name = company.get("name") or "Lexora"
-                        logo_rel = company.get("logo") or ""
-                        logo_path = os.path.join(ROOT_DIR, logo_rel) if logo_rel else ""
-                        if not os.path.isfile(logo_path):
-                            logo_path = ""
-                        pdf_bytes = _build_receipt_pdf(company_name, logo_path, user, entry)
-                        _send_email_with_attachment(
-                            user["email"], "Payment received",
-                            f"Hi {user.get('firstName') or 'there'},\n\n"
-                            f"We've received your payment of {entry['credit']:,.2f} ({order.get('currency', 'INR')}). "
-                            f"Transaction ID: {entry['id']}.\n\nYour receipt is attached.\n\n- {company_name}",
-                            pdf_bytes, f"Receipt - {entry['id']}.pdf",
-                        )
-                    except Exception as err:  # noqa: BLE001
-                        print(f"[payment-received] could not email receipt to {user.get('email')}: {err}")
-                        # Fall back to a plain notification so the person still
-                        # hears about the payment even if the PDF failed.
+            if user:
+                mobile_verified = bool(
+                    user.get("mobileVerified")
+                    and user.get("mobileVerifiedNumber") == (user.get("mobile") or "").strip()
+                )
+                if user.get("verificationMethod") == "sms" and mobile_verified and user.get("mobile"):
+                    _send_notification_sms_async(
+                        user["mobile"], "Payment received",
+                        f"We've received your payment of {entry['credit']:,.2f} ({order.get('currency', 'INR')}). "
+                        f"Transaction ID: {entry['id']}.")
+                if user.get("email"):
+                    def _send_receipt_email_worker(user=user, entry=entry):
                         try:
-                            _send_notification_email(
-                                user["email"], user.get("firstName") or "there", "Payment received",
+                            company = _load_company_info()
+                            company_name = company.get("name") or "Lexora"
+                            logo_rel = company.get("logo") or ""
+                            logo_path = os.path.join(ROOT_DIR, logo_rel) if logo_rel else ""
+                            if not os.path.isfile(logo_path):
+                                logo_path = ""
+                            pdf_bytes = _build_receipt_pdf(company_name, logo_path, user, entry)
+                            _send_email_with_attachment(
+                                user["email"], "Payment received",
+                                f"Hi {user.get('firstName') or 'there'},\n\n"
                                 f"We've received your payment of {entry['credit']:,.2f} ({order.get('currency', 'INR')}). "
-                                f"Transaction ID: {entry['id']}.")
-                        except Exception as err2:  # noqa: BLE001
-                            print(f"[payment-received] fallback notification also failed: {err2}")
-                threading.Thread(target=_send_receipt_email_worker, daemon=True).start()
+                                f"Transaction ID: {entry['id']}.\n\nYour receipt is attached.\n\n- {company_name}",
+                                pdf_bytes, f"Receipt - {entry['id']}.pdf",
+                            )
+                        except Exception as err:  # noqa: BLE001
+                            print(f"[payment-received] could not email receipt to {user.get('email')}: {err}")
+                            # Fall back to a plain notification so the person still
+                            # hears about the payment even if the PDF failed.
+                            try:
+                                _send_notification_email(
+                                    user["email"], user.get("firstName") or "there", "Payment received",
+                                    f"We've received your payment of {entry['credit']:,.2f} ({order.get('currency', 'INR')}). "
+                                    f"Transaction ID: {entry['id']}.")
+                            except Exception as err2:  # noqa: BLE001
+                                print(f"[payment-received] fallback notification also failed: {err2}")
+                    threading.Thread(target=_send_receipt_email_worker, daemon=True).start()
         return 200, {"ok": True, "transaction": entry}
 
     # ---- Section 2: profile photo storage ----
