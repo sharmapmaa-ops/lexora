@@ -4619,6 +4619,7 @@
 
                 if (!(profileData && profileData.mobileVerified && profileData.mobileVerifiedNumber === (profileData.mobile || '').trim())) {
                     showWarning('Please verify your Mobile No first (Profile > Mobile No > Verify) before adding balance.');
+                    if (window.handleUserAction) handleUserAction('Profile');
                     return;
                 }
                 if (!amount || amount <= 0) { showWarning('Please enter a valid amount.'); return; }
@@ -10454,7 +10455,7 @@
                                     <button class="dash-view-all" onclick="lexoraNavigatePaymentTab('history')">View All Transactions <span>\u2192</span></button>
                                 </div>
                                 <div class="card-body today-table-scroll-outer">
-                                    <table class="history-table today-table" id="todayTableHeader">
+                                    <table class="history-table today-table payment-history-table" id="todayTableHeader">
                                         <thead>
                                             <tr>
                                                 <th style="width:44px;">Download</th>
@@ -10471,7 +10472,7 @@
                                         </thead>
                                     </table>
                                     <div class="history-table-wrapper" id="todayTableWrapper">
-                                        <table class="history-table today-table" id="todayTable">
+                                        <table class="history-table today-table payment-history-table" id="todayTable">
                                             <tbody id="todayTableBody">
                                             </tbody>
                                         </table>
@@ -11005,7 +11006,10 @@
                                             <div class="contact-map-wrap">
                                                 <iframe src="${mapEmbedSrc}" loading="lazy" referrerpolicy="no-referrer-when-downgrade" title="Map"></iframe>
                                                 <a class="contact-map-link" href="${mapsLink}" target="_blank" rel="noopener">Get Directions</a>
-                                            </div>` : '<p class="ds-card-sub">No location set in company.json.</p>'}
+                                            </div>` : (c.mapFallbackImage ? `
+                                            <div class="contact-map-wrap contact-map-fallback-image">
+                                                <img src="${escapeHtml(c.mapFallbackImage)}" alt="${escapeHtml(c.name || 'Company')}" />
+                                            </div>` : '<p class="ds-card-sub">No location set in company.json.</p>')}
                                     </div>
 
                                 </div>
@@ -11565,7 +11569,7 @@
                     <div class="auth-services-card">
                         <div class="auth-services-heading">
                             <h2>Our Most Popular Tools</h2>
-                            <p>We present the best of the best. All free, no catch</p>
+                            <p>Powerful document tools, ready when you need them</p>
                         </div>
                         <div class="auth-filter-bar">
                             <button class="auth-filter-btn active" data-filter="all" onclick="setAuthServiceFilter('all')">All Services <em>${services.length}</em></button>

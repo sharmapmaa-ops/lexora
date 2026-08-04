@@ -907,7 +907,7 @@ VIRTUAL_TABLES = {
         "resource": "company",
         "fields": [
             "name", "address", "workingHours", "workingDays", "location",
-            "email", "phone", "logo",
+            "email", "phone", "logo", "mapFallbackImage",
             "youtube", "facebook", "linkedin", "instagram",
             "shareEnabled", "currency",
         ],
@@ -1036,7 +1036,8 @@ VIRTUAL_TABLES = {
 VIRTUAL_TABLE_LABELS = {
     "cfg_company": {"workingHours": "Working Hours", "workingDays": "Working Days",
                      "youtube": "Youtube", "facebook": "Facebook", "linkedin": "Linkedin",
-                     "instagram": "Instagram", "shareEnabled": "Share"},
+                     "instagram": "Instagram", "shareEnabled": "Share",
+                     "mapFallbackImage": "Map Fallback Image (file path, shown when there's no address)"},
     "doc_plans": {"id": "Plan ID", "name": "Plan Name", "icon": "Plan Icon",
                   "monthlyPrice": "Plan Price", "pricePerTranslation": "Paid Services Price",
                   "billingUnit": "Paid Billing Unit", "paidFeature": "Paid Feature",

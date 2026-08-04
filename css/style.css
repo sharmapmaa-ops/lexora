@@ -1665,26 +1665,12 @@
             overflow-x: visible; /* horizontal scroll happens on the outer wrapper instead */
         }
 
-        table.today-table {
-            table-layout: fixed;
-            width: 1160px; /* sum of the 8 column widths below - must match exactly */
-        }
-
-        table.today-table th,
-        table.today-table td {
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        table.today-table th:nth-child(1), table.today-table td:nth-child(1) { width: 150px; }
-        table.today-table th:nth-child(2), table.today-table td:nth-child(2) { width: 130px; }
-        table.today-table th:nth-child(3), table.today-table td:nth-child(3) { width: 100px; }
-        table.today-table th:nth-child(4), table.today-table td:nth-child(4) { width: 160px; }
-        table.today-table th:nth-child(5), table.today-table td:nth-child(5) { width: 300px; }
-        table.today-table th:nth-child(6), table.today-table td:nth-child(6) { width: 110px; }
-        table.today-table th:nth-child(7), table.today-table td:nth-child(7) { width: 110px; }
-        table.today-table th:nth-child(8), table.today-table td:nth-child(8) { width: 100px; }
+        /* today-table's column widths/styling now live entirely in
+           design-system.css (.today-table.payment-history-table), for
+           the same reason payment-history-table's old element-qualified
+           rules were removed above - don't reintroduce a "table.foo"
+           version of this selector; it silently wins over the class-only
+           one regardless of source order. */
 
         /* ===== SUPPORT SECTION LAYOUT ===== */
         .support-layout {
@@ -5741,7 +5727,7 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
    side, Payment History below (no more tab-switching) ===== */
 .payment-top-row {
     display: grid;
-    grid-template-columns: minmax(240px, 0.85fr) minmax(0, 1.4fr);
+    grid-template-columns: minmax(300px, 1.15fr) minmax(0, 1fr);
     gap: 20px;
     align-items: stretch;
     margin-bottom: 20px;
@@ -5833,17 +5819,19 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
 /* Amount chhota, Description bada - Payment section feedback */
 .balance-form-row .balance-amount-group {
     flex: 0.6;
-    min-width: 140px;
+    min-width: 100px;
 }
 
 .balance-form-row .balance-description-group {
     flex: 2;
-    min-width: 260px;
+    min-width: 170px;
 }
 
 .balance-form-row .balance-add-submit {
     height: 42px;
     white-space: nowrap;
+    padding-left: 14px;
+    padding-right: 14px;
 }
 
 /* Secure Checkout - ab inline panel nahi, ek popup modal hai. Backdrop

@@ -1267,7 +1267,23 @@ body, input, select, textarea, button {
 
 /* Item 1 - the Download header shows a small icon instead of
    truncated text, with a tooltip for clarity. */
-.payment-history-table th:nth-child(2) { text-align: center; }
+
+/* Item 3 - Today's Transactions (dashboard) shares Payment History's
+   styling via the .payment-history-table class, but has no checkbox
+   column, so every column shifts one position earlier - these
+   .today-table-specific rules (2 classes = higher specificity, always
+   wins regardless of source order) repoint the same widths. */
+.today-table.payment-history-table { min-width: 1309px; }
+.today-table.payment-history-table th:nth-child(1),  .today-table.payment-history-table td:nth-child(1)  { width: 40px; text-align: center; }
+.today-table.payment-history-table th:nth-child(2),  .today-table.payment-history-table td:nth-child(2)  { width: 115px; }
+.today-table.payment-history-table th:nth-child(3),  .today-table.payment-history-table td:nth-child(3)  { width: 64px; }
+.today-table.payment-history-table th:nth-child(4),  .today-table.payment-history-table td:nth-child(4)  { width: 100px; }
+.today-table.payment-history-table th:nth-child(5),  .today-table.payment-history-table td:nth-child(5)  { width: 200px; }
+.today-table.payment-history-table th:nth-child(6),  .today-table.payment-history-table td:nth-child(6)  { width: 340px; }
+.today-table.payment-history-table th:nth-child(7),  .today-table.payment-history-table td:nth-child(7)  { width: 100px; }
+.today-table.payment-history-table th:nth-child(8),  .today-table.payment-history-table td:nth-child(8)  { width: 110px; }
+.today-table.payment-history-table th:nth-child(9),  .today-table.payment-history-table td:nth-child(9)  { width: 130px; }
+.today-table.payment-history-table th:nth-child(10), .today-table.payment-history-table td:nth-child(10) { width: 110px; }
 
 /* Item 10 - a narrow container scrolls horizontally instead of
    crushing columns below their functional minimum. Scoped to the
@@ -1275,6 +1291,18 @@ body, input, select, textarea, button {
    table) so they always scroll together, never out of sync. */
 .payment-history-scroll-outer {
     overflow-x: auto;
+}
+
+.payment-history-scroll-outer .history-table-wrapper {
+    overflow-x: visible;
+}
+
+.today-table-scroll-outer {
+    overflow-x: auto;
+}
+
+.today-table-scroll-outer .history-table-wrapper {
+    overflow-x: visible;
 }
 
 /* Item 9,10 - compact rows, everything in a row vertically centered.
@@ -2669,6 +2697,8 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
 
 /* ---- map ---- */
 .contact-map-wrap { position: relative; border-radius: var(--ds-radius-sm); overflow: hidden; }
+.contact-map-fallback-image { display: flex; align-items: center; justify-content: center; background: var(--ds-light-grey, #f5f6f8); }
+.contact-map-fallback-image img { width: 100%; height: 100%; object-fit: cover; }
 .contact-map-wrap iframe { width: 100%; height: 240px; border: 0; display: block; }
 
 .contact-map-link {
@@ -3082,7 +3112,7 @@ label { font-size: .76rem; }
     padding: 1.1em 1.15em;
     background: #fff;
     transition: 0.15s;
-    height: 180px;
+    height: 117px;
     overflow: hidden;
     box-sizing: border-box;
 }
