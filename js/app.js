@@ -630,7 +630,7 @@
             // Sharepoint's real OAuth apps) when a service actually
             // uses it.
             const KNOWN_BROWSER_PROVIDERS = {
-                'google drive': 'google-drive', dropbox: 'dropbox', box: 'box',
+                dropbox: 'dropbox', box: 'box',
                 onedrive: 'onedrive', 'one drive': 'onedrive', webdav: 'webdav', sftp: 'sftp',
             };
             function systemConfigProviderId(name) {
@@ -699,6 +699,16 @@
                     st.systemConfig = selected;
                     st.connectionStatus = 'connected';
                     applyStatus();
+                    return;
+                }
+                if (selected.trim().toLowerCase() === 'google drive') {
+                    if (!window.verifyGoogleDriveConnection) { select.value = 'Desktop'; return; }
+                    verifyGoogleDriveConnection(select, (status) => {
+                        st.systemConfig = status === 'connected' ? 'Google Drive' : 'Desktop';
+                        st.connectionStatus = status;
+                        if (status !== 'connected') select.value = 'Desktop';
+                        applyStatus();
+                    });
                     return;
                 }
                 const providerId = systemConfigProviderId(selected);
@@ -772,6 +782,16 @@
                         document.body.appendChild(a); a.click(); document.body.removeChild(a);
                         setTimeout(() => URL.revokeObjectURL(url), 4000);
                         return;
+                    }
+                    if (selected.trim().toLowerCase() === 'google drive') {
+                        try {
+                            await uploadBlobToGoogleDrive(blob, filename);
+                            showMessage('✅ Saved', `${filename} was saved to Google Drive.`, ['OK']);
+                            return;
+                        } catch (err) {
+                            showWarning(`Google Drive upload failed for ${filename}: ${err.message}`);
+                            return;
+                        }
                     }
                     // Cloud-provider destination - unchanged per-file behavior.
                     try {
@@ -2420,6 +2440,24 @@
             // if there's more than one) once the run finishes.
             const _leaseTranslationRunCtx = {};
 
+            async function uploadBlobToGoogleDrive(blob, filename) {
+                const base64 = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                });
+                const res = await authFetch('/api/system-config/google-drive-upload', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId: CURRENT_USER_ID, filename, fileData: base64 }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Google Drive upload failed.');
+                return data;
+            }
+            window.uploadBlobToGoogleDrive = uploadBlobToGoogleDrive;
+
             async function createLeaseTranslationRunCtx(serviceId) {
                 if (window.refreshServicesCatalog) {
                     try { await refreshServicesCatalog(); } catch (e) { /* use whatever's cached */ }
@@ -2447,6 +2485,16 @@
                         file.autoDelivered = true;
                         addActivity(serviceId, `System > Downloaded ${entry.name}`, 'Success');
                         return true;
+                    }
+                    if (selected === 'google drive') {
+                        try {
+                            await uploadBlobToGoogleDrive(entry.blob, entry.name || 'Output');
+                            addActivity(serviceId, `System > Saved ${entry.name} to Google Drive`, 'Success');
+                            return true;
+                        } catch (err) {
+                            addActivity(serviceId, `System > Google Drive upload failed for ${entry.name}: ${err.message}`, 'Failed');
+                            return false;
+                        }
                     }
                     // Cloud-provider destination - unchanged per-file behavior.
                     try {
@@ -3439,6 +3487,51 @@
             // 18. SYSTEM CONNECTION - auto-verified as soon as the user
             // picks Desktop / ShareFile / SharePoint from the dropdown.
             // ============================================================
+            window.verifyGoogleDriveConnection = async function(selectEl, onDone) {
+                try {
+                    const statusRes = await authFetch(`/api/system-config/google-drive-status?userId=${encodeURIComponent(CURRENT_USER_ID)}`);
+                    const status = await statusRes.json();
+                    if (status.connected) {
+                        onDone('connected');
+                        return;
+                    }
+                    const startRes = await authFetch(`/api/auth/oauth/google-drive/start?userId=${encodeURIComponent(CURRENT_USER_ID)}`);
+                    const startData = await startRes.json();
+                    if (!startRes.ok || !startData.authUrl) throw new Error(startData.error || 'Could not start Google Drive connection.');
+
+                    const popup = window.open(startData.authUrl, '_blank', 'width=520,height=680');
+                    await new Promise((resolve) => {
+                        let settled = false;
+                        const onMessage = (e) => {
+                            if (e.data === 'lexora-google-drive-connected') {
+                                settled = true;
+                                window.removeEventListener('message', onMessage);
+                                clearInterval(poll);
+                                resolve();
+                            }
+                        };
+                        window.addEventListener('message', onMessage);
+                        // Fallback in case the popup's postMessage doesn't
+                        // reach us (pop-up blockers, cross-origin quirks) -
+                        // notice if the person just closes the window.
+                        const poll = setInterval(() => {
+                            if (popup && popup.closed) {
+                                clearInterval(poll);
+                                window.removeEventListener('message', onMessage);
+                                resolve();
+                            }
+                        }, 500);
+                    });
+
+                    const recheck = await authFetch(`/api/system-config/google-drive-status?userId=${encodeURIComponent(CURRENT_USER_ID)}`);
+                    const recheckData = await recheck.json();
+                    onDone(recheckData.connected ? 'connected' : 'idle');
+                } catch (err) {
+                    showWarning(err.message || 'Could not connect Google Drive.');
+                    onDone('idle');
+                }
+            };
+
             window.verifySystemConnection = async function() {
                 const select = document.getElementById('systemConfigSelect');
                 const selected = select.value;
@@ -3464,8 +3557,23 @@
                     return;
                 }
 
-                // Browser-managed providers (Google Drive, Dropbox, Box,
-                // OneDrive, WebDAV, SFTP) - the person pastes their own
+                // Item - "Google Drive" now uses a proper OAuth flow
+                // (drive.file scope + offline access, stored server-side
+                // per account) instead of the old paste-your-own-token
+                // flow the other providers below still use.
+                if (selected.trim().toLowerCase() === 'google drive') {
+                    await verifyGoogleDriveConnection(select, (status) => {
+                        connectionStatus = status;
+                        currentSystemConfig = status === 'connected' ? 'Google Drive' : 'Desktop';
+                        if (status !== 'connected') select.value = 'Desktop';
+                        if (profileData) { profileData.sysConfig = currentSystemConfig; persistProfile(); }
+                        refreshServicePage(activeSubItemId || 'lease-abstraction');
+                    });
+                    return;
+                }
+
+                // Browser-managed providers (Dropbox, Box, OneDrive,
+                // WebDAV, SFTP) - the person pastes their own
                 // token/credentials, nothing registered server-side.
                 const providerId = systemConfigProviderId(selected);
                 if (providerId) {
@@ -11675,8 +11783,22 @@
                     ['contact', 'Contact Us'],
                 ];
                 const iconKeyFor = { home: 'home', services: 'services', plans: 'plans-offers', contact: 'contact-us' };
+                const name = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora';
+                const logo = COMPANY_INFO && COMPANY_INFO.logo;
+                // Item - logo only shows on Services/Plans & Offers/Contact
+                // Us (matching post-login's .menu-left exactly), not on
+                // Home, where the hero section already has a big logo.
+                const showLogo = authActiveSection !== 'home';
                 return `
                     <div class="top-menu-bar auth-top-menu-bar">
+                        ${showLogo ? `
+                        <div class="menu-left">
+                            <div class="company-logo">${logo ? `<img src="${escapeHtml(logo)}" alt="${escapeHtml(name)} logo" onerror="this.onerror=null;this.src='Pictures/logo.png';" />` : '🏢'}</div>
+                            <div class="company-info">
+                                <span class="company-name">${escapeHtml(name)}</span>
+                            </div>
+                        </div>
+                        ` : ''}
                         <div class="menu-wrapper">
                             <ul class="menu">
                                 ${items.map(([id, label]) => `

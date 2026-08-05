@@ -100,6 +100,17 @@
         addLog(id, `System > Downloaded ${filename}`, 'Success');
         return;
       }
+      if (runConfig.selected.trim().toLowerCase() === 'google drive') {
+        try {
+          await window.uploadBlobToGoogleDrive(blob, filename);
+          addLog(id, `System > Saved ${filename} to Google Drive`, 'Success');
+          if (window.showMessage) window.showMessage('✅ Saved', `${filename} was saved to Google Drive.`, ['OK']);
+        } catch (err) {
+          addLog(id, `System > Google Drive upload failed for ${filename}: ${err.message}`, 'Failed');
+          if (window.showWarning) window.showWarning(`Google Drive upload failed for ${filename}: ${err.message}`);
+        }
+        return;
+      }
       // Cloud-provider destination - unchanged per-file behavior.
       try {
         if (window.systemConfigProviderId && window.StorageDestinations) {
@@ -275,6 +286,18 @@
       st.connectionStatus = 'connected';
       if (window.saveSetupPref) window.saveSetupPref(id, 'systemConfig', selected);
       refresh(id);
+      return;
+    }
+
+    if (selected.trim().toLowerCase() === 'google drive') {
+      if (!window.verifyGoogleDriveConnection) { select.value = 'Desktop'; return; }
+      window.verifyGoogleDriveConnection(select, function (status) {
+        st.systemConfig = status === 'connected' ? 'Google Drive' : 'Desktop';
+        st.connectionStatus = status;
+        if (status !== 'connected') select.value = 'Desktop';
+        if (window.saveSetupPref) window.saveSetupPref(id, 'systemConfig', st.systemConfig);
+        refresh(id);
+      });
       return;
     }
 

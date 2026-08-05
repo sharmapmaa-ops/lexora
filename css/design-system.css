@@ -3174,7 +3174,7 @@ label { font-size: .76rem; }
 @media (max-width: 480px) {
     .auth-thumb-grid { grid-template-columns: 1fr; }
 }
-.auth-thumb-emoji { font-size: 1.2em; line-height: 1; }
+.auth-thumb-emoji { font-size: 34px; line-height: 1; }
 
 /* =====================================================================
    ROUND 8

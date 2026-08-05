@@ -452,6 +452,31 @@ def _oauth_base_url(handler):
     return f"http://{host}"
 
 
+_drive_oauth_states = {}
+_drive_oauth_states_lock = threading.Lock()
+DRIVE_OAUTH_STATE_TTL_SECONDS = 600
+
+
+def _new_drive_oauth_state(user_id):
+    token = secrets.token_urlsafe(24)
+    with _drive_oauth_states_lock:
+        now = time.time()
+        for t in [k for k, v in _drive_oauth_states.items() if now - v["created"] > DRIVE_OAUTH_STATE_TTL_SECONDS]:
+            del _drive_oauth_states[t]
+        _drive_oauth_states[token] = {"user_id": user_id, "created": now}
+    return token
+
+
+def _consume_drive_oauth_state(token):
+    with _drive_oauth_states_lock:
+        entry = _drive_oauth_states.pop(token, None)
+    if entry is None:
+        return None
+    if time.time() - entry["created"] > DRIVE_OAUTH_STATE_TTL_SECONDS:
+        return None
+    return entry["user_id"]
+
+
 def _new_oauth_state():
     token = secrets.token_urlsafe(24)
     with _oauth_states_lock:
@@ -3202,6 +3227,9 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/auth/directory": self._handle_auth_directory,
             "/api/auth/oauth/google/start": lambda q: self._handle_oauth_start("google", q),
             "/api/auth/oauth/google/callback": lambda q: self._handle_oauth_callback("google", q),
+            "/api/auth/oauth/google-drive/start": self._handle_google_drive_oauth_start,
+            "/api/auth/oauth/google-drive/callback": self._handle_google_drive_oauth_callback,
+            "/api/system-config/google-drive-status": self._handle_google_drive_status,
             "/api/auth/oauth/facebook/start": lambda q: self._handle_oauth_start("facebook", q),
             "/api/auth/oauth/facebook/callback": lambda q: self._handle_oauth_callback("facebook", q),
             "/api/auth/email-status": self._handle_auth_email_status,
@@ -3774,6 +3802,8 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/payment/create-order": self._handle_payment_create_order,
             "/api/payment/verify-payment": self._handle_payment_verify,
             "/api/system-config/email-file": self._handle_system_config_email_file,
+            "/api/system-config/google-drive-upload": self._handle_google_drive_upload,
+            "/api/system-config/google-drive-disconnect": self._handle_google_drive_disconnect,
             "/api/payment/notify-failed": self._handle_payment_notify_failed,
         }
 
@@ -5767,6 +5797,178 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send_redirect(f"{base_url}/?oauthError=" + url_quote(str(err) or "Sign-in failed - please try again."))
 
         return self._send_redirect(f"{base_url}/?oauthToken=" + url_quote(token))
+
+    def _handle_google_drive_oauth_start(self, query):
+        """Item: System Configuration > Google Drive. This is a SEPARATE
+        flow from "Sign in with Google" (which only ever asks for
+        openid/email/profile) - it asks for drive.file access (only
+        files this app creates, not the person's whole Drive) plus
+        offline access so we get a refresh token, since a file could be
+        uploaded at any time, not just right after they grant access."""
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        if not _oauth_configured("google"):
+            return self._send_json(503, {"error": "Google Drive is not configured on this server yet."})
+        redirect_uri = f"{_oauth_base_url(self)}/api/auth/oauth/google-drive/callback"
+        state = _new_drive_oauth_state(user_id)
+        params = {
+            "client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": "https://www.googleapis.com/auth/drive.file",
+            "state": state,
+            "access_type": "offline",
+            "prompt": "consent",  # forces a refresh_token every time, not just the first grant
+        }
+        return self._send_json(200, {"ok": True, "authUrl": "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)})
+
+    def _handle_google_drive_oauth_callback(self, query):
+        base_url = _oauth_base_url(self)
+        error = (query.get("error", [""])[0] or "").strip()
+        state = (query.get("state", [""])[0] or "").strip()
+        code = (query.get("code", [""])[0] or "").strip()
+        user_id = _consume_drive_oauth_state(state) if state else None
+
+        if error or not code or not user_id:
+            return self._send_html(200, f"""<h3>Could not connect Google Drive</h3><p>{escape_html(error or 'That link has expired - please try again from Setup.')}</p>
+                <script>setTimeout(function(){{ window.close(); }}, 2500);</script>""")
+
+        try:
+            redirect_uri = f"{base_url}/api/auth/oauth/google-drive/callback"
+            token_data = urlencode({
+                "code": code,
+                "client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
+                "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "https://oauth2.googleapis.com/token", data=token_data, method="POST",
+                headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                token_resp = json.loads(resp.read().decode("utf-8"))
+            access_token = token_resp.get("access_token")
+            refresh_token = token_resp.get("refresh_token")
+            expires_in = token_resp.get("expires_in", 3600)
+            if not access_token:
+                raise ValueError("Google did not return an access token.")
+
+            users = auth_store.load_users()
+            user = auth_store.find_user_by_id(users, user_id)
+            if not user:
+                raise ValueError("Account not found.")
+            user["googleDriveAccessToken"] = access_token
+            # Google only sends a refresh_token the FIRST time consent is
+            # granted for this combination of scopes - if the person had
+            # already connected before and this is a re-consent, keep the
+            # one we already have rather than overwriting it with nothing.
+            if refresh_token:
+                user["googleDriveRefreshToken"] = refresh_token
+            user["googleDriveTokenExpiresAt"] = time.time() + int(expires_in) - 60
+            auth_store.save_users(users)
+        except Exception as err:  # noqa: BLE001
+            print(f"Google Drive OAuth failed: {err}")
+            return self._send_html(200, f"""<h3>Could not connect Google Drive</h3><p>{escape_html(str(err) or 'Something went wrong - please try again.')}</p>
+                <script>setTimeout(function(){{ window.close(); }}, 3000);</script>""")
+
+        return self._send_html(200, """<h3>\u2705 Google Drive connected</h3><p>You can close this window and go back to Setup.</p>
+            <script>if (window.opener) { window.opener.postMessage('lexora-google-drive-connected', '*'); } setTimeout(function(){ window.close(); }, 1200);</script>""")
+
+    def _handle_google_drive_status(self, query):
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        connected = bool(user and user.get("googleDriveRefreshToken"))
+        return self._send_json(200, {"ok": True, "connected": connected})
+
+    def _handle_google_drive_disconnect(self, body):
+        user_id = _safe_id(self._resolve_user_id(body))
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if user:
+            user["googleDriveAccessToken"] = None
+            user["googleDriveRefreshToken"] = None
+            user["googleDriveTokenExpiresAt"] = None
+            auth_store.save_users(users)
+        return 200, {"ok": True}
+
+    def _google_drive_access_token_for(self, user):
+        """Returns a currently-valid access token for this user, silently
+        refreshing it first if the cached one has expired - callers never
+        need to think about the refresh dance themselves."""
+        if not user.get("googleDriveRefreshToken"):
+            raise ValueError("Google Drive is not connected for this account.")
+        if user.get("googleDriveAccessToken") and user.get("googleDriveTokenExpiresAt", 0) > time.time():
+            return user["googleDriveAccessToken"]
+
+        token_data = urlencode({
+            "refresh_token": user["googleDriveRefreshToken"],
+            "client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
+            "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+            "grant_type": "refresh_token",
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/token", data=token_data, method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            token_resp = json.loads(resp.read().decode("utf-8"))
+        access_token = token_resp.get("access_token")
+        if not access_token:
+            raise ValueError("Could not refresh Google Drive access - please reconnect it in Setup.")
+        users = auth_store.load_users()
+        for u in users:
+            if u.get("id") == user.get("id"):
+                u["googleDriveAccessToken"] = access_token
+                u["googleDriveTokenExpiresAt"] = time.time() + int(token_resp.get("expires_in", 3600)) - 60
+        auth_store.save_users(users)
+        return access_token
+
+    def _handle_google_drive_upload(self, body):
+        """Uploads one file directly into the user's own Google Drive
+        (My Drive root) using their stored, auto-refreshed access token -
+        this is what System Configuration > Google Drive actually
+        delivers a finished file to, once connected."""
+        user_id = _safe_id(self._resolve_user_id(body))
+        filename = (body.get("filename") or "file.pdf").strip()
+        file_b64 = body.get("fileData") or ""
+        if not file_b64:
+            raise ValueError("No file data was provided.")
+        try:
+            file_bytes = base64.b64decode(file_b64)
+        except Exception as err:  # noqa: BLE001
+            raise ValueError(f"Could not decode the file data: {err}")
+
+        users = auth_store.load_users()
+        user = auth_store.find_user_by_id(users, user_id)
+        if not user:
+            raise ValueError("Account not found.")
+        access_token = self._google_drive_access_token_for(user)
+
+        boundary = "lexora-drive-upload-" + secrets.token_hex(8)
+        metadata = json.dumps({"name": filename}).encode("utf-8")
+        mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        body_parts = (
+            f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode("utf-8") + metadata
+            + f"\r\n--{boundary}\r\nContent-Type: {mime_type}\r\n\r\n".encode("utf-8") + file_bytes
+            + f"\r\n--{boundary}--".encode("utf-8")
+        )
+        req = urllib.request.Request(
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+            data=body_parts, method="POST",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": f"multipart/related; boundary={boundary}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                upload_resp = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as err:
+            detail = err.read().decode("utf-8", "ignore")
+            raise ValueError(f"Google Drive upload failed ({err.code}): {detail[:200]}")
+
+        return 200, {"ok": True, "fileId": upload_resp.get("id"), "fileName": filename}
 
     # Sanitized (no password/verification-code fields) user list - used by
     # Developer/Admin UI features that need to show "which user" something
