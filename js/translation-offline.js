@@ -973,10 +973,10 @@ Return NOTHING except the JSON object.`;
     return data;
   }
 
-  async function v14VisionOnce(model, dataUrl, prompt, maxTokens) {
+  async function v14VisionOnce(model, dataUrl, prompt, maxTokens, temperature) {
     const data = await v14ProxyJson({
       model: model,
-      temperature: 0,
+      temperature: temperature != null ? temperature : 0,
       max_tokens: maxTokens,
       messages: [
         {
@@ -1007,11 +1007,11 @@ Return NOTHING except the JSON object.`;
   // output ko JSON.parse hi reliably pakadta hai (v14ProcessSingleImage
   // ka apna retry-on-parse-failure), isliye normal path par hamesha
   // sirf EK hi call lagti hai, jaisa HTML tool me hota hai.
-  async function v14VisionCall(model, dataUrl, prompt, startTokens) {
-    let result = await v14VisionOnce(model, dataUrl, prompt, startTokens || 16000);
+  async function v14VisionCall(model, dataUrl, prompt, startTokens, temperature) {
+    let result = await v14VisionOnce(model, dataUrl, prompt, startTokens || 16000, temperature);
     if (result.finishReason === 'length') {
       log('OCR response was truncated by the token limit — retrying with 32000 tokens...', 'warn');
-      result = await v14VisionOnce(model, dataUrl, prompt, 32000);
+      result = await v14VisionOnce(model, dataUrl, prompt, 32000, temperature);
     }
     return { content: result.content, finishReason: result.finishReason, hitTokenLimit: result.finishReason === 'length' };
   }
@@ -1134,6 +1134,7 @@ Return NOTHING except the JSON object.`;
         height: viewport.height,
         pageNum: pageNum
       });
+      emit({ type: 'scan', page: pageNum, totalPages: numPages });
     }
     return images;
   }
@@ -1455,10 +1456,17 @@ Return NOTHING except the JSON object.`;
 
     let parsed, rawContent, finishReason, lastErr;
     const MAX_ATTEMPTS = 2;
-    const SALVAGE_ACCEPT_THRESHOLD = 20; // enough blocks recovered = don't burn another full attempt
     let nextStartTokens = startTokens || 16000; // once an attempt needs 32000, skip the wasted 16000 call on the next one
+    let bestSalvage = { blocks: [], hasVisualBackground: null };
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const callResult = await v14VisionCall(model, dataUrl, prompt, nextStartTokens);
+      // temperature=0 is deterministic - if attempt 1 fails, retrying at
+      // temperature=0 again just reproduces the IDENTICAL broken output
+      // (verified: same char count, same finish_reason, every time on a
+      // page that fails this way). A real second chance needs a
+      // genuinely different sample, so attempt 2 uses a small non-zero
+      // temperature instead of repeating the same request pointlessly.
+      const temperature = attempt === 1 ? 0 : 0.3;
+      const callResult = await v14VisionCall(model, dataUrl, prompt, nextStartTokens, temperature);
       rawContent = callResult.content;
       finishReason = callResult.finishReason;
       if (callResult.hitTokenLimit) nextStartTokens = 32000;
@@ -1481,27 +1489,23 @@ Return NOTHING except the JSON object.`;
           : `JSON parse failed (${cleaned.length} chars, finish_reason="${finishReason}", ${looksTruncated ? 'response looks truncated — end: "...' + tail + '"' : 'JSON is malformed'})`;
         lastErr = new Error(detail);
 
-        // Try to salvage individually-valid blocks from THIS attempt's
-        // response before deciding whether another full attempt is even
-        // worth the extra time - if most of the page already came
-        // through, burning another attempt just to maybe do slightly
-        // better isn't worth the wait.
+        // Keep this attempt's salvage only if it beats what we already
+        // have - don't settle for a smaller partial recovery from a
+        // later attempt when an earlier one actually did better.
         const salvaged = v14SalvagePartialTextBlocks(cleaned);
         const salvagedBg = v14SalvageHasVisualBackground(cleaned);
-        if (salvaged.length >= SALVAGE_ACCEPT_THRESHOLD) {
-          log('P' + pageNum + ': JSON invalid (' + detail + ') but recovered ' + salvaged.length + ' text block(s) from this response - using that instead of retrying.', 'warn');
-          parsed = { text_blocks: salvaged, has_visual_background: salvagedBg };
-          lastErr = null;
-          break;
+        if (salvaged.length > bestSalvage.blocks.length) {
+          bestSalvage = { blocks: salvaged, hasVisualBackground: salvagedBg };
         }
 
         if (attempt < MAX_ATTEMPTS) {
           log('P' + pageNum + ': OCR JSON invalid (' + detail + ') — retrying with a fresh attempt (' + (attempt + 1) + '/' + MAX_ATTEMPTS + ')...', 'warn');
-        } else if (salvaged.length) {
-          // Last attempt, and salvage recovered SOMETHING even if below
-          // the threshold - still far better than losing the page.
-          log('P' + pageNum + ': full JSON still malformed after ' + MAX_ATTEMPTS + ' attempts, but recovered ' + salvaged.length + ' text block(s) from the partial response.', 'warn');
-          parsed = { text_blocks: salvaged, has_visual_background: salvagedBg };
+        } else if (bestSalvage.blocks.length) {
+          // Both attempts failed to parse cleanly - use whichever
+          // attempt recovered the most blocks rather than losing the
+          // page entirely.
+          log('P' + pageNum + ': full JSON still malformed after ' + MAX_ATTEMPTS + ' attempts, but recovered ' + bestSalvage.blocks.length + ' text block(s) from the best partial response.', 'warn');
+          parsed = { text_blocks: bestSalvage.blocks, has_visual_background: bestSalvage.hasVisualBackground };
           lastErr = null;
         }
       }

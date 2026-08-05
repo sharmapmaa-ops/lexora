@@ -398,13 +398,25 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     for (let i = 0; i < selected.length; i++) {
       const entry = selected[i];
       const label = `File(${i + 1}/${selected.length})`;
-      entry.status = 'Processing';
-      entry.progress = 5;
+      entry.status = useOcr ? 'Scanning' : 'Processing';
+      entry.scanProgress = 0;
+      entry.progress = useOcr ? 0 : 5;
       log(`${label} > File Processing > ${entry.file.name}`, 'Info');
       rerender();
 
       let fileCharged = 0, pagesDone = 0, fileJson = 0, fileImage = 0;
       try {
+        if (window.setPipelineEventHandler) {
+          window.setPipelineEventHandler(function (ev) {
+            if (!ev || ev.type !== 'scan') return;
+            entry.scanProgress = Math.round((ev.page / (ev.totalPages || 1)) * 100);
+            if (entry.scanProgress >= 100) {
+              log(`${label} > Scanning > 100%`, 'Success');
+              entry.status = 'Processing';
+            }
+            rerender();
+          });
+        }
         // FULL-FILE BILLING: pages only accrue toward the total as they're
         // read - nothing is actually charged to the wallet until the
         // whole file (text read + field extraction) finishes successfully
@@ -553,6 +565,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     if (s === 'Success') return 'completed';
     if (s === 'Failed') return 'error';
     if (s === 'Processing') return 'processing';
+    if (s === 'Scanning') return 'processing';
     return 'pending';
   }
 
@@ -564,7 +577,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
       const cls = statusClass(f.status);
       const pct = f.progress != null ? f.progress : (f.status === 'Success' ? 100 : 0);
       const action = f.status === 'Success'
-        ? `<a class="file-action-link" onclick="DataExtraction.downloadFile(${f.uid})" title="Download"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`
+        ? `<span class="file-action-link" title="Delivered">✓</span>`
         : (f.status === 'Failed'
             ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">⚠</span>`
             : `<span class="file-action-link disabled" title="${esc(f.status || 'Pending')}">${f.status === 'Processing' ? '\u23f3' : '\u2022'}</span>`);
@@ -573,7 +586,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
                    ${STATE.running ? 'disabled' : ''} onchange="DataExtraction.toggleSelect(${f.uid}, this.checked)" /></td>
         <td class="file-name"><span class="file-name-link">${esc(f.file.name)}</span></td>
         <td>${f.pageCount || '-'}</td>
-        <td><span class="scan-result-text ${cls}">${esc(f.status || 'Pending')}</span></td>
+        <td><span class="scan-result-text ${cls}">${f.status === 'Scanning' ? (f.scanProgress || 0) + '%' : esc(f.status || 'Pending')}</span></td>
         <td>
           <span class="progress-label">${pct}%</span>
         </td>

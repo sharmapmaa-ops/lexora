@@ -256,7 +256,7 @@
   // Injected into a card's own <h3> so the button sits inside the first
   // card (right-aligned) rather than floating above the page.
   function withBackButton(html) {
-    const btn = '<button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate(\'services\',\'services\')">← Back to Services</button>';
+    const btn = '<button class="process-btn clear-btn card-back-btn" onclick="goBackToServices()">← Back to Services</button>';
     return html.replace(/<h3>([\s\S]*?)<\/h3>/, '<h3 class="card-head-row"><span>$1</span>' + btn + '</h3>');
   }
 

@@ -93,10 +93,10 @@
     for (let i = 0; i < selected.length; i++) {
       const entry = selected[i];
       const label = `File(${i + 1}/${selected.length})`;
-      entry.status = 'Processing';
-      entry.progress = 5;
+      entry.status = useOcr ? 'Scanning' : 'Processing';
+      entry.scanProgress = 0;
+      entry.progress = useOcr ? 0 : 5;
       log(`${label} > File Processing > ${entry.file.name}`, 'Info');
-      log(`${label} > Scanning > 100%`, 'Success');
       rerender();
 
       let charged = 0, pagesDone = 0, jsonCalls = 0, imageCalls = 0;
@@ -109,7 +109,19 @@
         // accumulated here); per-page plans add rate for every page.
         if (window.setPipelineEventHandler) {
           window.setPipelineEventHandler(function (ev) {
-            if (!ev || ev.type !== 'page') return;
+            if (!ev) return;
+            if (ev.type === 'scan') {
+              // Item 1 - Scan Result reaches 100% BEFORE Progress starts
+              // moving at all, not simultaneously.
+              entry.scanProgress = Math.round((ev.page / (ev.totalPages || 1)) * 100);
+              if (entry.scanProgress >= 100) {
+                log(`${label} > Scanning > 100%`, 'Success');
+                entry.status = 'Processing';
+              }
+              rerender();
+              return;
+            }
+            if (ev.type !== 'page') return;
             jsonCalls += ev.jsonCalls;
             imageCalls += ev.imageCalls;
             const lbl = `Page(${ev.page}/${ev.totalPages})`;
@@ -212,6 +224,7 @@
     if (s === 'Success') return 'completed';
     if (s === 'Failed') return 'error';
     if (s === 'Processing') return 'processing';
+    if (s === 'Scanning') return 'processing';
     return 'pending';
   }
 
@@ -234,7 +247,7 @@
       const cls = statusClass(f.status);
       const pct = f.progress != null ? f.progress : (f.status === 'Success' ? 100 : 0);
       const action = f.status === 'Success'
-        ? `<a class="file-action-link" onclick="OcrService.downloadOne(${f.uid})" title="Download"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`
+        ? `<span class="file-action-link" title="Delivered">✓</span>`
         : (f.status === 'Failed'
             ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">⚠</span>`
             : `<span class="file-action-link disabled" title="${esc(f.status)}">${f.status === 'Processing' ? '\u23f3' : '\u2022'}</span>`);
@@ -243,7 +256,7 @@
                    ${STATE.running ? 'disabled' : ''} onchange="OcrService.toggleSelect(${f.uid}, this.checked)" /></td>
         <td class="file-name"><span class="file-name-link">${esc(f.file.name)}</span></td>
         <td>${f.pageCount || '-'}</td>
-        <td><span class="scan-result-text ${cls}">${esc(f.status)}</span></td>
+        <td><span class="scan-result-text ${cls}">${f.status === 'Scanning' ? (f.scanProgress || 0) + '%' : esc(f.status)}</span></td>
         <td><span class="progress-label">${pct}%</span></td>
         <td>${action}</td>
       </tr>`;
