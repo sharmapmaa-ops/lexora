@@ -219,16 +219,10 @@
       return `${i + 1}. "${f.header}"${f.description ? ' — ' + f.description : ''}`;
     }).join('\n');
 
-    const defaultIntro = `You are a precise document data-extraction engine.
-
-You will be given the full text of one document. Extract ONLY the fields listed below.`;
-    const defaultRules = `RULES
-- Return the value EXACTLY as it appears in the document. Do not reformat dates, do not convert currencies or units, do not recalculate anything, do not translate.
-- If a field genuinely does not appear in the document, return an empty string "" for it. Never guess, never invent a plausible-looking value, and never carry a value over from a different field.
-- If a field appears more than once with the same meaning, use the most complete/primary occurrence.
-- Keep values short and literal - the value only, without its surrounding label text.`;
-    const intro = window.getAiPrompt ? window.getAiPrompt('Data Extraction', 1, defaultIntro) : defaultIntro;
-    const rules = window.getAiPrompt ? window.getAiPrompt('Data Extraction', 2, defaultRules) : defaultRules;
+    const intro = window.getAiPrompt ? window.getAiPrompt('Data Extraction', 1) : null;
+    const rules = window.getAiPrompt ? window.getAiPrompt('Data Extraction', 2) : null;
+    if (!intro) throw new Error('AI Prompt for Data Extraction (prompt #1) is not configured - add it in Admin > AI Prompts, or run migration first.');
+    if (!rules) throw new Error('AI Prompt for Data Extraction (prompt #2) is not configured - add it in Admin > AI Prompts, or run migration first.');
 
     return `${intro}
 
@@ -631,7 +625,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
         <div class="service-page-grid">
           <div class="service-col">
           <div class="service-card">
-            <h3 class="card-head-row"><span>📤 Upload File(s)</span><button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','paid-services')">← Back to Paid Services</button></h3>
+            <h3 class="card-head-row"><span>📤 Upload File(s)</span><button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','services')">← Back to Services</button></h3>
             <div class="card-body">
               <div class="drop-zone" onclick="${STATE.running ? 'void(0)' : "document.getElementById('deInput').click()"}"
                    style="${STATE.running ? 'opacity:0.5;pointer-events:none;' : ''}">

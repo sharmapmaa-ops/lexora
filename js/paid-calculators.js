@@ -41,11 +41,11 @@
   }
 
   function backButton() {
-    return `<button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','paid-services')">\u2190 Back to Paid Services</button>`;
+    return `<button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','services')">\u2190 Back to Services</button>`;
   }
 
   function backButtonFree() {
-    return `<button class="process-btn clear-btn card-back-btn" onclick="FreeServices.open('other-services')">\u2190 Back to Free Services</button>`;
+    return `<button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','services')">\u2190 Back to Services</button>`;
   }
 
   function billingRow(calcId) {
@@ -404,12 +404,9 @@
       const outEl = document.getElementById('tCwOut');
       if (!topic) { outEl.value = ''; say2('tCwStatus', 'Describe the topic first.', 'error'); return false; }
 
-      const defaultPrompt = `Write a ${tone} ${type} about the following topic. Target length: ${length}. ` +
-        `Return only the finished content, no preamble or explanation.\n\nTopic: ${topic}`;
-      const template = window.getAiPrompt ? window.getAiPrompt('Content Writing Tool', 1, null) : null;
-      const prompt = template
-        ? template.replace('{tone}', tone).replace('{type}', type).replace('{length}', length).replace('{topic}', topic)
-        : defaultPrompt;
+      const template = window.getAiPrompt ? window.getAiPrompt('Content Writing Tool', 1) : null;
+      if (!template) { outEl.value = ''; say2('tCwStatus', 'AI Prompt for Content Writing Tool is not configured - add it in Admin > AI Prompts, or run migration first.', 'error'); return false; }
+      const prompt = template.replace('{tone}', tone).replace('{type}', type).replace('{length}', length).replace('{topic}', topic);
 
       const data = await window.lexoraProxyJson({
         model: CONTENT_MODEL,
@@ -461,12 +458,9 @@
       const outEl = document.getElementById('tHzOut');
       if (!input) { outEl.value = ''; say2('tHzStatus', 'Paste some text first.', 'error'); return false; }
 
-      const defaultPrompt = `Rewrite the following text so it reads more naturally and conversationally - ` +
-        `vary sentence length and structure, avoid repetitive or overly formal AI-sounding phrasing, ` +
-        `but keep the same meaning, facts, and length roughly the same. ` +
-        `Return only the rewritten text, no preamble or explanation.\n\nTEXT:\n${input}`;
-      const template = window.getAiPrompt ? window.getAiPrompt('Humanize Document Tool', 1, null) : null;
-      const prompt = template ? template.replace('{input}', input) : defaultPrompt;
+      const template = window.getAiPrompt ? window.getAiPrompt('Humanize Document Tool', 1) : null;
+      if (!template) { outEl.value = ''; say2('tHzStatus', 'AI Prompt for Humanize Document Tool is not configured - add it in Admin > AI Prompts, or run migration first.', 'error'); return false; }
+      const prompt = template.replace('{input}', input);
 
       const data = await window.lexoraProxyJson({
         model: CONTENT_MODEL,

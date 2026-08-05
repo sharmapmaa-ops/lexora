@@ -32,7 +32,10 @@
   }
 
   function state(id) {
-    if (!STATE[id]) STATE[id] = { files: [], log: [], running: false, stopped: false, nextId: 1 };
+    if (!STATE[id]) {
+      STATE[id] = { files: [], log: [], running: false, stopped: false, nextId: 1 };
+      STATE[id].systemConfig = (window.getSetupPref ? window.getSetupPref(id, 'systemConfig', 'Desktop') : 'Desktop');
+    }
     return STATE[id];
   }
 
@@ -262,6 +265,7 @@
     if (selected === 'Desktop') {
       st.systemConfig = 'Desktop';
       st.connectionStatus = 'connected';
+      if (window.saveSetupPref) window.saveSetupPref(id, 'systemConfig', 'Desktop');
       refresh(id);
       return;
     }
@@ -269,6 +273,7 @@
     if (selected.trim().toLowerCase() === 'email') {
       st.systemConfig = selected;
       st.connectionStatus = 'connected';
+      if (window.saveSetupPref) window.saveSetupPref(id, 'systemConfig', selected);
       refresh(id);
       return;
     }
@@ -287,6 +292,7 @@
           st.connectionStatus = 'idle';
           select.value = 'Desktop';
         }
+        if (window.saveSetupPref) window.saveSetupPref(id, 'systemConfig', st.systemConfig);
         refresh(id);
       }, 400);
       return;
@@ -327,7 +333,7 @@
     const browseHint = svc.browseHint || (accept.indexOf('image') !== -1 ? 'or click to browse (JPG / PNG)' : 'or click to browse (PDF only)');
 
     const backBtn = svc.backTo
-      ? `<button class="process-btn clear-btn card-back-btn" onclick="${svc.backTo}">← Back to Free Services</button>`
+      ? `<button class="process-btn clear-btn card-back-btn" onclick="${svc.backTo}">← Back to Services</button>`
       : '';
 
     return `

@@ -66,7 +66,7 @@
     title: 'PDF Split',
     icon: '✂️',
     accept: 'application/pdf',
-    backTo: "FreeServices.open('other-services')",
+    backTo: "lexoraNavigate('services','services')",
     description: 'Pull selected pages out of a PDF into a new file.',
     batch: true,
     setupHtml: function () {
@@ -160,7 +160,7 @@
     title: 'PDF Merge',
     icon: '🔗',
     accept: 'application/pdf',
-    backTo: "FreeServices.open('other-services')",
+    backTo: "lexoraNavigate('services','services')",
     batch: true,      // merge needs ALL selected files together, not one-by-one
     description: 'Combine several PDFs into one, in the order they appear in the list.',
     process: async function (files, ctx) {
@@ -184,7 +184,7 @@
     title: 'Image to PDF',
     icon: '🖼️',
     accept: 'image/jpeg,image/png',
-    backTo: "FreeServices.open('other-services')",
+    backTo: "lexoraNavigate('services','services')",
     batch: true,      // all selected images become one PDF
     description: 'Turn JPG/PNG images into a single PDF - one image per page.',
     process: async function (files, ctx) {
@@ -210,7 +210,7 @@
     title: 'PDF to Image',
     icon: '📸',
     accept: 'application/pdf',
-    backTo: "FreeServices.open('other-services')",
+    backTo: "lexoraNavigate('services','services')",
     description: 'Export each PDF page as a PNG image.',
     setupHtml: function () {
       return `
@@ -256,7 +256,7 @@
   // Injected into a card's own <h3> so the button sits inside the first
   // card (right-aligned) rather than floating above the page.
   function withBackButton(html) {
-    const btn = '<button class="process-btn clear-btn card-back-btn" onclick="FreeServices.open(\'other-services\')">← Back to Free Services</button>';
+    const btn = '<button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate(\'services\',\'services\')">← Back to Services</button>';
     return html.replace(/<h3>([\s\S]*?)<\/h3>/, '<h3 class="card-head-row"><span>$1</span>' + btn + '</h3>');
   }
 
@@ -566,7 +566,7 @@
   function toolCard(t) {
     const click = t.external ? `lexoraNavigate('services','${t.id}')` : `FreeServices.open('${t.id}')`;
     return `
-      <div class="tool-card" onclick="${click}">
+      <div class="tool-card" data-service-search="${esc((t.label + ' ' + (t.desc || '')).toLowerCase())}" onclick="${click}">
         <div class="tool-card-icon">${t.icon || '🔧'}</div>
         <div class="tool-card-name">${esc(t.label)}</div>
         <div class="tool-card-desc">${esc(t.desc || '')}</div>

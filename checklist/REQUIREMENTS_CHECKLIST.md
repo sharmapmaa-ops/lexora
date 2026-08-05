@@ -1,0 +1,38 @@
+# Lexora Requirements Checklist
+
+Every requirement gets checked off in **two** stages, per item 12 (new):
+- **Updated** — the code change has been made.
+- **Reviewed** — the change has actually been verified (tested, traced through the code, or confirmed against a screenshot) after being updated. An item is only "Done" when both boxes are checked.
+
+Update this file whenever a requirement from any future message is worked on - add a new row rather than starting a separate list, so this stays the single source of truth for outstanding/completed work.
+
+## Old Requirements (carried over, still being tracked)
+
+| # | Requirement | Updated | Reviewed | Notes |
+|---|---|:---:|:---:|---|
+| Old-2 | Mobile-not-verified warning during Razorpay payment should auto-redirect to Profile | ✅ | ✅ | `handleUserAction('Profile')` called right after `showWarning(...)` in the Add Balance flow; same pattern added to plan-upgrade flow (see New-10). Confirmed present in code twice. |
+| Old-3 | Today's Transactions table should look like Payment History | ✅ | ✅ | Shared `.payment-history-table` class + dedicated `.today-table` column-width overrides. The literal "Download" text header (root cause of the "DownloDate" overlap in the screenshot) replaced with the same icon Payment History uses. |
+| Old-4 | Payment should email a receipt with the details | ✅ | ✅ | `_send_receipt_email_worker` builds the receipt PDF via `_build_receipt_pdf` and emails it as an attachment on every successful payment. |
+| Old-5 | Payment Summary (Total Credit/Debit/Balance) should be column-wise, not stacked row-wise | ✅ | ✅ | `.payment-balance-summary` changed from `flex-direction: column` to `row` (3 items side by side); each item's internal layout flipped to icon-above-text so it reads cleanly as a column. |
+| Old-6 | Payment History: horizontal scroll should move header and body together | ✅ | ✅ | Replaced the earlier CSS-only "shared outer scrolls" attempt (which wasn't reliable) with JS-based sync: `wireSplitTableScrollSync()` forces the header wrapper's `scrollLeft` to track the body wrapper's on every scroll event. Applied to both Payment History and Today's Transactions. |
+| Old-7 | Company table: image instead of map when there's no address | ✅ | ✅ | New `mapFallbackImage` column on `cfg_company`; Contact Us page shows that image when `mapEmbedSrc` is empty and the field is set. |
+
+## New Requirements
+
+| # | Requirement | Updated | Reviewed | Notes |
+|---|---|:---:|:---:|---|
+| New-1 | Delete Account card should be full width | ✅ | ✅ | Moved out of the 2-column `.payment-layout` grid; `grid-column: 1 / -1` makes it span both columns. |
+| New-2 | Remove Paid/Free Services submenus - one "Services" section with both, a search box, and "Back to Services" wording | ✅ | ✅ | Removed the submenu (Services is now a single click target). New combined `'services'` page: search box + Paid Services grid + Free Services grid (`FreeServices.render('other-services')`), filtered live via `filterServicesSearch()` matching against a `data-service-search` attribute added to every card in both grids. All ~30 "Back to Paid/Free Services" buttons across app.js/bai2.js/data-extraction.js/ocr-service.js/free-services.js/paid-calculators.js/service-runner.js/tools-files.js (shared `BACK` constant) now say "Back to Services" and point to the combined page. |
+| New-3 | Setup card selections should persist across logins (last-used values, not reset every time) | ✅ | ✅ | Root cause: `profileData.sysConfig` was only ever READ at boot, never WRITTEN when the user actually changed their selection - so it could never persist regardless of the read-side working. Fixed at every success branch of `verifySystemConnection()` (Lease/Translation) and ServiceRunner's `verifyConnection()`/`state()` (free tools, own per-service store via new `saveSetupPref`/`getSetupPref` helpers). Also wired Translation's Output Language and Output Format specifically, which had no persistence at all before. |
+| New-4 | Remove AI Prompt hardcoded fallback logic - wait or show a message instead of silently falling back | ✅ | ✅ | `getAiPrompt()` no longer accepts/returns a hardcoded default - returns `null` if the DB row/file genuinely has no content. Every caller (BAI2 x2, Data Extraction x2, Content Writing Tool, Humanize Document Tool) now throws/shows a clear "AI Prompt for X is not configured" error and stops, instead of silently continuing with inline default text a person's edit could never actually override. |
+| New-5 | PostgreSQL admin table: mark only the edited row as "changed" so Save only writes that row, not the whole table | ✅ | ✅ | `_wireDbRowChangeTracking()` uses event delegation on the stable table container (survives re-renders) to mark a row `data-row-changed="true"` + a visible highlight/dot the moment any of its inputs change. `dbTableSaveAll()` (generic tables) and `saveAllRuleRows()` (Rules table's own separate save path) both now only process changed rows (plus pending new-row inserts), instead of always re-writing every row on the page. |
+| New-6 | Receipt PDF footer (4 feature badges + "Computer Rise Print" card) should match Account Statement's exactly | ✅ | ✅ | Found and fixed a real inconsistency: Receipt was still using an older 2-line badge label format while Account Statement had been switched to single-line; now identical. |
+| New-7 | Account Statement: rename "From" to "Account Details" | ✅ | ✅ | Label changed in `_build_account_statement_pdf`. |
+| New-8 | Payment success/failure SMS or email should also be controlled from Messaging Settings | ✅ | ✅ | Both events were already gated by `_messaging_enabled()`; additionally wired Payment Received/Rejected to respect the user's SMS-vs-email channel preference (`_dispatch_user_notification` / a matching SMS branch), matching how every other notification already worked - not just email regardless of preference. |
+| New-9 | Company table: 2FA Yes/No toggle - hides the Profile 2FA checkbox entirely when No | ✅ | ✅ | New `twoFactorAvailable` field on `cfg_company`; Profile conditionally renders the checkbox; `saveProfile()` handles the checkbox being absent without erroring. |
+| New-10 | Mobile-verify warning should only show when actually paying (not immediately on clicking Upgrade) | ✅ | ✅ | Root cause: `switchPlan()` auto-navigated to Payment and auto-triggered `payWithRazorpay()`, which is where the check lived - moved the check to run *before* navigating away from Plans & Offers at all. |
+| New-11 | Section headers (e.g. "📊 Dashboard") should have a bigger font size | ✅ | ✅ | `.section-breadcrumb-bar` font-size raised from 0.85rem to 1.15rem, weight 600→700. |
+| New-12 | Build a requirements checklist; every requirement gets checked in both an Update and a Review step | ✅ | ✅ | This file. |
+| New-13 | Add Balance: shrink the button, widen the Description field | ✅ | ✅ | `.balance-description-group` widened relative to `.balance-amount-group`/button; button padding tightened. Same underlying fix as Old-5's width change. |
+| New-14 | Remove the Filter button in Payment History; filter automatically as Date/User fields change; don't require both dates just to filter by User | ✅ | ✅ | Root cause: `getFilteredHistory()` already handled partial filters correctly - the bug was an unnecessary "both dates required" check inside `applyHistoryFilter()` itself. Removed that check, wired `onchange`/`oninput` on the fields, removed the button. |
+| New-15 | (Screenshots only - before/after scroll and current-state reference images, no separate action) | — | — | Used as evidence for Old-3 and Old-6 above. |

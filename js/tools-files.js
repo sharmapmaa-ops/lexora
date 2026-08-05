@@ -12,7 +12,7 @@
     if (typeof lib === 'undefined') throw new Error(what + ' failed to load - please refresh the page.');
   }
   const stem = (n) => String(n || 'file').replace(/\.[^.]+$/, '');
-  const BACK = "FreeServices.open('other-services')";
+  const BACK = "lexoraNavigate('services','services')";
 
   function readImage(file) {
     return new Promise(function (res, rej) {

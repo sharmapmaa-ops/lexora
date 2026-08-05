@@ -42,16 +42,7 @@
                     {
                         "id": "services",
                         "label": "🛠️ Services",
-                        "subItems": [
-                            {
-                                "id": "paid-services",
-                                "label": "💼 Paid Services"
-                            },
-                            {
-                                "id": "other-services",
-                                "label": "🧰 Free Services"
-                            }
-                        ]
+                        "subItems": []
                     },
                     {
                         "id": "plans-offers",
@@ -259,10 +250,10 @@
             // actually changes behavior.
             let AI_PROMPTS_DB = [];
             window.AI_PROMPTS_DB = AI_PROMPTS_DB;
-            window.getAiPrompt = function(serviceName, promptNumber, defaultText) {
+            window.getAiPrompt = function(serviceName, promptNumber) {
                 const row = (window.AI_PROMPTS_DB || []).find(r =>
                     r.serviceName === serviceName && String(r.promptNumber) === String(promptNumber));
-                return (row && row.promptText && row.promptText.trim()) ? row.promptText : defaultText;
+                return (row && row.promptText && row.promptText.trim()) ? row.promptText : null;
             };
             // Item 15 - admin-manageable "System Configuration" systems
             // list (Desktop is always available; everything else comes
@@ -452,6 +443,44 @@
             let CURRENT_USER_ID = null;
             window.getCurrentUserId = () => CURRENT_USER_ID;
             let profileData = null;
+
+            // New-3 - Setup card selections (System Configuration, output
+            // language/format, etc.) should persist across logins instead
+            // of resetting to defaults every time. Piggybacks on the
+            // existing profile save (profileData already round-trips to
+            // the server on every change), just under one extra key -
+            // no new backend endpoint needed.
+            function getSetupPref(serviceId, fieldName, defaultValue) {
+                const prefs = profileData && profileData.setupPreferences;
+                if (prefs && prefs[serviceId] && prefs[serviceId][fieldName] !== undefined) {
+                    return prefs[serviceId][fieldName];
+                }
+                return defaultValue;
+            }
+            window.getSetupPref = getSetupPref;
+
+            function saveSetupPref(serviceId, fieldName, value) {
+                if (!profileData) return;
+                if (!profileData.setupPreferences) profileData.setupPreferences = {};
+                if (!profileData.setupPreferences[serviceId]) profileData.setupPreferences[serviceId] = {};
+                profileData.setupPreferences[serviceId][fieldName] = value;
+                if (window.persistProfile) persistProfile();
+            }
+            window.saveSetupPref = saveSetupPref;
+
+            // New-3 - TRANSLATION_LANG_OPTIONS etc. are precomputed
+            // constant strings (not rebuilt per-render), so restoring a
+            // saved selection means marking the right <option> after the
+            // fact rather than re-generating the whole list.
+            function _markSelectedOption(optionsHtml, value) {
+                if (!value) return optionsHtml;
+                const escaped = String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const re = new RegExp(`(<option value="${escaped}")([^>]*)>`);
+                if (re.test(optionsHtml)) {
+                    return optionsHtml.replace(re, (m, p1, p2) => `${p1}${p2.replace(' selected', '')} selected>`);
+                }
+                return optionsHtml;
+            }
 
             // Simulated server-side storage layout per the project's folder
             // convention:
@@ -1055,8 +1084,8 @@
                         <div style="display:flex;gap:12px;align-items:flex-start;">
                           <div style="flex:1;">
                             <label>Output Language</label>
-                            <select id="translationLangSelect" style="width:100%;" ${processState.running ? 'disabled' : ''}>
-                                ${TRANSLATION_LANG_OPTIONS}
+                            <select id="translationLangSelect" onchange="saveSetupPref('translation','outputLanguage',this.value)" style="width:100%;" ${processState.running ? 'disabled' : ''}>
+                                ${_markSelectedOption(TRANSLATION_LANG_OPTIONS, getSetupPref('translation', 'outputLanguage', 'English'))}
                             </select>
 
                           </div>
@@ -1108,7 +1137,7 @@
                         <div class="service-col">
                             <!-- Left: Upload Card -->
                             <div class="service-card">
-                                <h3 class="card-head-row"><span>📤 Upload File(s)</span><button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','paid-services')">← Back to Paid Services</button></h3>
+                                <h3 class="card-head-row"><span>📤 Upload File(s)</span><button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','services')">← Back to Services</button></h3>
                                 <div class="card-body">
                                     <div class="drop-zone" id="dropZone" onclick="${processState.running ? 'void(0)' : "document.getElementById('fileInput').click()"}" style="${processState.running ? 'opacity:0.5;pointer-events:none;' : ''}">
                                         <svg class="drop-art" viewBox="0 0 120 78" fill="none" aria-hidden="true">
@@ -1360,6 +1389,7 @@
             let translationOutputFormat = 'docx';
             window.setTranslationOutputFormat = function(fmt) {
                 translationOutputFormat = (fmt === 'pdf') ? 'pdf' : 'docx';
+                saveSetupPref('translation', 'outputFormat', translationOutputFormat);
             };
 
             // ============================================================
@@ -3326,6 +3356,7 @@
                 if (selected === 'Desktop') {
                     connectionStatus = 'connected';
                     currentSystemConfig = 'Desktop';
+                    if (profileData) { profileData.sysConfig = 'Desktop'; persistProfile(); }
                     refreshServicePage(activeSubItemId || 'lease-abstraction');
                     return;
                 }
@@ -3336,6 +3367,7 @@
                 if (selected.trim().toLowerCase() === 'email') {
                     connectionStatus = 'connected';
                     currentSystemConfig = selected;
+                    if (profileData) { profileData.sysConfig = selected; persistProfile(); }
                     refreshServicePage(activeSubItemId || 'lease-abstraction');
                     return;
                 }
@@ -3360,6 +3392,7 @@
                             currentSystemConfig = 'Desktop';
                             select.value = 'Desktop';
                         }
+                        if (profileData) { profileData.sysConfig = currentSystemConfig; persistProfile(); }
                         refreshServicePage(activeSubItemId || 'lease-abstraction');
                     }, 400);
                     return;
@@ -3378,6 +3411,7 @@
                         connectionStatus = 'disconnected';
                         currentSystemConfig = 'Desktop';
                         select.value = 'Desktop';
+                        if (profileData) { profileData.sysConfig = 'Desktop'; persistProfile(); }
                         refreshServicePage(activeSubItemId || 'lease-abstraction');
                         showMessage('⚙️ Not Set Up Yet', `${selected} isn't connected because no one has registered an app with ${selected} yet (needs a Client ID/Secret set up by your Developer in the server's .env file). Ask your Developer to complete that setup, then try again. Switched back to Desktop for now.`, ['OK']);
                         return;
@@ -7547,6 +7581,34 @@
                 dbTableLoad(name);
             };
 
+            // New-5 - marks only the row actually edited as "changed" (a
+            // data attribute Save checks, plus a visible highlight/dot so
+            // the person can see which rows will be written) instead of
+            // Save always re-writing every row on the page regardless of
+            // whether it was touched. Wired once via event delegation on
+            // the stable outer container - survives the table's innerHTML
+            // being rebuilt on every dbTableLoad() call.
+            function _wireDbRowChangeTracking(host) {
+                if (host._changeTrackingWired) return;
+                host._changeTrackingWired = true;
+                host.addEventListener('input', function (e) {
+                    const tr = e.target.closest('tr[data-row-index]');
+                    if (!tr) return;
+                    if (tr.dataset.rowChanged !== 'true') {
+                        tr.dataset.rowChanged = 'true';
+                        tr.classList.add('db-row-changed');
+                    }
+                });
+                host.addEventListener('change', function (e) {
+                    const tr = e.target.closest('tr[data-row-index]');
+                    if (!tr) return;
+                    if (tr.dataset.rowChanged !== 'true') {
+                        tr.dataset.rowChanged = 'true';
+                        tr.classList.add('db-row-changed');
+                    }
+                });
+            }
+
             window.dbTableLoad = async function(name) {
                 const host = document.getElementById('dbActiveTableBody');
                 if (!host) return;
@@ -7625,6 +7687,7 @@
                         <div class="db-table-caption">${allRows.length} row(s)</div>`;
                     host.dataset.rows = JSON.stringify(allRows);
                     host.dataset.pageStart = String(pageStart);
+                    _wireDbRowChangeTracking(host);
                 } catch (err) {
                     host.innerHTML = `<p class="db-note is-bad" style="padding:14px;">${escapeHtml(err.message)}</p>`;
                 }
@@ -7810,6 +7873,7 @@
                     </table>
                     </div>
                     <div class="db-table-caption">${allRows.length} rule(s) - ${allRows.filter(r => r._editable).length} approved (editable), ${allRows.filter(r => !r._editable).length} pending. Approve/reject from the Lease Abstraction rules review screen.</div>`;
+                _wireDbRowChangeTracking(host);
             }
 
             window.addBlankRuleRow = async function() {
@@ -7884,7 +7948,8 @@
             };
 
             window.saveAllRuleRows = async function() {
-                const trs = Array.from(document.querySelectorAll('#dbTableBody tr'));
+                const trs = Array.from(document.querySelectorAll('#dbTableBody tr'))
+                    .filter(tr => tr.dataset.rowChanged === 'true');
                 const updates = [];
                 trs.forEach(tr => {
                     const idx = parseInt(tr.dataset.rowIndex, 10);
@@ -7896,7 +7961,7 @@
                     updates.push({ id: row.id, fieldId, ruleType, ruleText });
                     row.fieldId = fieldId; row.ruleType = ruleType; row.ruleText = ruleText;
                 });
-                if (!updates.length) { showWarning('No editable (approved) rules on this page to save.'); return; }
+                if (!updates.length) { showWarning('No changes to save - edit an approved rule first.'); return; }
                 try {
                     const res = await authFetch('/api/rules/update-approved', {
                         method: 'POST',
@@ -7906,6 +7971,7 @@
                     const data = await res.json();
                     if (!res.ok) throw new Error(data.error || 'Could not save rules.');
                     showSuccess(`Saved ${updates.length} rule(s).`);
+                    trs.forEach(tr => { tr.dataset.rowChanged = 'false'; tr.classList.remove('db-row-changed'); });
                 } catch (err) {
                     showWarning(err.message || 'Could not save rules.');
                 }
@@ -8089,8 +8155,13 @@
                 const scroll = document.getElementById('dbActiveTableBody');
                 if (!scroll) return;
                 const originalRows = JSON.parse(scroll.dataset.rows || '[]');
-                const trs = Array.from(document.querySelectorAll('#dbTableBody tr'));
-                if (!trs.length) { showWarning('There is nothing to save.'); return; }
+                const allTrs = Array.from(document.querySelectorAll('#dbTableBody tr'));
+                if (!allTrs.length) { showWarning('There is nothing to save.'); return; }
+
+                // Only rows actually edited (marked by _wireDbRowChangeTracking)
+                // or brand-new pending rows get sent - not every row on the page.
+                const trs = allTrs.filter(tr => tr.dataset.rowChanged === 'true' || String(tr.dataset.rowIndex).indexOf('new') === 0);
+                if (!trs.length) { showWarning('No changes to save - edit a cell first.'); return; }
 
                 let inserted = 0, updated = 0, failed = 0;
                 for (const tr of trs) {
@@ -8117,6 +8188,8 @@
                             if (!res.ok) throw new Error(d.error || 'Save failed.');
                             updated++;
                         }
+                        tr.dataset.rowChanged = 'false';
+                        tr.classList.remove('db-row-changed');
                     } catch (err) {
                         failed++;
                     }
@@ -10407,6 +10480,63 @@
             // ============================================================
             // 38. CONTENT DATA
             // ============================================================
+            function buildPaidServicesGridHtml() {
+                const nativeSvcs = (window.FreeServices && FreeServices.nativePaidServices) || [
+                    { id: 'lease-abstraction', icon: '📄', label: 'Lease Abstraction', desc: 'Extract key terms and clauses from lease documents.' },
+                    { id: 'translation', icon: '🌐', label: 'Translation', desc: 'Translate documents into 60+ languages, layout preserved.' },
+                    { id: 'ocr', icon: '🔍', label: 'OCR', desc: 'Turn scanned or photographed pages into editable Word.' },
+                    { id: 'data-extraction', icon: '📊', label: 'Data Extraction', desc: 'Define your own fields and get a clean structured table.' },
+                    { id: 'bai2', icon: '🏦', label: 'BAI2', desc: 'Convert bank statements into BAI2, CSV, or JSON.' },
+                    { id: 'content-writing-tool', icon: '✍️', label: 'Content Writing Tool', desc: 'Generate blog posts, captions, product descriptions and more.' },
+                    { id: 'humanize-document-tool', icon: '🧑', label: 'Humanize Document Tool', desc: 'Rewrite stiff or AI-sounding text to read more naturally.' },
+                ];
+                const items = nativeSvcs
+                    .filter(t => !(SERVICES_CATALOG[t.id] && SERVICES_CATALOG[t.id].type === 'Free'))
+                    .filter(t => !(SERVICES_CATALOG[t.id] && SERVICES_CATALOG[t.id].visibility === 'Hidden'))
+                    .map(t => ({
+                        id: t.id, icon: t.icon,
+                        label: (SERVICES_CATALOG[t.id] && SERVICES_CATALOG[t.id].name && SERVICES_CATALOG[t.id].name.trim()) || t.label,
+                        desc: t.desc, external: false
+                    }));
+
+                if (window.FreeServices && FreeServices.allToolsRaw) {
+                    FreeServices.allToolsRaw().forEach(function (t) {
+                        const entry = SERVICES_CATALOG[t.id];
+                        if (entry && entry.type === 'Paid' && entry.visibility !== 'Hidden') {
+                            items.push({ id: t.id, icon: t.icon || '🔧', label: (entry.name && entry.name.trim()) || t.label, desc: t.desc || '', external: true });
+                        }
+                    });
+                }
+
+                return `
+                    <div class="tool-group-title">💼 Paid Services</div>
+                    <div class="tools-grid">
+                        ${items.map(t => `
+                            <div class="tool-card" data-service-search="${escapeHtml((t.label + ' ' + (t.desc || '')).toLowerCase())}" onclick="${t.external ? `FreeServices.open('${t.id}')` : `lexoraNavigate('services','${t.id}')`}">
+                                <div class="tool-card-icon">${t.icon}</div>
+                                <div class="tool-card-name">${escapeHtml(t.label)}</div>
+                                <div class="tool-card-desc">${escapeHtml(t.desc)}</div>
+                            </div>`).join('')}
+                    </div>`;
+            }
+
+            // New-2 - one combined Services landing page (search box on top,
+            // Paid Services and Free Services both shown below) instead of
+            // two separate submenu destinations.
+            window.filterServicesSearch = function(query) {
+                const q = (query || '').trim().toLowerCase();
+                document.querySelectorAll('[data-service-search]').forEach(function (card) {
+                    card.style.display = (!q || card.dataset.serviceSearch.includes(q)) ? '' : 'none';
+                });
+                document.querySelectorAll('.tool-group-title').forEach(function (heading) {
+                    const grid = heading.nextElementSibling;
+                    if (!grid) return;
+                    const anyVisible = Array.from(grid.querySelectorAll('[data-service-search]')).some(c => c.style.display !== 'none');
+                    heading.style.display = anyVisible ? '' : 'none';
+                    grid.style.display = anyVisible ? '' : 'none';
+                });
+            };
+
             const CONTENT_DATA = {
                 dashboard: {
                     // Layout mockup se, upar se neeche:
@@ -10576,50 +10706,20 @@
                 'humanize-document-tool': { body: function() { return window.PaidCalculators.render('humanize-document-tool'); } },
                 'paid-services': {
                     body: function() {
-                        // Native paid services (Translation, OCR, ...) -
-                        // minus any the Services Catalog has moved to Free.
-                        const nativeSvcs = (window.FreeServices && FreeServices.nativePaidServices) || [
-                            { id: 'lease-abstraction', icon: '📄', label: 'Lease Abstraction', desc: 'Extract key terms and clauses from lease documents.' },
-                            { id: 'translation', icon: '🌐', label: 'Translation', desc: 'Translate documents into 60+ languages, layout preserved.' },
-                            { id: 'ocr', icon: '🔍', label: 'OCR', desc: 'Turn scanned or photographed pages into editable Word.' },
-                            { id: 'data-extraction', icon: '📊', label: 'Data Extraction', desc: 'Define your own fields and get a clean structured table.' },
-                            { id: 'bai2', icon: '🏦', label: 'BAI2', desc: 'Convert bank statements into BAI2, CSV, or JSON.' },
-                            { id: 'content-writing-tool', icon: '✍️', label: 'Content Writing Tool', desc: 'Generate blog posts, captions, product descriptions and more.' },
-                            { id: 'humanize-document-tool', icon: '🧑', label: 'Humanize Document Tool', desc: 'Rewrite stiff or AI-sounding text to read more naturally.' },
-                        ];
-                        const items = nativeSvcs
-                            .filter(t => !(SERVICES_CATALOG[t.id] && SERVICES_CATALOG[t.id].type === 'Free'))
-                            .filter(t => !(SERVICES_CATALOG[t.id] && SERVICES_CATALOG[t.id].visibility === 'Hidden'))
-                            .map(t => ({
-                                id: t.id, icon: t.icon,
-                                label: (SERVICES_CATALOG[t.id] && SERVICES_CATALOG[t.id].name && SERVICES_CATALOG[t.id].name.trim()) || t.label,
-                                desc: t.desc, external: false
-                            }));
-
-                        // Any normally-free tool the catalog has marked
-                        // Paid - metadata comes from the free-tools
-                        // registry itself (allToolsRaw), not duplicated
-                        // here, so the label/icon always matches what
-                        // that tool is actually called elsewhere.
-                        if (window.FreeServices && FreeServices.allToolsRaw) {
-                            FreeServices.allToolsRaw().forEach(function (t) {
-                                const entry = SERVICES_CATALOG[t.id];
-                                if (entry && entry.type === 'Paid' && entry.visibility !== 'Hidden') {
-                                    items.push({ id: t.id, icon: t.icon || '🔧', label: (entry.name && entry.name.trim()) || t.label, desc: t.desc || '', external: true });
-                                }
-                            });
-                        }
-
+                        return buildPaidServicesGridHtml();
+                    }
+                },
+                'services': {
+                    body: function() {
+                        const freeGridHtml = (window.FreeServices && FreeServices.render) ? FreeServices.render('other-services') : '';
                         return `
-                            <div class="tool-group-title">💼 Paid Services</div>
-                            <div class="tools-grid">
-                                ${items.map(t => `
-                                    <div class="tool-card" onclick="${t.external ? `FreeServices.open('${t.id}')` : `lexoraNavigate('services','${t.id}')`}">
-                                        <div class="tool-card-icon">${t.icon}</div>
-                                        <div class="tool-card-name">${escapeHtml(t.label)}</div>
-                                        <div class="tool-card-desc">${escapeHtml(t.desc)}</div>
-                                    </div>`).join('')}
-                            </div>`;
+                            <div class="services-search-bar">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                                <input type="text" id="servicesSearchInput" placeholder="Search services..." oninput="filterServicesSearch(this.value)" />
+                            </div>
+                            ${buildPaidServicesGridHtml()}
+                            ${freeGridHtml}
+                        `;
                     }
                 },
                 'plans-offers': {
@@ -11309,6 +11409,7 @@
                 // System Configuration default comes from the user's own
                 // sysConfig field (users.json), not a separate json file.
                 currentSystemConfig = (profileData && profileData.sysConfig) || 'Desktop';
+                translationOutputFormat = getSetupPref('translation', 'outputFormat', 'docx');
 
                 nextLeaseFileId = leaseFiles.length ? Math.max(...leaseFiles.map(f => Number(f.id) || 0)) + 1 : 1;
                 nextTranslationFileId = translationFiles.length ? Math.max(...translationFiles.map(f => Number(f.id) || 0)) + 1 : 1;

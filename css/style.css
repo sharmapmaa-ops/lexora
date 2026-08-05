@@ -3138,6 +3138,27 @@
 
         .tool-group-title:first-of-type { margin-top: 6px; }
 
+        .services-search-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: #fff;
+            border: 1px solid rgba(0,0,0,0.12);
+            border-radius: 10px;
+            padding: 10px 14px;
+            margin-bottom: 10px;
+            color: rgba(0,0,0,0.45);
+        }
+        .services-search-bar svg { width: 18px; height: 18px; flex-shrink: 0; }
+        .services-search-bar input {
+            border: none;
+            outline: none;
+            flex: 1;
+            font-size: 0.92rem;
+            color: #12305c;
+            background: transparent;
+        }
+
         @media (max-width: 1400px) { .tools-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
         @media (max-width: 1100px) { .tools-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
         @media (max-width: 800px)  { .tools-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
@@ -4972,6 +4993,26 @@
 
 .db-edit-table td {
     vertical-align: top;
+}
+
+/* New-5 - a row that's actually been edited (and so will be included
+   the next time Save is clicked) gets a subtle highlight + a small dot
+   in its first cell, so it's obvious at a glance which rows changed. */
+.db-edit-table tr.db-row-changed {
+    background: #FFFBEB;
+}
+.db-edit-table tr.db-row-changed td:first-child {
+    position: relative;
+}
+.db-edit-table tr.db-row-changed td:first-child::before {
+    content: '';
+    position: absolute;
+    top: 6px;
+    left: 3px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #F59E0B;
 }
 
 .db-row-actions {

@@ -89,8 +89,8 @@
   }
 
   async function transcribe(dataUrl) {
-    const defaultPrompt = 'Transcribe ALL readable text from this bank statement page exactly as written, preserving reading order, row alignment and line breaks. Return the transcription only.';
-    const prompt = window.getAiPrompt ? window.getAiPrompt('BAI2', 2, defaultPrompt) : defaultPrompt;
+    const prompt = window.getAiPrompt ? window.getAiPrompt('BAI2', 2) : null;
+    if (!prompt) throw new Error('AI Prompt for BAI2 (prompt #2) is not configured - add it in Admin > AI Prompts, or run migration first.');
     const data = await window.lexoraProxyJson({
       model: MODEL,
       messages: [{
@@ -107,33 +107,9 @@
 
   // ── extracting structured transactions ─────────────────────────────
   function extractionPrompt() {
-    const defaultPrompt = `You are a precise bank-statement parser.
-
-From the statement text below, extract the account details and every transaction line.
-
-RULES
-- Copy values EXACTLY as printed. Do not reformat numbers, do not convert currencies, do not recalculate balances.
-- "amount" must be a positive number with no currency symbol, thousands separator or sign. Use "type" to say whether money came in or went out.
-- "type" is "credit" when money went INTO the account, "debit" when money left it.
-- "date" must be ISO format YYYY-MM-DD. Work out the correct order from the statement's own date format; if the year is not printed on a line, take it from the statement period.
-- If a field genuinely is not shown anywhere, return an empty string "". Never guess an account number, a balance or a date.
-- Include every transaction row, in the order they appear.
-
-Return ONLY this JSON, nothing else:
-{
-  "account_number": "...",
-  "account_name": "...",
-  "bank_name": "...",
-  "currency": "...",
-  "statement_start": "YYYY-MM-DD",
-  "statement_end": "YYYY-MM-DD",
-  "opening_balance": "",
-  "closing_balance": "",
-  "transactions": [
-    { "date": "YYYY-MM-DD", "description": "...", "reference": "", "amount": "0.00", "type": "credit|debit", "balance": "" }
-  ]
-}`;
-    return window.getAiPrompt ? window.getAiPrompt('BAI2', 1, defaultPrompt) : defaultPrompt;
+    const prompt = window.getAiPrompt ? window.getAiPrompt('BAI2', 1) : null;
+    if (!prompt) throw new Error('AI Prompt for BAI2 (prompt #1) is not configured - add it in Admin > AI Prompts, or run migration first.');
+    return prompt;
   }
 
   async function extract(text) {
@@ -507,7 +483,7 @@ Return ONLY this JSON, nothing else:
         <div class="service-page-grid">
           <div class="service-col">
           <div class="service-card">
-            <h3 class="card-head-row"><span>📤 Upload File(s)</span><button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','paid-services')">← Back to Paid Services</button></h3>
+            <h3 class="card-head-row"><span>📤 Upload File(s)</span><button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','services')">← Back to Services</button></h3>
             <div class="card-body">
               <div class="drop-zone" onclick="${STATE.running ? 'void(0)' : "document.getElementById('baiInput').click()"}"
                    style="${STATE.running ? 'opacity:0.5;pointer-events:none;' : ''}">
