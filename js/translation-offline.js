@@ -1387,6 +1387,51 @@ Return NOTHING except the JSON object.`;
     return typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c);
   }
 
+  // ---- Salvage partial text_blocks when the overall JSON is malformed ----
+  // A single bad escape/quote anywhere in a dense bilingual page can break
+  // JSON.parse for the WHOLE response even though most individual block
+  // objects are perfectly well-formed. Rather than losing the entire page,
+  // scan for the text_blocks array and pull out every {...} object that
+  // parses cleanly on its own, skipping only the one(s) that don't.
+  function v14SalvagePartialTextBlocks(raw) {
+    const arrayStart = raw.indexOf('"text_blocks"');
+    if (arrayStart === -1) return [];
+    const bracketStart = raw.indexOf('[', arrayStart);
+    if (bracketStart === -1) return [];
+
+    const blocks = [];
+    let i = bracketStart + 1;
+    while (i < raw.length) {
+      while (i < raw.length && /[\s,]/.test(raw[i])) i++;
+      if (raw[i] === ']' || i >= raw.length) break;
+      if (raw[i] !== '{') { i++; continue; }
+
+      // Balanced-brace scan for one object, respecting quoted strings so a
+      // '{' or '}' inside a text value doesn't throw the count off.
+      let depth = 0, inString = false, escaped = false, objStart = i, objEnd = -1;
+      for (let j = i; j < raw.length; j++) {
+        const ch = raw[j];
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (ch === '\\') escaped = true;
+          else if (ch === '"') inString = false;
+          continue;
+        }
+        if (ch === '"') { inString = true; continue; }
+        if (ch === '{') depth++;
+        else if (ch === '}') { depth--; if (depth === 0) { objEnd = j; break; } }
+      }
+      if (objEnd === -1) break; // unterminated - rest of the response is unusable
+      const candidate = raw.slice(objStart, objEnd + 1);
+      try {
+        const obj = JSON.parse(candidate);
+        if (obj && typeof obj === 'object' && typeof obj.text === 'string') blocks.push(obj);
+      } catch (e) { /* this one block was the malformed one - skip it, keep going */ }
+      i = objEnd + 1;
+    }
+    return blocks;
+  }
+
   // ---- OCR one page: box_2d 0-1000 -> px, filter, repair, de-overlap ----
   // ROOT CAUSE FIX: agar pehli call ka JSON malformed/incomplete nikle
   // (flaky vision-model output — v14VisionCall ke reason dekho), to
@@ -1398,7 +1443,8 @@ Return NOTHING except the JSON object.`;
     const prompt = v14BuildExtractionPrompt();
 
     let parsed, rawContent, finishReason, lastErr;
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    const MAX_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const callResult = await v14VisionCall(model, dataUrl, prompt);
       rawContent = callResult.content;
       finishReason = callResult.finishReason;
@@ -1420,8 +1466,18 @@ Return NOTHING except the JSON object.`;
           ? parseErr.message
           : `JSON parse failed (${cleaned.length} chars, finish_reason="${finishReason}", ${looksTruncated ? 'response looks truncated — end: "...' + tail + '"' : 'JSON is malformed'})`;
         lastErr = new Error(detail);
-        if (attempt === 1) {
-          log('P' + pageNum + ': OCR JSON invalid (' + detail + ') — retrying with a fresh attempt...', 'warn');
+        if (attempt < MAX_ATTEMPTS) {
+          log('P' + pageNum + ': OCR JSON invalid (' + detail + ') — retrying with a fresh attempt (' + (attempt + 1) + '/' + MAX_ATTEMPTS + ')...', 'warn');
+        } else {
+          // Last attempt's response still didn't parse as a whole - before
+          // giving up on the page entirely, see if most of the individual
+          // blocks are still salvageable on their own.
+          const salvaged = v14SalvagePartialTextBlocks(cleaned);
+          if (salvaged.length) {
+            log('P' + pageNum + ': full JSON still malformed after ' + MAX_ATTEMPTS + ' attempts, but recovered ' + salvaged.length + ' text block(s) from the partial response.', 'warn');
+            parsed = { text_blocks: salvaged };
+            lastErr = null;
+          }
         }
       }
     }
@@ -1496,12 +1552,142 @@ Return NOTHING except the JSON object.`;
     return { blocks: deo.blocks, notes: rep.notes.concat(deo.notes), width: width, height: height, hasVisualBackground: hasVisualBackground };
   }
 
+  // ---- DOMAIN EXPERT PERSONAS (17 domains) ----
+  // Each persona = an expert role framing + a hard-locked terminology
+  // glossary (source term -> exact target-language equivalents). Giving
+  // the model the EXACT terms up front, rather than a generic "use
+  // domain terminology" instruction, is what keeps terminology
+  // consistent across a whole document and matches how a genuine
+  // subject-matter professional would translate it.
+  const TRANSLATION_DOMAIN_EXPERTS = {
+    'Real Estate': {
+      role: 'a senior commercial real estate attorney and certified native translator with 20+ years drafting leases, purchase agreements, and management contracts',
+      terms: 'Lessor (arrendador, bailleur, Vermieter, locatore), Lessee/Tenant (arrendatario, locataire, Mieter, conduttore), Premises (inmueble, locaux, Mietsache, locali), Rent (renta/canon, loyer, Miete, canone), Security Deposit (fianza, depot de garantie, Kaution, deposito cauzionale), Term (vigencia/plazo, duree, Mietdauer, durata), Assignment (cesion, cession, Abtretung, cessione), Sublease (subarriendo, sous-location, Untervermietung, sublocazione), Common Area (zonas comunes), Force Majeure (fuerza mayor, force majeure, hohere Gewalt, forza maggiore), Default (incumplimiento), Termination (rescision/resolucion, resiliation, Kundigung, risoluzione)'
+    },
+    'Legal': {
+      role: 'a senior corporate attorney and certified native translator specializing in contracts, litigation, regulatory filings, and court documents with 20+ years drafting in formal legal register',
+      terms: 'Party (parte, partie, Partei, parte), Counterparty (contraparte), Whereas (considerando), Hereby (por la presente), Hereinafter (en lo sucesivo), Notwithstanding (no obstante), Indemnity (indemnizacion), Liability (responsabilidad), Jurisdiction (jurisdiccion), Governing Law (ley aplicable), Arbitration (arbitraje), Damages (danos y perjuicios), Breach (incumplimiento), Remedy (remedio), Waiver (renuncia), Severability (divisibilidad)'
+    },
+    'Healthcare': {
+      role: 'a senior healthcare administrator and certified medical translator with 20+ years working across hospitals, clinics, and provider networks',
+      terms: 'Patient (paciente), Provider (proveedor/prestador), Clinic (clinica), Diagnosis (diagnostico), Treatment (tratamiento), Care Plan (plan de atencion), Medical Record (historia clinica), Consent (consentimiento), Practitioner (profesional sanitario), Referral (derivacion/remision), Triage (triaje), Outpatient (ambulatorio), Inpatient (hospitalizado), Discharge (alta), Admission (ingreso)'
+    },
+    'Finance': {
+      role: 'a senior financial controller and certified accounting translator (CPA-equivalent) with 20+ years in financial reporting, auditing, and corporate accounting',
+      terms: 'Assets (activos), Liabilities (pasivos), Equity (patrimonio neto), Revenue (ingresos), Expenses (gastos), Net Income (resultado neto/utilidad neta), Accounts Payable (cuentas por pagar), Accounts Receivable (cuentas por cobrar), Working Capital (capital de trabajo), EBITDA (BAIIDA), Cash Flow (flujo de caja), Depreciation (amortizacion/depreciacion), Accrual (devengo), Reconciliation (conciliacion)'
+    },
+    'Insurance': {
+      role: 'a senior insurance underwriter and certified native translator with 20+ years in property, casualty, life, and commercial insurance',
+      terms: 'Policyholder (tomador/asegurado), Insurer (aseguradora), Insured (asegurado), Beneficiary (beneficiario), Premium (prima), Deductible (franquicia/deducible), Coverage (cobertura), Claim (reclamo/siniestro), Endorsement (endoso), Exclusion (exclusion), Underwriting (suscripcion), Loss (siniestro), Adjuster (perito/ajustador), Subrogation (subrogacion)'
+    },
+    'Banking': {
+      role: 'a senior banking executive and certified native translator with 20+ years in retail banking, commercial lending, and treasury operations',
+      terms: 'Account (cuenta), Loan (prestamo), Mortgage (hipoteca), Credit Line (linea de credito), Principal (principal/capital), Interest Rate (tasa de interes), Collateral (garantia/colateral), Guarantor (avalista/garante), Default (mora/incumplimiento), Disbursement (desembolso), Wire Transfer (transferencia bancaria), KYC (conocer al cliente), AML (prevencion de blanqueo), Beneficial Owner (titular real)'
+    },
+    'Procurement': {
+      role: 'a senior supply chain and procurement director and certified native translator with 20+ years in vendor contracts, RFPs, and sourcing strategy',
+      terms: 'Purchase Order (orden de compra), Vendor/Supplier (proveedor), Buyer (comprador), Specification (especificacion), Lead Time (plazo de entrega), Delivery Terms (condiciones de entrega), Incoterms, Quality Standards (estandares de calidad), Service Level Agreement (acuerdo de nivel de servicio), Master Service Agreement (acuerdo marco), Statement of Work (descripcion del trabajo), RFP (solicitud de propuesta), RFQ (solicitud de cotizacion)'
+    },
+    'HR': {
+      role: 'a senior human resources director and certified employment-law translator with 20+ years in employment contracts, policies, and labor compliance',
+      terms: 'Employee (empleado), Employer (empleador), Compensation (remuneracion), Salary (salario), Benefits (prestaciones/beneficios), Termination (terminacion/despido), Severance (indemnizacion), Probation (periodo de prueba), Notice Period (preaviso), Performance Review (evaluacion de desempeno), Code of Conduct (codigo de conducta), Confidentiality (confidencialidad), Non-compete (no competencia), Non-disclosure (no divulgacion)'
+    },
+    'Tax': {
+      role: 'a senior tax advisor and certified native translator (CPA/EA-equivalent) with 20+ years in corporate tax, international tax, and tax controversy',
+      terms: 'Taxpayer (contribuyente), Tax Authority (autoridad fiscal/hacienda), Withholding (retencion), Tax Return (declaracion fiscal/de impuestos), VAT (IVA), Income Tax (impuesto sobre la renta), Corporate Tax (impuesto de sociedades), Tax Year (ejercicio fiscal), Tax Base (base imponible), Tax Credit (credito fiscal), Deduction (deduccion), Tax Treaty (tratado fiscal), Transfer Pricing (precios de transferencia)'
+    },
+    'Manufacturing': {
+      role: 'a senior manufacturing operations director and certified native translator with 20+ years in production, quality control, and industrial engineering',
+      terms: 'Production (produccion), Equipment (equipo/maquinaria), Assembly (ensamblaje/montaje), Maintenance (mantenimiento), Inventory (inventario), Bill of Materials (lista de materiales), Quality Control (control de calidad), Yield (rendimiento), Throughput (rendimiento de produccion), Downtime (tiempo de inactividad), Lean Manufacturing (manufactura esbelta), Just-in-Time (justo a tiempo), Kaizen, Six Sigma'
+    },
+    'Technical': {
+      role: 'a senior software/systems architect and certified technical translator with 20+ years in engineering documentation, infrastructure design, and technical specifications',
+      terms: 'System (sistema), Architecture (arquitectura), Deployment (despliegue), Infrastructure (infraestructura), Specification (especificacion), API (API/interfaz de programacion), Database (base de datos), Endpoint (punto de conexion), Throughput (rendimiento), Latency (latencia), Scalability (escalabilidad), Redundancy (redundancia), Failover (conmutacion por error), Authentication (autenticacion)'
+    },
+    'Medical': {
+      role: 'a senior physician and certified medical translator (board-equivalent) with 20+ years in clinical practice, medical research, and pharmaceutical documentation',
+      terms: 'Patient (paciente), Diagnosis (diagnostico), Prognosis (pronostico), Pathology (patologia), Etiology (etiologia), Symptom (sintoma), Sign (signo), Comorbidity (comorbilidad), Adverse Event (evento adverso), Indication (indicacion), Contraindication (contraindicacion), Posology (posologia/dosificacion), Pharmacokinetics (farmacocinetica), Clinical Trial (ensayo clinico)'
+    },
+    'Compliance': {
+      role: 'a senior compliance officer (CCO/CECO-equivalent) and certified native translator with 20+ years in regulatory affairs, AML, sanctions, and corporate governance',
+      terms: 'Regulation (regulacion/normativa), Regulatory Body (organismo regulador), Compliance Program (programa de cumplimiento), Risk Assessment (evaluacion de riesgos), Audit (auditoria), Control (control), Whistleblower (denunciante), Internal Investigation (investigacion interna), Sanctions (sanciones), Due Diligence (debida diligencia), Beneficial Owner (titular real), Material Risk (riesgo material)'
+    },
+    'Corporate': {
+      role: 'a senior corporate executive (general counsel / company secretary equivalent) and certified native translator with 20+ years in M&A, board governance, and shareholder relations',
+      terms: 'Board of Directors (consejo de administracion/junta directiva), Shareholder (accionista), Equity Holder (tenedor de capital), Quorum (quorum), Resolution (acuerdo/resolucion), Bylaws (estatutos), Articles of Association (escritura constitutiva), Merger (fusion), Acquisition (adquisicion), Spin-off (escision), Dividend (dividendo), Share Capital (capital social), Subsidiary (filial/subsidiaria), Parent Company (matriz)'
+    },
+    'Government': {
+      role: 'a senior public-sector official (policy adviser / regulatory specialist) and certified native translator with 20+ years in legislative drafting, public administration, and intergovernmental affairs',
+      terms: 'Statute (ley/estatuto), Regulation (reglamento), Decree (decreto), Ordinance (ordenanza), Public Authority (autoridad publica), Ministry (ministerio), Agency (agencia/organismo), Permit (permiso), License (licencia), Public Tender (licitacion publica), Citizen (ciudadano), Resident (residente), Jurisdiction (jurisdiccion), Procedural Code (codigo procesal)'
+    },
+    'Academic': {
+      role: 'a senior research professor and certified academic translator with 20+ years in scholarly publishing, peer review, and grant proposals',
+      terms: 'Research (investigacion), Hypothesis (hipotesis), Methodology (metodologia), Findings (hallazgos/resultados), Citation (cita), Bibliography (bibliografia), Peer Review (revision por pares), Abstract (resumen), Literature Review (revision de literatura), Empirical (empirico), Quantitative (cuantitativo), Qualitative (cualitativo), Hypothesis Testing (contraste de hipotesis), Sample (muestra)'
+    },
+    'General Business': {
+      role: 'a senior business executive and certified native translator with 20+ years in general corporate communications, business correspondence, and operational documentation',
+      terms: 'Company (empresa), Customer (cliente), Stakeholder (parte interesada), Strategy (estrategia), Operations (operaciones), Performance (desempeno/rendimiento), KPI (indicador clave), ROI (retorno de inversion), Market (mercado), Competitor (competidor), Partnership (alianza/asociacion), Deliverable (entregable), Milestone (hito)'
+    }
+  };
+
+  // Quick, cheap, focused call (~1500 chars of sample text) BEFORE the
+  // main translation - the model's full attention goes to classification
+  // alone, which is more reliable than asking it to classify AND
+  // translate in the same call. Falls back to General Business on any
+  // failure so translation always proceeds even if this step errors out.
+  async function v14ClassifyTranslationDomain(model, sampleText) {
+    const domains = Object.keys(TRANSLATION_DOMAIN_EXPERTS);
+    const systemPrompt = [
+      'You are a document classifier. Given a sample of text from a document, identify:',
+      '1. Domain: one of [' + domains.join(', ') + ']',
+      '2. Document type: a brief 2-4 word descriptor (e.g. "Lease Agreement", "Medical Report", "Invoice", "Employment Contract", "Tax Filing")',
+      '',
+      'Output ONLY this format, nothing else:',
+      'DOMAIN: <one from list>',
+      'TYPE: <2-4 words>'
+    ].join('\n');
+
+    try {
+      const data = await v14ProxyJson({
+        model: model,
+        temperature: 0,
+        max_tokens: 60,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: String(sampleText || '').slice(0, 1500) }
+        ]
+      });
+      const content = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+      const domainMatch = content.match(/DOMAIN:\s*([^\n]+)/i);
+      const typeMatch = content.match(/TYPE:\s*([^\n]+)/i);
+      const detected = (domainMatch && domainMatch[1] || '').trim();
+
+      let matched = 'General Business';
+      for (const d of domains) {
+        if (d.toLowerCase() === detected.toLowerCase()) { matched = d; break; }
+      }
+      if (matched === 'General Business' && detected) {
+        for (const d of domains) {
+          if (detected.toLowerCase().includes(d.toLowerCase()) || d.toLowerCase().includes(detected.toLowerCase())) { matched = d; break; }
+        }
+      }
+      return { domain: matched, docType: (typeMatch && typeMatch[1] || 'Document').trim() };
+    } catch (err) {
+      log('Domain detection failed, continuing with General Business terminology: ' + err.message, 'warn');
+      return { domain: 'General Business', docType: 'Document' };
+    }
+  }
+
   // ---- TRANSLATION (single final call, whole document — v14 exact) ----
   // LAST me, ek hi call, saare pages saath — page-boundary-crossing
   // paragraphs ki continuity per-page translation tod deti hai.
-  function v14BuildTranslationPrompt(targetLanguageLabel, targetCountry) {
+  function v14BuildTranslationPrompt(targetLanguageLabel, targetCountry, domainInfo) {
     const countryInstruction = targetCountry
       ? `\n\nTARGET COUNTRY SPECIFIED: ${targetCountry}. Use the standard variant of ${targetLanguageLabel} as spoken/written in ${targetCountry} specifically - its spelling conventions, its official/legal terminology, its units and formatting conventions (dates, currency, addresses), and the terms ${targetCountry}'s own administrative/legal system actually uses for each concept. This takes priority over guessing a variant from the source document.`
+      : '';
+    const expert = domainInfo && TRANSLATION_DOMAIN_EXPERTS[domainInfo.domain];
+    const domainPersonaInstruction = expert
+      ? `\n\nDOMAIN EXPERT PERSONA:\nThis document was pre-classified as domain "${domainInfo.domain}" (document type: "${domainInfo.docType || 'Document'}"). Translate it as ${expert.role}. Write in ${targetLanguageLabel} as a native professional in this field would - natural, fluent, idiomatic, and using this field's precise terminology.\n\nDOMAIN TERMINOLOGY (use these exact ${targetLanguageLabel} equivalents consistently wherever the source term or its clear equivalent appears - these override your own judgment call on which synonym to pick):\n${expert.terms}`
       : '';
     return `You are a professional document translator and typesetter.
 
@@ -1518,7 +1704,7 @@ STEP 2 — TRANSLATE INTO ${targetLanguageLabel}
 Translate the ENTIRE document into ${targetLanguageLabel}, using a tone/register appropriate to the document_type, domain and era_tone you determined (e.g. a certificate needs a formal ceremonial register, a legal document needs precise legal register, an old book needs period-appropriate literary tone, a casual letter needs a conversational tone).
 
 IMPORTANT — PICK THE RIGHT REGIONAL VARIANT OF ${targetLanguageLabel}:
-Most languages have several standard regional variants that differ in spelling, official terminology, and legal/administrative vocabulary (for example a language may have distinct European vs. North/South American vs. South Asian standards). Decide which variant of ${targetLanguageLabel} best fits this document's domain and likely audience, then apply it CONSISTENTLY throughout: its spelling conventions, its standard professional/official terminology, and the terms that variant's own legal or administrative system actually uses for each concept. Also record which variant you chose as "target_variant". If nothing indicates a specific region, use the most widely-understood neutral standard form of ${targetLanguageLabel} and say so.${countryInstruction}
+Most languages have several standard regional variants that differ in spelling, official terminology, and legal/administrative vocabulary (for example a language may have distinct European vs. North/South American vs. South Asian standards). Decide which variant of ${targetLanguageLabel} best fits this document's domain and likely audience, then apply it CONSISTENTLY throughout: its spelling conventions, its standard professional/official terminology, and the terms that variant's own legal or administrative system actually uses for each concept. Also record which variant you chose as "target_variant". If nothing indicates a specific region, use the most widely-understood neutral standard form of ${targetLanguageLabel} and say so.${countryInstruction}${domainPersonaInstruction}
 
 IMPORTANT — TERMINOLOGY MUST STAY CONSISTENT ACROSS THE WHOLE DOCUMENT:
 Before translating, mentally note the key recurring terms and concepts in the document — legal, financial, technical, or otherwise (e.g. rent, tenant, landlord, terminate, deposit, premises, party, agreement, or whatever else actually recurs in THIS document). For each such term, pick ONE precise ${targetLanguageLabel} equivalent appropriate to the document_type's register, and use that EXACT SAME word every single time that term/concept appears, on every page. Do not vary it with a different synonym from one occurrence to the next - inconsistent terminology changes the meaning of a document like this (especially a legal or technical one), it isn't a stylistic choice.
@@ -1528,6 +1714,9 @@ Do not produce a literal, word-by-word rendering that mirrors the source languag
 - For a legal/contractual document_type: use the standard terms and set phrases a professional in that legal tradition would use for each concept (e.g. how that legal system's professionals normally phrase ending an agreement, standard boilerplate expressions, standard clause openers) - a concept-for-concept translation of what the clause legally does, not a literal word-for-word one. If a long sentence's source-language structure would read as awkward or unnatural when translated word-for-word, restructure it into the sentence structure ${targetLanguageLabel} would normally use for that kind of clause, while preserving the exact legal meaning and effect - do not change what any party is agreeing to, obligated to, or entitled to.
 - Official entity names, company/organization titles, authority names, and any term the source document treats as a defined/formal term (capitalized, quoted, or explicitly defined) should be translated to their standard recognized ${targetLanguageLabel} equivalent if one exists, and otherwise kept in a single consistent form - never translated one way in one place and a different way elsewhere.
 - Preserve clause/section numbering and structural markers exactly as given (e.g. "1.", "(a)", "Article 3", "Section II") - translate only the text that follows them, never the numbering/lettering itself, since these are used for cross-references within the document.
+
+IMPORTANT — ELIMINATE LITERAL TRANSLATION PATTERNS:
+Rewrite awkward, stiff constructions that come from translating word-for-word into natural ${targetLanguageLabel} a native professional would actually write. For example (English source shown for illustration - apply the same principle regardless of source/target language pair): "The appearing parties mutually and reciprocally acknowledge" -> "The parties acknowledge"; "free disposal thereof" -> "full legal authority"; "interest and will" -> "intention"; "price of lease" -> "rent" (in a Real Estate document); "cannot be adapted to regulations" -> "cannot be brought into regulatory compliance". Apply this same kind of simplification and naturalization throughout, in whichever language pair you are actually translating.
 
 IMPORTANT — NEVER ALTER FACTUAL DATA WHILE TRANSLATING:
 The following must come through EXACTLY as in the source, never re-worded, re-formatted, recalculated, converted, or "corrected": dates, personal and organization names, addresses, all numbers, monetary amounts and currency symbols/codes, units of measurement, identifiers (tax/VAT/registration/file/account numbers), and cross-references to laws, articles, or clauses. Translate the words around them, but copy these through verbatim. Do not convert a currency into another currency, do not convert units, and do not change a date's format or calendar. Do not add any information that is not in the source, and do not omit any information that is.
@@ -1573,7 +1762,17 @@ Return ONLY this JSON shape, nothing else:
     }));
 
     const targetCountry = window.getSetupPref ? window.getSetupPref('translation', 'targetCountry', '') : '';
-    const prompt = v14BuildTranslationPrompt(targetLanguageLabel, targetCountry) +
+
+    // Classify domain first (separate, focused, cheap call) so the main
+    // translation call can be given the domain expert persona + exact
+    // terminology glossary up front, instead of guessing terminology
+    // while also doing the harder job of translating.
+    const sampleText = compact.slice(0, 25).map(b => b.text).filter(Boolean).join('\n').slice(0, 1500);
+    log('Detecting document domain for terminology matching...', 'info');
+    const domainInfo = await v14ClassifyTranslationDomain(model, sampleText);
+    log(`Detected domain: ${domainInfo.domain} (${domainInfo.docType})`, 'info');
+
+    const prompt = v14BuildTranslationPrompt(targetLanguageLabel, targetCountry, domainInfo) +
       '\n\nINPUT BLOCKS (full document, all pages, reading order):\n' +
       JSON.stringify(compact);
 
