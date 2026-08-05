@@ -11948,6 +11948,12 @@
             // taaki ek hi thumbnail-card renderer dono ke liye chale.
             function authAllServices() {
                 const catalog = window.SERVICES_CATALOG || {};
+                // Same icon source the Services page uses (NATIVE_PAID_SERVICES),
+                // so Home's thumbnails show the identical icon/emoji per service.
+                const nativeIconById = {};
+                const nativeList = (window.FreeServices && FreeServices.nativePaidServices) || [];
+                nativeList.forEach(t => { nativeIconById[t.id] = t.icon; });
+
                 const paid = AUTH_PAID_TOOLS
                     .filter(t => {
                         const entry = catalog[t[0]];
@@ -11959,7 +11965,7 @@
                         type: 'paid',
                         label: (catalog[t[0]] && catalog[t[0]].name && catalog[t[0]].name.trim()) || t[1],
                         desc: t[2],
-                        iconHtml: authIcon(t[3])
+                        iconHtml: `<span class="auth-thumb-emoji">${nativeIconById[t[0]] || '🔧'}</span>`
                     }));
                 // Any normally-free tool the catalog has marked Paid shows
                 // here too, matching the in-app Paid Services page.
@@ -11971,7 +11977,7 @@
                                 type: 'paid',
                                 label: (entry.name && entry.name.trim()) || t.label,
                                 desc: t.desc || '',
-                                iconHtml: authIcon(AUTH_PAID_TOOLS_ICON_FALLBACK)
+                                iconHtml: `<span class="auth-thumb-emoji">${t.icon || '🔧'}</span>`
                             });
                         }
                     });
