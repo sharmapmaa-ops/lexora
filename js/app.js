@@ -6534,6 +6534,7 @@
                                             </div>
                                         </div>
                                         <div class="form-row">
+                                            ${(COMPANY_INFO && COMPANY_INFO.twoFactorAvailable === 'No') ? '' : `
                                             <div class="form-group">
                                                 <label>Notify On</label>
                                                 <div class="profile-vcd-radio-group" id="profileVcdRadioGroup">
@@ -6551,6 +6552,7 @@
                                                     </label>
                                                 </div>
                                             </div>
+                                            `}
                                             <div class="form-group">
                                                 <label>&nbsp;</label>
                                                 <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
@@ -12023,23 +12025,15 @@
             // har service apna icon + title + description ke saath, na ki
             // free services ek jodi hui sentence me.
             function buildAuthToolsCard() {
-                const services = authAllServices();
-                const freeCount = services.filter(s => s.type === 'free').length;
-                const paidCount = services.filter(s => s.type === 'paid').length;
+                const freeGridHtml = (window.FreeServices && FreeServices.render) ? FreeServices.render('other-services') : '';
                 return `
-                    <div class="auth-services-card">
+                    <div class="auth-services-card" id="contentBody">
                         <div class="auth-services-heading">
                             <h2>Our Most Popular Tools</h2>
                             <p>Powerful document tools, ready when you need them</p>
                         </div>
-                        <div class="auth-filter-bar">
-                            <button class="auth-filter-btn active" data-filter="all" onclick="setAuthServiceFilter('all')">All Services <em>${services.length}</em></button>
-                            <button class="auth-filter-btn" data-filter="free" onclick="setAuthServiceFilter('free')">Free Services <em>${freeCount}</em></button>
-                            <button class="auth-filter-btn" data-filter="paid" onclick="setAuthServiceFilter('paid')">Paid Services <em>${paidCount}</em></button>
-                        </div>
-                        <div class="auth-thumb-grid" id="authThumbGrid">
-                            ${services.map(authServiceCardHtml).join('')}
-                        </div>
+                        ${buildPaidServicesGridHtml(true)}
+                        ${freeGridHtml}
                     </div>
                 `;
             }

@@ -1595,7 +1595,12 @@ def _dispatch_user_notification(user_id, fallback_email, user_name, title, messa
         user and user.get("mobileVerified")
         and user.get("mobileVerifiedNumber") == (user.get("mobile") or "").strip()
     )
-    if user and user.get("verificationMethod") == "sms" and mobile_verified:
+    # If 2FA has been switched off company-wide, always use email here -
+    # even if this user has a leftover "sms" preference from before it was
+    # disabled. Mobile-verification OTP itself is a separate, direct SMS
+    # send elsewhere and is unaffected by this.
+    two_factor_available = _load_company_info().get("twoFactorAvailable") != "No"
+    if user and two_factor_available and user.get("verificationMethod") == "sms" and mobile_verified:
         _send_notification_sms_async(user["mobile"], title, message)
         return
 
@@ -4028,7 +4033,7 @@ class Handler(SimpleHTTPRequestHandler):
                     user.get("mobileVerified")
                     and user.get("mobileVerifiedNumber") == (user.get("mobile") or "").strip()
                 )
-                if user.get("verificationMethod") == "sms" and mobile_verified and user.get("mobile"):
+                if user.get("verificationMethod") == "sms" and mobile_verified and user.get("mobile") and _load_company_info().get("twoFactorAvailable") != "No":
                     _send_notification_sms_async(
                         user["mobile"], "Payment received",
                         f"We've received your payment of {entry['credit']:,.2f} ({order.get('currency', 'INR')}). "
@@ -4116,7 +4121,7 @@ class Handler(SimpleHTTPRequestHandler):
             user and user.get("mobileVerified")
             and user.get("mobileVerifiedNumber") == (user.get("mobile") or "").strip()
         )
-        if user and user.get("verificationMethod") == "sms" and mobile_verified:
+        if user and user.get("verificationMethod") == "sms" and mobile_verified and _load_company_info().get("twoFactorAvailable") != "No":
             _send_notification_sms_async(
                 user["mobile"], f"Ticket {ticket_id} received",
                 f"We've received your {msg_type.lower()} (\"{subject}\"). Our team will respond soon.",
@@ -4164,7 +4169,7 @@ class Handler(SimpleHTTPRequestHandler):
             user and user.get("mobileVerified")
             and user.get("mobileVerifiedNumber") == (user.get("mobile") or "").strip()
         )
-        if user and user.get("verificationMethod") == "sms" and mobile_verified:
+        if user and user.get("verificationMethod") == "sms" and mobile_verified and _load_company_info().get("twoFactorAvailable") != "No":
             text = f'Your support ticket "{subject}" status is now {status}.'
             if response and response != "-":
                 text += f" Response: {response}"
