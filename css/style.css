@@ -4075,7 +4075,16 @@
    .auth-top-menu-bar only overrides what genuinely differs (no logo, so
    no .menu-left sibling competing for space; padding-bottom drops the
    sticky top-margin the app header doesn't need pre-login). */
-.auth-top-menu-bar { padding-bottom: 6px; }
+.auth-top-menu-bar {
+    width: calc(100% + 2 * var(--auth-pad-x));
+    margin-left: calc(-1 * var(--auth-pad-x));
+    margin-right: calc(-1 * var(--auth-pad-x));
+    margin-top: -1.1em;
+    padding-left: 26px;
+    padding-right: 26px;
+    padding-bottom: 6px;
+    box-sizing: border-box;
+}
 
 .auth-top-nav-login-btn {
     margin-left: auto;

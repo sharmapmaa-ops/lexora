@@ -3118,16 +3118,17 @@ label { font-size: .76rem; }
 
 .auth-thumb-card {
     display: flex;
-    align-items: center;
-    gap: 16px;
+    align-items: stretch;
+    gap: 0;
     border: 1px solid #E6ECFF;
     border-radius: 12px;
-    padding: 16px;
+    padding: 0;
     background: #fff;
     box-shadow: 0 2px 8px rgba(11, 21, 51, 0.04);
     transition: 0.15s;
     box-sizing: border-box;
     cursor: pointer;
+    overflow: hidden;
 }
 
 .auth-thumb-card:hover {
@@ -3137,19 +3138,18 @@ label { font-size: .76rem; }
 }
 
 .auth-thumb-icon {
-    flex: 0 0 30%;
-    aspect-ratio: 1 / 1;
-    max-width: 52px;
-    border-radius: 10px;
-    background: #F2F6FF;
+    flex: 0 0 20%;
+    border-right: 1px solid #E6ECFF;
+    background: transparent;
     color: #2563EB;
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 0;
 }
-.auth-thumb-icon svg { width: 23px; height: 23px; }
+.auth-thumb-icon svg { width: 40%; height: 40%; min-width: 32px; min-height: 32px; }
 
-.auth-thumb-text { flex: 1; min-width: 0; }
+.auth-thumb-text { flex: 1; min-width: 0; padding: 16px; }
 
 .auth-thumb-title {
     font-size: 15.5px;
