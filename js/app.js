@@ -10698,9 +10698,14 @@
                     body: function() {
                         const freeGridHtml = (window.FreeServices && FreeServices.render) ? FreeServices.render('other-services') : '';
                         return `
-                            <div class="services-search-bar">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-                                <input type="text" id="servicesSearchInput" placeholder="Search services..." oninput="filterServicesSearch(this.value)" />
+                            <div class="services-search-wrapper">
+                                <div class="services-search-box">
+                                    <span class="services-search-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                                    </span>
+                                    <input type="text" id="servicesSearchInput" placeholder="Search services..." oninput="filterServicesSearch(this.value)" onkeydown="if(event.key==='Enter')this.blur();" />
+                                    <button class="services-search-btn" onclick="filterServicesSearch(document.getElementById('servicesSearchInput').value)">Search</button>
+                                </div>
                             </div>
                             ${buildPaidServicesGridHtml()}
                             ${freeGridHtml}
@@ -10789,20 +10794,7 @@
                         // tha) - ek dedicated, conflict-free component hai.
                         return `
                         <div class="payment-top-row">
-                            <div class="payment-balance-summary" id="balanceGrid">
-                                <div class="payment-balance-head">
-                                    <span class="payment-balance-head-icon">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2.5"/><path d="M16 7V5.5a2.5 2.5 0 0 0-2.5-2.5h-3A2.5 2.5 0 0 0 8 5.5V7"/></svg>
-                                    </span>
-                                    <div class="payment-balance-head-text">
-                                        <div class="payment-balance-head-title">Account Overview</div>
-                                        <div class="payment-balance-head-sub">Summary of your transactions</div>
-                                    </div>
-                                    <span class="payment-balance-head-menu">
-                                        <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
-                                    </span>
-                                </div>
-                                <div class="payment-balance-row">
+                            <div class="payment-balance-summary" id="balanceGrid">                                <div class="payment-balance-row">
                                     <div class="payment-balance-item is-credit">
                                         <span class="payment-balance-icon">
                                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>

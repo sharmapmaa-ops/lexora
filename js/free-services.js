@@ -575,27 +575,8 @@
 
   function renderIndex() {
     const all = allTools();
-    const byId = {};
-    all.forEach(function (t) { byId[t.id] = t; });
-
-    const used = {};
-    const sections = GROUPS.map(function (g) {
-      const items = g.ids.map(function (id) { used[id] = true; return byId[id]; })
-        .filter(Boolean);
-      if (!items.length) return '';
-      return `<div class="tool-group-title">${g.icon} ${esc(g.title)}</div>
-        <div class="tools-grid">${items.map(toolCard).join('')}</div>`;
-    }).join('');
-
-    // Safety net: a tool registered without being added to GROUPS still
-    // needs somewhere to appear, otherwise it would silently vanish.
-    const leftovers = all.filter(function (t) { return !used[t.id]; });
-    const extra = leftovers.length
-      ? `<div class="tool-group-title">🔩 More</div>
-         <div class="tools-grid">${leftovers.map(toolCard).join('')}</div>`
-      : '';
-
-    return sections + extra;
+    return `<div class="tool-group-title">🧰 Free Services</div>
+      <div class="tools-grid">${all.map(toolCard).join('')}</div>`;
   }
 
   const CALCULATORS = { 'emi-calculator': renderEmi, 'gratuity-calculator': renderGratuity };
