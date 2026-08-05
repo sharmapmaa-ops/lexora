@@ -1007,13 +1007,13 @@ Return NOTHING except the JSON object.`;
   // output ko JSON.parse hi reliably pakadta hai (v14ProcessSingleImage
   // ka apna retry-on-parse-failure), isliye normal path par hamesha
   // sirf EK hi call lagti hai, jaisa HTML tool me hota hai.
-  async function v14VisionCall(model, dataUrl, prompt) {
-    let result = await v14VisionOnce(model, dataUrl, prompt, 16000);
+  async function v14VisionCall(model, dataUrl, prompt, startTokens) {
+    let result = await v14VisionOnce(model, dataUrl, prompt, startTokens || 16000);
     if (result.finishReason === 'length') {
       log('OCR response was truncated by the token limit — retrying with 32000 tokens...', 'warn');
       result = await v14VisionOnce(model, dataUrl, prompt, 32000);
     }
-    return { content: result.content, finishReason: result.finishReason };
+    return { content: result.content, finishReason: result.finishReason, hitTokenLimit: result.finishReason === 'length' };
   }
 
   // ---- CLEAN IMAGE (image-output model, HTML tool ka EXACT prompt) ----
@@ -1443,11 +1443,14 @@ Return NOTHING except the JSON object.`;
     const prompt = v14BuildExtractionPrompt();
 
     let parsed, rawContent, finishReason, lastErr;
-    const MAX_ATTEMPTS = 3;
+    const MAX_ATTEMPTS = 2;
+    const SALVAGE_ACCEPT_THRESHOLD = 20; // enough blocks recovered = don't burn another full attempt
+    let nextStartTokens = 16000; // once an attempt needs 32000, skip the wasted 16000 call on the next one
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const callResult = await v14VisionCall(model, dataUrl, prompt);
+      const callResult = await v14VisionCall(model, dataUrl, prompt, nextStartTokens);
       rawContent = callResult.content;
       finishReason = callResult.finishReason;
+      if (callResult.hitTokenLimit) nextStartTokens = 32000;
       const cleaned = v14CleanJsonResponse(rawContent);
 
       try {
@@ -1466,18 +1469,28 @@ Return NOTHING except the JSON object.`;
           ? parseErr.message
           : `JSON parse failed (${cleaned.length} chars, finish_reason="${finishReason}", ${looksTruncated ? 'response looks truncated — end: "...' + tail + '"' : 'JSON is malformed'})`;
         lastErr = new Error(detail);
+
+        // Try to salvage individually-valid blocks from THIS attempt's
+        // response before deciding whether another full attempt is even
+        // worth the extra time - if most of the page already came
+        // through, burning another attempt just to maybe do slightly
+        // better isn't worth the wait.
+        const salvaged = v14SalvagePartialTextBlocks(cleaned);
+        if (salvaged.length >= SALVAGE_ACCEPT_THRESHOLD) {
+          log('P' + pageNum + ': JSON invalid (' + detail + ') but recovered ' + salvaged.length + ' text block(s) from this response - using that instead of retrying.', 'warn');
+          parsed = { text_blocks: salvaged };
+          lastErr = null;
+          break;
+        }
+
         if (attempt < MAX_ATTEMPTS) {
           log('P' + pageNum + ': OCR JSON invalid (' + detail + ') — retrying with a fresh attempt (' + (attempt + 1) + '/' + MAX_ATTEMPTS + ')...', 'warn');
-        } else {
-          // Last attempt's response still didn't parse as a whole - before
-          // giving up on the page entirely, see if most of the individual
-          // blocks are still salvageable on their own.
-          const salvaged = v14SalvagePartialTextBlocks(cleaned);
-          if (salvaged.length) {
-            log('P' + pageNum + ': full JSON still malformed after ' + MAX_ATTEMPTS + ' attempts, but recovered ' + salvaged.length + ' text block(s) from the partial response.', 'warn');
-            parsed = { text_blocks: salvaged };
-            lastErr = null;
-          }
+        } else if (salvaged.length) {
+          // Last attempt, and salvage recovered SOMETHING even if below
+          // the threshold - still far better than losing the page.
+          log('P' + pageNum + ': full JSON still malformed after ' + MAX_ATTEMPTS + ' attempts, but recovered ' + salvaged.length + ' text block(s) from the partial response.', 'warn');
+          parsed = { text_blocks: salvaged };
+          lastErr = null;
         }
       }
     }
