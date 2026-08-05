@@ -2162,6 +2162,7 @@ Return ONLY this JSON shape, nothing else:
         // same reliable approach as Text-based mode. The old AI clean-
         // image call was verified to leave the original text fully intact
         // on dense pages, and it cost an extra API call per page.
+        emit({ type: 'page_start', page: pageNum, totalPages: images.length });
         const result = await v14ProcessSingleImage(model, img.dataUrl, img.width, img.height, pageNum, sharedStartTokens);
         if (result.startTokensNeeded > sharedStartTokens) sharedStartTokens = result.startTokensNeeded;
         let currentJson = result.blocks;

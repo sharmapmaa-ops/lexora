@@ -29,10 +29,12 @@
 
   function log(activity, status) {
     const d = new Date(), p = (n) => String(n).padStart(2, '0');
-    STATE.log.unshift({
+    const entry = {
       time: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`,
       activity: activity, status: status || 'Info'
-    });
+    };
+    STATE.log.unshift(entry);
+    return entry;
   }
 
   function setStatus(msg, kind) {
@@ -100,6 +102,7 @@
       rerender();
 
       let charged = 0, pagesDone = 0, jsonCalls = 0, imageCalls = 0;
+      let liveEntry = null;
       try {
         // Per-page rows come from the pipeline's structured events, same
         // as Translation - but billing is now FULL-FILE: pages only
@@ -121,11 +124,25 @@
               rerender();
               return;
             }
+            if (ev.type === 'page_start') {
+              // Live row: shows "In Progress" for as long as the actual
+              // vision API call is in flight, then gets overwritten by
+              // the real result below - not a separate permanent entry.
+              liveEntry = log(`${label} > Page(${ev.page}/${ev.totalPages}) > Extracting text...`, 'Processing');
+              rerender();
+              return;
+            }
             if (ev.type !== 'page') return;
             jsonCalls += ev.jsonCalls;
             imageCalls += ev.imageCalls;
             const lbl = `Page(${ev.page}/${ev.totalPages})`;
-            log(`${label} > ${lbl} > API Call(s) > JSON=${ev.jsonCalls}, IMAGE=${ev.imageCalls}`, 'Success');
+            if (liveEntry) {
+              liveEntry.activity = `${label} > ${lbl} > API Call(s) > JSON=${ev.jsonCalls}, IMAGE=${ev.imageCalls}`;
+              liveEntry.status = 'Success';
+              liveEntry = null;
+            } else {
+              log(`${label} > ${lbl} > API Call(s) > JSON=${ev.jsonCalls}, IMAGE=${ev.imageCalls}`, 'Success');
+            }
             if (ev.ok) {
               pagesDone++;
               if (!perDocument) charged += rate;

@@ -1302,6 +1302,12 @@
         .activity-list .activity-result.processing {
             color: #e67e22;
             background: rgba(230,126,34,0.08);
+            animation: lexora-live-pulse 1.4s ease-in-out infinite;
+        }
+
+        @keyframes lexora-live-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.55; }
         }
 
         .activity-list .activity-result.pending {
@@ -6056,22 +6062,44 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
 
 /* Amount chhota, Description bada - Payment section feedback */
 .balance-form-row .balance-amount-group {
-    flex: 0.5;
-    min-width: 90px;
+    flex: 0 0 120px;
+    width: 120px;
+    min-width: 120px;
+}
+
+.balance-form-row .balance-amount-group input {
+    width: 100%;
+    box-sizing: border-box;
+    padding-left: 12px;
+    padding-right: 8px;
+    font-size: 0.88rem;
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
+.balance-form-row .balance-amount-group input::-webkit-outer-spin-button,
+.balance-form-row .balance-amount-group input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
 }
 
 .balance-form-row .balance-description-group {
-    flex: 3;
-    min-width: 200px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.balance-form-row .balance-description-group input {
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .balance-form-row .balance-add-submit {
     height: 42px;
     white-space: nowrap;
-    padding-left: 16px;
-    padding-right: 16px;
+    padding-left: 24px;
+    padding-right: 24px;
     font-size: 0.85rem;
     flex: 0 0 auto;
+    width: auto;
 }
 
 /* Secure Checkout - ab inline panel nahi, ek popup modal hai. Backdrop

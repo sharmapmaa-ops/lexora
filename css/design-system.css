@@ -719,6 +719,14 @@ body, input, select, textarea, button {
 .balance-add-card .form-group label { display: block; margin-bottom: 6px; font-weight: 600; color: var(--ds-ink); }
 .balance-add-card .form-group input { width: 100%; padding: 12px 14px; font-size: .92rem; }
 
+/* Item 1,3 - these two need to win over the generic rule above
+   (design-system.css loads last, so this is the rule that actually
+   applies) - Amount gets tighter padding/font-size so its placeholder
+   never clips at 120px, and the Add button sizes to its own content
+   instead of stretching. */
+.balance-form-row .balance-amount-group input { padding: 12px 8px 12px 12px; font-size: .88rem; }
+.balance-form-row .balance-add-submit { width: auto; flex: 0 0 auto; padding-left: 24px; padding-right: 24px; }
+
 .balance-quick-row { gap: 10px; margin: 0 0 16px; }
 
 .balance-quick-chip {
