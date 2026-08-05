@@ -3768,23 +3768,14 @@
             }
 
             function renderHistoryRows(tbody, list, includeCheckbox) {
-                const colCount = includeCheckbox ? 11 : 10;
+                const colCount = includeCheckbox ? 10 : 9;
                 if (list.length === 0) {
                     tbody.innerHTML =
                         `<tr><td colspan="${colCount}" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions found.</td></tr>`;
                     return;
                 }
                 tbody.innerHTML = '';
-                // Running balance reads chronologically (oldest first), so
-                // compute it in that order, then display newest-first like
-                // the rest of this table always has.
-                const chronological = [...list].sort((a, b) => new Date(a.date + ' ' + (a.time || '')) - new Date(b.date + ' ' + (b.time || '')));
-                let running = 0;
-                const withBalance = chronological.map(t => {
-                    running += (Number(t.credit) || 0) - (Number(t.debit) || 0);
-                    return Object.assign({}, t, { _runningBalance: running });
-                });
-                const sortedHistory = withBalance.slice().reverse();
+                const sortedHistory = [...list].sort((a, b) => new Date(b.date + ' ' + (b.time || '')) - new Date(a.date + ' ' + (a.time || '')));
                 sortedHistory.forEach((transaction) => {
                     const tr = document.createElement('tr');
                     // Item 3 - a balance-add sitting in pending_approval (or
@@ -3826,7 +3817,6 @@
                         <td>${descriptionText}</td>
                         <td class="${isCredit ? 'credit' : 'debit'}" style="text-align:right;font-weight:600;">${amountText}</td>
                         <td>${txnStatusPill(transaction.status)}</td>
-                        <td style="text-align:right;">${formatMoney(transaction._runningBalance)}</td>
                         <td>${escapeHtml(transaction.userId || '')}</td>
                     `;
                     tbody.appendChild(tr);
@@ -3941,19 +3931,16 @@
                     showWarning('"From" date cannot be after "To" date.');
                     return;
                 }
-                const tbody = document.getElementById('historyTableBody');
-                const filtered = getFilteredHistory();
-                renderHistoryRows(tbody, filtered, true);
-                updateSummary(filtered);
+                renderPaymentHistory();
             };
 
             window.clearHistoryFilter = function() {
                 document.getElementById('historyFromDate').value = '';
                 document.getElementById('historyToDate').value = '';
-                const tbody = document.getElementById('historyTableBody');
-                const filtered = getFilteredHistory();
-                renderHistoryRows(tbody, filtered, true);
-                updateSummary(filtered);
+                const userFilterInput = document.getElementById('historyUserFilter');
+                if (userFilterInput) userFilterInput.value = '';
+                historyPage = 1;
+                renderPaymentHistory();
             };
 
             // Item 3 - "Download" ab Excel nahi, ek PDF invoice deta hai
@@ -4078,7 +4065,6 @@
                                             <th>Description</th>
                                             <th style="text-align:right;">Amount (\u20b9)</th>
                                             <th>Status</th>
-                                            <th style="text-align:right;">Balance (\u20b9)</th>
                                             <th>User ID</th>
                                         </tr>
                                     </thead>
@@ -4117,11 +4103,11 @@
                         <div class="balance-form-row">
                             <div class="form-group balance-amount-group">
                                 <label>Amount (\u20b9)</label>
-                                <input type="number" id="balanceAmount" placeholder="Enter amount" min="1" step="1" oninput="syncPayPanelAmount()" />
+                                <input type="number" id="balanceAmount" placeholder="Amount" min="1" step="1" oninput="syncPayPanelAmount()" />
                             </div>
                             <div class="form-group balance-description-group">
                                 <label>Description</label>
-                                <input type="text" id="balanceDescription" placeholder="Enter description" />
+                                <input type="text" id="balanceDescription" placeholder="Description" />
                             </div>
                             <button class="add-btn balance-add-submit" onclick="addBalance()">+ Add Balance</button>
                         </div>
@@ -10619,7 +10605,6 @@
                                                 <th>Description</th>
                                                 <th style="text-align:right;">Amount (\u20b9)</th>
                                                 <th>Status</th>
-                                                <th style="text-align:right;">Balance (\u20b9)</th>
                                                 <th>User ID</th>
                                             </tr>
                                         </thead>
@@ -10805,31 +10790,41 @@
                         return `
                         <div class="payment-top-row">
                             <div class="payment-balance-summary" id="balanceGrid">
-                                <div class="payment-balance-item is-credit">
-                                    <span class="payment-balance-icon">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5.5" width="19" height="13" rx="3"/><path d="M2.5 10h19"/></svg>
+                                <div class="payment-balance-head">
+                                    <span class="payment-balance-head-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2.5"/><path d="M16 7V5.5a2.5 2.5 0 0 0-2.5-2.5h-3A2.5 2.5 0 0 0 8 5.5V7"/></svg>
                                     </span>
-                                    <div>
-                                        <div class="payment-balance-value" id="totalCreditBalance">${currencySymbol()}0.00</div>
+                                    <div class="payment-balance-head-text">
+                                        <div class="payment-balance-head-title">Account Overview</div>
+                                        <div class="payment-balance-head-sub">Summary of your transactions</div>
+                                    </div>
+                                    <span class="payment-balance-head-menu">
+                                        <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
+                                    </span>
+                                </div>
+                                <div class="payment-balance-row">
+                                    <div class="payment-balance-item is-credit">
+                                        <span class="payment-balance-icon">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+                                        </span>
                                         <div class="payment-balance-label">Total Credit</div>
+                                        <div class="payment-balance-value" id="totalCreditBalance">${currencySymbol()}0.00</div>
                                     </div>
-                                </div>
-                                <div class="payment-balance-item is-debit">
-                                    <span class="payment-balance-icon">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5.5" width="19" height="13" rx="3"/><path d="M2.5 10h19"/></svg>
-                                    </span>
-                                    <div>
-                                        <div class="payment-balance-value" id="totalDebitBalance">${currencySymbol()}0.00</div>
-                                        <div class="payment-balance-label">Total Debit</div>
-                                    </div>
-                                </div>
-                                <div class="payment-balance-item is-current">
-                                    <span class="payment-balance-icon">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V9l8-6 8 6v12"/><path d="M9 21v-7h6v7"/></svg>
-                                    </span>
-                                    <div>
-                                        <div class="payment-balance-value" id="currentBalanceDisplay">${currencySymbol()}0.00</div>
+                                    <div class="payment-balance-divider"></div>
+                                    <div class="payment-balance-item is-current">
+                                        <span class="payment-balance-icon">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V10l8-6 8 6v11"/><path d="M9 21v-6h6v6"/></svg>
+                                        </span>
                                         <div class="payment-balance-label">Current Balance</div>
+                                        <div class="payment-balance-value" id="currentBalanceDisplay">${currencySymbol()}0.00</div>
+                                    </div>
+                                    <div class="payment-balance-divider"></div>
+                                    <div class="payment-balance-item is-debit">
+                                        <span class="payment-balance-icon">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+                                        </span>
+                                        <div class="payment-balance-label">Total Debit</div>
+                                        <div class="payment-balance-value" id="totalDebitBalance">${currencySymbol()}0.00</div>
                                     </div>
                                 </div>
                             </div>
@@ -11121,11 +11116,12 @@
                                 </div>
 
                                 <div class="contact-right">
-                                    <div class="company-map-card">
+                                    <div class="company-map-card ${(!mapEmbedSrc && c.mapFallbackImage) ? 'is-image-only' : ''}">
+                                        ${(!mapEmbedSrc && c.mapFallbackImage) ? '' : `
                                         <div class="ds-card-head">
                                             <span class="ds-card-icon is-filled">${svg('<path d="M9 4 3 6.5v14L9 18l6 2.5 6-2.5v-14L15 6.5z"/><path d="M9 4v14M15 6.5v14"/>')}</span>
                                             <div><h3 data-iconified="1">Find Us</h3></div>
-                                        </div>
+                                        </div>`}
                                         ${mapEmbedSrc ? `
                                             <div class="contact-map-wrap">
                                                 <iframe src="${mapEmbedSrc}" loading="lazy" referrerpolicy="no-referrer-when-downgrade" title="Map"></iframe>

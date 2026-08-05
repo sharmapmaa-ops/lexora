@@ -739,11 +739,11 @@ body, input, select, textarea, button {
 }
 
 .balance-add-submit {
-    width: 100%;
     justify-content: center;
-    padding: 14px;
+    padding: 14px 18px;
     font-size: .98rem;
     margin-top: 4px;
+    white-space: nowrap;
 }
 
 .balance-approval-note {
@@ -1245,14 +1245,14 @@ body, input, select, textarea, button {
     overflow: visible;
     text-overflow: clip;
 }
-.payment-history-table { table-layout: fixed; width: 100%; min-width: 1330px; }
+.payment-history-table { table-layout: fixed; width: 100%; min-width: 1215px; }
 
 /* Item 7,8,9 - column widths follow the requested priority order:
-   Description largest, Transaction ID large, Date/Balance/User ID
-   medium, Amount/Status/Type/Time fixed, Download/checkbox small.
-   The table's min-width above plus overflow-x:auto on the wrapper
-   (below) means narrow containers scroll horizontally instead of
-   crushing any column below a readable width. */
+   Description largest, Transaction ID large, Date medium, Amount/
+   Status/Type/Time fixed, Download/checkbox small. The table's
+   min-width above plus overflow-x:auto on the wrapper (below) means
+   narrow containers scroll horizontally instead of crushing any
+   column below a readable width. */
 .payment-history-table th:nth-child(1),  .payment-history-table td:nth-child(1)  { width: 36px; }
 .payment-history-table th:nth-child(2),  .payment-history-table td:nth-child(2)  { width: 40px; }
 .payment-history-table th:nth-child(3),  .payment-history-table td:nth-child(3)  { width: 115px; }
@@ -1262,8 +1262,7 @@ body, input, select, textarea, button {
 .payment-history-table th:nth-child(7),  .payment-history-table td:nth-child(7)  { width: 340px; }
 .payment-history-table th:nth-child(8),  .payment-history-table td:nth-child(8)  { width: 100px; }
 .payment-history-table th:nth-child(9),  .payment-history-table td:nth-child(9)  { width: 110px; }
-.payment-history-table th:nth-child(10), .payment-history-table td:nth-child(10) { width: 130px; }
-.payment-history-table th:nth-child(11), .payment-history-table td:nth-child(11) { width: 110px; }
+.payment-history-table th:nth-child(10), .payment-history-table td:nth-child(10) { width: 110px; }
 
 /* Item 1 - the Download header shows a small icon instead of
    truncated text, with a tooltip for clarity. */
@@ -1273,7 +1272,7 @@ body, input, select, textarea, button {
    column, so every column shifts one position earlier - these
    .today-table-specific rules (2 classes = higher specificity, always
    wins regardless of source order) repoint the same widths. */
-.today-table.payment-history-table { min-width: 1309px; }
+.today-table.payment-history-table { min-width: 1179px; }
 .today-table.payment-history-table th:nth-child(1),  .today-table.payment-history-table td:nth-child(1)  { width: 40px; text-align: center; }
 .today-table.payment-history-table th:nth-child(2),  .today-table.payment-history-table td:nth-child(2)  { width: 115px; }
 .today-table.payment-history-table th:nth-child(3),  .today-table.payment-history-table td:nth-child(3)  { width: 64px; }
@@ -1282,8 +1281,7 @@ body, input, select, textarea, button {
 .today-table.payment-history-table th:nth-child(6),  .today-table.payment-history-table td:nth-child(6)  { width: 340px; }
 .today-table.payment-history-table th:nth-child(7),  .today-table.payment-history-table td:nth-child(7)  { width: 100px; }
 .today-table.payment-history-table th:nth-child(8),  .today-table.payment-history-table td:nth-child(8)  { width: 110px; }
-.today-table.payment-history-table th:nth-child(9),  .today-table.payment-history-table td:nth-child(9)  { width: 130px; }
-.today-table.payment-history-table th:nth-child(10), .today-table.payment-history-table td:nth-child(10) { width: 110px; }
+.today-table.payment-history-table th:nth-child(9),  .today-table.payment-history-table td:nth-child(9)  { width: 110px; }
 
 /* Item 6 (old req) - the header and body are separate <table>
    elements (so the header can stay put while only the body scrolls
@@ -2955,6 +2953,9 @@ label { font-size: .76rem; }
 .contact-grid { align-items: stretch; }
 .contact-right { height: 100%; }
 .company-map-card { flex: 1; display: flex; flex-direction: column; }
+.company-map-card.is-image-only { padding: 0; overflow: hidden; }
+.company-map-card.is-image-only .contact-map-wrap { flex: 1; height: 100%; }
+.company-map-card.is-image-only .contact-map-fallback-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .contact-map-wrap { flex: 1; min-height: 180px; }
 .contact-map-wrap iframe { height: 100%; min-height: 180px; }
 
