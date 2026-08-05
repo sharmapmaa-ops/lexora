@@ -3110,7 +3110,7 @@ label { font-size: .76rem; }
 
 .auth-thumb-grid {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 20px;
     align-items: stretch;
     align-content: start;
@@ -3138,7 +3138,7 @@ label { font-size: .76rem; }
 }
 
 .auth-thumb-icon {
-    flex: 0 0 20%;
+    flex: 0 0 30%;
     border-right: 1px solid #E6ECFF;
     background: transparent;
     color: #2563EB;
@@ -3147,7 +3147,7 @@ label { font-size: .76rem; }
     justify-content: center;
     padding: 0;
 }
-.auth-thumb-icon svg { width: 40%; height: 40%; min-width: 32px; min-height: 32px; }
+.auth-thumb-icon svg { width: 55%; height: 55%; min-width: 40px; min-height: 40px; }
 
 .auth-thumb-text { flex: 1; min-width: 0; padding: 16px; }
 
