@@ -3034,11 +3034,16 @@ label { font-size: .76rem; }
 .auth-services-card {
     display: block;
     background: #fff;
-    border: 1px solid var(--lx-line);
-    border-radius: 0.9em;
+    border: none;
+    border-top: 1px solid var(--lx-line);
+    border-radius: 0;
     box-shadow: 0 0.15em 0.75em rgba(11, 21, 51, 0.05);
-    padding: 1.2em 1.3em 1.4em;
-    margin-top: 1.2em;
+    padding: 1.2em 3em 1.4em;
+    margin-top: 0;
+    width: calc(100% + 2 * var(--auth-pad-x));
+    margin-left: calc(-1 * var(--auth-pad-x));
+    margin-right: calc(-1 * var(--auth-pad-x));
+    box-sizing: border-box;
 }
 
 .auth-services-heading {
@@ -3105,63 +3110,70 @@ label { font-size: .76rem; }
 
 .auth-thumb-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 1em;
-    align-items: start;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 20px;
+    align-items: stretch;
     align-content: start;
 }
 
 .auth-thumb-card {
-    border: 1px solid var(--lx-line);
-    border-radius: 0.8em;
-    padding: 1.1em 1.15em;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    border: 1px solid #E6ECFF;
+    border-radius: 12px;
+    padding: 16px;
     background: #fff;
+    box-shadow: 0 2px 8px rgba(11, 21, 51, 0.04);
     transition: 0.15s;
-    height: 117px;
-    overflow: hidden;
     box-sizing: border-box;
+    cursor: pointer;
 }
 
 .auth-thumb-card:hover {
-    border-color: #1257f5;
+    border-color: #2563EB;
     box-shadow: 0 0.4em 1em rgba(11, 21, 51, 0.08);
     transform: translateY(-2px);
 }
 
 .auth-thumb-icon {
-    width: 2.6em;
-    height: 2.6em;
-    border-radius: 0.6em;
+    flex: 0 0 30%;
+    aspect-ratio: 1 / 1;
+    max-width: 52px;
+    border-radius: 10px;
+    background: #F2F6FF;
+    color: #2563EB;
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-bottom: 0.7em;
 }
+.auth-thumb-icon svg { width: 23px; height: 23px; }
 
-.auth-thumb-icon svg { width: 1.4em; height: 1.4em; }
-.auth-thumb-emoji { font-size: 1.4em; line-height: 1; }
+.auth-thumb-text { flex: 1; min-width: 0; }
 
-.auth-thumb-icon.is-paid { background: #e4edfe; color: #1257f5; }
-.auth-thumb-icon.is-free { background: #dcf3e7; color: #15803d; }
-
-/* Item 1 - font size badhaya (title + description dono, purane
-   0.92em/0.82em se ab bade). */
 .auth-thumb-title {
-    font-size: 1.08em;
+    font-size: 15.5px;
     font-weight: 700;
-    color: var(--lx-navy);
-    margin-bottom: 0.35em;
+    color: #0F172A;
+    margin-bottom: 2px;
 }
 
 .auth-thumb-desc {
-    font-size: 0.96em;
-    line-height: 1.45;
-    color: var(--lx-muted);
+    font-size: 13px;
+    line-height: 1.5;
+    color: #64748B;
 }
 
-@media (max-width: 900px) {
-    .auth-thumb-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+@media (max-width: 1100px) {
+    .auth-thumb-grid { grid-template-columns: repeat(3, 1fr); }
 }
+@media (max-width: 700px) {
+    .auth-thumb-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 480px) {
+    .auth-thumb-grid { grid-template-columns: 1fr; }
+}
+.auth-thumb-emoji { font-size: 1.2em; line-height: 1; }
 
 /* =====================================================================
    ROUND 8

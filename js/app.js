@@ -9566,6 +9566,10 @@
                 if (footerEl) {
                     footerEl.textContent = COMPANY_INFO.name;
                 }
+                const footerCopyEl = document.getElementById('footerCopyText');
+                if (footerCopyEl && COMPANY_INFO.copyright) {
+                    footerCopyEl.textContent = COMPANY_INFO.copyright;
+                }
 
                 document.title = COMPANY_INFO.name;
             }
@@ -10215,6 +10219,7 @@
             // kisi id ka icon yahan na ho to label waise ka waisa chalta hai.
             const MENU_ICON_PATHS = {
                 'dashboard':    '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
+                'home':         '<path d="M4 11.5 12 4l8 7.5"/><path d="M6 10v9.5a1 1 0 0 0 1 1h3.5v-6h3v6H17a1 1 0 0 0 1-1V10"/>',
                 'services':     '<path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 1 5.4-5.4l-2.6 2.6"/>',
                 'plans-offers': '<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4"/>',
                 'payment':      '<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19"/>',
@@ -11665,14 +11670,19 @@
                     ['plans', 'Plans & Offers'],
                     ['contact', 'Contact Us'],
                 ];
+                const iconKeyFor = { home: 'home', services: 'services', plans: 'plans-offers', contact: 'contact-us' };
                 return `
-                    <div class="auth-top-nav">
-                        <div class="auth-top-nav-menu">
-                            ${items.map(([id, label]) => `
-                                <a class="auth-top-nav-link ${authActiveSection === id ? 'is-active' : ''}" onclick="setAuthSection('${id}')">${escapeHtml(label)}</a>
-                            `).join('')}
+                    <div class="top-menu-bar auth-top-menu-bar">
+                        <div class="menu-wrapper">
+                            <ul class="menu">
+                                ${items.map(([id, label]) => `
+                                    <li class="menu-item ${authActiveSection === id ? 'active' : ''}">
+                                        <a onclick="setAuthSection('${id}')">${menuIconHtml(iconKeyFor[id])}${escapeHtml(label)}</a>
+                                    </li>
+                                `).join('')}
+                            </ul>
+                            <button class="auth-top-nav-login-btn" onclick="openAuthLoginModal()">Login</button>
                         </div>
-                        <button class="auth-top-nav-login-btn" onclick="openAuthLoginModal()">Login</button>
                     </div>`;
             }
 
@@ -11732,7 +11742,6 @@
             }
 
             window.promptAuthLoginForService = function(label) {
-                showWarning(`Please login to use this service.`);
                 openAuthLoginModal();
             };
 
@@ -11857,10 +11866,12 @@
 
             function authServiceCardHtml(s) {
                 return `
-                    <div class="auth-thumb-card" data-type="${s.type}" onclick="goToServicesWithSearch('${escapeHtml(s.label).replace(/'/g, "\\'")}')" style="cursor:pointer;">
-                        <div class="auth-thumb-icon ${s.type === 'paid' ? 'is-paid' : 'is-free'}">${s.iconHtml}</div>
-                        <div class="auth-thumb-title">${escapeHtml(s.label)}</div>
-                        <div class="auth-thumb-desc">${escapeHtml(s.desc)}</div>
+                    <div class="auth-thumb-card" data-type="${s.type}" onclick="goToServicesWithSearch('${escapeHtml(s.label).replace(/'/g, "\\'")}')">
+                        <div class="auth-thumb-icon">${s.iconHtml}</div>
+                        <div class="auth-thumb-text">
+                            <div class="auth-thumb-title">${escapeHtml(s.label)}</div>
+                            <div class="auth-thumb-desc">${escapeHtml(s.desc)}</div>
+                        </div>
                     </div>`;
             }
 
@@ -12194,7 +12205,7 @@
                         <div class="footer">
                             <div class="footer-inner">
                                 <span class="footer-spacer"></span>
-                                <span class="footer-copy">&copy; ${new Date().getFullYear()} ${escapeHtml(name)}. All rights reserved. | Version 1.0.0</span>
+                                <span class="footer-copy">${escapeHtml((COMPANY_INFO && COMPANY_INFO.copyright) || `\u00a9 ${new Date().getFullYear()} ${name}. All rights reserved. | Version 1.0.0`)}</span>
                                 <span id="authFooterSocial">${social || ''}</span>
                             </div>
                         </div>
@@ -12521,6 +12532,8 @@
                 window.__lexoraAuthToken = token;   // for standalone service modules
                 localStorage.setItem(AUTH_SESSION_KEY, userId);
                 localStorage.setItem(AUTH_TOKEN_KEY, token);
+                authLoginModalOpen = false;
+                document.body.style.overflow = '';
                 document.getElementById('authScreen').style.display = 'none';
                 // appShell reveal happens inside initializeApp(), after the
                 // real company/user name is applied - see boot() note.
@@ -12632,6 +12645,8 @@
                 window.__lexoraAuthToken = null;
                 profileData = null;
                 document.getElementById('appShell').style.display = 'none';
+                authLoginModalOpen = false;
+                document.body.style.overflow = '';
                 authState = { step: 'login', verifyPurpose: null, userId: null, email: null,
                     expiresInMinutes: 4, emailFailed: false, resetCode: null,
                     countdownInterval: null, countdownSecondsLeft: 0 };
@@ -12872,6 +12887,7 @@
             async function boot() {
                 try {
                     COMPANY_INFO = await fetchJSON('/api/data/company');
+                    if (COMPANY_INFO && COMPANY_INFO.name) document.title = COMPANY_INFO.name;
                 } catch (e) { /* auth screen falls back to a default name */ }
 
                 try {
