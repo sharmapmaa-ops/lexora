@@ -12137,7 +12137,14 @@
                 // Home = the same marketing content that used to sit
                 // alongside the login form, just without the form itself -
                 // the login form now only appears in the popup modal.
-                return `<div class="auth-hero-full">${buildAuthLeftPanel()}</div>${buildAuthToolsCard()}`;
+                // If Company > Home Image is set, it becomes this card's
+                // background (same background-size:100% 100% / top-center
+                // / no-repeat treatment as the approved reference design).
+                const homeImage = (COMPANY_INFO && COMPANY_INFO.homeImage) || '';
+                const cardStyle = homeImage
+                    ? ` style="background-image:url('${escapeHtml(homeImage)}');background-size:100% 100%;background-position:top center;background-repeat:no-repeat;"`
+                    : '';
+                return `<div class="auth-hero-full auth-home-card"${cardStyle}>${buildAuthLeftPanel()}</div>${buildAuthToolsCard()}`;
             }
 
             function renderAuthScreen() {
