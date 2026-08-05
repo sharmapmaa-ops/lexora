@@ -3268,11 +3268,12 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send_json(404, {"error": f'Unknown resource "{name}"'})
 
         # "company" branding, "card-layout" (login screen card sizes),
-        # aur "services-catalog" (Paid/Free/Hidden classification) pehle
-        # public static files the (auth screen inhe login se pehle padhta
-        # hai) - Postgres me move hone ke baad bhi same exposure level
-        # rakha hai, koi user data inme nahi hai.
-        if name not in ("company", "card-layout", "services-catalog"):
+        # "services-catalog" (Paid/Free/Hidden classification), and
+        # "plans" (pricing - same for everyone, shown on the pre-login
+        # Plans & Offers section) are public static data the auth screen
+        # reads before login - Postgres me move hone ke baad bhi same
+        # exposure level rakha hai, koi user data inme nahi hai.
+        if name not in ("company", "card-layout", "services-catalog", "plans"):
             try:
                 self._authenticated_user_id()
             except AuthError as err:
