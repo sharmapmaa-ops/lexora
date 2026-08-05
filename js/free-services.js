@@ -568,8 +568,10 @@
     return `
       <div class="tool-card" data-service-search="${esc((t.label + ' ' + (t.desc || '')).toLowerCase())}" onclick="${click}">
         <div class="tool-card-icon">${t.icon || '🔧'}</div>
-        <div class="tool-card-name">${esc(t.label)}</div>
-        <div class="tool-card-desc">${esc(t.desc || '')}</div>
+        <div class="tool-card-text">
+          <div class="tool-card-name">${esc(t.label)}</div>
+          <div class="tool-card-desc">${esc(t.desc || '')}</div>
+        </div>
       </div>`;
   }
 

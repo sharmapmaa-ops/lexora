@@ -3104,37 +3104,56 @@
             user-select: none;
         }
 
-        /* Other Services tool grid - 5 across, unlike .plans-grid which is
-           3 across for the three pricing plans. */
+        /* Other Services tool grid - matches .auth-thumb-grid exactly
+           (4 across, same card shape) so Services and Home look
+           identical. */
         .tools-grid {
             display: grid;
-            grid-template-columns: repeat(5, minmax(0, 1fr));
-            gap: 14px;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 20px;
             margin: 10px 0 0;
             align-items: stretch;
         }
 
         .tool-card {
-            border: 1px solid rgba(0,0,139,0.15);
-            border-radius: 8px;
-            padding: 14px 12px;
-            background: #fff;
-            cursor: pointer;
-            transition: box-shadow .15s, transform .15s, border-color .15s;
             display: flex;
-            flex-direction: column;
-            gap: 6px;
+            align-items: stretch;
+            gap: 0;
+            min-height: 104px;
+            border: 1px solid #E6ECFF;
+            border-radius: 12px;
+            padding: 0;
+            background: #fff;
+            box-shadow: 0 2px 8px rgba(11, 21, 51, 0.04);
+            transition: 0.15s;
+            box-sizing: border-box;
+            cursor: pointer;
+            overflow: hidden;
         }
 
         .tool-card:hover {
-            border-color: #0284c7;
-            box-shadow: 0 4px 14px rgba(2,132,199,0.15);
+            border-color: #2563EB;
+            box-shadow: 0 0.4em 1em rgba(11, 21, 51, 0.08);
             transform: translateY(-2px);
         }
 
-        .tool-card-icon { font-size: 1.6rem; line-height: 1; }
-        .tool-card-name { font-weight: 600; color: #12305c; font-size: 0.92rem; }
-        .tool-card-desc { font-size: 0.76rem; color: rgba(0,0,0,0.55); line-height: 1.35; }
+        .tool-card-icon {
+            flex: 0 0 30%;
+            border-right: 1px solid #E6ECFF;
+            background: transparent;
+            color: #2563EB;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            font-size: 34px;
+            line-height: 1;
+        }
+        .tool-card-icon svg { width: 55%; height: 55%; min-width: 40px; min-height: 40px; }
+
+        .tool-card-text { flex: 1; min-width: 0; padding: 16px; }
+        .tool-card-name { font-weight: 700; color: #0F172A; font-size: 15.5px; margin-bottom: 2px; }
+        .tool-card-desc { font-size: 13px; color: #64748B; line-height: 1.5; }
 
         .tool-group-title {
             font-size: 1rem;

@@ -10707,8 +10707,10 @@
                         ${items.map(t => `
                             <div class="tool-card" data-service-search="${escapeHtml((t.label + ' ' + (t.desc || '')).toLowerCase())}" onclick="${preLogin ? `promptAuthLoginForService('${escapeHtml(t.label)}')` : (t.external ? `FreeServices.open('${t.id}')` : `lexoraNavigate('services','${t.id}')`)}">
                                 <div class="tool-card-icon">${t.icon}</div>
-                                <div class="tool-card-name">${escapeHtml(t.label)}</div>
-                                <div class="tool-card-desc">${escapeHtml(t.desc)}</div>
+                                <div class="tool-card-text">
+                                    <div class="tool-card-name">${escapeHtml(t.label)}</div>
+                                    <div class="tool-card-desc">${escapeHtml(t.desc)}</div>
+                                </div>
                             </div>`).join('')}
                     </div>`;
             }
@@ -12025,15 +12027,23 @@
             // har service apna icon + title + description ke saath, na ki
             // free services ek jodi hui sentence me.
             function buildAuthToolsCard() {
-                const freeGridHtml = (window.FreeServices && FreeServices.render) ? FreeServices.render('other-services') : '';
+                const services = authAllServices();
+                const freeCount = services.filter(s => s.type === 'free').length;
+                const paidCount = services.filter(s => s.type === 'paid').length;
                 return `
-                    <div class="auth-services-card" id="contentBody">
+                    <div class="auth-services-card">
                         <div class="auth-services-heading">
                             <h2>Our Most Popular Tools</h2>
                             <p>Powerful document tools, ready when you need them</p>
                         </div>
-                        ${buildPaidServicesGridHtml(true)}
-                        ${freeGridHtml}
+                        <div class="auth-filter-bar">
+                            <button class="auth-filter-btn active" data-filter="all" onclick="setAuthServiceFilter('all')">All Services <em>${services.length}</em></button>
+                            <button class="auth-filter-btn" data-filter="free" onclick="setAuthServiceFilter('free')">Free Services <em>${freeCount}</em></button>
+                            <button class="auth-filter-btn" data-filter="paid" onclick="setAuthServiceFilter('paid')">Paid Services <em>${paidCount}</em></button>
+                        </div>
+                        <div class="auth-thumb-grid" id="authThumbGrid">
+                            ${services.map(authServiceCardHtml).join('')}
+                        </div>
                     </div>
                 `;
             }
