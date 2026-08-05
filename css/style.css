@@ -44,6 +44,16 @@
             border-bottom: 1px solid rgba(255,255,255,0.08);
         }
 
+        /* Item 3 - true center on the whole header bar (not just the
+           leftover space between logo and avatar, which shifts
+           off-center whenever those two sides differ in width). */
+        .menu {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+        }
+
         .menu-left {
             display: flex;
             align-items: center;
@@ -4089,11 +4099,11 @@
 .auth-top-nav-login-btn {
     margin-left: auto;
     height: 2.6em;
-    padding: 0 1.6em;
+    padding: 0 2.2em;
     border: none;
     border-radius: 999px;
     font-weight: 700;
-    font-size: 0.95em;
+    font-size: .92rem;
     color: #fff;
     background: linear-gradient(135deg, #2f7bf6, #0b48e0);
     cursor: pointer;

@@ -1081,6 +1081,15 @@
                     'No files uploaded yet';
 
                 // Output Template (lease-abstraction) OR Output Language (translation) - shown in Setup card
+                // System config - declared here (before outputFieldHTML)
+                // because Translation's Target Country block references it
+                // - declaring it after outputFieldHTML (as before) threw a
+                // ReferenceError the moment anyone opened Translation,
+                // crashing the whole page to blank.
+                let systemOptions = getSystemConfigs().map(config => `
+                    <option value="${config}" ${config === currentSystemConfig ? 'selected' : ''}>${config}</option>
+                `).join('');
+
                 const outputFieldHTML = isTranslation ? `
                     <div class="setup-group">
                         <div style="display:flex;gap:12px;align-items:flex-start;">
@@ -1133,11 +1142,6 @@
                         <input type="file" id="templateFileInput" style="display:none;" accept=".pdf" onchange="selectTemplateFile(event)" />
                     </div>
                 `;
-
-                // System config
-                let systemOptions = getSystemConfigs().map(config => `
-                    <option value="${config}" ${config === currentSystemConfig ? 'selected' : ''}>${config}</option>
-                `).join('');
 
                 // Mockup me har service page ke neeche ye strip hai.
                 const SERVICE_PERKS = [

@@ -118,7 +118,7 @@ body {
 }
 
 .user-profile:hover { background: rgba(255,255,255,.12); }
-.user-name          { color: #fff; font-weight: 600; font-size: .92rem; }
+.user-name          { color: #fff; font-weight: 600; font-size: .92rem; display: none; }
 
 .user-avatar {
     width: 36px; height: 36px;
@@ -3120,6 +3120,7 @@ label { font-size: .76rem; }
     display: flex;
     align-items: stretch;
     gap: 0;
+    min-height: 104px;
     border: 1px solid #E6ECFF;
     border-radius: 12px;
     padding: 0;
@@ -3147,7 +3148,7 @@ label { font-size: .76rem; }
     justify-content: center;
     padding: 0;
 }
-.auth-thumb-icon svg { width: 55%; height: 55%; min-width: 40px; min-height: 40px; }
+.auth-thumb-icon svg { width: 72%; height: 72%; min-width: 46px; min-height: 46px; }
 
 .auth-thumb-text { flex: 1; min-width: 0; padding: 16px; }
 
