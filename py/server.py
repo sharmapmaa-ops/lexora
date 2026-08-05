@@ -2694,7 +2694,7 @@ def _build_receipt_pdf(company_name, logo_path, user, txn):
         canvas_obj.saveState()
         # Footer card: computer icon + disclaimer + green page badge.
         card_h = 0.59 * inch
-        card_y = 1.85 * inch
+        card_y = 0.35 * inch
         _round_rect_with_shadow(canvas_obj, margin, card_y, width - 2 * margin, card_h, radius=9, fill="#FFFFFF")
         mid_y = card_y + card_h / 2
         _draw_icon_glyph(canvas_obj, "computer", margin + 0.32 * inch, mid_y + 0.04 * inch, 0.24 * inch, colors.HexColor(_TEXT_MUTED))

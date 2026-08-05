@@ -1499,7 +1499,10 @@ Return NOTHING except the JSON object.`;
   // ---- TRANSLATION (single final call, whole document — v14 exact) ----
   // LAST me, ek hi call, saare pages saath — page-boundary-crossing
   // paragraphs ki continuity per-page translation tod deti hai.
-  function v14BuildTranslationPrompt(targetLanguageLabel) {
+  function v14BuildTranslationPrompt(targetLanguageLabel, targetCountry) {
+    const countryInstruction = targetCountry
+      ? `\n\nTARGET COUNTRY SPECIFIED: ${targetCountry}. Use the standard variant of ${targetLanguageLabel} as spoken/written in ${targetCountry} specifically - its spelling conventions, its official/legal terminology, its units and formatting conventions (dates, currency, addresses), and the terms ${targetCountry}'s own administrative/legal system actually uses for each concept. This takes priority over guessing a variant from the source document.`
+      : '';
     return `You are a professional document translator and typesetter.
 
 You will be given the FULL extracted content of a multi-page scanned document, as a flat list of text blocks in reading order (across ALL pages). Each block has: id, page, paragraph_id, order, text (original), width (its textbox's pixel width in the final layout), language, direction.
@@ -1515,7 +1518,7 @@ STEP 2 — TRANSLATE INTO ${targetLanguageLabel}
 Translate the ENTIRE document into ${targetLanguageLabel}, using a tone/register appropriate to the document_type, domain and era_tone you determined (e.g. a certificate needs a formal ceremonial register, a legal document needs precise legal register, an old book needs period-appropriate literary tone, a casual letter needs a conversational tone).
 
 IMPORTANT — PICK THE RIGHT REGIONAL VARIANT OF ${targetLanguageLabel}:
-Most languages have several standard regional variants that differ in spelling, official terminology, and legal/administrative vocabulary (for example a language may have distinct European vs. North/South American vs. South Asian standards). Decide which variant of ${targetLanguageLabel} best fits this document's domain and likely audience, then apply it CONSISTENTLY throughout: its spelling conventions, its standard professional/official terminology, and the terms that variant's own legal or administrative system actually uses for each concept. Also record which variant you chose as "target_variant". If nothing indicates a specific region, use the most widely-understood neutral standard form of ${targetLanguageLabel} and say so.
+Most languages have several standard regional variants that differ in spelling, official terminology, and legal/administrative vocabulary (for example a language may have distinct European vs. North/South American vs. South Asian standards). Decide which variant of ${targetLanguageLabel} best fits this document's domain and likely audience, then apply it CONSISTENTLY throughout: its spelling conventions, its standard professional/official terminology, and the terms that variant's own legal or administrative system actually uses for each concept. Also record which variant you chose as "target_variant". If nothing indicates a specific region, use the most widely-understood neutral standard form of ${targetLanguageLabel} and say so.${countryInstruction}
 
 IMPORTANT — TERMINOLOGY MUST STAY CONSISTENT ACROSS THE WHOLE DOCUMENT:
 Before translating, mentally note the key recurring terms and concepts in the document — legal, financial, technical, or otherwise (e.g. rent, tenant, landlord, terminate, deposit, premises, party, agreement, or whatever else actually recurs in THIS document). For each such term, pick ONE precise ${targetLanguageLabel} equivalent appropriate to the document_type's register, and use that EXACT SAME word every single time that term/concept appears, on every page. Do not vary it with a different synonym from one occurrence to the next - inconsistent terminology changes the meaning of a document like this (especially a legal or technical one), it isn't a stylistic choice.
@@ -1569,7 +1572,8 @@ Return ONLY this JSON shape, nothing else:
       direction: b.direction
     }));
 
-    const prompt = v14BuildTranslationPrompt(targetLanguageLabel) +
+    const targetCountry = window.getSetupPref ? window.getSetupPref('translation', 'targetCountry', '') : '';
+    const prompt = v14BuildTranslationPrompt(targetLanguageLabel, targetCountry) +
       '\n\nINPUT BLOCKS (full document, all pages, reading order):\n' +
       JSON.stringify(compact);
 
