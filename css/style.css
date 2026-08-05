@@ -4075,7 +4075,7 @@
     display: flex;
     align-items: center;
     padding: 1.1em 0;
-    margin-bottom: 1.2em;
+    margin-bottom: 0;
     border-bottom: 1px solid rgba(11,21,51,0.06);
 }
 .auth-top-nav-menu {
@@ -4120,8 +4120,12 @@
 
 .auth-section-body { flex: 1; }
 .auth-hero-full.auth-home-card {
-    width: 100%;
-    border-radius: 20px;
+    width: calc(100% + 2 * var(--auth-pad-x));
+    margin-left: calc(-1 * var(--auth-pad-x));
+    margin-right: calc(-1 * var(--auth-pad-x));
+    margin-top: 0;
+    margin-bottom: 0;
+    border-radius: 0;
     padding: 2.4em 3em 1.8em;
     min-height: 280px;
     box-sizing: border-box;
@@ -4129,12 +4133,12 @@
 
 .auth-hero-full .auth-hero {
     display: block;
-    max-width: 900px;
-    margin: 0 auto;
-    text-align: center;
+    max-width: none;
+    margin: 0;
+    text-align: left;
 }
 .auth-hero-full .auth-stats-row,
-.auth-hero-full .auth-check-grid { justify-content: center; }
+.auth-hero-full .auth-check-grid { justify-content: flex-start; }
 
 /* Login form popup - opens over whichever section is showing, dims and
    blocks interaction with the rest of the page until closed. */

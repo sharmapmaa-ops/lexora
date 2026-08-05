@@ -637,6 +637,8 @@
                 return KNOWN_BROWSER_PROVIDERS[String(name || '').trim().toLowerCase()] || null;
             }
             function getSystemConfigs() {
+                const loggedIn = window.getCurrentUserId && window.getCurrentUserId();
+                if (!loggedIn) return ['Desktop'];
                 const dbNames = (window.SYSTEM_CONFIGS_DB || []).map(s => s.name).filter(Boolean);
                 const combined = SYSTEM_CONFIG_BASE.concat(dbNames);
                 return combined.filter((v, i) => combined.indexOf(v) === i); // de-dupe
@@ -11154,10 +11156,11 @@
                             ['API & Integrations', 'Generate a key under Profile \u203a API Documentation, then call the REST endpoints listed there with a Bearer token.']
                         ];
 
+                        const isLoggedIn = !!(window.getCurrentUserId && window.getCurrentUserId());
                         const quick = [
-                            ['<rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M8.5 9h7M8.5 13h7M8.5 17h4"/>', 'Create Ticket', 'Submit a support request', "handleUserAction('Support')"],
-                            ['<path d="M4 12.5 9 17l11-11"/><path d="M4 6.5h9"/>', 'Track Ticket', 'Check ticket status', "handleUserAction('Support')"],
-                            ['<path d="M9 7 4.5 12 9 17M15 7l4.5 5L15 17"/>', 'API Documentation', 'Explore our API docs', "handleUserAction('API Documentation')"],
+                            ['<rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M8.5 9h7M8.5 13h7M8.5 17h4"/>', 'Create Ticket', 'Submit a support request', isLoggedIn ? "handleUserAction('Support')" : "promptAuthLoginForService('Create Ticket')"],
+                            ['<path d="M4 12.5 9 17l11-11"/><path d="M4 6.5h9"/>', 'Track Ticket', 'Check ticket status', isLoggedIn ? "handleUserAction('Support')" : "promptAuthLoginForService('Track Ticket')"],
+                            ['<path d="M9 7 4.5 12 9 17M15 7l4.5 5L15 17"/>', 'API Documentation', 'Explore our API docs', isLoggedIn ? "handleUserAction('API Documentation')" : "promptAuthLoginForService('API Documentation')"],
                             [ICON.phone, 'Call Us', c.phone || '', c.phone ? `window.open('tel:${String(c.phone).replace(/[^+\d]/g, '')}')` : 'void(0)']
                         ];
 
@@ -11750,11 +11753,13 @@
             window.openAuthLoginModal = function() {
                 authLoginModalOpen = true;
                 authState.step = 'login';
+                document.body.style.overflow = 'hidden';
                 renderAuthScreen();
             };
 
             window.closeAuthLoginModal = function() {
                 authLoginModalOpen = false;
+                document.body.style.overflow = '';
                 renderAuthScreen();
             };
 
@@ -11852,12 +11857,24 @@
 
             function authServiceCardHtml(s) {
                 return `
-                    <div class="auth-thumb-card" data-type="${s.type}">
+                    <div class="auth-thumb-card" data-type="${s.type}" onclick="goToServicesWithSearch('${escapeHtml(s.label).replace(/'/g, "\\'")}')" style="cursor:pointer;">
                         <div class="auth-thumb-icon ${s.type === 'paid' ? 'is-paid' : 'is-free'}">${s.iconHtml}</div>
                         <div class="auth-thumb-title">${escapeHtml(s.label)}</div>
                         <div class="auth-thumb-desc">${escapeHtml(s.desc)}</div>
                     </div>`;
             }
+
+            window.goToServicesWithSearch = function(serviceName) {
+                authActiveSection = 'services';
+                renderAuthScreen();
+                setTimeout(() => {
+                    const input = document.getElementById('servicesSearchInput');
+                    if (input) {
+                        input.value = serviceName;
+                        if (window.filterServicesSearch) filterServicesSearch(serviceName);
+                    }
+                }, 0);
+            };
 
             // Tools card ab .auth-main (do-column grid) ke bahar render hota
             // hai, isliye poori width leta hai - pehle wo left column me
@@ -12869,6 +12886,10 @@
                     window.SERVICES_CATALOG = catalogMap;
                     SERVICES_CATALOG = catalogMap;
                 } catch (e) { /* login page's tools catalogue just falls back to its built-in defaults */ }
+
+                try {
+                    PLANS_DATA = await fetchJSON('/api/data/plans') || [];
+                } catch (e) { /* pre-login Plans & Offers section falls back to nothing shown */ }
 
                 if (await tryHandleOAuthRedirect()) return;
                 if (tryHandleMagicVerifyLink()) return;
