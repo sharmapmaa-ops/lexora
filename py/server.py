@@ -1116,39 +1116,49 @@ MESSAGING_EVENTS = [
 # of the Python source and pasted in (a separate follow-up task from
 # just having the row exist).
 AI_PROMPT_SEED = [
-    # (serviceName, promptNumber, fileLocation) - the file itself (in
-    # the "AI Prompts/" folder at the project root) holds the real
-    # prompt text; this table only points at it. Wired services read
-    # the file this row names, falling back to their own hardcoded
-    # default only if the DB row/file genuinely doesn't exist.
-    ("BAI2", 1, "AI Prompts/bai2-1.txt"),
-    ("BAI2", 2, "AI Prompts/bai2-2.txt"),
-    ("Data Extraction", 1, "AI Prompts/data-extraction-1.txt"),
-    ("Data Extraction", 2, "AI Prompts/data-extraction-2.txt"),
+    # (serviceName, promptNumber, fileLocation, description) - the file
+    # itself (in the "AI Prompts/" folder at the project root) holds the
+    # real prompt text; this table only points at it, plus a
+    # human-readable description of what that specific prompt is for.
+    # Wired services read the file this row names, falling back to
+    # their own hardcoded default only if the DB row/file genuinely
+    # doesn't exist.
+    ("BAI2", 1, "AI Prompts/bai2-1.txt",
+     "Extracts structured transactions (date, description, amount, credit/debit, balance) from bank-statement text already read from the PDF/image. Runs once per statement."),
+    ("BAI2", 2, "AI Prompts/bai2-2.txt",
+     "Transcribes a bank-statement page image to plain text when the file is an image (not a text PDF). Runs once per page, before prompt #1 parses the transcribed text."),
+    ("Data Extraction", 1, "AI Prompts/data-extraction-1.txt",
+     "Intro/framing instructions for the custom-fields extraction call - sets the overall task (extract only the fields the user defined, exactly as written in the document)."),
+    ("Data Extraction", 2, "AI Prompts/data-extraction-2.txt",
+     "Strict extraction rules appended after the field list - governs exact-verbatim copying, never guessing missing values, and how to handle a field repeated more than once."),
     # Content Writing / Humanize use {placeholder} tokens for their
     # dynamic parts (tone/type/length/topic, or the input text) -
     # replaced in JS after reading the file. Edit the wording freely,
     # just keep the {placeholder} tokens themselves intact.
-    ("Content Writing Tool", 1, "AI Prompts/content-writing-tool-1.txt"),
-    ("Humanize Document Tool", 1, "AI Prompts/humanize-document-tool-1.txt"),
-    # Not yet wired to actually read from this table - all the real
-    # current prompt text has been extracted into these files though,
-    # so an Admin can review/edit them ahead of that wiring landing.
-    # Translation has 4 distinct prompts across its pipeline:
-    #  1 = line-by-line OCR extraction (extractApiPage)
-    #  2 = region-grounding OCR extraction (v14BuildExtractionPrompt)
-    #  3 = translation + typesetting (v14BuildTranslationPrompt)
-    #  4 = line-by-line translation of already-extracted OCR text
-    ("Translation", 1, "AI Prompts/translation-1.txt"),
-    ("Translation", 2, "AI Prompts/translation-2.txt"),
-    ("Translation", 3, "AI Prompts/translation-3.txt"),
-    ("Translation", 4, "AI Prompts/translation-4.txt"),
-    # OCR has no prompt of its own - it calls Translation's exact same
-    # pipeline with the target language locked to "original" (see the
-    # note inside ocr-1.txt). Editing translation-1/2.txt affects OCR
-    # too.
-    ("OCR", 1, "AI Prompts/ocr-1.txt"),
-    ("Lease Abstraction", 1, "AI Prompts/lease-abstraction-1.txt"),
+    ("Content Writing Tool", 1, "AI Prompts/content-writing-tool-1.txt",
+     "Generates blog posts / captions / product descriptions from a topic. Uses {tone}, {type}, {length}, {topic} placeholders filled in from the tool's own form fields."),
+    ("Humanize Document Tool", 1, "AI Prompts/humanize-document-tool-1.txt",
+     "Rewrites stiff or AI-sounding text to read more naturally, keeping the same meaning and length. Uses an {input} placeholder filled in with the pasted text."),
+    # Translation has 4 distinct prompts across its pipeline. OCR now
+    # has its OWN separate prompts (1 = extraction, 2 = image cleaning)
+    # instead of silently reusing Translation's - editing one no longer
+    # affects the other, even though both still run through the same
+    # underlying pipeline code (buildHybridDocxBlob/buildOfflineDocxBlob
+    # in js/translation-offline.js).
+    ("Translation", 1, "AI Prompts/translation-1.txt",
+     "(Reserved for a future line-by-line OCR extraction mode - not currently wired to any live code path.)"),
+    ("Translation", 2, "AI Prompts/translation-2.txt",
+     "(Reserved for a future alternate region-grounding OCR mode - not currently wired to any live code path.)"),
+    ("Translation", 3, "AI Prompts/translation-3.txt",
+     "The main translate+typeset call: translates every extracted text block into the target language/country/regional variant while preserving layout, numbers, names, and legal/technical terminology (includes the domain-expert glossary)."),
+    ("Translation", 4, "AI Prompts/translation-4.txt",
+     "(Reserved for a future line-by-line translation mode on already-extracted OCR text - not currently wired to any live code path.)"),
+    ("OCR", 1, "AI Prompts/ocr-1.txt",
+     "Reads every visible line of text (any language, handwritten or printed, including text inside logos/seals/stamps) from a page image and returns each line's exact text, position, and language. This is what actually runs for BOTH OCR and Translation, since Translation extracts text the same way before translating it."),
+    ("OCR", 2, "AI Prompts/ocr-2.txt",
+     "Removes all readable text from a page image while keeping logos, seals, photos, and background graphics untouched - used to produce the clean background behind the repositioned text in the output document."),
+    ("Lease Abstraction", 1, "AI Prompts/lease-abstraction-1.txt",
+     "Extracts the ~33 standard lease clauses/fields (parties, dates, rent, renewal terms, etc.) from a lease document's text into the structured JSON the app displays and exports."),
 ]
 
 
@@ -6271,21 +6281,27 @@ class Handler(SimpleHTTPRequestHandler):
         # alone.
         rows = db.list_documents("ai-prompts")
         existing_keys = {(r.get("serviceName"), str(r.get("promptNumber"))) for r in rows}
+        existing_by_key = {(r.get("serviceName"), str(r.get("promptNumber"))): r for r in rows}
         added = 0
-        for service_name, prompt_number, file_location in AI_PROMPT_SEED:
+        backfilled = 0
+        for service_name, prompt_number, file_location, description in AI_PROMPT_SEED:
             key = (service_name, str(prompt_number))
             if key in existing_keys:
+                existing_row = existing_by_key[key]
+                if not (existing_row.get("description") or "").strip():
+                    existing_row["description"] = description
+                    backfilled += 1
                 continue
             slug = re.sub(r"[^a-z0-9]+", "-", service_name.lower()).strip("-")
             rows.append({
                 "id": f"{slug}-{prompt_number}",
                 "serviceName": service_name, "promptNumber": prompt_number,
-                "fileLocation": file_location,
+                "fileLocation": file_location, "description": description,
             })
             added += 1
-        if added:
+        if added or backfilled:
             db.replace_documents("ai-prompts", rows)
-        summary.append(f"AI Prompts: added {added} placeholder row(s)")
+        summary.append(f"AI Prompts: added {added} placeholder row(s), backfilled {backfilled} description(s)")
 
         return 200, {"ok": True, "summary": summary}
 

@@ -824,123 +824,9 @@ STRICT RULES:
   // ====================================================================
 
   function v14BuildExtractionPrompt() {
-    return `You are a high-precision OCR and object-detection engine specialized in text-region grounding.
-Do NOT behave like a general assistant.
-Do NOT explain anything.
-Do NOT summarize.
-Do NOT translate.
-Do NOT correct spelling.
-Do NOT infer missing characters.
-Do NOT hallucinate.
-
-Your task is to detect EVERY visible line of text in the attached image, including:
-• Printed text
-• Handwritten text
-• Any language (English, Arabic, or any other)
-• Numbers, symbols, dates
-• Small labels, stamps, signatures (only readable text)
-• Watermarks if readable
-• Text inside decorative logos, seals, badges and ribbons (treat exactly like normal text, give it its own box, never skip it because it's decorative)
-
-Ignore purely graphical elements that contain no text.
-For every VISUAL LINE OF TEXT output one JSON object.
-Never merge two visual lines into one box.
-Never split one visual line into two boxes.
-If only part of a line is readable, output ONLY the readable characters — never guess the missing part.
-Maintain the document's natural top-to-bottom reading order.
-
-BOUNDING BOX FORMAT — READ CAREFULLY, THIS IS THE MOST IMPORTANT PART
-
-Do NOT output raw pixel coordinates. Large absolute pixel numbers are unreliable for you to estimate accurately, especially for small or closely-spaced text.
-
-Instead, output every bounding box as "box_2d": [ymin, xmin, ymax, xmax] — four integers on a NORMALIZED 0 TO 1000 SCALE, relative to the image's own full width and height:
-- 0 = the very top edge (for y) or very left edge (for x) of the image
-- 1000 = the very bottom edge (for y) or very right edge (for x) of the image
-- This is a proportion of the image, NOT a pixel count, and it does NOT change based on the image's actual resolution.
-
-The box must tightly enclose ALL visible glyphs of that specific line only — including ascenders, descenders, dots, accents and diacritics (for Arabic: letters like ط ظ أ, dots below like ي ب, and any tashkeel marks) — but must NOT include neighboring lines above or below it. Two different visual lines must always get two boxes with different, non-overlapping [ymin,ymax] ranges (a small 1-2 unit touch at the boundary is fine, but the boxes must not substantially overlap into each other's line).
-
-Look very carefully at each line's exact top and bottom edge before deciding ymin/ymax — this is especially important in tightly-packed areas like signature blocks, footers, or multi-line paragraphs where several short lines sit close together. Each line gets its own tight, separate box.
-
-READING ORDER
-
-Sort all detected text by:
-1. top coordinate (ascending)
-2. left coordinate for LTR
-3. right coordinate for RTL
-Return the final JSON in natural reading order.
-
-CONFIDENCE
-
-Confidence must represent the OCR certainty for each individual line.
-Do NOT assign identical confidence values to all lines. Estimate confidence independently for every text line.
-
-For each detected line return exactly this object shape:
-{
-  "paragraph_id":"p4",
-  "reading_order":6,
-  "line_index":2,
-  "text":"راجين لها كل التوفيق والسداد",
-  "language":"ar",
-  "direction":"rtl",
-  "box_2d":[852,256,878,556],
-  "font_family":"unknown",
-  "style":"normal",
-  "color":"#000000",
-  "align":"center",
-  "is_handwritten":false,
-  "rotation":0,
-  "confidence":0.96
-}
-
-Field definitions
-paragraph_id: same paragraph shares the same id (p1,p2,p3...)
-reading_order: 1-based index of this line's position in the final natural reading order across the whole document.
-line_index: 1-based line number inside the paragraph.
-text: exact OCR result. Preserve original spelling, punctuation, spaces. Never normalize Unicode. Never translate. Never complete missing words.
-language: best-guess ISO-like code for the line's language (e.g. "ar", "en"), or "unknown" if unsure.
-direction: "rtl" or "ltr" based on the script of this line.
-box_2d: [ymin, xmin, ymax, xmax], four integers from 0 to 1000, normalized to this image's own dimensions as described above. This is the ONLY geometry field — do not also output x/y/width/height/pixel values.
-font_family: closest estimate, or "unknown" if unsure.
-color: dominant visible text color as hex RGB.
-style: one of normal / bold / italic / bold italic.
-align: visible paragraph alignment of this line, one of left / right / center / justify.
-is_handwritten: true if this line is handwritten, false if printed.
-rotation: clockwise text rotation in degrees, usually 0, 90, 180 or 270.
-confidence: decimal value between 0.00 and 1.00 representing OCR certainty, estimated independently per line — do not reuse the same value for every line.
-
-Rules
-• box_2d values MUST be integers between 0 and 1000 inclusive.
-• Never output raw/absolute pixel coordinates.
-• Never crop, deskew, enhance or denoise the image.
-• Never hallucinate missing text.
-• Preserve reading order.
-• Output valid JSON only.
-
-FINAL VALIDATION
-
-Before returning the JSON, verify EVERY object:
-0 <= xmin < xmax <= 1000
-0 <= ymin < ymax <= 1000
-This box's [ymin,ymax] range does not substantially overlap any other line's [ymin,ymax] range at the same horizontal position.
-
-Reject and recompute any object that fails validation.
-Return JSON only after ALL objects pass validation.
-
-ALSO REPORT THE PAGE BACKGROUND TYPE:
-In addition to text_blocks, include a top-level boolean field "has_visual_background" describing the page as a whole:
-- true if the page has ANY meaningful non-text visual content that should be preserved - a logo, emblem, stamp/seal, photograph, drawing, decorative border or frame, watermark graphic, a colored or textured (non-white) background, or handwritten content mixed with the layout.
-- false if the page is essentially plain text on a plain, near-white background with no such graphical elements worth preserving (a typical typed document page).
-Judge the page overall, not individual lines.
-
-Return exactly:
-{
-  "has_visual_background": true,
-  "text_blocks":[
-      ...
-  ]
-}
-Return NOTHING except the JSON object.`;
+    const prompt = window.getAiPrompt ? window.getAiPrompt('OCR', 1) : null;
+    if (!prompt) throw new Error('AI Prompt for OCR (prompt #1, text extraction) is not configured - add it in Admin > AI Prompts, or run migration first.');
+    return prompt;
   }
 
   function v14CleanJsonResponse(raw) {
@@ -1020,7 +906,11 @@ Return NOTHING except the JSON object.`;
   // AI-based clean, used ONLY for pages the OCR flags as having a real
   // visual background (logo/seal/photo/texture) worth preserving. An
   // image-output model removes the text while keeping the graphics.
-  const V14_CLEAN_IMAGE_PROMPT = 'Generate a clean version of this image without changing its original width and height. Completely remove all readable text, printed words, handwritten signatures, and any linguistic characters from the image, as if they never existed. Do not alter any non-readable elements like logos, seals, stamps, photographs, drawings, lines, borders, patterns, textures, colors, or background designs - preserve all of those exactly. The output must have the exact same dimensions as the input and no new text should be added.';
+  function v14GetCleanImagePrompt() {
+    const prompt = window.getAiPrompt ? window.getAiPrompt('OCR', 2) : null;
+    if (!prompt) throw new Error('AI Prompt for OCR (prompt #2, image cleaning) is not configured - add it in Admin > AI Prompts, or run migration first.');
+    return prompt;
+  }
 
   // A model can silently return an unchanged image on hard pages. Cheap
   // downsampled diff so the caller can treat that as failure and fall
@@ -1065,7 +955,7 @@ Return NOTHING except the JSON object.`;
       messages: [{
         role: 'user',
         content: [
-          { type: 'text', text: V14_CLEAN_IMAGE_PROMPT },
+          { type: 'text', text: v14GetCleanImagePrompt() },
           { type: 'image_url', image_url: { url: dataUrl } }
         ]
       }]
@@ -1140,6 +1030,84 @@ Return NOTHING except the JSON object.`;
   }
 
   // ---- REPAIR (v14 exact) ----
+  // ---- Pixel-level box refinement (ink detection) ----
+  // Vision-LLM bounding boxes are a well-known weak point: the model is
+  // good at READING text but not at precisely LOCALIZING it pixel-by-
+  // pixel, especially in a dense table with many small adjacent cells.
+  // This scans the actual rendered page image for real dark/ink pixels
+  // within and slightly around the model's rough box, and tightens the
+  // box to the true ink boundary - the same principle used successfully
+  // in this project's earlier PDF-to-Word tool ("geometry must come from
+  // pixel measurement, not the model's guess").
+  function v14GetImageDataFromDataUrl(dataUrl) {
+    return new Promise(function (resolve, reject) {
+      const img = new Image();
+      img.onload = function () {
+        try {
+          const c = document.createElement('canvas');
+          c.width = img.naturalWidth;
+          c.height = img.naturalHeight;
+          const ctx = c.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          resolve({ imageData: ctx.getImageData(0, 0, c.width, c.height), width: c.width, height: c.height });
+        } catch (e) { reject(e); }
+      };
+      img.onerror = function () { reject(new Error('Could not load page image for box refinement.')); };
+      img.src = dataUrl;
+    });
+  }
+
+  function v14RefineBoxesWithInk(pixelInfo, blocks) {
+    const { imageData, width: imgW, height: imgH } = pixelInfo;
+    const data = imageData.data;
+    const DARK_THRESHOLD = 150; // luminance below this counts as "ink"
+    const MARGIN = 6; // px of search room around the model's rough box
+
+    function isInk(px, py) {
+      if (px < 0 || py < 0 || px >= imgW || py >= imgH) return false;
+      const idx = (py * imgW + px) * 4;
+      const lum = data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114;
+      return lum < DARK_THRESHOLD;
+    }
+
+    return blocks.map(function (b) {
+      const searchX0 = Math.max(0, Math.round(b.x - MARGIN));
+      const searchY0 = Math.max(0, Math.round(b.y - MARGIN));
+      const searchX1 = Math.min(imgW - 1, Math.round(b.x + b.w + MARGIN));
+      const searchY1 = Math.min(imgH - 1, Math.round(b.y + b.h + MARGIN));
+      if (searchX1 <= searchX0 || searchY1 <= searchY0) return b;
+
+      let minX = null, minY = null, maxX = null, maxY = null;
+      // Sample every pixel in the (small) search window - these boxes are
+      // only tens of pixels across, so this stays cheap.
+      for (let py = searchY0; py <= searchY1; py++) {
+        for (let px = searchX0; px <= searchX1; px++) {
+          if (isInk(px, py)) {
+            if (minX === null || px < minX) minX = px;
+            if (minY === null || py < minY) minY = py;
+            if (maxX === null || px > maxX) maxX = px;
+            if (maxY === null || py > maxY) maxY = py;
+          }
+        }
+      }
+      // No ink found nearby - keep the model's original box rather than
+      // collapsing it (could be a genuinely blank field, or ink outside
+      // the search margin for an unusually large text block).
+      if (minX === null) return b;
+
+      const refinedW = Math.max(1, maxX - minX + 1);
+      const refinedH = Math.max(1, maxY - minY + 1);
+      // Sanity check: if the refined box is wildly smaller than the
+      // model's own box (e.g. only caught one stray dark pixel), the
+      // model's box is probably more trustworthy for this one - only
+      // apply the refinement when it's a plausible tightening, not a
+      // collapse.
+      if (refinedW < b.w * 0.3 || refinedH < b.h * 0.3) return b;
+
+      return Object.assign({}, b, { x: minX, y: minY, w: refinedW, h: refinedH });
+    });
+  }
+
   function v14RepairBlocks(blocks, imgW, imgH) {
     const notes = [];
     const repaired = blocks.map((b, i) => {
@@ -1575,7 +1543,17 @@ Return NOTHING except the JSON object.`;
       throw new Error('No readable text was detected in the image.');
     }
 
-    const rep = v14RepairBlocks(filtered, width, height);
+    let refined = filtered;
+    try {
+      const pixelInfo = await v14GetImageDataFromDataUrl(dataUrl);
+      refined = v14RefineBoxesWithInk(pixelInfo, filtered);
+    } catch (e) {
+      // If pixel refinement fails for any reason (canvas/image error),
+      // fall back to the model's own coordinates rather than losing the
+      // page - refinement is a quality improvement, not a hard dependency.
+    }
+
+    const rep = v14RepairBlocks(refined, width, height);
     const deo = v14ResolveOverlaps(rep.blocks, width, height);
     const hasVisualBackground = (parsed.has_visual_background === true);
     return { blocks: deo.blocks, notes: rep.notes.concat(deo.notes), width: width, height: height, hasVisualBackground: hasVisualBackground, startTokensNeeded: nextStartTokens };
