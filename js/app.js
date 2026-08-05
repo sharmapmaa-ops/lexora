@@ -1159,7 +1159,7 @@
                         <div class="service-col">
                             <!-- Left: Upload Card -->
                             <div class="service-card">
-                                <h3 class="card-head-row"><span>📤 Upload File(s)</span><button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','services')">← Back to Services</button></h3>
+                                <h3 class="card-head-row"><span>📤 Upload File(s)</span><button class="process-btn clear-btn card-back-btn" onclick="goBackToServices()">← Back to Services</button></h3>
                                 <div class="card-body">
                                     <div class="drop-zone" id="dropZone" onclick="${processState.running ? 'void(0)' : "document.getElementById('fileInput').click()"}" style="${processState.running ? 'opacity:0.5;pointer-events:none;' : ''}">
                                         <svg class="drop-art" viewBox="0 0 120 78" fill="none" aria-hidden="true">
@@ -10552,7 +10552,7 @@
             // ============================================================
             // 38. CONTENT DATA
             // ============================================================
-            function buildPaidServicesGridHtml() {
+            function buildPaidServicesGridHtml(preLogin) {
                 const nativeSvcs = (window.FreeServices && FreeServices.nativePaidServices) || [
                     { id: 'lease-abstraction', icon: '📄', label: 'Lease Abstraction', desc: 'Extract key terms and clauses from lease documents.' },
                     { id: 'translation', icon: '🌐', label: 'Translation', desc: 'Translate documents into 60+ languages, layout preserved.' },
@@ -10584,7 +10584,7 @@
                     <div class="tool-group-title">💼 Paid Services</div>
                     <div class="tools-grid">
                         ${items.map(t => `
-                            <div class="tool-card" data-service-search="${escapeHtml((t.label + ' ' + (t.desc || '')).toLowerCase())}" onclick="${t.external ? `FreeServices.open('${t.id}')` : `lexoraNavigate('services','${t.id}')`}">
+                            <div class="tool-card" data-service-search="${escapeHtml((t.label + ' ' + (t.desc || '')).toLowerCase())}" onclick="${preLogin ? `promptAuthLoginForService('${escapeHtml(t.label)}')` : (t.external ? `FreeServices.open('${t.id}')` : `lexoraNavigate('services','${t.id}')`)}">
                                 <div class="tool-card-icon">${t.icon}</div>
                                 <div class="tool-card-name">${escapeHtml(t.label)}</div>
                                 <div class="tool-card-desc">${escapeHtml(t.desc)}</div>
@@ -11556,6 +11556,12 @@
                 countdownSecondsLeft: 0
             };
 
+            // Pre-login top nav (Home / Services / Plans & Offers / Contact
+            // Us + a Login button, no logo) - which of those four sections
+            // is showing, and whether the Login form popup is open.
+            let authActiveSection = 'home';
+            let authLoginModalOpen = false;
+
             function authPost(path, payload) {
                 return authFetch(path, {
                     method: 'POST',
@@ -11648,6 +11654,109 @@
                 }
                 return [];
             }
+
+            function buildAuthTopNav() {
+                const items = [
+                    ['home', 'Home'],
+                    ['services', 'Services'],
+                    ['plans', 'Plans & Offers'],
+                    ['contact', 'Contact Us'],
+                ];
+                return `
+                    <div class="auth-top-nav">
+                        <div class="auth-top-nav-menu">
+                            ${items.map(([id, label]) => `
+                                <a class="auth-top-nav-link ${authActiveSection === id ? 'is-active' : ''}" onclick="setAuthSection('${id}')">${escapeHtml(label)}</a>
+                            `).join('')}
+                        </div>
+                        <button class="auth-top-nav-login-btn" onclick="openAuthLoginModal()">Login</button>
+                    </div>`;
+            }
+
+            function buildAuthServicesSection() {
+                const freeGridHtml = (window.FreeServices && FreeServices.render) ? FreeServices.render('other-services') : '';
+                return `
+                    <div id="contentBody">
+                        <div class="services-search-wrapper">
+                            <div class="services-search-box">
+                                <span class="services-search-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                                </span>
+                                <input type="text" id="servicesSearchInput" placeholder="Search services..." oninput="filterServicesSearch(this.value)" />
+                            </div>
+                        </div>
+                        ${buildPaidServicesGridHtml(true)}
+                        ${freeGridHtml}
+                    </div>
+                `;
+            }
+
+            function buildAuthPlansSection() {
+                const planFrequencySuffix = (freq) => {
+                    if (freq === 'Daily') return 'day';
+                    if (freq === 'Yearly') return 'year';
+                    return 'month';
+                };
+                const tick = '<svg class="plan-tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>';
+                return `
+                    <div class="plans-grid">
+                        ${PLANS_DATA.map(plan => {
+                            const tier = plan.featured ? 'is-pro' : (plan.monthlyPrice > 0 ? 'is-standard' : 'is-free');
+                            return `
+                            <div class="plan-card ${tier} ${plan.featured ? 'featured' : ''}">
+                                ${plan.featured ? '<div class="plan-badge">\u2605 Most Popular</div>' : ''}
+                                ${tier === 'is-free' ? '<div class="plan-free-tag">FREE</div>' : ''}
+                                <div class="plan-icon">${plan.icon || ''}</div>
+                                <div class="plan-name">${escapeHtml(plan.name)}</div>
+                                <div class="plan-price">${currencySymbol()}${plan.monthlyPrice}<span>/${planFrequencySuffix(plan.frequency)}</span></div>
+                                <ul class="plan-features">
+                                    ${plan.paidFeature === 'Yes' ? `<li>${tick}All Paid Services (${currencySymbol()}${Number(plan.pricePerTranslation != null ? plan.pricePerTranslation : 0)} / ${escapeHtml(plan.billingUnit || 'document')})</li>` : ''}
+                                    ${plan.freeFeature === 'Yes' ? `<li>${tick}All Free Services</li>` : ''}
+                                    ${plan.supportFeature === 'Yes' ? `<li>${tick}Email Support</li>` : ''}
+                                    ${plan.apiFeature === 'Yes' ? `<li>${tick}API Documentation Access</li>` : ''}
+                                </ul>
+                                <button class="plan-cta-btn" onclick="promptAuthLoginForService('${escapeHtml(plan.name)} plan')">Upgrade Now</button>
+                            </div>`;
+                        }).join('')}
+                    </div>
+                `;
+            }
+
+            function buildAuthContactSection() {
+                return (CONTENT_DATA['contact-us'] && CONTENT_DATA['contact-us'].body)
+                    ? CONTENT_DATA['contact-us'].body()
+                    : '<p style="text-align:center;padding:40px;">Contact information is not available right now.</p>';
+            }
+
+            window.promptAuthLoginForService = function(label) {
+                showWarning(`Please login to use this service.`);
+                openAuthLoginModal();
+            };
+
+            window.goBackToServices = function() {
+                const loggedIn = window.getCurrentUserId && window.getCurrentUserId();
+                if (loggedIn) {
+                    lexoraNavigate('services', 'services');
+                } else if (window.setAuthSection) {
+                    setAuthSection('services');
+                }
+            };
+
+            window.setAuthSection = function(section) {
+                authActiveSection = section;
+                renderAuthScreen();
+            };
+
+            window.openAuthLoginModal = function() {
+                authLoginModalOpen = true;
+                authState.step = 'login';
+                renderAuthScreen();
+            };
+
+            window.closeAuthLoginModal = function() {
+                authLoginModalOpen = false;
+                renderAuthScreen();
+            };
 
             function buildAuthLeftPanel() {
                 const freeTools = authFreeTools();
@@ -12024,25 +12133,39 @@
                 }
             }
 
+            function buildAuthHomeSection() {
+                // Home = the same marketing content that used to sit
+                // alongside the login form, just without the form itself -
+                // the login form now only appears in the popup modal.
+                return `<div class="auth-hero-full">${buildAuthLeftPanel()}</div>${buildAuthToolsCard()}`;
+            }
+
             function renderAuthScreen() {
                 const root = document.getElementById('authScreen');
                 if (!root) return;
 
                 const name = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora';
-                const shortName = String(name).split(/\s+/)[0] || 'Lexora';
-                const logoPath = (COMPANY_INFO && COMPANY_INFO.logo) || 'Pictures/logo.png';
                 const social = buildSocialLinksHtml({ size: 18, gap: 14, color: 'rgba(11,21,51,0.45)', includeShare: true });
+
+                let sectionHtml;
+                if (authActiveSection === 'services') sectionHtml = buildAuthServicesSection();
+                else if (authActiveSection === 'plans') sectionHtml = buildAuthPlansSection();
+                else if (authActiveSection === 'contact') sectionHtml = buildAuthContactSection();
+                else sectionHtml = buildAuthHomeSection();
 
                 root.innerHTML = `
                     <div class="auth-page">
-                        <div class="auth-main">
-                            <div class="auth-main-left">${buildAuthLeftPanel()}</div>
-                            <div class="auth-main-right">
+                        ${buildAuthTopNav()}
+
+                        <div class="auth-section-body">${sectionHtml}</div>
+
+                        ${authLoginModalOpen ? `
+                        <div class="auth-login-modal-backdrop" onclick="if(event.target===this)closeAuthLoginModal()">
+                            <div class="auth-login-modal">
+                                <button class="auth-login-modal-close" onclick="closeAuthLoginModal()">&times;</button>
                                 <div class="auth-card">${buildAuthCard()}</div>
                             </div>
-                        </div>
-
-                        ${buildAuthToolsCard()}
+                        </div>` : ''}
 
                         <div class="footer">
                             <div class="footer-inner">
@@ -12053,11 +12176,13 @@
                         </div>
                     </div>
                 `;
-                if (authState.step === 'verify') {
+                if (authLoginModalOpen && authState.step === 'verify') {
                     wireOtpBoxes();
                     startAuthCountdown();
                 }
-                lockAuthThumbGridHeight();
+                if (window.lockAuthThumbGridHeight) {
+                    try { lockAuthThumbGridHeight(); } catch (e) { /* layout changed, not required anymore */ }
+                }
             }
 
             function wireOtpBoxes() {

@@ -66,7 +66,7 @@
     title: 'PDF Split',
     icon: '✂️',
     accept: 'application/pdf',
-    backTo: "lexoraNavigate('services','services')",
+    backTo: "goBackToServices()",
     description: 'Pull selected pages out of a PDF into a new file.',
     batch: true,
     setupHtml: function () {
@@ -160,7 +160,7 @@
     title: 'PDF Merge',
     icon: '🔗',
     accept: 'application/pdf',
-    backTo: "lexoraNavigate('services','services')",
+    backTo: "goBackToServices()",
     batch: true,      // merge needs ALL selected files together, not one-by-one
     description: 'Combine several PDFs into one, in the order they appear in the list.',
     process: async function (files, ctx) {
@@ -184,7 +184,7 @@
     title: 'Image to PDF',
     icon: '🖼️',
     accept: 'image/jpeg,image/png',
-    backTo: "lexoraNavigate('services','services')",
+    backTo: "goBackToServices()",
     batch: true,      // all selected images become one PDF
     description: 'Turn JPG/PNG images into a single PDF - one image per page.',
     process: async function (files, ctx) {
@@ -210,7 +210,7 @@
     title: 'PDF to Image',
     icon: '📸',
     accept: 'application/pdf',
-    backTo: "lexoraNavigate('services','services')",
+    backTo: "goBackToServices()",
     description: 'Export each PDF page as a PNG image.',
     setupHtml: function () {
       return `

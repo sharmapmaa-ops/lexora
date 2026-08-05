@@ -4069,6 +4069,92 @@
     margin-bottom: 0.7em;
 }
 
+/* New pre-login top nav: Home / Services / Plans & Offers / Contact Us
+   + a Login button, deliberately no logo here. */
+.auth-top-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.1em 0;
+    margin-bottom: 1.2em;
+    border-bottom: 1px solid rgba(11,21,51,0.06);
+}
+.auth-top-nav-menu {
+    display: flex;
+    align-items: center;
+    gap: 2em;
+}
+.auth-top-nav-link {
+    font-size: 1em;
+    font-weight: 600;
+    color: rgba(11,21,51,0.6);
+    cursor: pointer;
+    padding-bottom: 4px;
+    border-bottom: 2px solid transparent;
+    transition: 0.15s;
+}
+.auth-top-nav-link:hover { color: var(--lx-navy); }
+.auth-top-nav-link.is-active { color: #1257f5; border-bottom-color: #1257f5; }
+.auth-top-nav-login-btn {
+    height: 2.6em;
+    padding: 0 1.6em;
+    border: none;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 0.95em;
+    color: #fff;
+    background: linear-gradient(135deg, #2f7bf6, #0b48e0);
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(18,87,245,0.28);
+    transition: 0.2s;
+}
+.auth-top-nav-login-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(18,87,245,0.35); }
+
+.auth-section-body { flex: 1; }
+.auth-hero-full .auth-hero { max-width: 900px; margin: 0 auto; text-align: center; }
+.auth-hero-full .auth-stats-row,
+.auth-hero-full .auth-check-grid { justify-content: center; }
+
+/* Login form popup - opens over whichever section is showing, dims and
+   blocks interaction with the rest of the page until closed. */
+.auth-login-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(11,21,51,0.45);
+    backdrop-filter: blur(2px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    padding: 20px;
+}
+.auth-login-modal {
+    position: relative;
+    background: #fff;
+    border-radius: 18px;
+    padding: 2em;
+    width: 100%;
+    max-width: 30em;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+}
+.auth-login-modal-close {
+    position: absolute;
+    top: 0.8em;
+    right: 0.8em;
+    width: 2em;
+    height: 2em;
+    border: none;
+    background: rgba(11,21,51,0.06);
+    border-radius: 50%;
+    font-size: 1.2em;
+    line-height: 1;
+    color: rgba(11,21,51,0.6);
+    cursor: pointer;
+}
+.auth-login-modal-close:hover { background: rgba(11,21,51,0.12); }
+
 .auth-topbar-logo {
     width: 3.4em;
     height: 3.4em;

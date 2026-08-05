@@ -41,11 +41,11 @@
   }
 
   function backButton() {
-    return `<button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','services')">\u2190 Back to Services</button>`;
+    return `<button class="process-btn clear-btn card-back-btn" onclick="goBackToServices()">\u2190 Back to Services</button>`;
   }
 
   function backButtonFree() {
-    return `<button class="process-btn clear-btn card-back-btn" onclick="lexoraNavigate('services','services')">\u2190 Back to Services</button>`;
+    return `<button class="process-btn clear-btn card-back-btn" onclick="goBackToServices()">\u2190 Back to Services</button>`;
   }
 
   function billingRow(calcId) {
