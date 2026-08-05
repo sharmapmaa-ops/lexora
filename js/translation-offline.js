@@ -1432,6 +1432,17 @@ Return NOTHING except the JSON object.`;
     return blocks;
   }
 
+  // Same idea as v14SalvagePartialTextBlocks, but for the top-level
+  // has_visual_background flag - a simple regex match works fine here
+  // since it's a plain boolean field, not nested structure. Losing this
+  // flag on a malformed response silently skipped image-cleaning on
+  // pages that clearly had a background worth preserving (logos, seals,
+  // colored headers) - that was a real bug, not intentional behavior.
+  function v14SalvageHasVisualBackground(raw) {
+    const m = raw.match(/"has_visual_background"\s*:\s*(true|false)/i);
+    return m ? m[1].toLowerCase() === 'true' : null;
+  }
+
   // ---- OCR one page: box_2d 0-1000 -> px, filter, repair, de-overlap ----
   // ROOT CAUSE FIX: agar pehli call ka JSON malformed/incomplete nikle
   // (flaky vision-model output — v14VisionCall ke reason dekho), to
@@ -1439,13 +1450,13 @@ Return NOTHING except the JSON object.`;
   // karte hain — dusra attempt zyada baar sahi JSON deta hai. Sirf
   // dusri baar bhi fail ho to page fail hota hai (jaisa pehle tha),
   // par ab asli finish_reason bhi error message me dikhta hai.
-  async function v14ProcessSingleImage(model, dataUrl, width, height, pageNum) {
+  async function v14ProcessSingleImage(model, dataUrl, width, height, pageNum, startTokens) {
     const prompt = v14BuildExtractionPrompt();
 
     let parsed, rawContent, finishReason, lastErr;
     const MAX_ATTEMPTS = 2;
     const SALVAGE_ACCEPT_THRESHOLD = 20; // enough blocks recovered = don't burn another full attempt
-    let nextStartTokens = 16000; // once an attempt needs 32000, skip the wasted 16000 call on the next one
+    let nextStartTokens = startTokens || 16000; // once an attempt needs 32000, skip the wasted 16000 call on the next one
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const callResult = await v14VisionCall(model, dataUrl, prompt, nextStartTokens);
       rawContent = callResult.content;
@@ -1476,9 +1487,10 @@ Return NOTHING except the JSON object.`;
         // through, burning another attempt just to maybe do slightly
         // better isn't worth the wait.
         const salvaged = v14SalvagePartialTextBlocks(cleaned);
+        const salvagedBg = v14SalvageHasVisualBackground(cleaned);
         if (salvaged.length >= SALVAGE_ACCEPT_THRESHOLD) {
           log('P' + pageNum + ': JSON invalid (' + detail + ') but recovered ' + salvaged.length + ' text block(s) from this response - using that instead of retrying.', 'warn');
-          parsed = { text_blocks: salvaged };
+          parsed = { text_blocks: salvaged, has_visual_background: salvagedBg };
           lastErr = null;
           break;
         }
@@ -1489,7 +1501,7 @@ Return NOTHING except the JSON object.`;
           // Last attempt, and salvage recovered SOMETHING even if below
           // the threshold - still far better than losing the page.
           log('P' + pageNum + ': full JSON still malformed after ' + MAX_ATTEMPTS + ' attempts, but recovered ' + salvaged.length + ' text block(s) from the partial response.', 'warn');
-          parsed = { text_blocks: salvaged };
+          parsed = { text_blocks: salvaged, has_visual_background: salvagedBg };
           lastErr = null;
         }
       }
@@ -1562,7 +1574,7 @@ Return NOTHING except the JSON object.`;
     const rep = v14RepairBlocks(filtered, width, height);
     const deo = v14ResolveOverlaps(rep.blocks, width, height);
     const hasVisualBackground = (parsed.has_visual_background === true);
-    return { blocks: deo.blocks, notes: rep.notes.concat(deo.notes), width: width, height: height, hasVisualBackground: hasVisualBackground };
+    return { blocks: deo.blocks, notes: rep.notes.concat(deo.notes), width: width, height: height, hasVisualBackground: hasVisualBackground, startTokensNeeded: nextStartTokens };
   }
 
   // ---- DOMAIN EXPERT PERSONAS (17 domains) ----
@@ -2143,6 +2155,12 @@ Return ONLY this JSON shape, nothing else:
     const pageBackgrounds = {};   // pageNum -> {bgDataUrl, bgIsCleaned}
     const pageErrors = [];
     let stoppedEarly = false;
+    // Once any page in this document needs the 32000-token retry, start
+    // every later page there directly too - pages from the same document
+    // tend to share similar structural density (same table layout,
+    // same bilingual content), so the 16000-token attempt is very likely
+    // wasted on them as well.
+    let sharedStartTokens = 16000;
 
     // 2) per-page: [Clean Image] -> OCR — v14 ki tarah SEQUENTIAL
     for (let i = 0; i < images.length; i++) {
@@ -2162,7 +2180,8 @@ Return ONLY this JSON shape, nothing else:
         // same reliable approach as Text-based mode. The old AI clean-
         // image call was verified to leave the original text fully intact
         // on dense pages, and it cost an extra API call per page.
-        const result = await v14ProcessSingleImage(model, img.dataUrl, img.width, img.height, pageNum);
+        const result = await v14ProcessSingleImage(model, img.dataUrl, img.width, img.height, pageNum, sharedStartTokens);
+        if (result.startTokensNeeded > sharedStartTokens) sharedStartTokens = result.startTokensNeeded;
         let currentJson = result.blocks;
         const pageHasVisualBg = !!result.hasVisualBackground;
 
