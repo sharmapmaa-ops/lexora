@@ -5936,20 +5936,21 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
 
 /* Amount chhota, Description bada - Payment section feedback */
 .balance-form-row .balance-amount-group {
-    flex: 0.6;
-    min-width: 100px;
+    flex: 0.5;
+    min-width: 90px;
 }
 
 .balance-form-row .balance-description-group {
-    flex: 2;
-    min-width: 170px;
+    flex: 3;
+    min-width: 200px;
 }
 
 .balance-form-row .balance-add-submit {
     height: 42px;
     white-space: nowrap;
-    padding-left: 14px;
-    padding-right: 14px;
+    padding-left: 16px;
+    padding-right: 16px;
+    font-size: 0.85rem;
     flex: 0 0 auto;
 }
 

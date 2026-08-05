@@ -1084,7 +1084,7 @@
                         <div style="display:flex;gap:12px;align-items:flex-start;">
                           <div style="flex:1;">
                             <label>Output Language</label>
-                            <select id="translationLangSelect" onchange="saveSetupPref('translation','outputLanguage',this.value)" style="width:100%;" ${processState.running ? 'disabled' : ''}>
+                            <select id="translationLangSelect" onchange="onTranslationLanguageChange(this.value)" style="width:100%;" ${processState.running ? 'disabled' : ''}>
                                 ${_markSelectedOption(TRANSLATION_LANG_OPTIONS, getSetupPref('translation', 'outputLanguage', 'English'))}
                             </select>
 
@@ -1100,11 +1100,26 @@
                         </div>
                     </div>
                     <div class="setup-group">
-                        <label>Target Country</label>
-                        <select id="translationTargetCountry" onchange="saveSetupPref('translation','targetCountry',this.value)" style="width:100%;" ${processState.running ? 'disabled' : ''}
-                                title="Helps tailor spelling, terminology, units, and phrasing to how this language is used in that country.">
-                            ${_markSelectedOption(TRANSLATION_COUNTRY_OPTIONS, getSetupPref('translation', 'targetCountry', ''))}
-                        </select>
+                        <div style="display:flex;gap:12px;align-items:flex-start;">
+                          <div style="flex:1;">
+                            <label>Target Country</label>
+                            <select id="translationTargetCountry" onchange="saveSetupPref('translation','targetCountry',this.value)" style="width:100%;" ${processState.running ? 'disabled' : ''}
+                                    title="Helps tailor spelling, terminology, units, and phrasing to how this language is used in that country.">
+                                ${_markSelectedOption(TRANSLATION_COUNTRY_OPTIONS, getSetupPref('translation', 'targetCountry', TRANSLATION_LANGUAGE_TO_COUNTRY[getSetupPref('translation', 'outputLanguage', 'English')] || ''))}
+                            </select>
+                          </div>
+                          ${(SERVICES_CATALOG[serviceId] && SERVICES_CATALOG[serviceId].systemConfig === 'Yes') ? `
+                          <div style="flex:1;">
+                            <label>System Configuration</label>
+                            <div class="system-config-row">
+                                <select id="systemConfigSelect" onchange="verifySystemConnection()">
+                                    ${systemOptions}
+                                </select>
+                                <span id="connectionStatusWrap">${buildConnectionStatusHTML()}</span>
+                            </div>
+                          </div>
+                          ` : ``}
+                        </div>
                     </div>
                 ` : `
                     <div class="setup-group">
@@ -1172,7 +1187,7 @@
                                 <div class="card-body">
                                     ${outputFieldHTML}
 
-                                    ${(SERVICES_CATALOG[serviceId] && SERVICES_CATALOG[serviceId].systemConfig === 'Yes') ? `
+                                    ${(!isTranslation && SERVICES_CATALOG[serviceId] && SERVICES_CATALOG[serviceId].systemConfig === 'Yes') ? `
                                     <div class="setup-group">
                                         <label>System Configuration</label>
                                         <div class="system-config-row">
@@ -1409,6 +1424,36 @@
             ];
             const TRANSLATION_COUNTRY_OPTIONS = '<option value="">No specific country</option>' +
                 TRANSLATION_COUNTRIES.map(c => `<option value="${c}">${c}</option>`).join('');
+
+            // New-1 - default Target Country the moment Output Language
+            // changes (the person can still change it manually afterward -
+            // this only runs again if they change the language again).
+            const TRANSLATION_LANGUAGE_TO_COUNTRY = {
+                'English': 'United States', 'Spanish': 'Spain', 'French': 'France', 'German': 'Germany',
+                'Italian': 'Italy', 'Portuguese': 'Portugal', 'Dutch': 'Netherlands', 'Russian': 'Russia',
+                'Chinese (Simplified)': 'China', 'Chinese (Traditional)': 'Taiwan', 'Japanese': 'Japan',
+                'Korean': 'South Korea', 'Arabic': 'Saudi Arabia', 'Hindi': 'India', 'Bengali': 'Bangladesh',
+                'Urdu': 'Pakistan', 'Punjabi': 'India', 'Gujarati': 'India', 'Marathi': 'India',
+                'Tamil': 'India', 'Telugu': 'India', 'Kannada': 'India', 'Malayalam': 'India',
+                'Turkish': 'Turkey', 'Persian': 'Iran', 'Vietnamese': 'Vietnam', 'Thai': 'Thailand',
+                'Indonesian': 'Indonesia', 'Malay': 'Malaysia', 'Polish': 'Poland', 'Ukrainian': 'Ukraine',
+                'Greek': 'Greece', 'Swedish': 'Sweden', 'Norwegian': 'Norway', 'Danish': 'Denmark',
+                'Finnish': 'Finland', 'Hebrew': 'Israel', 'Romanian': 'Romania', 'Hungarian': 'Hungary',
+                'Czech': 'Czech Republic', 'Slovak': 'Slovakia', 'Mongolian': 'Mongolia', 'Kazakh': 'Kazakhstan',
+                'Uzbek': 'Uzbekistan', 'Azerbaijani': 'Azerbaijan', 'Armenian': 'Armenia', 'Georgian': 'Georgia',
+                'Serbian': 'Serbia', 'Croatian': 'Croatia', 'Somali': 'Somalia', 'Hausa': 'Nigeria',
+                'Yoruba': 'Nigeria', 'Zulu': 'South Africa', 'Afrikaans': 'South Africa',
+                'Filipino (Tagalog)': 'Philippines',
+            };
+            window.onTranslationLanguageChange = function(value) {
+                saveSetupPref('translation', 'outputLanguage', value);
+                const countryDefault = TRANSLATION_LANGUAGE_TO_COUNTRY[value];
+                const countrySelect = document.getElementById('translationTargetCountry');
+                if (countryDefault && countrySelect) {
+                    countrySelect.value = countryDefault;
+                    saveSetupPref('translation', 'targetCountry', countryDefault);
+                }
+            };
 
             const translationHybridMode = false;   // With OCR checkbox removed - translation is text-based only now.
             // Image is ALWAYS placed behind the text now (no more With Image
@@ -4150,7 +4195,7 @@
                                 <label>Description</label>
                                 <input type="text" id="balanceDescription" placeholder="Description" />
                             </div>
-                            <button class="add-btn balance-add-submit" onclick="addBalance()">+ Add Balance</button>
+                            <button class="add-btn balance-add-submit" onclick="addBalance()">+ Add</button>
                         </div>
                     </div>`;
             }
