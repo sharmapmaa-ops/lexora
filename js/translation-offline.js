@@ -2033,6 +2033,30 @@ Return ONLY this JSON shape, nothing else:
 
     let textboxesHtml = '';
 
+    // Pre-pass: compute each line's own best-fit font size first (same
+    // calculation as before), then unify every line that shares a
+    // paragraph_id to ONE common size - the smallest individually-needed
+    // size in that paragraph, so every line still fits, but the whole
+    // paragraph renders with a single consistent font size instead of
+    // visibly jumping between sizes from one line to the next.
+    const perItemFit = pageJson.map(function (item) {
+      const text = String(item.text || '').trim();
+      const boxWidth = (parseFloat(item.width) || 50) * scale;
+      const boxHeight = (parseFloat(item.height) || 20) * scale;
+      const styleStr = String(item.style || 'normal').toLowerCase();
+      const isBold = styleStr.indexOf('bold') !== -1;
+      return v14FindSmartFontSize(text, boxWidth, boxHeight, isBold);
+    });
+    const paragraphMinSize = {};
+    pageJson.forEach(function (item, idx) {
+      const pid = item.paragraph_id;
+      if (!pid) return;
+      const size = perItemFit[idx].fontSize;
+      if (paragraphMinSize[pid] === undefined || size < paragraphMinSize[pid]) {
+        paragraphMinSize[pid] = size;
+      }
+    });
+
     for (let i = 0; i < pageJson.length; i++) {
       const item = pageJson[i];
 
@@ -2047,8 +2071,11 @@ Return ONLY this JSON shape, nothing else:
       const isBold = styleStr.indexOf('bold') !== -1;
       const isItalic = styleStr.indexOf('italic') !== -1;
 
-      const result = v14FindSmartFontSize(text, boxWidth, boxHeight, isBold);
-      const optimalFontSize = result.fontSize;
+      const result = perItemFit[i];
+      const unifiedSize = item.paragraph_id && paragraphMinSize[item.paragraph_id] !== undefined
+        ? paragraphMinSize[item.paragraph_id]
+        : result.fontSize;
+      const optimalFontSize = unifiedSize;
       // Clipping fix: if even the readable-floor font size doesn't fit
       // the box, let the (small) excess spill past the box edge instead
       // of clipping it - a slightly-overflowing complete line beats a
