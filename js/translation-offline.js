@@ -293,6 +293,165 @@
       '</pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>';
   }
 
+  // ---- FLOWING PARAGRAPH BUILDER (text-based mode only) ----
+  // Text-based mode has REAL structured text from the PDF's own text
+  // layer (unlike OCR, which only has a vision model's best guess at
+  // positions) - there's no need to pin every line to an exact pixel
+  // position with a floating textbox and a full-page background image.
+  // A normal flowing Word document (real margins, real paragraph
+  // alignment, natural text wrap) reads better and avoids the
+  // "floating textbox" artifacts entirely.
+
+  // Groups a page's lines into paragraphs by vertical gap: lines that
+  // sit close together (within about 0.6x the surrounding line height)
+  // are the same paragraph; a bigger gap signals a paragraph break.
+  function v14GroupLinesIntoParagraphs(lines) {
+    if (!lines.length) return [];
+    const sorted = lines.slice().sort((a, b) => a.yPt - b.yPt || a.xPt - b.xPt);
+    const paragraphs = [[sorted[0]]];
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = sorted[i - 1], cur = sorted[i];
+      const prevBottom = prev.yPt + prev.hPt;
+      const gap = cur.yPt - prevBottom;
+      const avgH = (prev.hPt + cur.hPt) / 2;
+      if (gap <= avgH * 0.6) {
+        paragraphs[paragraphs.length - 1].push(cur);
+      } else {
+        paragraphs.push([cur]);
+      }
+    }
+    return paragraphs;
+  }
+
+  // Guesses left/center/right/justify by comparing how consistent each
+  // line's left edge and right edge are with each other across the
+  // paragraph - centered text has neither edge consistent but a
+  // consistent midpoint; justified text has both edges consistent
+  // except the last line; left-aligned has a consistent left edge with
+  // a ragged right edge, and so on.
+  function v14DetectAlignment(paraLines, pageWidth) {
+    if (paraLines.length < 2) return 'left';
+    const lefts = paraLines.map(l => l.xPt);
+    const rights = paraLines.map(l => l.xPt + l.wPt);
+    const mids = paraLines.map(l => l.xPt + l.wPt / 2);
+    const variance = arr => {
+      const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+      return arr.reduce((a, b) => a + Math.abs(b - mean), 0) / arr.length;
+    };
+    const tolerance = Math.max(4, pageWidth * 0.01);
+    const leftConsistent = variance(lefts) < tolerance;
+    // Exclude the last line (often shorter) when checking right-edge consistency for justify
+    const rightsExceptLast = rights.slice(0, -1);
+    const rightConsistent = rightsExceptLast.length > 1 ? variance(rightsExceptLast) < tolerance : false;
+    const midConsistent = variance(mids) < tolerance;
+    if (leftConsistent && rightConsistent) return 'justify';
+    if (midConsistent && !leftConsistent) return 'center';
+    if (leftConsistent) return 'left';
+    if (variance(rights) < tolerance) return 'right';
+    return 'left';
+  }
+
+  function buildFlowingDocx(pages) {
+    const zip = new JSZip();
+    const MARGIN_TWIPS = 1440; // standard 1-inch margin
+    const wPt = pages[0].wPt, hPt = pages[0].hPt;
+    const pgW = Math.round(wPt * 20), pgH = Math.round(hPt * 20);
+    const usableWidthPt = wPt - (MARGIN_TWIPS / 20) * 2;
+
+    function sectPrXml(pg) {
+      const w = Math.round(pg.wPt * 20), h = Math.round(pg.hPt * 20);
+      return '<w:pgSz w:w="' + w + '" w:h="' + h + '"/>' +
+        '<w:pgMar w:top="' + MARGIN_TWIPS + '" w:right="' + MARGIN_TWIPS + '" w:bottom="' + MARGIN_TWIPS +
+        '" w:left="' + MARGIN_TWIPS + '" w:header="720" w:footer="720" w:gutter="0"/>';
+    }
+
+    function runXml(r) {
+      const sz = Math.max(2, Math.round((r.sizePt || 11) * 2));
+      const col = /^[0-9A-F]{6}$/i.test(r.color || '') ? r.color.toUpperCase() : '000000';
+      const fam = esc(r.family || 'Arial');
+      return '<w:r><w:rPr>' +
+        '<w:rFonts w:ascii="' + fam + '" w:hAnsi="' + fam + '" w:cs="' + fam + '"/>' +
+        (r.bold ? '<w:b/><w:bCs/>' : '') +
+        (r.italic ? '<w:i/><w:iCs/>' : '') +
+        '<w:color w:val="' + col + '"/>' +
+        '<w:sz w:val="' + sz + '"/><w:szCs w:val="' + sz + '"/>' +
+        '</w:rPr><w:t xml:space="preserve">' + esc(r.text) + '</w:t></w:r>';
+    }
+
+    const jcMap = { left: 'left', center: 'center', right: 'right', justify: 'both' };
+
+    let bodyXml = '';
+    pages.forEach(function (pg, pIdx) {
+      const paragraphs = v14GroupLinesIntoParagraphs(pg.lines.filter(L => L.runs.some(r => r.text && r.text.trim())));
+      const isLastPage = pIdx === pages.length - 1;
+
+      paragraphs.forEach(function (paraLines, pgIdx) {
+        const align = v14DetectAlignment(paraLines, usableWidthPt);
+        const rtl = paraLines.some(l => l.rtl);
+        // Join every line's runs in reading order into one paragraph,
+        // with a space between lines (natural word-wrap replaces the
+        // original hard line breaks - that's the point of flowing text).
+        let runsXml = '';
+        paraLines.forEach(function (L, li) {
+          const order = L.rtl ? L.runs.slice().reverse() : L.runs;
+          order.forEach(r => { if (r.text) runsXml += runXml(r); });
+          if (li < paraLines.length - 1) runsXml += '<w:r><w:t xml:space="preserve"> </w:t></w:r>';
+        });
+        const isLastParagraph = isLastPage && pgIdx === paragraphs.length - 1;
+        const pPr = '<w:pPr><w:spacing w:before="0" w:after="160" w:line="276" w:lineRule="auto"/>' +
+          '<w:jc w:val="' + (jcMap[align] || 'left') + '"/>' +
+          (rtl ? '<w:bidi/>' : '') +
+          (isLastParagraph ? '<w:sectPr>' + sectPrXml(pg) + '</w:sectPr>' : '') +
+          '</w:pPr>';
+        bodyXml += '<w:p>' + pPr + runsXml + '</w:p>';
+      });
+
+      // A page with zero detected paragraphs still needs a section
+      // break so page count/dimensions stay correct.
+      if (paragraphs.length === 0 && !isLastPage) {
+        bodyXml += '<w:p><w:pPr><w:sectPr>' + sectPrXml(pg) + '</w:sectPr></w:pPr></w:p>';
+      }
+    });
+
+    const documentXml =
+'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+'<w:body>' + bodyXml +
+'<w:sectPr>' + sectPrXml(pages[pages.length - 1]) + '</w:sectPr></w:body></w:document>';
+
+    zip.file('[Content_Types].xml',
+'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+'<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+'<Default Extension="xml" ContentType="application/xml"/>' +
+'<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+'<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
+'</Types>');
+
+    zip.file('_rels/.rels',
+'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+'</Relationships>');
+
+    zip.file('word/styles.xml',
+'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+'<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+'<w:docDefaults><w:rPrDefault><w:rPr>' +
+'<w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="22"/><w:szCs w:val="22"/>' +
+'</w:rPr></w:rPrDefault></w:docDefaults></w:styles>');
+
+    zip.file('word/document.xml', documentXml);
+    zip.file('word/_rels/document.xml.rels',
+'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+'<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+'</Relationships>');
+
+    return zip.generateAsync({ type: 'blob',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  }
+
   function buildDocx(pages, includeBg){
     const zip = new JSZip();
     const wPt = pages[0].wPt, hPt = pages[0].hPt;
@@ -678,7 +837,7 @@
       }
     }
 
-    return buildDocx(pages, withImage);
+    return buildFlowingDocx(pages);
   }
 
 
