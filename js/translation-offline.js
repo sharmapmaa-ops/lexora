@@ -357,7 +357,10 @@
   function v14BuildSegments(paraLines, isBlock) {
     const segments = [];
     paraLines.forEach(function (L) {
-      const order = L.rtl ? L.runs.slice().reverse() : L.runs;
+      // L.runs is already in correct logical reading order (fixed at
+      // extraction, in makeLine) - no reversal needed here regardless
+      // of direction.
+      const order = L.runs;
       order.forEach(function (r, ri) {
         if (!r.text) return;
         const sizePt = r.sizePt || 11, bold = !!r.bold, italic = !!r.italic,
@@ -489,30 +492,42 @@
 
   // Converts a detected table's rows/columns into a plain grid of cell
   // strings (row-major), merging any line whose x falls nearer one
-  // column cluster than another into that column.
   // Converts a detected table's rows/columns into a grid of CELL
   // OBJECTS (row-major) - not just plain strings. Each cell keeps its
-  // own dominant style (bold/italic/color/font), computed the same
-  // weighted way as a paragraph's dominant style, from the actual
-  // source lines that landed in that cell. A table built from a form
-  // like this is a label/value GRID, not a "bold header row on top"
-  // table, so the real per-cell styling (which field labels happen to
-  // be bold in the source, which are not) has to come from the source
-  // itself rather than an assumed row-0-is-the-header rule.
+  // own dominant style AND, when a source line's actual width spans
+  // past the next detected column boundary, a colspan count - the
+  // source's own merged/wide cells (a label spanning two columns) are
+  // common in form-style tables and would otherwise just leave the
+  // "extra" columns in that row looking like stray empty cells rather
+  // than one properly merged one.
   function v14BuildTableGrid(table) {
+    const nCols = table.colStarts.length;
     return table.rows.map(function (R) {
-      const cellLines = table.colStarts.map(function () { return []; });
+      const bucket = new Array(nCols).fill(null); // bucket[startCol] = { lines, span }
       R.lines.forEach(function (L) {
-        const col = v14NearestColumn(L.xPt, table.colStarts);
-        cellLines[col].push(L);
+        const startCol = v14NearestColumn(L.xPt, table.colStarts);
+        let endCol = v14NearestColumn(L.xPt + L.wPt, table.colStarts);
+        if (endCol < startCol) endCol = startCol;
+        endCol = Math.min(endCol, nCols - 1);
+        if (!bucket[startCol]) bucket[startCol] = { lines: [L], span: endCol - startCol + 1 };
+        else {
+          bucket[startCol].lines.push(L);
+          bucket[startCol].span = Math.max(bucket[startCol].span, endCol - startCol + 1);
+        }
       });
-      return cellLines.map(function (linesArr) {
-        const text = linesArr.map(function (L) {
+      const rowOut = [];
+      let c = 0;
+      while (c < nCols) {
+        const b = bucket[c];
+        if (!b) { rowOut.push({ text: '', bold: false, italic: false, color: '000000', family: 'Arial', span: 1, col: c }); c += 1; continue; }
+        const text = b.lines.map(function (L) {
           return L.runs.map(function (r) { return r.text; }).join(' ').trim();
         }).filter(Boolean).join(' ');
-        const style = linesArr.length ? v14DominantStyle(linesArr) : { sizePt: 9, bold: false, italic: false, color: '000000', family: 'Arial' };
-        return { text: text, bold: style.bold, italic: style.italic, color: style.color, family: style.family };
-      });
+        const style = v14DominantStyle(b.lines);
+        rowOut.push({ text: text, bold: style.bold, italic: style.italic, color: style.color, family: style.family, span: b.span, col: c });
+        c += b.span;
+      }
+      return rowOut;
     });
   }
 
@@ -821,7 +836,16 @@
     // words being force-broken mid-word.
     function tableXml(table, pg) {
       const nCols = table.colStarts.length;
-      const usableWidthPt = pg.wPt - (pg.margins.left + pg.margins.right) / 20;
+      const marginLeftPt = pg.margins.left / 20, marginRightPt = pg.margins.right / 20;
+      // Preserve the table's own original horizontal position relative
+      // to the page margin, instead of always snapping it flush to the
+      // page's overall left margin - the page margin is computed from
+      // the TIGHTEST content on the page (which may be some other
+      // paragraph or image), so a table that originally sat further
+      // right/inset than that would otherwise render further left than
+      // it ever was in the source.
+      const tblIndentPt = Math.max(0, table.leftPt - marginLeftPt);
+      const usableWidthPt = pg.wPt - marginLeftPt - marginRightPt - tblIndentPt;
       const naturalWidths = table.colStarts.map(function (x, i) {
         const nextX = i < nCols - 1 ? table.colStarts[i + 1] : table.rightPt;
         return Math.max(24, nextX - x);
@@ -829,42 +853,51 @@
       const naturalTotal = naturalWidths.reduce(function (a, b) { return a + b; }, 0);
 
       const CELL_FONT_PT = 8, FLOOR_FONT_PT = 6, PADDING_PT = 10;
+      // Per-GRID-COLUMN minimum: a spanning cell's word-width demand is
+      // split evenly across the columns it covers, since its final
+      // width will be the SUM of those columns.
       function minWidthsAt(fontPt) {
-        return table.colStarts.map(function (_, colIdx) {
-          let m = 20;
-          table.grid.forEach(function (row) {
-            const cell = row[colIdx];
+        const m = new Array(nCols).fill(16);
+        table.grid.forEach(function (row) {
+          row.forEach(function (cell) {
             if (!cell || !cell.text) return;
-            const w = v14LongestWordWidthPt(cell.text, fontPt, cell.family || 'Arial') + PADDING_PT;
-            if (w > m) m = w;
+            const need = (v14LongestWordWidthPt(cell.text, fontPt, cell.family || 'Arial') + PADDING_PT) / cell.span;
+            for (let k = cell.col; k < cell.col + cell.span && k < nCols; k++) {
+              if (need > m[k]) m[k] = need;
+            }
           });
-          return m;
         });
+        return m;
       }
 
+      // Shrink the font in steps until the SUM of per-word minimums
+      // fits the page, or the floor is reached - a smaller (but still
+      // legible) font is always preferable to a word being force-broken.
       let fontPt = CELL_FONT_PT;
-      let widths = naturalWidths.map(function (w, i) { return Math.max(w, minWidthsAt(fontPt)[i]); });
-      let total = widths.reduce(function (a, b) { return a + b; }, 0);
-      if (total > usableWidthPt) {
-        // Shrink the font toward the floor in proportion to how far
-        // over budget the minimum-width table is, then re-measure
-        // minimums at that smaller size (a smaller font needs less
-        // width per word, so this can still avoid mid-word breaks).
-        fontPt = Math.max(FLOOR_FONT_PT, CELL_FONT_PT * (usableWidthPt / total));
-        const mins2 = minWidthsAt(fontPt);
-        widths = naturalWidths.map(function (w, i) {
-          return Math.max(w * (usableWidthPt / naturalTotal), mins2[i]);
-        });
-        total = widths.reduce(function (a, b) { return a + b; }, 0);
-        if (total > usableWidthPt) {
-          // Even at floor font the words themselves don't fit the page
-          // width - last resort, scale everything down proportionally
-          // (a rare, very long outlier word may still wrap mid-word).
-          const shrink = usableWidthPt / total;
-          widths = widths.map(function (w) { return w * shrink; });
-          total = usableWidthPt;
-        }
+      let mins = minWidthsAt(fontPt);
+      let minTotal = mins.reduce(function (a, b) { return a + b; }, 0);
+      while (minTotal > usableWidthPt && fontPt > FLOOR_FONT_PT) {
+        fontPt = Math.max(FLOOR_FONT_PT, fontPt - 0.5);
+        mins = minWidthsAt(fontPt);
+        minTotal = mins.reduce(function (a, b) { return a + b; }, 0);
       }
+
+      // Every column starts AT its own minimum - that floor is never
+      // reduced again. Any page width left over after that is handed
+      // out proportionally to the source's original column widths. If
+      // the minimums alone already exceed the page (a very dense
+      // table even at floor font), the table is simply allowed to run
+      // wider than the page rather than crushing every column below
+      // its own word-fit floor, which previously broke every column's
+      // words at once instead of just the one genuine outlier.
+      let widths;
+      if (minTotal >= usableWidthPt) {
+        widths = mins;
+      } else {
+        const extra = usableWidthPt - minTotal;
+        widths = mins.map(function (m, i) { return m + extra * (naturalWidths[i] / naturalTotal); });
+      }
+      const total = widths.reduce(function (a, b) { return a + b; }, 0);
 
       const gridCols = widths.map(function (w) { return '<w:gridCol w:w="' + Math.round(w * 20) + '"/>'; }).join('');
       const borderXml = '<w:tblBorders>' +
@@ -875,13 +908,15 @@
       let rowsXml = '';
       table.grid.forEach(function (row) {
         let cellsXml = '';
-        row.forEach(function (cell, cIdx) {
-          const w = Math.round((widths[cIdx] || 40) * 20);
+        row.forEach(function (cell) {
+          let w = 0;
+          for (let k = cell.col; k < cell.col + cell.span && k < nCols; k++) w += widths[k] || 40;
           const bold = cell.bold ? '<w:b/><w:bCs/>' : '';
           const italic = cell.italic ? '<w:i/><w:iCs/>' : '';
           const col = /^[0-9A-F]{6}$/i.test(cell.color || '') ? cell.color.toUpperCase() : '000000';
           const fam = esc(cell.family || 'Arial');
-          cellsXml += '<w:tc><w:tcPr><w:tcW w:w="' + w + '" w:type="dxa"/></w:tcPr>' +
+          const span = cell.span > 1 ? '<w:gridSpan w:val="' + cell.span + '"/>' : '';
+          cellsXml += '<w:tc><w:tcPr><w:tcW w:w="' + Math.round(w * 20) + '" w:type="dxa"/>' + span + '</w:tcPr>' +
             '<w:p><w:pPr><w:spacing w:before="20" w:after="20"/></w:pPr><w:r><w:rPr>' + bold + italic +
             '<w:rFonts w:ascii="' + fam + '" w:hAnsi="' + fam + '" w:cs="' + fam + '"/>' +
             '<w:color w:val="' + col + '"/><w:sz w:val="' + sz + '"/><w:szCs w:val="' + sz + '"/></w:rPr>' +
@@ -889,7 +924,8 @@
         });
         rowsXml += '<w:tr>' + cellsXml + '</w:tr>';
       });
-      return '<w:tbl><w:tblPr><w:tblW w:w="' + Math.round(total * 20) + '" w:type="dxa"/>' + borderXml +
+      return '<w:tbl><w:tblPr><w:tblW w:w="' + Math.round(total * 20) + '" w:type="dxa"/>' +
+        '<w:tblInd w:w="' + Math.round(tblIndentPt * 20) + '" w:type="dxa"/>' + borderXml +
         '<w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>' + gridCols + '</w:tblGrid>' + rowsXml + '</w:tbl>';
     }
 
@@ -1281,7 +1317,17 @@
         bold: !!fi.bold,
         italic: !!fi.italic,
         family: fi.family || genericFamily(st.fontFamily),
-        color: colorOk ? (colors[idx] || '000000') : '000000'
+        color: colorOk ? (colors[idx] || '000000') : '000000',
+        srcIdx: idx   // original PDF content-stream order - the actual
+                       // LOGICAL reading order, independent of visual
+                       // x-position. Needed because right-to-left text
+                       // sorted by x ends up in reverse reading order,
+                       // and reversing that array again doesn't
+                       // reliably restore correct order once embedded
+                       // Latin numbers/punctuation (e.g. "(131)",
+                       // "1435/4/3") are mixed into the RTL line -
+                       // proper bidi text needs the ORIGINAL order, not
+                       // a blanket reversal.
       });
     });
 
@@ -1324,13 +1370,20 @@
     const maxDesc = Math.max.apply(null, seg.map(r => r.descent * r.sizePt));
     const yBase = seg[0].yBase;
     const rtl = seg.some(r => hasRTL(r.text));
+    // For an RTL line, reading order is NOT "sorted by x" (that's
+    // visual/left-to-right order, which is backwards for Arabic/Hebrew
+    // text) - it's the order the PDF's own content stream drew the
+    // glyphs in, which is the true logical reading order. Geometry
+    // (xPt/wPt/etc, above) stays based on visual position regardless;
+    // only which order the TEXT gets read/joined in changes here.
+    const ordered = rtl ? seg.slice().sort(function (a, b) { return a.srcIdx - b.srcIdx; }) : seg;
     return {
       xPt: x0,
       yPt: pageH - yBase - maxAsc,      // top-left, exact — koi shift nahi
       wPt: x1 - x0,                      // sirf sentence jitni width
       hPt: maxAsc + maxDesc,             // sabse bade text ki height
       rtl: rtl,
-      runs: seg.map(function(r){
+      runs: ordered.map(function(r){
         return { text: r.text, sizePt: r.sizePt, bold: r.bold, italic: r.italic, color: r.color, family: r.family };
       })
     };
@@ -1498,8 +1551,9 @@
         const align = v14DetectAlignment(paraLines, pg.wPt, contentLeftPt, contentRightPt);
         const rtl = paraLines.some(l => l.rtl);
         const originalText = paraLines.map(function (L) {
-          const order = L.rtl ? L.runs.slice().reverse() : L.runs;
-          return order.map(r => r.text).join(' ');
+          // L.runs is already in correct logical reading order (fixed
+          // at extraction) - no reversal needed here either.
+          return L.runs.map(r => r.text).join(' ');
         }).join(' ').replace(/\s+/g, ' ').trim();
         const listInfo = v14DetectListMarker(originalText);
 
