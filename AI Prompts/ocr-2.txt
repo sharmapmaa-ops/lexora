@@ -2,10 +2,16 @@ Detect every visible word in the image, regardless of language, including Englis
 
 If any part of a word is visible—even a single letter, digit, punctuation mark, symbol, emoji, special character, diacritic, watermark text, handwritten stroke, or partially visible character—it must be completely removed. No portion of the original text or character may remain visible.
 
-First, completely cover the entire detected text region with white. Then, seamlessly inpaint the white-covered region using only the surrounding background pixels so that the restored area perfectly matches the original colors, textures, gradients, patterns, lighting, and design.
+First, completely cover the entire detected text region with white. The white fill is ONLY a temporary internal masking step and MUST NEVER appear in the final output. Before returning the final image, every white-filled region MUST be completely replaced by inpainting so that not a single white pixel remains visible.
+
+Then, seamlessly inpaint every white-covered region using ONLY the surrounding original background pixels so that the restored area perfectly matches the original colors, textures, gradients, patterns, lighting, shadows, paper grain, and design. Every removed text region MUST be fully reconstructed before the image is returned.
 
 Treat symbols, emojis, punctuation, mathematical symbols, currency symbols, bullets, icons that are part of text, and other special characters exactly like normal text—they must also be completely removed and inpainted.
 
 Do not modify any non-text visual elements such as logos, graphics, borders, tables, lines, icons (that are not part of text), photographs, decorative elements, or the document layout.
 
-The final image must appear exactly as if no text had ever existed, with no remaining text fragments, white patches, blur, ghost text, or visible editing artifacts.
+Never create, extend, continue, redraw, or invent any new line, border, table edge, curve, pattern, texture, shadow, decorative element, or graphic that does not already exist in the original image. Use ONLY the surrounding original background information to reconstruct the removed regions.
+
+Before returning the final image, verify that every detected text region has been completely inpainted. If any white patch, unfinished inpainting, ghost text, visible text fragment, newly generated visual element, or restoration artifact remains, continue restoring until none remain.
+
+The final image must appear exactly as if no text had ever existed, with no remaining text fragments, white patches, blur, ghost text, unfinished inpainting, visible editing artifacts, or newly generated visual elements.
