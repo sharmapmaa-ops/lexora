@@ -339,6 +339,169 @@
     return best;
   }
 
+  // ---- STYLE SEGMENTS (preserve bold/italic boundaries WITHIN a
+  // paragraph, even through translation) ----
+  // Collapsing a whole paragraph into one styled run is what caused
+  // "the whole paragraph went bold" - a bold company name followed by
+  // a regular address is two different styles inside ONE paragraph.
+  // This walks the paragraph's original runs in reading order and
+  // merges only the CONSECUTIVE runs that share the same style into a
+  // segment, so a style change mid-paragraph (bold name -> regular
+  // text) becomes two segments that survive into the output as two
+  // separate <w:r> elements with their own formatting.
+  // isBlock forces every original LINE to start its own segment
+  // (regardless of style) - used for address/signature-style
+  // paragraphs where the original hard line breaks are the actual
+  // content structure, not just word-wrap, so they must render as real
+  // line breaks instead of being flowed/joined with spaces.
+  function v14BuildSegments(paraLines, isBlock) {
+    const segments = [];
+    paraLines.forEach(function (L) {
+      const order = L.rtl ? L.runs.slice().reverse() : L.runs;
+      order.forEach(function (r, ri) {
+        if (!r.text) return;
+        const sizePt = r.sizePt || 11, bold = !!r.bold, italic = !!r.italic,
+          color = r.color || '000000', family = r.family || 'Arial';
+        const styleKey = Math.round(sizePt) + '|' + bold + '|' + italic + '|' + color + '|' + family;
+        const isLineStart = ri === 0;
+        const last = segments[segments.length - 1];
+        if (last && last.styleKey === styleKey && !(isBlock && isLineStart)) {
+          last.text += ' ' + r.text;
+        } else {
+          segments.push({
+            text: r.text, sizePt: sizePt, bold: bold, italic: italic, color: color, family: family,
+            styleKey: styleKey,
+            lineBreakBefore: !!(isBlock && isLineStart && segments.length > 0)
+          });
+        }
+      });
+    });
+    return segments;
+  }
+
+  // A paragraph whose non-last lines are all noticeably narrower than
+  // the page's real content column is a deliberate short-line block
+  // (an address, a signature block, a "Between" party header) rather
+  // than word-wrapped prose - wrapped prose's lines (other than the
+  // final, naturally-short one) run close to the full column width.
+  function v14IsBlockParagraph(paraLines, columnWidthPt) {
+    if (paraLines.length < 2 || !(columnWidthPt > 0)) return false;
+    const nonLast = paraLines.slice(0, -1);
+    return nonLast.every(function (l) { return l.wPt < columnWidthPt * 0.62; });
+  }
+
+  // ============================================================
+  // TABLE DETECTION (local/free - never calls the vision API)
+  // ============================================================
+  // extractOfflinePage already splits a visual row into SEPARATE line
+  // objects wherever there's a big horizontal gap ("table columns as
+  // separate boxes" - see the row-splitting step there), so a table
+  // row's cells already arrive as distinct `lines` entries sharing
+  // close to the same yPt. What was missing was recognising that
+  // PATTERN - several consecutive rows that each split into 2+ pieces,
+  // whose split points line up into the same handful of x-positions
+  // across those rows - as a table, instead of feeding all those
+  // pieces into the paragraph grouper, which just sorted them by
+  // position and joined them with spaces (scrambling every column of a
+  // payment schedule into one unlabelled run of numbers).
+
+  // Groups lines into visual ROWS by y-range overlap (not the looser
+  // "close enough" paragraph gap test - a row's cells must genuinely
+  // sit side by side, not just be vertically nearby).
+  function v14GroupIntoRows(lines) {
+    const sorted = lines.slice().sort(function (a, b) { return a.yPt - b.yPt || a.xPt - b.xPt; });
+    const rows = [];
+    sorted.forEach(function (L) {
+      const row = rows.find(function (R) {
+        const overlap = Math.min(R.yBottom, L.yPt + L.hPt) - Math.max(R.yTop, L.yPt);
+        return overlap > Math.min(R.yBottom - R.yTop, L.hPt) * 0.5;
+      });
+      if (row) {
+        row.lines.push(L);
+        row.yTop = Math.min(row.yTop, L.yPt);
+        row.yBottom = Math.max(row.yBottom, L.yPt + L.hPt);
+      } else {
+        rows.push({ yTop: L.yPt, yBottom: L.yPt + L.hPt, lines: [L] });
+      }
+    });
+    rows.forEach(function (R) { R.lines.sort(function (a, b) { return a.xPt - b.xPt; }); });
+    rows.sort(function (a, b) { return a.yTop - b.yTop; });
+    return rows;
+  }
+
+  function v14NearestColumn(x, colStarts) {
+    let best = 0, bestDist = Infinity;
+    colStarts.forEach(function (c, idx) {
+      const d = Math.abs(x - c);
+      if (d < bestDist) { bestDist = d; best = idx; }
+    });
+    return best;
+  }
+
+  // Scans a page's rows for a run of 2+ CONSECUTIVE multi-cell rows
+  // whose cells' left edges cluster into the same set of x-positions -
+  // that column alignment repeating row after row is the actual
+  // signature of a table, as opposed to two unrelated short lines that
+  // just happen to sit near the same height once.
+  function v14DetectTables(lines) {
+    const rows = v14GroupIntoRows(lines);
+    const tables = [];
+    const usedLines = new Set();
+    let i = 0;
+    while (i < rows.length) {
+      if (rows[i].lines.length < 2) { i++; continue; }
+      let j = i;
+      while (j < rows.length && rows[j].lines.length >= 2) j++;
+      const block = rows.slice(i, j);
+      if (block.length >= 2) {
+        const xs = [];
+        block.forEach(function (R) { R.lines.forEach(function (L) { xs.push(L.xPt); }); });
+        xs.sort(function (a, b) { return a - b; });
+        const clusters = [];
+        xs.forEach(function (x) {
+          const last = clusters[clusters.length - 1];
+          if (last && x - last.max < 24) { last.max = x; last.sum += x; last.n++; }
+          else clusters.push({ max: x, sum: x, n: 1 });
+        });
+        if (clusters.length >= 2) {
+          const colStarts = clusters.map(function (c) { return c.sum / c.n; });
+          let goodRows = 0;
+          block.forEach(function (R) {
+            const cols = new Set(R.lines.map(function (L) { return v14NearestColumn(L.xPt, colStarts); }));
+            if (cols.size >= 2) goodRows++;
+          });
+          // Require most rows in the block to genuinely populate 2+ of
+          // the detected columns, and at least 3 rows total (2 rows of
+          // aligned text is common coincidence; 3+ repeating almost
+          // never is) - keeps this conservative so ordinary two-line
+          // paragraphs that happen to align once are never misread as
+          // a table and pulled out of normal flowing text.
+          if (block.length >= 3 && goodRows >= Math.ceil(block.length * 0.6)) {
+            tables.push({ rows: block, colStarts: colStarts });
+            block.forEach(function (R) { R.lines.forEach(function (L) { usedLines.add(L); }); });
+          }
+        }
+      }
+      i = j > i ? j : i + 1;
+    }
+    return { tables: tables, usedLines: usedLines };
+  }
+
+  // Converts a detected table's rows/columns into a plain grid of cell
+  // strings (row-major), merging any line whose x falls nearer one
+  // column cluster than another into that column.
+  function v14BuildTableGrid(table) {
+    return table.rows.map(function (R) {
+      const cells = table.colStarts.map(function () { return []; });
+      R.lines.forEach(function (L) {
+        const col = v14NearestColumn(L.xPt, table.colStarts);
+        const text = L.runs.map(function (r) { return r.text; }).join(' ').trim();
+        if (text) cells[col].push(text);
+      });
+      return cells.map(function (arr) { return arr.join(' '); });
+    });
+  }
+
   function v14GroupLinesIntoParagraphs(lines) {
     if (!lines.length) return [];
     const sorted = lines.slice().sort((a, b) => a.yPt - b.yPt || a.xPt - b.xPt);
@@ -475,7 +638,7 @@
   // always forcing the generic 1-inch default regardless of how the
   // source document was actually laid out.
   function computePageMargins(pg) {
-    const items = pg.paragraphs.concat(pg.images || []);
+    const items = pg.paragraphs.concat(pg.images || []).concat(pg.tables || []);
     if (!items.length) {
       return { top: MARGIN_TWIPS, right: MARGIN_TWIPS, bottom: MARGIN_TWIPS, left: MARGIN_TWIPS };
     }
@@ -515,23 +678,30 @@
         '" w:left="' + m.left + '" w:header="720" w:footer="720" w:gutter="0"/>';
     }
 
-    // One run per paragraph (translation reflows words, so word-level
-    // style runs from the original can't be preserved 1:1 - the
-    // paragraph's dominant style is used instead). Character spacing
-    // (tracking) is emitted as a real w:spacing value when the source
-    // used visible letter-spacing, rather than being silently dropped.
-    function runXml(p) {
-      const sz = Math.max(2, Math.round((p.fontPt || 11) * 2));
-      const col = /^[0-9A-F]{6}$/i.test(p.color || '') ? p.color.toUpperCase() : '000000';
-      const fam = esc(p.family || 'Arial');
-      const spacing = p.trackingPt ? ' <w:spacing w:val="' + Math.round(p.trackingPt * 20) + '"/>' : '';
+    // One <w:r> per SEGMENT, not per paragraph - a paragraph with a
+    // bold company name followed by regular body text now keeps both
+    // styles instead of collapsing to a single dominant one. A segment
+    // marked lineBreakBefore (address/signature-style paragraphs) opens
+    // with a real <w:br/> so the original hard line break survives
+    // instead of being flattened into flowing, space-joined text.
+    function segRunXml(seg, trackingPt) {
+      const sz = Math.max(2, Math.round((seg.sizePt || 11) * 2));
+      const col = /^[0-9A-F]{6}$/i.test(seg.color || '') ? seg.color.toUpperCase() : '000000';
+      const fam = esc(seg.family || 'Arial');
+      const spacing = trackingPt ? ' <w:spacing w:val="' + Math.round(trackingPt * 20) + '"/>' : '';
+      const br = seg.lineBreakBefore ? '<w:br/>' : '';
       return '<w:r><w:rPr>' +
         '<w:rFonts w:ascii="' + fam + '" w:hAnsi="' + fam + '" w:cs="' + fam + '"/>' +
-        (p.bold ? '<w:b/><w:bCs/>' : '') +
-        (p.italic ? '<w:i/><w:iCs/>' : '') +
+        (seg.bold ? '<w:b/><w:bCs/>' : '') +
+        (seg.italic ? '<w:i/><w:iCs/>' : '') +
         '<w:color w:val="' + col + '"/>' +
         '<w:sz w:val="' + sz + '"/><w:szCs w:val="' + sz + '"/>' + spacing +
-        '</w:rPr><w:t xml:space="preserve">' + esc(p.text) + '</w:t></w:r>';
+        '</w:rPr>' + br + '<w:t xml:space="preserve">' + esc(seg.text) + '</w:t></w:r>';
+    }
+    function paragraphRunsXml(p) {
+      return (p.segments || []).map(function (seg) {
+        return seg.text ? segRunXml(seg, p.trackingPt) : (seg.lineBreakBefore ? '<w:r><w:br/></w:r>' : '');
+      }).join('');
     }
 
     // ---- NUMBERING (bullets/numbered clauses) ----
@@ -611,17 +781,54 @@
         '</pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>';
     }
 
+    // ---- TABLE rendering ----
+    // A detected table becomes a real <w:tbl> (not flowing paragraphs),
+    // with its own column grid matching the source's detected column
+    // x-positions, a shaded header row, and light borders so the grid
+    // itself is visible - the whole point of detecting it as a table in
+    // the first place is to keep rows/columns aligned instead of
+    // collapsing into one unlabelled run of text.
+    function tableXml(table) {
+      const nCols = table.colStarts.length;
+      const colWidthsPt = table.colStarts.map(function (x, i) {
+        const nextX = i < nCols - 1 ? table.colStarts[i + 1] : table.rightPt;
+        return Math.max(24, nextX - x);
+      });
+      const totalWidthPt = colWidthsPt.reduce(function (a, b) { return a + b; }, 0);
+      const gridCols = colWidthsPt.map(function (w) { return '<w:gridCol w:w="' + Math.round(w * 20) + '"/>'; }).join('');
+      const borderXml = '<w:tblBorders>' +
+        ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(function (side) {
+          return '<w:' + side + ' w:val="single" w:sz="4" w:space="0" w:color="999999"/>';
+        }).join('') + '</w:tblBorders>';
+      let rowsXml = '';
+      table.grid.forEach(function (row, rIdx) {
+        let cellsXml = '';
+        row.forEach(function (cellText, cIdx) {
+          const w = Math.round((colWidthsPt[cIdx] || 40) * 20);
+          const shading = rIdx === 0 ? '<w:shd w:val="clear" w:color="auto" w:fill="E7E6E6"/>' : '';
+          const bold = rIdx === 0 ? '<w:b/><w:bCs/>' : '';
+          cellsXml += '<w:tc><w:tcPr><w:tcW w:w="' + w + '" w:type="dxa"/>' + shading + '</w:tcPr>' +
+            '<w:p><w:pPr><w:spacing w:before="20" w:after="20"/></w:pPr><w:r><w:rPr>' + bold +
+            '<w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr><w:t xml:space="preserve">' + esc(cellText) + '</w:t></w:r></w:p></w:tc>';
+        });
+        rowsXml += '<w:tr>' + cellsXml + '</w:tr>';
+      });
+      return '<w:tbl><w:tblPr><w:tblW w:w="' + Math.round(totalWidthPt * 20) + '" w:type="dxa"/>' + borderXml +
+        '<w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>' + gridCols + '</w:tblGrid>' + rowsXml + '</w:tbl>';
+    }
+
     let bodyXml = '';
     pages.forEach(function (pg, pIdx) {
       pg.margins = computePageMargins(pg);
       const isLastPage = pIdx === pages.length - 1;
 
-      // Interleave paragraphs and images in original vertical reading
-      // order, so an image that sat between two paragraphs in the
-      // source still sits between the SAME two paragraphs here, with
-      // the paragraphs' own square-wrap flowing around it.
+      // Interleave paragraphs, images and tables in original vertical
+      // reading order, so an image or table that sat between two
+      // paragraphs in the source still sits between the SAME two
+      // paragraphs here.
       const flow = pg.paragraphs.map(function (p) { return { kind: 'para', topPt: p.topPt, data: p }; })
-        .concat((pg.images || []).map(function (im) { return { kind: 'image', topPt: im.yPt, data: im }; }));
+        .concat((pg.images || []).map(function (im) { return { kind: 'image', topPt: im.yPt, data: im }; }))
+        .concat((pg.tables || []).map(function (t) { return { kind: 'table', topPt: t.topPt, data: t }; }));
       flow.sort(function (a, b) { return a.topPt - b.topPt; });
 
       flow.forEach(function (item, idx) {
@@ -633,8 +840,18 @@
           }
           return;
         }
+        if (item.kind === 'table') {
+          bodyXml += tableXml(item.data);
+          // OOXML requires a paragraph immediately following a table
+          // (a table can't be the literal last thing before a section
+          // break or the body's end) - this doubles as that spacer and,
+          // when the table is the page's last item, carries the actual
+          // section-break properties.
+          bodyXml += '<w:p>' + (isLastPage && isLastFlowItem ? '<w:pPr><w:sectPr>' + sectPrXml(pg) + '</w:sectPr></w:pPr>' : '') + '</w:p>';
+          return;
+        }
         const p = item.data;
-        const runsXml = p.text ? runXml(p) : '';
+        const runsXml = paragraphRunsXml(p);
         const isLastParagraph = isLastPage && isLastFlowItem;
         const pPr = '<w:pPr><w:spacing w:before="0" w:after="' + (p.spaceAfterTwips != null ? p.spaceAfterTwips : 160) +
           '" w:line="' + (p.lineTwips || 276) + '" w:lineRule="auto"/>' +
@@ -1172,7 +1389,31 @@
     // neighbouring lines in the same visual paragraph got translated -
     // the exact "half English / half Italian in one paragraph" bug.
     pages.forEach(function (pg) {
-      const usableLines = pg.lines.filter(function (L) { return L.runs.some(r => r.text && r.text.trim()); });
+      const allUsableLines = pg.lines.filter(function (L) { return L.runs.some(r => r.text && r.text.trim()); });
+
+      // TABLE DETECTION runs first, on the FULL set of lines, so that
+      // rows recognised as a table are pulled out of the pool BEFORE
+      // paragraph grouping ever sees them - otherwise the paragraph
+      // grouper (which only understands "close together = same
+      // paragraph") would flatten a payment schedule's rows into
+      // unlabelled runs of numbers, exactly as seen before this existed.
+      const tableResult = v14DetectTables(allUsableLines);
+      const usableLines = allUsableLines.filter(function (L) { return !tableResult.usedLines.has(L); });
+      pg.tables = tableResult.tables.map(function (t) {
+        const allX = t.rows.reduce(function (acc, R) { return acc.concat(R.lines.map(l => l.xPt)); }, []);
+        const allX2 = t.rows.reduce(function (acc, R) { return acc.concat(R.lines.map(l => l.xPt + l.wPt)); }, []);
+        return {
+          grid: v14BuildTableGrid(t),
+          colStarts: t.colStarts,
+          topPt: Math.min.apply(null, t.rows.map(R => R.yTop)),
+          bottomPt: Math.max.apply(null, t.rows.map(R => R.yBottom)),
+          leftPt: Math.min.apply(null, allX),
+          rightPt: Math.max.apply(null, allX2),
+          rtl: t.rows.some(function (R) { return R.lines.some(function (L) { return L.rtl; }); })
+        };
+      });
+      if (pg.tables.length) log(pg.tables.length + ' table(s) detected (' + tableResult.usedLines.size + ' line(s) reserved for table cells)', 'info');
+
       const contentLeftPt = usableLines.length ? Math.min.apply(null, usableLines.map(l => l.xPt)) : 0;
       const contentRightPt = usableLines.length ? Math.max.apply(null, usableLines.map(l => l.xPt + l.wPt)) : pg.wPt;
       const groups = v14GroupLinesIntoParagraphs(usableLines);
@@ -1185,7 +1426,16 @@
           return order.map(r => r.text).join(' ');
         }).join(' ').replace(/\s+/g, ' ').trim();
         const listInfo = v14DetectListMarker(originalText);
-        const cleanText = listInfo ? listInfo.clean.trim() : originalText;
+
+        const isBlock = v14IsBlockParagraph(paraLines, contentRightPt - contentLeftPt);
+        const segments = v14BuildSegments(paraLines, isBlock);
+        // Strip the list marker from the START of the first segment only
+        // (re-detecting on the segment's own text keeps this exact,
+        // since the segment was built from the same source runs).
+        if (listInfo && segments.length) {
+          const stripped = v14DetectListMarker(segments[0].text);
+          if (stripped) segments[0].text = stripped.clean.trim();
+        }
 
         const r0 = (paraLines[0].runs && paraLines[0].runs[0]) || {};
         const style = v14DominantStyle(paraLines);
@@ -1228,16 +1478,12 @@
           : 0;
 
         return {
-          text: cleanText,          // may be replaced with translated text below
+          segments: segments,       // each segment's .text may be replaced with translated text below
           originalText: originalText,
+          isBlock: isBlock,
           rtl: rtl,
           align: align,
           listInfo: listInfo ? { type: listInfo.type, level: level } : null,
-          fontPt: style.sizePt,
-          bold: style.bold,
-          italic: style.italic,
-          color: style.color,
-          family: style.family,
           trackingPt: v14DetectTracking(paraLines[0]),
           lineTwips: lineTwips,
           spaceAfterTwips: 160, // refined below once all paragraphs on the page are known
@@ -1270,32 +1516,70 @@
 
     // TRANSLATION: the other exception to "no API call" in text-based
     // mode. Each PARAGRAPH (not each raw line) is translated as one
-    // unit - see the paragraph-building comment above for why.
+    // unit - see the paragraph-building comment above for why. A
+    // paragraph that carries more than one STYLE SEGMENT (e.g. a bold
+    // company name followed by a regular address, or a signature block
+    // whose lines must stay separate) sends each segment as its own
+    // translation item instead of collapsing them into one string, so
+    // the bold/line-break boundary survives translation instead of
+    // disappearing into a single uniformly-styled block of text.
     if (!keepOriginal) {
       let counter = 0;
       const flatParas = [];
-      const paraRefs = []; // parallel array: {pg, idx} for each flatParas entry
+      const paraRefs = []; // parallel array: {pg, idx, segIdx, id} for each flatParas entry
+      const tableRefs = []; // parallel array: {table, row, col, id} for table-cell entries
       pages.forEach(function (pg, pIdx) {
         pg.paragraphs.forEach(function (para, paIdx) {
-          if (!para.text) return;
-          counter++;
-          const id = 'off_p' + (pIdx + 1) + '_para' + paIdx;
-          flatParas.push({
-            id: id,
-            page: pIdx + 1,
-            reading_order: counter,
-            text: para.text,
-            language: 'unknown',
-            direction: para.rtl ? 'rtl' : 'ltr'
+          para.segments.forEach(function (seg, segIdx) {
+            if (!seg.text) return;
+            counter++;
+            const id = 'off_p' + (pIdx + 1) + '_para' + paIdx + (para.segments.length > 1 ? '_s' + segIdx : '');
+            flatParas.push({
+              id: id,
+              page: pIdx + 1,
+              // Segments of the SAME paragraph share a paragraph_id so
+              // the translation model can use each other for context
+              // even though each is translated back into its own slot.
+              paragraph_id: para.segments.length > 1 ? ('p' + (pIdx + 1) + '_' + paIdx) : undefined,
+              reading_order: counter,
+              text: seg.text,
+              language: 'unknown',
+              direction: para.rtl ? 'rtl' : 'ltr'
+            });
+            paraRefs.push({ pg: pg, paIdx: paIdx, segIdx: segIdx, id: id });
           });
-          paraRefs.push({ pg: pg, idx: paIdx, id: id });
+        });
+        // Table cells translate individually too, but every cell in the
+        // SAME table shares one paragraph_id so the model can see the
+        // whole table (headers, neighbouring cells) for context - e.g.
+        // knowing a column is "VAT" helps it translate that column's
+        // numeric-looking cells correctly rather than guessing blind.
+        (pg.tables || []).forEach(function (table, tblIdx) {
+          const tableId = 'p' + (pIdx + 1) + '_tbl' + tblIdx;
+          table.grid.forEach(function (row, rowIdx) {
+            row.forEach(function (cellText, colIdx) {
+              if (!cellText) return;
+              counter++;
+              const id = 'off_' + tableId + '_r' + rowIdx + '_c' + colIdx;
+              flatParas.push({
+                id: id,
+                page: pIdx + 1,
+                paragraph_id: tableId,
+                reading_order: counter,
+                text: cellText,
+                language: 'unknown',
+                direction: table.rtl ? 'rtl' : 'ltr'
+              });
+              tableRefs.push({ table: table, rowIdx: rowIdx, colIdx: colIdx, id: id });
+            });
+          });
         });
       });
 
       if (flatParas.length > 0) {
         const updBefore = snapshotApiCalls();
         try {
-          log('Translating extracted text to ' + targetLang + ' (' + flatParas.length + ' paragraph(s))...');
+          log('Translating extracted text to ' + targetLang + ' (' + flatParas.length + ' segment(s))...');
           const translationResult = await v14TranslateAllPages(model, flatParas, targetLang);
           const map = {};
           (translationResult.translations || []).forEach(function (t) {
@@ -1305,12 +1589,12 @@
           });
           let replaced = 0, missing = 0;
           paraRefs.forEach(function (ref) {
-            const para = ref.pg.paragraphs[ref.idx];
+            const seg = ref.pg.paragraphs[ref.paIdx].segments[ref.segIdx];
             if (map[ref.id] !== undefined) {
-              para.text = map[ref.id];
+              seg.text = map[ref.id];
               replaced++;
             } else {
-              // No entry came back for this paragraph (e.g. it fell
+              // No entry came back for this segment (e.g. it fell
               // outside a still-truncated response) - say so explicitly
               // instead of silently leaving it in the source language,
               // so a mixed-language document is visible in the log
@@ -1318,8 +1602,16 @@
               missing++;
             }
           });
-          log('Translation: ' + replaced + ' paragraph(s) translated' +
-            (missing ? ', ' + missing + ' paragraph(s) came back untranslated (kept in source language)' : ''),
+          tableRefs.forEach(function (ref) {
+            if (map[ref.id] !== undefined) {
+              ref.table.grid[ref.rowIdx][ref.colIdx] = map[ref.id];
+              replaced++;
+            } else {
+              missing++;
+            }
+          });
+          log('Translation: ' + replaced + ' segment(s) translated' +
+            (missing ? ', ' + missing + ' segment(s) came back untranslated (kept in source language)' : ''),
             missing ? 'warn' : 'info');
         } catch (translateErr) {
           log('TRANSLATION DID NOT HAPPEN (' + translateErr.message + ') — the output has the ORIGINAL untranslated text', 'error');
@@ -2484,6 +2776,9 @@ Beyond individual terminology (covered above), if the exact same sentence or cla
 
 IMPORTANT — DEFINED ENTITY PROTECTION:
 In addition to personal and organization names (covered above under factual data), never translate fund names, project names, building/property names, product names, or trademark/brand names - carry these through exactly as written in the source, in their original script/language, even when translating the sentence around them.
+
+IMPORTANT — PUNCTUATION AND CAPITALIZATION FIDELITY:
+Preserve the source's actual punctuation marks rather than substituting a look-alike: an em dash (—) or en dash (–) in the source must stay an em/en dash in the output, not become a plain hyphen (-), and vice versa; preserve curly/smart quotation marks as such rather than converting them to straight quotes. For any term the source treats as a defined term (capitalized consistently in the source, e.g. "the Premises", "the Agreement", "the Party"), keep that same capitalization EVERY time it appears in the translation - never capitalize it in one paragraph and lowercase the same word used the same way in another.
 
 Before returning your JSON, do a final self-check: verify that every paragraph was translated, none was skipped, none was duplicated beyond what genuinely appears once in your output per input block, every input id appears in your output exactly once, and all numbering, cross-references, and defined terms remained consistent throughout. Correct anything you find before producing your final output.
 
