@@ -1834,10 +1834,10 @@ Before returning your JSON, do a final self-check: verify that every paragraph w
 The translated document must preserve the legal/practical meaning, effect, structure, and evidential value of the source document - the translation must never alter what any party is agreeing to, obligated to, entitled to, or bound by.
 
 IMPORTANT — TRANSLATE PARAGRAPH-WISE, NOT LINE-BY-LINE:
-Blocks that share the same "paragraph_id", taken in their given order (across pages if needed — a paragraph_id's blocks may span a page boundary, since blocks are given in full-document reading order), together form ONE continuous paragraph. Join them, understand the FULL paragraph's meaning and grammar, and translate it as one coherent unit — never translate an isolated block without its paragraph's context.
+Entries that share the same "paragraph_id" belong to the same paragraph. If you receive multiple separate entries for one paragraph_id, mentally join them in their given order (across pages if needed) to understand the FULL paragraph's meaning and grammar before translating - never translate an isolated fragment without its paragraph's full context. Some paragraphs may already arrive as a single combined entry instead of several - in that case just translate that one entry naturally as a complete paragraph.
 
-IMPORTANT — SPLIT BACK INTO THE SAME BLOCKS, WIDTH-AWARE:
-After translating a paragraph as a whole, split the translated text back across exactly the same blocks (same count, same order) that paragraph came from. Use each block's given "width" (pixels) as a guide for how much of the translated text that specific block/line should carry — a wider block's line should carry proportionally more translated text than a narrow one — so that when placed into a textbox of that same width, the text fits reasonably (not drastically too long or too short for that line). Blocks that are not part of any multi-line paragraph (isolated labels, single words, dates, numbers, standalone titles) just get their own direct translation.
+IMPORTANT — DO NOT WORRY ABOUT LINE-FITTING OR BOX WIDTHS:
+Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabel}, at whatever length that naturally takes - do not artificially shorten or pad it, and do not try to match the line-count or per-line length of the source. Exactly how the translated text gets fitted back into the page's layout is handled entirely outside of this step; your only job is an accurate, natural, complete translation of each entry's full content.
 
 RULES
 - Never add or remove blocks. Every input id must appear exactly once in your output, in the same order. No translated content may be lost, and no translated content may appear twice under different ids.
@@ -1858,17 +1858,56 @@ Return ONLY this JSON shape, nothing else:
 }`;
   }
 
-  async function v14TranslateAllPages(model, allPagesJsonArr, targetLanguageLabel) {
-    const compact = allPagesJsonArr.map(b => ({
-      id: b.id,
-      page: b.page,
-      paragraph_id: b.paragraph_id,
-      order: b.reading_order,
-      text: b.text,
-      width: b.width,
-      language: b.language,
-      direction: b.direction
-    }));
+  async function v14TranslateAllPages(model, allPagesJsonArr, targetLanguageLabel, enableParagraphGrouping) {
+    // Group blocks that share a paragraph_id (2+ blocks) into ONE
+    // combined-text entry - the model translates the whole paragraph as
+    // a single string, and v14ReflowTextIntoBlocks (used later in
+    // v14ApplyTranslations) redistributes that string back across the
+    // original block widths locally. Blocks with no paragraph_id, or
+    // whose paragraph_id only has one block (isolated labels/titles),
+    // are sent individually exactly as before. Opt-in only (see param
+    // above) - only the caller that merges via v14ApplyTranslations
+    // (which understands para_-prefixed ids) enables this; the
+    // text-based path's own simpler line-id merge does not yet, so it
+    // keeps sending one entry per line as before.
+    const byParagraph = {};
+    if (enableParagraphGrouping) {
+      allPagesJsonArr.forEach(function (b) {
+        if (!b.paragraph_id) return;
+        if (!byParagraph[b.paragraph_id]) byParagraph[b.paragraph_id] = [];
+        byParagraph[b.paragraph_id].push(b);
+      });
+    }
+
+    const compact = [];
+    const seenParagraphs = {};
+    allPagesJsonArr.forEach(function (b) {
+      const group = b.paragraph_id ? byParagraph[b.paragraph_id] : null;
+      if (group && group.length > 1) {
+        if (seenParagraphs[b.paragraph_id]) return; // already added this paragraph's combined entry
+        seenParagraphs[b.paragraph_id] = true;
+        const ordered = group.slice().sort((a, c) => (Number(a.reading_order) || 0) - (Number(c.reading_order) || 0));
+        compact.push({
+          id: 'para_' + b.paragraph_id,
+          page: ordered[0].page,
+          paragraph_id: b.paragraph_id,
+          order: ordered[0].reading_order,
+          text: ordered.map(o => o.text).join(' '),
+          language: b.language,
+          direction: b.direction
+        });
+      } else {
+        compact.push({
+          id: b.id,
+          page: b.page,
+          paragraph_id: b.paragraph_id,
+          order: b.reading_order,
+          text: b.text,
+          language: b.language,
+          direction: b.direction
+        });
+      }
+    });
 
     const targetCountry = window.getSetupPref ? window.getSetupPref('translation', 'targetCountry', '') : '';
 
@@ -1953,18 +1992,91 @@ Return ONLY this JSON shape, nothing else:
   }
 
   // id-match karke original text ko translated text se REPLACE karta hai.
+  // Redistributes ONE translated paragraph string across the N original
+  // blocks it came from, word by word, using each block's own width/
+  // font-size as the wrap boundary (same measurement tool used for
+  // font-size fitting) - this replaces asking the model to guess how to
+  // split translated text across blocks, which needed the model to
+  // output N separate entries per paragraph. Now it only needs to
+  // output ONE translated string per paragraph, and we handle the
+  // line-splitting locally, deterministically.
+  function v14ReflowTextIntoBlocks(translatedText, blocks) {
+    const words = String(translatedText || '').split(/\s+/).filter(Boolean);
+    if (!blocks.length) return [];
+    if (blocks.length === 1 || words.length === 0) {
+      return blocks.map((b, i) => (i === 0 ? translatedText : ''));
+    }
+
+    const fontPt = Number(blocks[0].font_size_px) ? Number(blocks[0].font_size_px) * 0.75 : 10;
+    const bold = String(blocks[0].style || '').toLowerCase().indexOf('bold') !== -1;
+
+    const linesOut = [];
+    let wordIdx = 0;
+    for (let li = 0; li < blocks.length; li++) {
+      const isLastBlock = li === blocks.length - 1;
+      const maxWidthPx = Math.max(10, Number(blocks[li].width) || 100);
+      let current = '';
+      if (isLastBlock) {
+        // Last available block gets everything remaining, however much
+        // that is - better a slightly-overflowing final line (font-fit
+        // step already handles that) than silently dropped words.
+        current = words.slice(wordIdx).join(' ');
+        wordIdx = words.length;
+      } else {
+        while (wordIdx < words.length) {
+          const candidate = current ? current + ' ' + words[wordIdx] : words[wordIdx];
+          const w = v14MeasureTextWidthPx(candidate, fontPt, bold);
+          if (w <= maxWidthPx || !current) {
+            current = candidate;
+            wordIdx++;
+          } else {
+            break;
+          }
+        }
+      }
+      linesOut.push(current);
+    }
+    return linesOut;
+  }
+
   function v14ApplyTranslations(allPagesJsonArr, translations) {
-    const map = {};
+    const blockMap = {};    // block id -> translated text
+    const paragraphMap = {}; // paragraph_id -> combined translated text
     translations.forEach(t => {
-      if (t && t.id && typeof t.translated_text === 'string' && t.translated_text.trim().length > 0) {
-        map[t.id] = t.translated_text.trim();
+      if (!t || typeof t.translated_text !== 'string' || !t.translated_text.trim()) return;
+      if (typeof t.id === 'string' && t.id.indexOf('para_') === 0) {
+        paragraphMap[t.id.slice(5)] = t.translated_text.trim();
+      } else if (t.id) {
+        blockMap[t.id] = t.translated_text.trim();
       }
     });
+
+    // Group original blocks by paragraph_id so paragraph-level
+    // translations can be reflowed across the right set of blocks, in
+    // their original reading order.
+    const byParagraph = {};
+    allPagesJsonArr.forEach(function (b) {
+      if (!b.paragraph_id) return;
+      if (!byParagraph[b.paragraph_id]) byParagraph[b.paragraph_id] = [];
+      byParagraph[b.paragraph_id].push(b);
+    });
+    const reflowedByBlockId = {};
+    Object.keys(paragraphMap).forEach(function (pid) {
+      const group = (byParagraph[pid] || []).slice().sort((a, c) => (Number(a.reading_order) || 0) - (Number(c.reading_order) || 0));
+      if (!group.length) return;
+      const lines = v14ReflowTextIntoBlocks(paragraphMap[pid], group);
+      group.forEach(function (b, i) { reflowedByBlockId[b.id] = lines[i] || ''; });
+    });
+
     let replacedCount = 0;
     const result = allPagesJsonArr.map(b => {
-      if (b.id && map[b.id] !== undefined) {
+      if (b.id && reflowedByBlockId[b.id] !== undefined) {
         replacedCount++;
-        return Object.assign({}, b, { text: map[b.id] });
+        return Object.assign({}, b, { text: reflowedByBlockId[b.id] });
+      }
+      if (b.id && blockMap[b.id] !== undefined) {
+        replacedCount++;
+        return Object.assign({}, b, { text: blockMap[b.id] });
       }
       return b;
     });
@@ -2417,7 +2529,7 @@ Return ONLY this JSON shape, nothing else:
       const updBefore = snapshotApiCalls();
       try {
         log('[Final Call] Translating the whole document to ' + targetLang + ' (detecting document type + tone)...');
-        const translationResult = await v14TranslateAllPages(model, allPagesJson, targetLang);
+        const translationResult = await v14TranslateAllPages(model, allPagesJson, targetLang, true);
         const applied = v14ApplyTranslations(allPagesJson, translationResult.translations);
         allPagesJson = applied.blocks;
         log('Translation: ' + applied.replacedCount + ' line(s) translated');
