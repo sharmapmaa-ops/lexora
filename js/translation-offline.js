@@ -2305,23 +2305,6 @@ Return ONLY this JSON shape, nothing else:
                 bgDataUrl = img.dataUrl;
               }
             }
-            // AI-cleaning alone is unreliable at removing EVERY line of
-            // text - it's been observed leaving field labels behind
-            // while removing the filled-in values, which then shows as
-            // doubled text once the real (repositioned) labels are drawn
-            // on top. Paint white over every known text-block coordinate
-            // as a guaranteed second pass, on top of the AI-cleaned
-            // image (not the original) - this still preserves whatever
-            // graphics the AI-clean protected, since text-block boxes
-            // don't cover the logo/seal areas.
-            if (bgIsCleaned) {
-              try {
-                bgDataUrl = await v14PaintOverTextBoxes(bgDataUrl, currentJson);
-                log('P' + pageNum + ': applied a guaranteed local-paint pass over the AI-cleaned background too');
-              } catch (paintErr2) {
-                log('P' + pageNum + ': guaranteed local-paint pass failed (' + paintErr2.message + ') — keeping AI-cleaned result as-is', 'warn');
-              }
-            }
           } else {
             try {
               bgDataUrl = await v14PaintOverTextBoxes(img.dataUrl, currentJson);
