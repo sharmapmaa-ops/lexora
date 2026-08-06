@@ -12782,6 +12782,7 @@
                 window.__lexoraAuthToken = null;
                 profileData = null;
                 document.getElementById('appShell').style.display = 'none';
+                authActiveSection = 'home';
                 authLoginModalOpen = false;
                 document.body.style.overflow = '';
                 authState = { step: 'login', verifyPurpose: null, userId: null, email: null,
