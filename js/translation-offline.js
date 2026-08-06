@@ -1010,41 +1010,7 @@ STRICT RULES:
     });
   }
 
-  // Marks every known text-block region with a distinct, essentially
-  // never-occurs-in-a-real-document color (bright magenta) so the
-  // image model can be told "inpaint only the magenta-marked areas"
-  // instead of "find and remove all text yourself" - this is what
-  // actually gives it exact coordinates to work with (from our own
-  // OCR pass), rather than asking it to detect text on its own, which
-  // is the unreliable part of the old approach.
-  const V14_MASK_COLOR = '#FF00FF';
-  function v14BuildMarkedImage(dataUrl, blocks) {
-    return new Promise(function (resolve, reject) {
-      const img = new Image();
-      img.onload = function () {
-        try {
-          const c = document.createElement('canvas');
-          c.width = img.naturalWidth || img.width;
-          c.height = img.naturalHeight || img.height;
-          const ctx = c.getContext('2d');
-          ctx.drawImage(img, 0, 0);
-          ctx.fillStyle = V14_MASK_COLOR;
-          const pad = 1;
-          blocks.forEach(function (b) {
-            const x = Number(b.x) || 0, y = Number(b.y) || 0;
-            const w = Number(b.width) || 0, h = Number(b.height) || 0;
-            if (w > 0 && h > 0) ctx.fillRect(x - pad, y - pad, w + pad * 2, h + pad * 2);
-          });
-          resolve(c.toDataURL('image/png'));
-        } catch (e) { reject(e); }
-      };
-      img.onerror = function () { reject(new Error('failed to load page image for masking')); };
-      img.src = dataUrl;
-    });
-  }
-
-  async function v14CleanImageAI(cleanModel, dataUrl, blocks) {
-    const markedDataUrl = await v14BuildMarkedImage(dataUrl, blocks);
+  async function v14CleanImageAI(cleanModel, dataUrl) {
     const data = await v14ProxyJson({
       model: cleanModel,
       modalities: ['image', 'text'],
@@ -1052,7 +1018,7 @@ STRICT RULES:
         role: 'user',
         content: [
           { type: 'text', text: v14GetCleanImagePrompt() },
-          { type: 'image_url', image_url: { url: markedDataUrl } }
+          { type: 'image_url', image_url: { url: dataUrl } }
         ]
       }]
     });
@@ -2324,7 +2290,7 @@ Return ONLY this JSON shape, nothing else:
           if (pageHasVisualBg) {
             try {
               log('P' + pageNum + ': page has a visual background — AI-cleaning (' + cleanModel + ')...');
-              bgDataUrl = await v14CleanImageAI(cleanModel, img.dataUrl, currentJson);
+              bgDataUrl = await v14CleanImageAI(cleanModel, img.dataUrl);
               bgIsCleaned = true;
               log('P' + pageNum + ': background AI-cleaned (graphics preserved)');
             } catch (cleanErr) {

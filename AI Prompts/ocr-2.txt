@@ -1,10 +1,1 @@
-This image has certain rectangular regions marked with a solid bright magenta color (#FF00FF). These magenta rectangles are NOT part of the original document - they are markers showing you exactly which regions contain text that needs to be removed.
-
-Your task: for every magenta-marked rectangle, inpaint over it - reconstruct what the background underneath would naturally look like (matching the color, shading, gradient, or pattern of the immediately surrounding area) so the magenta marker and whatever text it was covering both disappear completely, as if neither ever existed.
-
-Critical rules:
-- Only modify the magenta-marked rectangular regions. Every pixel outside those regions - logos, seals, stamps, photographs, drawings, lines, borders, patterns, textures, colors, background designs, and any other visual element - must remain EXACTLY as it is in the input image, unchanged.
-- Do not leave any trace of the magenta color anywhere in the output.
-- Do not add any new text anywhere in the image, including inside the regions you are filling in.
-- Do not change the image's width or height.
-- The output must be the same document, at the same size, with only the marked regions cleanly filled in to match their surroundings.
+Generate a clean version of this image without changing its original width and height. Completely remove all readable text, printed words, handwritten signatures, and any linguistic characters from the image, as if they never existed. Do not alter any non-readable elements like logos, seals, stamps, photographs, drawings, lines, borders, patterns, textures, colors, or background designs - preserve all of those exactly. The output must have the exact same dimensions as the input and no new text should be added.
