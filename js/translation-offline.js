@@ -305,6 +305,40 @@
   // Groups a page's lines into paragraphs by vertical gap: lines that
   // sit close together (within about 0.6x the surrounding line height)
   // are the same paragraph; a bigger gap signals a paragraph break.
+  // ---- DOMINANT STYLE (weighted, not "just the first run") ----
+  // A paragraph's marker ("4.", "A.") is often bold even when the body
+  // text after it is not - reading style off paraLines[0].runs[0]
+  // picked up the MARKER's style (a couple of bold characters) and
+  // applied it to the entire translated body. Weighting each run's
+  // style by how many characters it covers means a two-character bold
+  // marker can no longer outvote a 400-character regular body run; the
+  // style that actually covers most of the paragraph wins, which is
+  // also what correctly keeps a genuinely-all-bold paragraph (e.g. the
+  // preamble's defined-party block) bold.
+  function v14DominantStyle(paraLines) {
+    const buckets = {}; // key -> { weight, sizePt, bold, italic, color, family }
+    let totalWeight = 0;
+    paraLines.forEach(function (L) {
+      (L.runs || []).forEach(function (r) {
+        const len = (r.text || '').length;
+        if (!len) return;
+        totalWeight += len;
+        const key = (r.sizePt || 11) + '|' + !!r.bold + '|' + !!r.italic + '|' + (r.color || '000000') + '|' + (r.family || 'Arial');
+        if (!buckets[key]) buckets[key] = { weight: 0, sizePt: r.sizePt || 11, bold: !!r.bold, italic: !!r.italic, color: r.color || '000000', family: r.family || 'Arial' };
+        buckets[key].weight += len;
+      });
+    });
+    let best = null;
+    Object.keys(buckets).forEach(function (k) {
+      if (!best || buckets[k].weight > best.weight) best = buckets[k];
+    });
+    if (!best) {
+      const r0 = (paraLines[0] && paraLines[0].runs && paraLines[0].runs[0]) || {};
+      return { sizePt: r0.sizePt || 11, bold: !!r0.bold, italic: !!r0.italic, color: r0.color || '000000', family: r0.family || 'Arial' };
+    }
+    return best;
+  }
+
   function v14GroupLinesIntoParagraphs(lines) {
     if (!lines.length) return [];
     const sorted = lines.slice().sort((a, b) => a.yPt - b.yPt || a.xPt - b.xPt);
@@ -843,6 +877,36 @@
     const F = pdfjsLib.OPS;
     let ops;
     try { ops = await page.getOperatorList(); } catch (e) { return []; }
+
+    // Signature/form-field WIDGET annotations (digital-signature stamps,
+    // "sign here" boxes) sometimes surface their appearance-stream
+    // artwork through the same paint ops as real page content, but they
+    // are never something a translated flowing document should show as
+    // a floating picture - inserting one produces a stray, wrongly-
+    // placed graphic (and can inflate a page's content past its own
+    // height, spilling the signature block onto a spurious extra page).
+    // Any detected "image" that overlaps a widget annotation's own
+    // rectangle is therefore dropped before it ever becomes a picture.
+    let annotRects = [];
+    try {
+      const annots = await page.getAnnotations({ intent: 'display' });
+      annotRects = (annots || [])
+        .filter(function (a) { return a.subtype === 'Widget' || a.fieldType === 'Sig'; })
+        .map(function (a) {
+          const r = a.rect; // [x1, y1, x2, y2] in PDF user space (bottom-origin)
+          const x0 = Math.min(r[0], r[2]), x1 = Math.max(r[0], r[2]);
+          const y0 = Math.min(r[1], r[3]), y1 = Math.max(r[1], r[3]);
+          return { xPt: x0, yPt: pageH - y1, wPt: x1 - x0, hPt: y1 - y0 };
+        });
+    } catch (e) { /* annotations optional - proceed without the exclusion list */ }
+    function overlapsAnnotation(box) {
+      return annotRects.some(function (a) {
+        const ox = Math.min(box.xPt + box.wPt, a.xPt + a.wPt) - Math.max(box.xPt, a.xPt);
+        const oy = Math.min(box.yPt + box.hPt, a.yPt + a.hPt) - Math.max(box.yPt, a.yPt);
+        return ox > 0 && oy > 0;
+      });
+    }
+
     const images = [];
     const stack = [];
     let ctm = [1, 0, 0, 1, 0, 0];
@@ -864,6 +928,16 @@
         ctm = stack.length ? stack.pop() : ctm;
       } else if (fn === F.transform) {
         ctm = concat(ctm, args);
+      } else if (fn === F.paintFormXObjectBegin) {
+        // Entering a Form XObject (letterheads/logos are often wrapped
+        // in one) applies its own matrix on top of the current CTM,
+        // exactly like an explicit "cm" - without this, any image drawn
+        // inside the form inherits the OUTER transform only and lands
+        // at the wrong page position.
+        stack.push(ctm.slice());
+        if (args && args[0]) ctm = concat(ctm, args[0]);
+      } else if (fn === F.paintFormXObjectEnd) {
+        ctm = stack.length ? stack.pop() : ctm;
       } else if (fn === F.paintImageXObject || fn === F.paintJpegXObject ||
                  fn === F.paintImageMaskXObject) {
         const pts = [[0, 0], [1, 0], [0, 1], [1, 1]].map(function (p) {
@@ -876,7 +950,9 @@
         // Skip slivers - hairline rules/underlines are sometimes drawn as
         // 1px-tall images and shouldn't reserve a picture box.
         if (wPt < 10 || hPt < 10) continue;
-        images.push({ xPt: minX, yPt: pageH - maxY, wPt: wPt, hPt: hPt });
+        const box = { xPt: minX, yPt: pageH - maxY, wPt: wPt, hPt: hPt };
+        if (overlapsAnnotation(box)) continue;
+        images.push(box);
       }
     }
     if (images.length) log('P' + pageNo + ': ' + images.length + ' image region(s) detected', 'info');
@@ -1112,6 +1188,7 @@
         const cleanText = listInfo ? listInfo.clean.trim() : originalText;
 
         const r0 = (paraLines[0].runs && paraLines[0].runs[0]) || {};
+        const style = v14DominantStyle(paraLines);
         // Average line-to-line gap within the paragraph, relative to
         // font size, becomes the real w:line spacing value instead of
         // one fixed constant for every paragraph in the document.
@@ -1156,11 +1233,11 @@
           rtl: rtl,
           align: align,
           listInfo: listInfo ? { type: listInfo.type, level: level } : null,
-          fontPt: r0.sizePt || 11,
-          bold: !!r0.bold,
-          italic: !!r0.italic,
-          color: r0.color || '000000',
-          family: r0.family || 'Arial',
+          fontPt: style.sizePt,
+          bold: style.bold,
+          italic: style.italic,
+          color: style.color,
+          family: style.family,
           trackingPt: v14DetectTracking(paraLines[0]),
           lineTwips: lineTwips,
           spaceAfterTwips: 160, // refined below once all paragraphs on the page are known
