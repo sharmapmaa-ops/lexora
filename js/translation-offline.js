@@ -829,6 +829,68 @@ STRICT RULES:
     return prompt;
   }
 
+  // A quote character INSIDE a translated string value that the model
+  // forgot to escape (e.g. translating a quoted term like "CAMELOT")
+  // breaks JSON.parse at that exact spot, even though the rest of the
+  // response is perfectly well-formed. Walk the text tracking whether
+  // we're inside a string; when a quote appears mid-string but the next
+  // meaningful character isn't a valid JSON continuation (, } ] :), it's
+  // almost certainly an unescaped internal quote, not a real string
+  // boundary - escape it instead of letting it terminate the string.
+  function v14RepairUnescapedQuotes(text) {
+    let result = '';
+    let inString = false;
+    let i = 0;
+    while (i < text.length) {
+      const ch = text[i];
+      if (ch === '\\' && inString) {
+        result += ch + (text[i + 1] || '');
+        i += 2;
+        continue;
+      }
+      if (ch === '"') {
+        if (!inString) {
+          inString = true;
+          result += ch;
+          i++;
+          continue;
+        }
+        // We're inside a string and hit an unescaped quote - look ahead
+        // (skipping whitespace) to see if this looks like a real closing
+        // quote (followed by a JSON structural character) or a stray
+        // internal quote that needs escaping.
+        let j = i + 1;
+        while (j < text.length && /\s/.test(text[j])) j++;
+        const next = text[j];
+        let looksLikeRealClose = (next === '}' || next === ']' || next === ':' || next === undefined);
+        if (!looksLikeRealClose && next === ',') {
+          // A comma is ambiguous - could be real JSON structure (next
+          // property, or next array element) or just a comma inside the
+          // sentence itself (e.g. '..."CAMELOT", established...'). Only
+          // trust it if what follows genuinely looks like a new JSON
+          // key ("something": ) or the start of a new object/array
+          // element - not more lowercase prose.
+          let k = j + 1;
+          while (k < text.length && /\s/.test(text[k])) k++;
+          const rest = text.slice(k, k + 40);
+          looksLikeRealClose = /^"[^"]{1,60}"\s*:/.test(rest) || /^[{\[]/.test(rest);
+        }
+        if (looksLikeRealClose) {
+          inString = false;
+          result += ch;
+          i++;
+        } else {
+          result += '\\"';
+          i++;
+        }
+        continue;
+      }
+      result += ch;
+      i++;
+    }
+    return result;
+  }
+
   function v14CleanJsonResponse(raw) {
     let cleaned = String(raw || '').trim();
     cleaned = cleaned.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '');
@@ -1441,7 +1503,12 @@ STRICT RULES:
       const cleaned = v14CleanJsonResponse(rawContent);
 
       try {
-        const p = JSON.parse(cleaned);
+        let p;
+        try {
+          p = JSON.parse(cleaned);
+        } catch (parseErr0) {
+          p = JSON.parse(v14RepairUnescapedQuotes(cleaned));
+        }
         if (!p || typeof p !== 'object' || !Array.isArray(p.text_blocks)) {
           throw new Error('Model did not return the expected {"text_blocks":[...]} format.');
         }
@@ -1810,7 +1877,21 @@ Return ONLY this JSON shape, nothing else:
       }
       if (!res.raw) throw new Error('No content received from the translation model.');
       const cleaned = v14CleanJsonResponse(res.raw);
-      const parsed = JSON.parse(cleaned); // throws on malformed JSON - caller decides whether to retry
+      let parsed;
+      try {
+        parsed = JSON.parse(cleaned);
+      } catch (parseErr) {
+        // Likely an unescaped quote inside a translated string value
+        // (e.g. a quoted term like "CAMELOT") breaking the JSON at that
+        // exact spot - repair and try again before giving up on this
+        // whole attempt.
+        try {
+          parsed = JSON.parse(v14RepairUnescapedQuotes(cleaned));
+          log('Translation JSON had an unescaped quote - repaired automatically.', 'info');
+        } catch (repairErr) {
+          throw parseErr; // repair didn't help either - surface the original error
+        }
+      }
       if (!parsed || !Array.isArray(parsed.translations)) {
         throw new Error('Translation response did not include a "translations" array.');
       }
