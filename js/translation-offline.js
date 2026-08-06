@@ -666,7 +666,7 @@
           });
           log('Translation: ' + replaced + ' line(s) translated');
         } catch (translateErr) {
-          log('Translation failed (' + translateErr.message + ') — keeping the original extracted text', 'warn');
+          log('TRANSLATION DID NOT HAPPEN (' + translateErr.message + ') — the output has the ORIGINAL untranslated text', 'error');
         }
         const updAfter = snapshotApiCalls();
         emit({
@@ -1785,12 +1785,15 @@ Return ONLY this JSON shape, nothing else:
 
     // Bade documents ka translation JSON bhi bada — max_tokens block-count
     // se scale, truncate ho to ek retry badi limit se (OCR jaisa pattern).
-    const baseMaxTokens = Math.min(60000, Math.max(16000, compact.length * 200));
+    // Floor raised from 16000 - the domain-expert glossary injected into
+    // the prompt (see v14BuildTranslationPrompt) added real length, and
+    // documents with many small blocks need more room for the output.
+    const baseMaxTokens = Math.min(60000, Math.max(24000, compact.length * 220));
 
-    async function callTranslationOnce(maxTokens) {
+    async function callTranslationOnce(maxTokens, temperature) {
       const data = await v14ProxyJson({
         model: model,
-        temperature: 0,
+        temperature: temperature != null ? temperature : 0,
         max_tokens: maxTokens,
         messages: [{ role: 'user', content: prompt }]
       });
@@ -1799,29 +1802,38 @@ Return ONLY this JSON shape, nothing else:
       return { raw: raw, finishReason: finishReason };
     }
 
-    let res = await callTranslationOnce(baseMaxTokens);
-    if (res.finishReason === 'length') {
-      log('Translation response was truncated by the token limit — retrying with a higher limit...', 'warn');
-      res = await callTranslationOnce(Math.min(100000, baseMaxTokens * 2));
+    async function attemptTranslation(temperature) {
+      let res = await callTranslationOnce(baseMaxTokens, temperature);
+      if (res.finishReason === 'length') {
+        log('Translation response was truncated by the token limit — retrying with a higher limit...', 'warn');
+        res = await callTranslationOnce(Math.min(100000, baseMaxTokens * 2), temperature);
+      }
+      if (!res.raw) throw new Error('No content received from the translation model.');
+      const cleaned = v14CleanJsonResponse(res.raw);
+      const parsed = JSON.parse(cleaned); // throws on malformed JSON - caller decides whether to retry
+      if (!parsed || !Array.isArray(parsed.translations)) {
+        throw new Error('Translation response did not include a "translations" array.');
+      }
+      return parsed;
     }
 
-    if (!res.raw) throw new Error('No content received from the translation model.');
-
-    const cleaned = v14CleanJsonResponse(res.raw);
-    let parsed;
+    // temperature=0 is deterministic - if it produces malformed JSON once,
+    // retrying at temperature=0 again reproduces the IDENTICAL broken
+    // output (same issue diagnosed and fixed for OCR). A genuine second
+    // chance needs a different temperature, not a repeat of the same
+    // request.
     try {
-      parsed = JSON.parse(cleaned);
-    } catch (e) {
-      try { console.error('Raw translation response (full):', res.raw); } catch (e2) {}
-      throw new Error('Translation model did not return valid JSON (see console).');
+      return await attemptTranslation(0);
+    } catch (firstErr) {
+      try { console.error('Translation attempt 1 failed:', firstErr.message); } catch (e) {}
+      log('Translation response was invalid (' + firstErr.message + ') — retrying with a fresh attempt...', 'warn');
+      try {
+        return await attemptTranslation(0.3);
+      } catch (secondErr) {
+        try { console.error('Translation attempt 2 also failed:', secondErr.message); } catch (e) {}
+        throw new Error('Translation failed after 2 attempts: ' + secondErr.message);
+      }
     }
-
-    if (!parsed || !Array.isArray(parsed.translations)) {
-      try { console.error('Raw translation response:', res.raw); } catch (e2) {}
-      throw new Error('Translation response did not include a "translations" array.');
-    }
-
-    return parsed;
   }
 
   // id-match karke original text ko translated text se REPLACE karta hai.
@@ -2274,7 +2286,7 @@ Return ONLY this JSON shape, nothing else:
         if (_shouldStop()) {
           log('Stop requested — translation cancelled, output uses the ORIGINAL text', 'warn');
         } else {
-          log('Translation failed (' + translateErr.message + ') — building the document with the ORIGINAL text', 'warn');
+          log('TRANSLATION DID NOT HAPPEN (' + translateErr.message + ') — the output has the ORIGINAL untranslated text', 'error');
         }
       }
       const updAfter = snapshotApiCalls();
