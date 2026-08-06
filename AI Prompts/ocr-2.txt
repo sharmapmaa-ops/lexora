@@ -1,1 +1,23 @@
-Generate a clean version of this image without changing its original width and height. Completely remove all readable text, printed words, handwritten signatures, and any linguistic characters from the image, as if they never existed. Do not alter any non-readable elements like logos, seals, stamps, photographs, drawings, lines, borders, patterns, textures, colors, or background designs - preserve all of those exactly. The output must have the exact same dimensions as the input and no new text should be added.
+This image was previously processed by an AI enhancement tool to improve its quality, lighting, and sharpness. However, during that enhancement, the AI mistakenly added unwanted text in multiple languages (including but not limited to: English, Hindi, Chinese, Japanese, Arabic, Urdu, and other regional scripts). This text was NOT originally present in the image.
+
+Your task:
+1. Remove ALL text from this image completely — every single readable character, word, sentence, or number that appears anywhere.
+2. This includes:
+   - Printed text of any language
+   - Handwritten text
+   - Signatures
+   - Artistic/stylized lettering
+   - Dates and numbers
+   - Watermarks containing text
+   - Text inside badges, seals, medallions, or logos
+   - Any AI-generated text that was added during enhancement
+3. Fill the removed text areas naturally with the surrounding background, colors, and textures so the image looks seamless and original.
+4. Preserve ALL non-text elements exactly as they are:
+   - People, faces, objects, animals
+   - Backgrounds, colors, lighting
+   - Borders, frames, illustrations
+   - Any original visual content
+5. The final output must look like the original image BEFORE the AI enhancement, but with ALL added text removed.
+6. Do NOT add any new text or any new visual elements.
+
+The output must be the cleaned image with ZERO text — identical to the original except completely text-free.
