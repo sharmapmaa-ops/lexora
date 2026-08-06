@@ -1814,6 +1814,25 @@ The following must come through EXACTLY as in the source, never re-worded, re-fo
 IMPORTANT — DO NOT TRANSLATE NON-TEXT MARKS:
 If a block is a signature, a logo/wordmark, a stamp or seal legend, a barcode/QR label, or a similar mark rather than readable body text, leave its text exactly as-is rather than translating it. Only translate genuine readable language content.
 
+IMPORTANT — OCR DUPLICATE DETECTION:
+Before translating each paragraph, check whether any of its content is an accidental OCR artifact rather than something the document actually repeats intentionally. This includes duplicated words, duplicated lines, duplicated sentences, duplicated paragraphs, and duplicated page headers/footers/page numbers that a scan or OCR pass sometimes produces (e.g. a heading or footer line appearing twice in a row, or a whole sentence immediately repeating itself verbatim with no intervening content). If content is clearly an OCR duplication artifact, translate it only once in the output. Do not remove or collapse repetitions that are a genuine, intentional part of the document itself (e.g. a legal document deliberately repeating a defined term's full name, or a form field that legitimately appears on every page) - only collapse repetition that has the clear signature of a scanning/OCR error (identical text immediately adjacent to itself, with no other content between the two copies).
+
+IMPORTANT — NEVER RECONSTRUCT OR COMPLETE BROKEN OCR:
+Never infer missing text, never reconstruct an incomplete OCR block, never complete a sentence that was cut off mid-word or mid-thought, and never repair a paragraph that reads as damaged or garbled. Translate only what genuinely exists in the source text for that block. If the OCR text you were given is incomplete or truncated, the translated output for that block must remain equally incomplete/truncated in the same way - do not "fix" it by guessing what the rest of the sentence probably said.
+
+IMPORTANT — CROSS-REFERENCE AND LABEL-WORD PRESERVATION:
+Internal references to other parts of the document - "Article 15", "Clause 4", "Annex B", "Schedule 2", "Section III", and similar - must be preserved exactly, including the LABEL WORD itself (Article/Clause/Annex/Schedule/Section/etc.), not just the number. Never substitute one label word for another (e.g. never turn "Article 15" into "Section 15") even if the target language's normal convention would usually use a different word for that kind of division - these are cross-references INTO this specific document's own numbering scheme and must point to the exact same label+number the source used.
+
+IMPORTANT — SELF-CONSISTENCY FOR REPEATED SENTENCES AND CLAUSES:
+Beyond individual terminology (covered above), if the exact same sentence or clause appears more than once in the document (as is common with standard/boilerplate legal clauses), translate it identically every time it appears, word for word the same in the output - never produce two different-sounding translations of what was the same sentence in the source, unless the surrounding context makes the same source sentence mean something different in that specific spot.
+
+IMPORTANT — DEFINED ENTITY PROTECTION:
+In addition to personal and organization names (covered above under factual data), never translate fund names, project names, building/property names, product names, or trademark/brand names - carry these through exactly as written in the source, in their original script/language, even when translating the sentence around them.
+
+Before returning your JSON, do a final self-check: verify that every paragraph was translated, none was skipped, none was duplicated beyond what genuinely appears once in your output per input block, every input id appears in your output exactly once, and all numbering, cross-references, and defined terms remained consistent throughout. Correct anything you find before producing your final output.
+
+The translated document must preserve the legal/practical meaning, effect, structure, and evidential value of the source document - the translation must never alter what any party is agreeing to, obligated to, entitled to, or bound by.
+
 IMPORTANT — TRANSLATE PARAGRAPH-WISE, NOT LINE-BY-LINE:
 Blocks that share the same "paragraph_id", taken in their given order (across pages if needed — a paragraph_id's blocks may span a page boundary, since blocks are given in full-document reading order), together form ONE continuous paragraph. Join them, understand the FULL paragraph's meaning and grammar, and translate it as one coherent unit — never translate an isolated block without its paragraph's context.
 
@@ -1821,7 +1840,7 @@ IMPORTANT — SPLIT BACK INTO THE SAME BLOCKS, WIDTH-AWARE:
 After translating a paragraph as a whole, split the translated text back across exactly the same blocks (same count, same order) that paragraph came from. Use each block's given "width" (pixels) as a guide for how much of the translated text that specific block/line should carry — a wider block's line should carry proportionally more translated text than a narrow one — so that when placed into a textbox of that same width, the text fits reasonably (not drastically too long or too short for that line). Blocks that are not part of any multi-line paragraph (isolated labels, single words, dates, numbers, standalone titles) just get their own direct translation.
 
 RULES
-- Never add or remove blocks. Every input id must appear exactly once in your output, in the same order.
+- Never add or remove blocks. Every input id must appear exactly once in your output, in the same order. No translated content may be lost, and no translated content may appear twice under different ids.
 - Never translate the "id", "page", "paragraph_id" values themselves — only the text.
 - Do not add commentary, explanation, or anything outside the JSON.
 
