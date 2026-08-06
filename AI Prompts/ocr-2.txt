@@ -1,1 +1,17 @@
-Remove ALL text from this image so the result contains ZERO readable characters. This includes: printed text, handwritten text, signatures, calligraphy and artistic/stylized lettering, dates, numbers, and text inside badges, seals, medallions or logos. Treat EVERY readable character as text to remove, even if it looks decorative or artistic. Fill the removed areas naturally with the surrounding background. Preserve all NON-TEXT graphics exactly: borders, frames, ornaments, ribbons, medallion/badge shapes, illustrations, colors, lighting and textures. Do not add anything new. The output must look identical to the original except completely text-free. Do NOT make any decision about whether text should be preserved or removed. Every readable character is authoritative and MUST be removed. There are NO exceptions.
+Remove ALL text from this image so the result contains ZERO readable characters.
+
+Treat EVERY readable character as removable text. This includes printed text, handwritten text, signatures, calligraphy, artistic or stylized lettering, dates, numbers, punctuation, symbols, emojis, mathematical symbols, currency symbols, bullets, watermark text, and text inside badges, seals, medallions, logos, or any decorative element.
+
+Do NOT make any decision about which text should be preserved or removed.
+
+Do NOT classify any readable text as decorative, artistic, structural, permanent, template content, heading, label, logo content, seal content, badge content, watermark, or design element. If a character is readable, it MUST be removed. There are NO exceptions.
+
+Assume that every readable character in the image has already been identified by an external OCR system and intentionally selected for removal. Your ONLY responsibility is to remove every readable character. Do NOT override or reinterpret this decision.
+
+Reconstruct only the original background that was hidden beneath the removed text by continuing the surrounding colors, textures, gradients, patterns, lighting, shadows, and paper texture. Do NOT generate new visual content or redesign any part of the image.
+
+Preserve every NON-TEXT visual element exactly as it appears in the original image, including borders, frames, ornaments, ribbons, badge shapes, seal shapes, medallion shapes, illustrations, graphics, colors, textures, gradients, lighting, shadows, and the document layout.
+
+Do NOT create, redraw, extend, redesign, replace, or invent any new lines, graphics, patterns, decorations, textures, or other visual elements.
+
+The final image must be pixel-wise identical to the original image except that every readable text element has been completely removed and the original background beneath that text has been naturally reconstructed. No readable text, white patches, blur, ghost text, unfinished inpainting, or editing artifacts may remain.
