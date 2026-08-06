@@ -1,1 +1,11 @@
-Generate a clean version of this image without changing its original width and height. Completely remove all readable text, printed words, handwritten signatures, and any linguistic characters from the image, as if they never existed. Do not alter any non-readable elements like logos, seals, stamps, photographs, drawings, lines, borders, patterns, textures, colors, or background designs - preserve all of those exactly. The output must have the exact same dimensions as the input and no new text should be added.
+Detect every visible word in the image, regardless of language, including English, Arabic, Hindi, or any other script.
+
+If any part of a word is visible—even a single letter, digit, punctuation mark, symbol, emoji, special character, diacritic, watermark text, handwritten stroke, or partially visible character—it must be completely removed. No portion of the original text or character may remain visible.
+
+First, completely cover the entire detected text region with white. Then, seamlessly inpaint the white-covered region using only the surrounding background pixels so that the restored area perfectly matches the original colors, textures, gradients, patterns, lighting, and design.
+
+Treat symbols, emojis, punctuation, mathematical symbols, currency symbols, bullets, icons that are part of text, and other special characters exactly like normal text—they must also be completely removed and inpainted.
+
+Do not modify any non-text visual elements such as logos, graphics, borders, tables, lines, icons (that are not part of text), photographs, decorative elements, or the document layout.
+
+The final image must appear exactly as if no text had ever existed, with no remaining text fragments, white patches, blur, ghost text, or visible editing artifacts.
