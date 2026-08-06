@@ -526,7 +526,7 @@
     // text positions from the PDF text layer - no AI needed, no checkbox).
     const withImage = true;
     const cleanImage = true;
-    const model = opts.model || 'google/gemini-2.5-flash';
+    const model = opts.model || (window.COMPANY_INFO && window.COMPANY_INFO.textExtractionModel) || 'google/gemini-2.5-flash';
     const targetLang = opts.targetLang || 'original';
     const keepOriginal = !targetLang || String(targetLang).toLowerCase() === 'original';
     if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js failed to load');
@@ -2116,8 +2116,8 @@ Return ONLY this JSON shape, nothing else:
   async function buildHybridDocxBlob(file, opts, logFn) {
     if (typeof logFn === 'function') _log = logFn;
     opts = opts || {};
-    const model = opts.model || 'google/gemini-2.5-flash';
-    const cleanModel = opts.cleanModel || 'google/gemini-3.1-flash-image';
+    const model = opts.model || (window.COMPANY_INFO && window.COMPANY_INFO.textExtractionModel) || 'google/gemini-2.5-flash';
+    const cleanModel = opts.cleanModel || (window.COMPANY_INFO && window.COMPANY_INFO.imageCleaningModel) || 'google/gemini-3.1-flash-image';
     const withImage = true;   // image is always kept behind the text now
     const targetLang = opts.targetLang || 'original';
     const keepOriginal = !targetLang || String(targetLang).toLowerCase() === 'original';

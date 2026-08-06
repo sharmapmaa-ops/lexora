@@ -11593,6 +11593,7 @@
                 contactSubmissions = contactSubmissionsData;
                 AGENTS_BY_SERVICE = agentsData;
                 COMPANY_INFO = companyData;
+                window.COMPANY_INFO = COMPANY_INFO;
                 leaseFiles = leaseFilesData;
                 translationFiles = translationFilesData;
                 leaseActivityLog = leaseActivityLogData;
@@ -13023,6 +13024,7 @@
             async function boot() {
                 try {
                     COMPANY_INFO = await fetchJSON('/api/data/company');
+                    window.COMPANY_INFO = COMPANY_INFO;
                     if (COMPANY_INFO && COMPANY_INFO.name) document.title = COMPANY_INFO.name;
                 } catch (e) { /* auth screen falls back to a default name */ }
 

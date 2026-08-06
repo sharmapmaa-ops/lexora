@@ -13,7 +13,9 @@
 (function () {
   'use strict';
 
-  const MODEL = 'google/gemini-2.5-flash';
+  function MODEL() {
+    return (window.COMPANY_INFO && window.COMPANY_INFO.textExtractionModel) || 'google/gemini-2.5-flash';
+  }
 
   const STATE = {
     files: [], nextId: 1, running: false, log: [],
@@ -92,7 +94,7 @@
     const prompt = window.getAiPrompt ? window.getAiPrompt('BAI2', 2) : null;
     if (!prompt) throw new Error('AI Prompt for BAI2 (prompt #2) is not configured - add it in Admin > AI Prompts, or run migration first.');
     const data = await window.lexoraProxyJson({
-      model: MODEL,
+      model: MODEL(),
       messages: [{
         role: 'user',
         content: [
@@ -114,7 +116,7 @@
 
   async function extract(text) {
     const data = await window.lexoraProxyJson({
-      model: MODEL,
+      model: MODEL(),
       response_format: { type: 'json_object' },
       messages: [{ role: 'user', content: extractionPrompt() + '\n\nSTATEMENT TEXT:\n' + text }]
     });

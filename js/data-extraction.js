@@ -369,7 +369,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
 
     const ocrEl = document.getElementById('deOcr');
     const useOcr = ocrEl ? !!ocrEl.checked : false;
-    const model = 'google/gemini-2.5-flash';
+    const model = (window.COMPANY_INFO && window.COMPANY_INFO.textExtractionModel) || 'google/gemini-2.5-flash';
 
     // ── wallet check (same shape as Translation) ──────────────────
     // Page counts aren't known until each PDF is opened, so this is a
