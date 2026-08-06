@@ -1124,6 +1124,7 @@ STRICT RULES:
     const data = imageData.data;
     const DARK_THRESHOLD = 150; // luminance below this counts as "ink"
     const MARGIN = 6; // px of search room around the model's rough box
+    const WIDE_MARGIN = 22; // fallback search room before concluding "no real ink here at all"
 
     function isInk(px, py) {
       if (px < 0 || py < 0 || px >= imgW || py >= imgH) return false;
@@ -1132,16 +1133,14 @@ STRICT RULES:
       return lum < DARK_THRESHOLD;
     }
 
-    return blocks.map(function (b) {
-      const searchX0 = Math.max(0, Math.round(b.x - MARGIN));
-      const searchY0 = Math.max(0, Math.round(b.y - MARGIN));
-      const searchX1 = Math.min(imgW - 1, Math.round(b.x + b.w + MARGIN));
-      const searchY1 = Math.min(imgH - 1, Math.round(b.y + b.h + MARGIN));
-      if (searchX1 <= searchX0 || searchY1 <= searchY0) return b;
+    function findInkBounds(b, margin) {
+      const searchX0 = Math.max(0, Math.round(b.x - margin));
+      const searchY0 = Math.max(0, Math.round(b.y - margin));
+      const searchX1 = Math.min(imgW - 1, Math.round(b.x + b.width + margin));
+      const searchY1 = Math.min(imgH - 1, Math.round(b.y + b.height + margin));
+      if (searchX1 <= searchX0 || searchY1 <= searchY0) return null;
 
       let minX = null, minY = null, maxX = null, maxY = null;
-      // Sample every pixel in the (small) search window - these boxes are
-      // only tens of pixels across, so this stays cheap.
       for (let py = searchY0; py <= searchY1; py++) {
         for (let px = searchX0; px <= searchX1; px++) {
           if (isInk(px, py)) {
@@ -1152,11 +1151,28 @@ STRICT RULES:
           }
         }
       }
-      // No ink found nearby - keep the model's original box rather than
-      // collapsing it (could be a genuinely blank field, or ink outside
-      // the search margin for an unusually large text block).
-      if (minX === null) return b;
+      return minX === null ? null : { minX, minY, maxX, maxY };
+    }
 
+    return blocks.map(function (b) {
+      let bounds = findInkBounds(b, MARGIN);
+      if (!bounds) {
+        // Nothing in the normal search window - before concluding this
+        // block is a hallucination, give it one more chance with a much
+        // wider margin (the model's box could just be quite far off,
+        // not necessarily fabricated).
+        bounds = findInkBounds(b, WIDE_MARGIN);
+      }
+      if (!bounds) {
+        // No ink anywhere near this block even with a generous margin -
+        // this is almost certainly a false detection (text the model
+        // "saw" that doesn't actually exist on the page), which is what
+        // produced the empty ghost boxes visible in blank areas like the
+        // header margin. Drop it rather than keep it at a wrong position.
+        return null;
+      }
+
+      const { minX, minY, maxX, maxY } = bounds;
       const refinedW = Math.max(1, maxX - minX + 1);
       const refinedH = Math.max(1, maxY - minY + 1);
       // Sanity check: if the refined box is wildly smaller than the
@@ -1164,10 +1180,10 @@ STRICT RULES:
       // model's box is probably more trustworthy for this one - only
       // apply the refinement when it's a plausible tightening, not a
       // collapse.
-      if (refinedW < b.w * 0.3 || refinedH < b.h * 0.3) return b;
+      if (refinedW < b.width * 0.3 || refinedH < b.height * 0.3) return b;
 
-      return Object.assign({}, b, { x: minX, y: minY, w: refinedW, h: refinedH });
-    });
+      return Object.assign({}, b, { x: minX, y: minY, width: refinedW, height: refinedH });
+    }).filter(Boolean);
   }
 
   function v14RepairBlocks(blocks, imgW, imgH) {
@@ -2287,6 +2303,23 @@ Return ONLY this JSON shape, nothing else:
               } catch (paintErr) {
                 log('P' + pageNum + ': local paint also failed (' + paintErr.message + ') — using ORIGINAL image', 'warn');
                 bgDataUrl = img.dataUrl;
+              }
+            }
+            // AI-cleaning alone is unreliable at removing EVERY line of
+            // text - it's been observed leaving field labels behind
+            // while removing the filled-in values, which then shows as
+            // doubled text once the real (repositioned) labels are drawn
+            // on top. Paint white over every known text-block coordinate
+            // as a guaranteed second pass, on top of the AI-cleaned
+            // image (not the original) - this still preserves whatever
+            // graphics the AI-clean protected, since text-block boxes
+            // don't cover the logo/seal areas.
+            if (bgIsCleaned) {
+              try {
+                bgDataUrl = await v14PaintOverTextBoxes(bgDataUrl, currentJson);
+                log('P' + pageNum + ': applied a guaranteed local-paint pass over the AI-cleaned background too');
+              } catch (paintErr2) {
+                log('P' + pageNum + ': guaranteed local-paint pass failed (' + paintErr2.message + ') — keeping AI-cleaned result as-is', 'warn');
               }
             }
           } else {
