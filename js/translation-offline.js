@@ -460,7 +460,7 @@
         const clusters = [];
         xs.forEach(function (x) {
           const last = clusters[clusters.length - 1];
-          if (last && x - last.max < 24) { last.max = x; last.sum += x; last.n++; }
+          if (last && x - last.max < 16) { last.max = x; last.sum += x; last.n++; }
           else clusters.push({ max: x, sum: x, n: 1 });
         });
         if (clusters.length >= 2) {
@@ -490,15 +490,29 @@
   // Converts a detected table's rows/columns into a plain grid of cell
   // strings (row-major), merging any line whose x falls nearer one
   // column cluster than another into that column.
+  // Converts a detected table's rows/columns into a grid of CELL
+  // OBJECTS (row-major) - not just plain strings. Each cell keeps its
+  // own dominant style (bold/italic/color/font), computed the same
+  // weighted way as a paragraph's dominant style, from the actual
+  // source lines that landed in that cell. A table built from a form
+  // like this is a label/value GRID, not a "bold header row on top"
+  // table, so the real per-cell styling (which field labels happen to
+  // be bold in the source, which are not) has to come from the source
+  // itself rather than an assumed row-0-is-the-header rule.
   function v14BuildTableGrid(table) {
     return table.rows.map(function (R) {
-      const cells = table.colStarts.map(function () { return []; });
+      const cellLines = table.colStarts.map(function () { return []; });
       R.lines.forEach(function (L) {
         const col = v14NearestColumn(L.xPt, table.colStarts);
-        const text = L.runs.map(function (r) { return r.text; }).join(' ').trim();
-        if (text) cells[col].push(text);
+        cellLines[col].push(L);
       });
-      return cells.map(function (arr) { return arr.join(' '); });
+      return cellLines.map(function (linesArr) {
+        const text = linesArr.map(function (L) {
+          return L.runs.map(function (r) { return r.text; }).join(' ').trim();
+        }).filter(Boolean).join(' ');
+        const style = linesArr.length ? v14DominantStyle(linesArr) : { sizePt: 9, bold: false, italic: false, color: '000000', family: 'Arial' };
+        return { text: text, bold: style.bold, italic: style.italic, color: style.color, family: style.family };
+      });
     });
   }
 
@@ -781,39 +795,101 @@
         '</pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>';
     }
 
+    // Longest single WORD's rendered width at a given font size - the
+    // real minimum a column can be without forcing an ugly mid-word
+    // break (Word only wraps at spaces/hyphens; a column narrower than
+    // its longest word has no valid break point at all).
+    function v14LongestWordWidthPt(text, sizePt, family) {
+      const words = String(text || '').split(/\s+/).filter(Boolean);
+      let max = 0;
+      words.forEach(function (w) {
+        const width = measureTextPt(w, sizePt, family, false, false);
+        if (width > max) max = width;
+      });
+      return max;
+    }
+
     // ---- TABLE rendering ----
     // A detected table becomes a real <w:tbl> (not flowing paragraphs),
-    // with its own column grid matching the source's detected column
-    // x-positions, a shaded header row, and light borders so the grid
-    // itself is visible - the whole point of detecting it as a table in
-    // the first place is to keep rows/columns aligned instead of
-    // collapsing into one unlabelled run of text.
-    function tableXml(table) {
+    // with its own column grid and light borders so rows/columns stay
+    // aligned instead of collapsing into one unlabelled run of text.
+    // Column widths start from the source's detected proportions, but
+    // every column is guaranteed at least as wide as its longest actual
+    // word (post-translation, since translated labels are usually
+    // longer than the source) - if that still doesn't fit the page,
+    // the table's font shrinks first (down to a floor) rather than
+    // words being force-broken mid-word.
+    function tableXml(table, pg) {
       const nCols = table.colStarts.length;
-      const colWidthsPt = table.colStarts.map(function (x, i) {
+      const usableWidthPt = pg.wPt - (pg.margins.left + pg.margins.right) / 20;
+      const naturalWidths = table.colStarts.map(function (x, i) {
         const nextX = i < nCols - 1 ? table.colStarts[i + 1] : table.rightPt;
         return Math.max(24, nextX - x);
       });
-      const totalWidthPt = colWidthsPt.reduce(function (a, b) { return a + b; }, 0);
-      const gridCols = colWidthsPt.map(function (w) { return '<w:gridCol w:w="' + Math.round(w * 20) + '"/>'; }).join('');
+      const naturalTotal = naturalWidths.reduce(function (a, b) { return a + b; }, 0);
+
+      const CELL_FONT_PT = 8, FLOOR_FONT_PT = 6, PADDING_PT = 10;
+      function minWidthsAt(fontPt) {
+        return table.colStarts.map(function (_, colIdx) {
+          let m = 20;
+          table.grid.forEach(function (row) {
+            const cell = row[colIdx];
+            if (!cell || !cell.text) return;
+            const w = v14LongestWordWidthPt(cell.text, fontPt, cell.family || 'Arial') + PADDING_PT;
+            if (w > m) m = w;
+          });
+          return m;
+        });
+      }
+
+      let fontPt = CELL_FONT_PT;
+      let widths = naturalWidths.map(function (w, i) { return Math.max(w, minWidthsAt(fontPt)[i]); });
+      let total = widths.reduce(function (a, b) { return a + b; }, 0);
+      if (total > usableWidthPt) {
+        // Shrink the font toward the floor in proportion to how far
+        // over budget the minimum-width table is, then re-measure
+        // minimums at that smaller size (a smaller font needs less
+        // width per word, so this can still avoid mid-word breaks).
+        fontPt = Math.max(FLOOR_FONT_PT, CELL_FONT_PT * (usableWidthPt / total));
+        const mins2 = minWidthsAt(fontPt);
+        widths = naturalWidths.map(function (w, i) {
+          return Math.max(w * (usableWidthPt / naturalTotal), mins2[i]);
+        });
+        total = widths.reduce(function (a, b) { return a + b; }, 0);
+        if (total > usableWidthPt) {
+          // Even at floor font the words themselves don't fit the page
+          // width - last resort, scale everything down proportionally
+          // (a rare, very long outlier word may still wrap mid-word).
+          const shrink = usableWidthPt / total;
+          widths = widths.map(function (w) { return w * shrink; });
+          total = usableWidthPt;
+        }
+      }
+
+      const gridCols = widths.map(function (w) { return '<w:gridCol w:w="' + Math.round(w * 20) + '"/>'; }).join('');
       const borderXml = '<w:tblBorders>' +
         ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(function (side) {
           return '<w:' + side + ' w:val="single" w:sz="4" w:space="0" w:color="999999"/>';
         }).join('') + '</w:tblBorders>';
+      const sz = Math.max(2, Math.round(fontPt * 2));
       let rowsXml = '';
-      table.grid.forEach(function (row, rIdx) {
+      table.grid.forEach(function (row) {
         let cellsXml = '';
-        row.forEach(function (cellText, cIdx) {
-          const w = Math.round((colWidthsPt[cIdx] || 40) * 20);
-          const shading = rIdx === 0 ? '<w:shd w:val="clear" w:color="auto" w:fill="E7E6E6"/>' : '';
-          const bold = rIdx === 0 ? '<w:b/><w:bCs/>' : '';
-          cellsXml += '<w:tc><w:tcPr><w:tcW w:w="' + w + '" w:type="dxa"/>' + shading + '</w:tcPr>' +
-            '<w:p><w:pPr><w:spacing w:before="20" w:after="20"/></w:pPr><w:r><w:rPr>' + bold +
-            '<w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr><w:t xml:space="preserve">' + esc(cellText) + '</w:t></w:r></w:p></w:tc>';
+        row.forEach(function (cell, cIdx) {
+          const w = Math.round((widths[cIdx] || 40) * 20);
+          const bold = cell.bold ? '<w:b/><w:bCs/>' : '';
+          const italic = cell.italic ? '<w:i/><w:iCs/>' : '';
+          const col = /^[0-9A-F]{6}$/i.test(cell.color || '') ? cell.color.toUpperCase() : '000000';
+          const fam = esc(cell.family || 'Arial');
+          cellsXml += '<w:tc><w:tcPr><w:tcW w:w="' + w + '" w:type="dxa"/></w:tcPr>' +
+            '<w:p><w:pPr><w:spacing w:before="20" w:after="20"/></w:pPr><w:r><w:rPr>' + bold + italic +
+            '<w:rFonts w:ascii="' + fam + '" w:hAnsi="' + fam + '" w:cs="' + fam + '"/>' +
+            '<w:color w:val="' + col + '"/><w:sz w:val="' + sz + '"/><w:szCs w:val="' + sz + '"/></w:rPr>' +
+            '<w:t xml:space="preserve">' + esc(cell.text) + '</w:t></w:r></w:p></w:tc>';
         });
         rowsXml += '<w:tr>' + cellsXml + '</w:tr>';
       });
-      return '<w:tbl><w:tblPr><w:tblW w:w="' + Math.round(totalWidthPt * 20) + '" w:type="dxa"/>' + borderXml +
+      return '<w:tbl><w:tblPr><w:tblW w:w="' + Math.round(total * 20) + '" w:type="dxa"/>' + borderXml +
         '<w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>' + gridCols + '</w:tblGrid>' + rowsXml + '</w:tbl>';
     }
 
@@ -841,7 +917,7 @@
           return;
         }
         if (item.kind === 'table') {
-          bodyXml += tableXml(item.data);
+          bodyXml += tableXml(item.data, pg);
           // OOXML requires a paragraph immediately following a table
           // (a table can't be the literal last thing before a section
           // break or the body's end) - this doubles as that spacer and,
@@ -1557,8 +1633,8 @@
         (pg.tables || []).forEach(function (table, tblIdx) {
           const tableId = 'p' + (pIdx + 1) + '_tbl' + tblIdx;
           table.grid.forEach(function (row, rowIdx) {
-            row.forEach(function (cellText, colIdx) {
-              if (!cellText) return;
+            row.forEach(function (cell, colIdx) {
+              if (!cell.text) return;
               counter++;
               const id = 'off_' + tableId + '_r' + rowIdx + '_c' + colIdx;
               flatParas.push({
@@ -1566,7 +1642,7 @@
                 page: pIdx + 1,
                 paragraph_id: tableId,
                 reading_order: counter,
-                text: cellText,
+                text: cell.text,
                 language: 'unknown',
                 direction: table.rtl ? 'rtl' : 'ltr'
               });
@@ -1604,7 +1680,7 @@
           });
           tableRefs.forEach(function (ref) {
             if (map[ref.id] !== undefined) {
-              ref.table.grid[ref.rowIdx][ref.colIdx] = map[ref.id];
+              ref.table.grid[ref.rowIdx][ref.colIdx].text = map[ref.id];
               replaced++;
             } else {
               missing++;
