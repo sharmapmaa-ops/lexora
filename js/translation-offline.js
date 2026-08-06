@@ -390,8 +390,15 @@
     if (m) return { type: 'decimal', clean: t.slice(m[0].length) };
     // Roman is checked before generic alpha, since a lone "i." or "iv."
     // would otherwise be caught by the single-letter alpha pattern too.
+    // IMPORTANT: only multi-character sequences ("ii.", "iv.", "xii.")
+    // are treated as roman. A single letter is NEVER classified as
+    // roman even though some single letters (I, V, X, L, C, D, M) are
+    // technically valid roman numerals - a document numbering its
+    // recitals A, B, C would otherwise have "C." misread as roman
+    // numeral 100 the moment the sequence reached the letter C, breaking
+    // the list into a fresh "I." instead of continuing "C.".
     m = t.match(LIST_ROMAN_RE);
-    if (m && /^[ivxlcdmIVXLCDM]+$/.test(m[1])) {
+    if (m && m[1].length >= 2 && /^[ivxlcdmIVXLCDM]+$/.test(m[1])) {
       return { type: /[IVXLCDM]/.test(m[1]) ? 'upperRoman' : 'lowerRoman', clean: t.slice(m[0].length) };
     }
     m = t.match(LIST_ALPHA_RE);
@@ -1128,8 +1135,20 @@
         // Indentation level for nested list markers (a), i), etc. under
         // a numbered clause): how many "steps" this paragraph's left
         // edge sits to the right of the page's own content-left edge.
-        const indentUnitPt = Math.max(10, (r0.sizePt || 11) * 1.6);
-        const level = listInfo ? Math.max(0, Math.round((leftPt - contentLeftPt) / indentUnitPt)) : 0;
+        // Indent level uses a generous threshold before promoting a
+        // paragraph off level 0: a few points of natural jitter (font
+        // metrics, kerning) between "genuinely top-level" markers must
+        // never round up to level 1 - Word/LibreOffice numbering only
+        // increments cleanly when consecutive same-type items share
+        // level 0, and level 1 was seen to render every item as the
+        // first symbol ("A." repeating) when the parent level (0) had
+        // never actually been used. Floor (not round) + a real minimum
+        // offset means only clearly-indented sub-items go to level 1+.
+        const indentUnitPt = Math.max(14, (r0.sizePt || 11) * 2.2);
+        const indentOffset = leftPt - contentLeftPt;
+        const level = listInfo && indentOffset >= indentUnitPt * 0.9
+          ? Math.max(0, Math.floor(indentOffset / indentUnitPt))
+          : 0;
 
         return {
           text: cleanText,          // may be replaced with translated text below
@@ -1147,7 +1166,17 @@
           spaceAfterTwips: 160, // refined below once all paragraphs on the page are known
           topPt: topPt, bottomPt: bottomPt, leftPt: leftPt, rightPt: rightPt
         };
-      });
+      })
+      // Drop page-number / running-header artifacts: a "paragraph" that
+      // is nothing but a bare number (no marker punctuation, no other
+      // text - a real numbered clause always has content after the
+      // marker) is almost certainly a footer/header page number that
+      // the text layer happened to pick up as its own line. Keeping it
+      // both cluttered the output with a floating stray digit AND (worse)
+      // broke list numbering by looking like "not a list item", forcing
+      // the next real item to start a fresh numId instead of continuing
+      // the sequence.
+      .filter(function (para) { return !/^\d{1,4}$/.test(para.originalText); });
 
       // Paragraph-to-paragraph vertical rhythm: the gap actually
       // measured between consecutive paragraphs in the source, not one
