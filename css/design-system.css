@@ -3762,3 +3762,55 @@ body, .center-content { background: #fff; }
    above) - forcing it directly on body removes any doubt, regardless
    of which --ds-page declaration the cascade was actually resolving to. */
 body { background: #ffffff; }
+
+/* ---- ROUND 12 ----
+   Item: the actual TABLE scroll area (not the whole card) must be the
+   same height in every report-style card - Payment History, Today's
+   Transactions, Notification, Support, and the PostgreSQL admin table.
+   Each of these previously sized its table area differently: three
+   relied on flex:1/"whatever space is left after this card's own
+   header/filter/pager chrome" (Payment History, Today's Transactions,
+   Notification - so a card with more chrome above the table left less
+   room for rows), Support had its own explicit 272px, and PostgreSQL
+   had its own explicit 450px. All five are pinned to one identical
+   explicit height here instead. This is intentionally the LAST rule in
+   the last-loaded stylesheet, with !important, because every one of
+   these selectors already has an earlier same-or-higher-specificity
+   rule elsewhere (flex:1 in one case, explicit px in two others) that
+   would otherwise keep winning by source order - the exact failure
+   mode already hit twice before on this same set of cards. */
+.payment-history-scroll-outer .history-table-wrapper,
+.today-table-scroll-outer .history-table-wrapper,
+.dash-txn-card .history-table-wrapper,
+.notif-card .history-table-wrapper,
+.support-table-scroll,
+.db-edit-table-wrapper {
+    height: 300px !important;
+    flex: none !important;
+    min-height: 0 !important;
+}
+
+/* ---- ROUND 12b ----
+   Item 2/3 (login section) - no margin/gap around the two panels, and
+   their combined height must be EXACTLY the space between the nav and
+   the footer (page height - nav height - footer height), not
+   min-height:100vh's looser "at least this tall" behavior, which left
+   a visible gap above the sticky footer when the panels' own
+   height:100% didn't resolve against a truly definite parent height.
+   Scoped to only when the login section is actually showing, so every
+   other prelogin section's own spacing is untouched. */
+.auth-page:has(.auth-login-section) {
+    height: 100vh;
+    max-width: 100%;
+    padding-left: 0;
+    padding-right: 0;
+    padding-top: 0;
+}
+.auth-section-body:has(> .auth-login-section) {
+    padding: 0;
+    margin: 0;
+}
+.auth-login-section {
+    margin: 0;
+    padding: 0;
+}
