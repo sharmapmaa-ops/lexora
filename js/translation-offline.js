@@ -446,6 +446,16 @@
   // that column alignment repeating row after row is the actual
   // signature of a table, as opposed to two unrelated short lines that
   // just happen to sit near the same height once.
+  // A row's line(s) sit close enough to the table's already-detected
+  // column x-positions to plausibly belong to it, even if this
+  // particular row only populated one of those columns (e.g. a field
+  // whose value happened to be blank in the source).
+  function v14RowFitsColumns(R, colStarts, tolerancePt) {
+    return R.lines.every(function (L) {
+      return colStarts.some(function (c) { return Math.abs(L.xPt - c) < tolerancePt; });
+    });
+  }
+
   function v14DetectTables(lines) {
     const rows = v14GroupIntoRows(lines);
     const tables = [];
@@ -480,8 +490,30 @@
           // paragraphs that happen to align once are never misread as
           // a table and pulled out of normal flowing text.
           if (block.length >= 3 && goodRows >= Math.ceil(block.length * 0.6)) {
-            tables.push({ rows: block, colStarts: colStarts });
-            block.forEach(function (R) { R.lines.forEach(function (L) { usedLines.add(L); }); });
+            // Grow the confirmed block outward to absorb immediately
+            // adjacent rows that only populated ONE of the table's
+            // columns (a blank value cell, a single-line note row,
+            // etc.) - otherwise a single sparse row in the middle of an
+            // obvious table breaks it into separate pieces and that row
+            // leaks out as a stray paragraph floating outside any table
+            // border, misaligned from everything around it.
+            const tolerancePt = 18;
+            let startIdx = i, endIdx = j;
+            while (startIdx > 0 && rows[startIdx - 1].lines.length >= 1 &&
+                   rows[startIdx - 1].lines.every(function (L) { return !usedLines.has(L); }) &&
+                   v14RowFitsColumns(rows[startIdx - 1], colStarts, tolerancePt)) {
+              startIdx--;
+            }
+            while (endIdx < rows.length && rows[endIdx].lines.length >= 1 &&
+                   rows[endIdx].lines.every(function (L) { return !usedLines.has(L); }) &&
+                   v14RowFitsColumns(rows[endIdx], colStarts, tolerancePt)) {
+              endIdx++;
+            }
+            const grownBlock = rows.slice(startIdx, endIdx);
+            tables.push({ rows: grownBlock, colStarts: colStarts });
+            grownBlock.forEach(function (R) { R.lines.forEach(function (L) { usedLines.add(L); }); });
+            i = endIdx;
+            continue;
           }
         }
       }
@@ -500,6 +532,26 @@
   // common in form-style tables and would otherwise just leave the
   // "extra" columns in that row looking like stray empty cells rather
   // than one properly merged one.
+  // A "title" row that only has text at the very FIRST and very LAST
+  // column, with everything between empty, is this EJAR-style
+  // document's bilingual section header pattern (e.g. an English label
+  // at one edge and its Arabic/numbered mirror at the other, drawn
+  // over one full-width colored bar in the source) rather than a real
+  // 2-column data row - collapsing it into one full-span cell matches
+  // how it actually reads, instead of a mostly-empty-looking row.
+  function v14CollapseHeaderRow(row, nCols) {
+    if (row.length !== nCols) return row; // only simple, unspanned rows
+    const nonEmptyIdx = [];
+    row.forEach(function (c, i) { if (c.text) nonEmptyIdx.push(i); });
+    if (nonEmptyIdx.length !== 2 || nonEmptyIdx[0] !== 0 || nonEmptyIdx[1] !== nCols - 1) return row;
+    const first = row[0], last = row[nCols - 1];
+    const text = first.text.length >= last.text.length ? first.text : last.text;
+    return [{
+      text: text, bold: first.bold || last.bold, italic: first.italic || last.italic,
+      color: first.color, family: first.family, span: nCols, col: 0
+    }];
+  }
+
   function v14BuildTableGrid(table) {
     const nCols = table.colStarts.length;
     return table.rows.map(function (R) {
@@ -527,7 +579,7 @@
         rowOut.push({ text: text, bold: style.bold, italic: style.italic, color: style.color, family: style.family, span: b.span, col: c });
         c += b.span;
       }
-      return rowOut;
+      return v14CollapseHeaderRow(rowOut, nCols);
     });
   }
 
@@ -653,6 +705,21 @@
     // (e.g. a column gap wrongly folded into one line), not real tracking.
     if (extra < 0.3 || extra > 2) return 0;
     return extra;
+  }
+
+  // Whether a language LABEL (as typed into the target-language field,
+  // e.g. "Arabic", "English", "Hebrew (Israel)") reads right-to-left.
+  // Direction/alignment in the OUTPUT must follow the language being
+  // translated INTO, not whatever the source document happened to be -
+  // a paragraph translated from Arabic into English is English text
+  // now and belongs left-aligned/LTR, even though every geometric
+  // signal extracted from the source PDF said "this was a right-to-
+  // left line". Carrying the source's direction straight through to a
+  // translated-to-English output is what put paragraphs against the
+  // right margin, in RTL reading order, when they should read left to
+  // right like the rest of the English document.
+  function v14IsRtlLanguage(label) {
+    return /\b(arabic|hebrew|urdu|farsi|persian|dari|pashto|yiddish|sorani|kurdish)\b/i.test(String(label || ''));
   }
 
   // MARGIN_TWIPS is only the FALLBACK for a page with no detected
@@ -1754,6 +1821,27 @@
           textData: flatParas.length
         });
       }
+    }
+
+    // Direction/alignment reflects the OUTPUT language, not the
+    // source (see v14IsRtlLanguage) - only relevant when translation
+    // actually ran; keepOriginal output stays in the source script and
+    // should keep reading exactly as extracted. A paragraph that was
+    // right-aligned because right-aligned is RTL's natural "start"
+    // becomes left-aligned once it's English's natural "start";
+    // center/justify are unaffected by which direction is which.
+    if (!keepOriginal) {
+      const outputRtl = v14IsRtlLanguage(targetLang);
+      const mirrorAlign = { left: 'right', right: 'left', center: 'center', justify: 'justify' };
+      pages.forEach(function (pg) {
+        (pg.paragraphs || []).forEach(function (p) {
+          if (p.rtl !== outputRtl) {
+            p.align = mirrorAlign[p.align] || p.align;
+            p.rtl = outputRtl;
+          }
+        });
+        (pg.tables || []).forEach(function (t) { t.rtl = outputRtl; });
+      });
     }
 
     return buildFlowingDocx(pages);
