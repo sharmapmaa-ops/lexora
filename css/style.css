@@ -5375,13 +5375,14 @@
     max-width: 40em;
     margin: 20px auto 0;
 }
-/* Item - toggle sits above its text now (was side-by-side), and is 3x
-   its previous size - every other measurement on .toggle-switch is in
-   em relative to its own font-size, so scaling that up here scales
-   the whole toggle (track + thumb) proportionally instead of just
-   width/height alone. */
+/* Item - toggle sits above its text (was side-by-side). Was 3x its
+   original size (font-size:3em) per an earlier request; now cut in
+   half (1.5em) - still bigger than the plain default, just not as
+   large as before. Every other measurement on .toggle-switch is in em
+   relative to its own font-size, so this one number scales the whole
+   toggle (track + thumb) proportionally. */
 .auto-renew-footer-block .toggle-switch {
-    font-size: 3em;
+    font-size: 1.5em;
 }
 
 /* Reusable ON/OFF pill toggle - checkbox visually hidden, track+thumb

@@ -7905,8 +7905,7 @@
                         </div>
                         <div class="history-pager">
                             ${_dbPaginationHtml(name, dbTablePage, dbTablePerPage, allRows.length)}
-                        </div>
-                        <div class="db-table-caption">${allRows.length} row(s)</div>`;
+                        </div>`;
                     host.dataset.rows = JSON.stringify(allRows);
                     host.dataset.pageStart = String(pageStart);
                     _wireDbRowChangeTracking(host);
@@ -9806,7 +9805,7 @@
                     return;
                 }
 
-                const pagePath = 'User / ' + action;
+                const pagePath = action === 'AdminOverview' ? 'Overview' : action;
                 resetContentArea();
 
                 setTimeout(() => {
@@ -10654,7 +10653,13 @@
                     if (subId) {
                         const sub = parent.subItems.find(item => item.id === subId);
                         dataKey = subId;
-                        breadcrumb = parent.label + ' / ' + (sub ? sub.label : ((SERVICES_CATALOG[subId] && SERVICES_CATALOG[subId].name && SERVICES_CATALOG[subId].name.trim()) || UNLISTED_LABELS[subId] || subId));
+                        // Item 13 - Add Balance shows just its own name, no
+                        // "💳 Payment /" parent prefix (it doesn't read as
+                        // a sub-page of Payment the way Services' children
+                        // do - it's its own standalone Secure Checkout page).
+                        breadcrumb = subId === 'add-balance'
+                            ? 'Add Balance'
+                            : parent.label + ' / ' + (sub ? sub.label : ((SERVICES_CATALOG[subId] && SERVICES_CATALOG[subId].name && SERVICES_CATALOG[subId].name.trim()) || UNLISTED_LABELS[subId] || subId));
                         activeSubItemId = subId;
                     } else {
                         activeSubItemId = null;
@@ -11314,11 +11319,11 @@
                             <div class="history-filter-bar">
                                 <div class="filter-group">
                                     <label>From Date</label>
-                                    <input type="date" id="supportFromDate" />
+                                    <input type="date" id="supportFromDate" onchange="applySupportFilter()" />
                                 </div>
                                 <div class="filter-group">
                                     <label>To Date</label>
-                                    <input type="date" id="supportToDate" />
+                                    <input type="date" id="supportToDate" onchange="applySupportFilter()" />
                                 </div>
                                 <div class="filter-group">
                                     <label>Status</label>
@@ -11334,8 +11339,10 @@
                                         <input type="text" id="supportUserFilter" placeholder="User ID or email" oninput="applySupportFilter()" />
                                     </div>
                                 ` : ''}
-                                <button class="filter-btn" onclick="applySupportFilter()">🔍 Filter</button>
-                                <button class="filter-btn reset-btn" onclick="resetSupportFilter()">↺ Reset</button>
+                                <button class="filter-btn reset-btn" onclick="resetSupportFilter()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+                                    Clear
+                                </button>
                             </div>
                             <div class="card-body">
                                 <div class="support-table-scroll report-table-scroll" id="supportTableWrapper">
