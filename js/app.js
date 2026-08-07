@@ -8615,7 +8615,14 @@
             function _rerenderAdminOverview() {
                 const host = document.getElementById('serviceBodyRoot') || document.getElementById('contentBody');
                 if (!host) return;
+                window.__pendingChargeEstimateHtml = null;
                 host.innerHTML = buildAdminOverviewBody();
+                // buildAdminOverviewBody() (above) sets
+                // window.__pendingChargeEstimateHtml as a side effect -
+                // updateContent() isn't in the loop for this targeted
+                // rerender, so push it into the breadcrumb's slot directly.
+                const estEl = document.getElementById('fileListChargeEstimate');
+                if (estEl) estEl.innerHTML = window.__pendingChargeEstimateHtml || '';
                 if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
             }
 
@@ -8693,24 +8700,30 @@
                 const donutColors = ['#2d3fa0', '#1fb17a', '#f2a93b', '#e0546a', '#7c5cff', '#22b8cf'];
                 const donutSvg = buildAdminOverviewDonutSvg(planEntries, donutColors);
 
-                return `
-                    <div class="admin-ov-header">
-                        <h2>Overview</h2>
-                        <div class="history-filter-bar admin-ov-date-filter">
-                            <div class="filter-group">
-                                <label>From Date</label>
-                                <input type="date" id="overviewFromDate" value="${escapeHtml(adminOverviewFromDate)}" onchange="applyOverviewDateFilter()" />
-                            </div>
-                            <div class="filter-group">
-                                <label>To Date</label>
-                                <input type="date" id="overviewToDate" value="${escapeHtml(adminOverviewToDate)}" onchange="applyOverviewDateFilter()" />
-                            </div>
-                            <button class="filter-btn reset-btn" onclick="clearOverviewDateFilter()">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
-                                Clear
-                            </button>
+                // Item 3 - the breadcrumb bar (updateContent(), app.js)
+                // already shows "Overview" as this page's title, so the
+                // page body no longer repeats it as its own <h2> - and
+                // the date filter moves into that SAME breadcrumb bar
+                // (the shared right-side slot other pages' rate-estimate/
+                // auto-renew bits already use), not a second header row
+                // of its own.
+                window.__pendingChargeEstimateHtml = `
+                    <div class="history-filter-bar admin-ov-date-filter">
+                        <div class="filter-group">
+                            <label>From Date</label>
+                            <input type="date" id="overviewFromDate" value="${escapeHtml(adminOverviewFromDate)}" onchange="applyOverviewDateFilter()" />
                         </div>
-                    </div>
+                        <div class="filter-group">
+                            <label>To Date</label>
+                            <input type="date" id="overviewToDate" value="${escapeHtml(adminOverviewToDate)}" onchange="applyOverviewDateFilter()" />
+                        </div>
+                        <button class="filter-btn reset-btn" onclick="clearOverviewDateFilter()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+                            Clear
+                        </button>
+                    </div>`;
+
+                return `
                     <div class="admin-ov-stat-row">
                         <div class="admin-ov-stat-card">
                             <span class="admin-ov-stat-icon admin-ov-stat-icon-users">👥</span>
@@ -10965,7 +10978,7 @@
                                     <table class="history-table today-table payment-history-table" id="todayTableHeader">
                                         <thead>
                                             <tr>
-                                                <th style="width:44px;text-align:center;" title="Download Receipt">
+                                                <th title="Download Receipt">
                                                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/></svg>
                                                 </th>
                                                 <th>Date</th>
