@@ -11324,7 +11324,7 @@
                             </div>
                             <div class="card-body">
                                 <div class="support-table-scroll report-table-scroll" id="supportTableWrapper">
-                                    <table class="support-log-table" id="supportTable">
+                                    <table class="history-table support-log-table" id="supportTable">
                                         <thead>
                                             <tr>
                                                 <th><input type="checkbox" onchange="toggleSupportSelectAll(this)" /></th>

@@ -628,7 +628,12 @@ body, input, select, textarea, button {
 }
 
 .history-table { table-layout: auto; width: 100%; }
-.history-table th, .history-table td { padding: 11px 10px; font-size: .82rem; }
+/* th/td font-size/padding consolidated to ONE place - see the single
+   .history-table th, .history-table td rule further down this file
+   (search ROUND 13). This used to ALSO be declared right here with
+   different values (11px 10px/.82rem vs the other rule's 8px 9px/
+   .79rem) - two conflicting declarations for the exact same selector,
+   silently resolved by whichever was later in the file. */
 
 /* ---- shared card header (icon tile + title + subtitle) ---- */
 .ds-card-head {
@@ -1019,8 +1024,11 @@ body, input, select, textarea, button {
 /* Header aur body alag tables hain, isliye fixed layout - warna dono ke
    columns align nahi hote. */
 .today-table { table-layout: fixed; width: 100%; }
-.dash-txn-card .history-table th { background: #f8fafc; font-size: .71rem; padding: 9px 8px; border-top: none; }
-.dash-txn-card .history-table td { font-size: .77rem; padding: 8px; }
+/* th/td font-size/padding come from the shared .history-table th/td
+   rule now (ROUND 13) - this used to have its own separate, smaller
+   values here, which is exactly why Today's Transactions' table text
+   looked different-sized from Payment History/Notification's despite
+   all three sharing the same .history-table base class. */
 /* height/flex/overflow come from the shared .report-table-scroll class
    on this same element now (see ROUND 12). */
 
@@ -1263,8 +1271,16 @@ body, input, select, textarea, button {
 .payment-history-table td.debit  { color: #dc2626; }
 
 .payment-history-table thead th {
-    background: #eef2fa;
-    color: #46557a;
+    /* background/color/font-weight match the shared .history-table
+       thead th rule's values now (design-system.css line ~335) - these
+       used to be their own different values (#eef2fa/#46557a here vs
+       #f7f9fd/var(--ds-muted) there), a real visible colour mismatch
+       between Payment History/Today's Transactions' headers and
+       Notification/Support's. white-space/overflow/text-overflow stay
+       overridden here - those genuinely ARE reclaimed on purpose (see
+       below), not accidental duplication like the colours were. */
+    background: #f7f9fd;
+    color: var(--ds-muted);
     font-weight: 700;
     padding: 10px 14px;
     height: 42px;
@@ -1348,16 +1364,25 @@ body, input, select, textarea, button {
     overflow-x: auto;
 }
 
-/* Item 9,10 - compact rows, everything in a row vertically centered.
-   overflow/text-overflow are reclaimed here for the same reason as
-   the header rule above - style.css's generic ".history-table tbody
-   td" shares this selector's specificity and was forcing
-   overflow:hidden + ellipsis onto every column that didn't already
-   have its own more-specific override, which is what was truncating
-   Date/Time/Status/Balance/User ID even though their columns were
-   wide enough. */
-.payment-history-table tbody td {
+/* Item 9,10 - compact rows, everything in a row vertically centered -
+   now applied to every report-style card's table (not just Payment
+   History/Today's Transactions, which happen to also carry the
+   .payment-history-table class for their column-width rules) so the
+   row height/padding genuinely matches across Support and Notification
+   too, instead of them silently falling back to a taller, differently-
+   padded generic rule elsewhere in this file just because they don't
+   carry that particular class. overflow/text-overflow are reclaimed
+   here for the same reason as the header rule above - style.css's
+   generic ".history-table tbody td" shares this selector's specificity
+   and was forcing overflow:hidden + ellipsis onto every column that
+   didn't already have its own more-specific override, which is what
+   was truncating Date/Time/Status/Balance/User ID even though their
+   columns were wide enough. */
+.payment-history-table tbody td,
+.support-log-table tbody td,
+.notif-table tbody td {
     padding: 8px 14px;
+    font-size: .79rem;
     vertical-align: middle;
     height: 40px;
     white-space: nowrap;
@@ -2904,6 +2929,20 @@ label { font-size: .76rem; }
     font-size: .81rem;
 }
 
+/* ---- ROUND 13 ----
+   ONE rule for every report-card table's th/td font-size/padding -
+   Payment History, Today's Transactions and Notification already
+   shared .history-table as a base class; Support's <table> now carries
+   it too (js/app.js), so this single rule reaches all four instead of
+   each one carrying (or silently NOT carrying) its own copy. This is
+   also now the ONLY place these two properties are set for
+   .history-table - a second, conflicting declaration used to exist
+   earlier in this same file (11px 10px/.82rem vs this rule's values),
+   and a THIRD one only for Today's Transactions specifically
+   (.dash-txn-card .history-table th/td, 9px 8px/.71rem) - that extra
+   specificity is exactly why Today's Transactions visibly had smaller
+   text than Payment History/Notification even though all three carry
+   the same base class. */
 .history-table th, .history-table td { padding: 8px 9px; font-size: .79rem; }
 .file-table th, .file-table td       { padding: 8px 7px; font-size: .75rem; }
 .history-summary { padding: 14px 8px; }

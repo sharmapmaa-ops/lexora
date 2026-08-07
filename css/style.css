@@ -1793,7 +1793,9 @@
 
         .support-log-table th,
         .support-log-table td {
-            padding: 8px 10px;
+            /* padding/font-size now come from the shared .history-table
+               th/td rule (design-system.css, ROUND 13) - this table's
+               <table> tag carries that class too now. */
             border-bottom: 1px solid rgba(0,0,139,0.08);
             text-align: left;
             overflow: hidden;
@@ -1815,11 +1817,15 @@
         .support-log-table th:nth-child(10), .support-log-table td:nth-child(10) { width: 14%; white-space: normal; }
 
         .support-log-table thead th {
+            /* background/color/font-weight/padding all come from the
+               shared .history-table thead th rule now (design-system.css)
+               - this used to say background:darkblue; color:white; here,
+               a completely different look from every other table's
+               header that only wasn't visible in practice because the
+               shared rule (equal specificity, loads later) happened to
+               win the cascade anyway. Dead but misleading code, removed. */
             position: sticky;
             top: 0;
-            background: darkblue;
-            color: white;
-            font-weight: 600;
             z-index: 1;
         }
 
@@ -2072,19 +2078,26 @@
         }
 
         .history-table thead th {
-            background: rgba(0,0,139,0.05);
-            color: black;
-            padding: 10px 12px;
-            text-align: left;
-            font-weight: 600;
+            /* background/color/font-weight/padding come from the shared
+               .history-table thead th rule now (design-system.css) -
+               this used to declare a completely different look here
+               (rgba(0,0,139,0.05)/black/600-weight vs the shared rule's
+               #f7f9fd/muted/700-weight), dead code that only wasn't
+               visible because the shared rule (equal specificity, loads
+               later) happened to win the cascade anyway. */
             border-bottom: 2px solid blue;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
         }
 
         .history-table tbody td {
-            padding: 8px 12px;
+            /* padding/font-size come from the shared .history-table td
+               rule now (design-system.css) - this rule's OWN padding
+               (8px 12px) used to win over that shared one regardless of
+               file order, because "tbody td" (3-part selector) is
+               genuinely more specific than the shared rule's plain
+               ".history-table td" (2-part) - so Payment History's actual
+               rows were silently NOT using the "consolidated" value at
+               all. That's exactly the kind of duplicate this whole pass
+               is meant to catch. */
             border-bottom: 1px solid rgba(0,0,139,0.05);
             color: black;
             overflow: hidden;
@@ -5457,8 +5470,12 @@
 .notif-table thead th { vertical-align: middle; }
 
 .notif-table tbody td {
-    padding: 12px 10px;
-    vertical-align: top;
+    /* padding/font-size/vertical-align/height/white-space/overflow now
+       come from the shared .payment-history-table/.support-log-table/
+       .notif-table tbody td rule (design-system.css) - consolidated
+       there specifically so Notification's rows match the others'
+       instead of using their own separate padding value, which is what
+       this rule used to set. */
     border-bottom: 1px solid rgba(0,0,139,0.07);
 }
 
