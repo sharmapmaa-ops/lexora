@@ -592,7 +592,19 @@
       const prevBottom = prev.yPt + prev.hPt;
       const gap = cur.yPt - prevBottom;
       const avgH = (prev.hPt + cur.hPt) / 2;
-      if (gap <= avgH * 0.6) {
+      // Item - a line starting its OWN list/sub-clause marker ("a)",
+      // "b)", "2.", a bullet, ...) always starts a NEW paragraph, even
+      // when the vertical gap to the previous line is small enough that
+      // the gap-based check below would otherwise have called it a
+      // continuation. Tightly-spaced sub-items (e.g. "a) ...;" then,
+      // right on the very next line, "b) ...;") are exactly the case
+      // this was merging into one run-on paragraph - "a)" and "b)" both
+      // being real markers of the SAME (list) kind is what makes this
+      // safe to do unconditionally, rather than every line with a small
+      // gap accidentally starting its own paragraph.
+      const curText = (cur.runs || []).map(r => r.text).join('').trim();
+      const curIsListStart = curText && v14DetectListMarker(curText) != null;
+      if (!curIsListStart && gap <= avgH * 0.6) {
         paragraphs[paragraphs.length - 1].push(cur);
       } else {
         paragraphs.push([cur]);
@@ -855,30 +867,27 @@
       media.push({ id: relId, file: file, base64: img.base64 });
       const cx = Math.max(1, Math.round(img.wPt * EMU));
       const cy = Math.max(1, Math.round(img.hPt * EMU));
-      const offX = Math.max(0, Math.round(img.xPt * EMU));
-      // Item - was relativeFrom="page" with an absolute Y computed from
-      // the ORIGINAL PDF's page coordinates. That assumes the translated
-      // flowing document breaks into pages at exactly the same spots the
-      // source PDF did, which is very often false - translated text is
-      // routinely longer or shorter than the source, so by the time
-      // Word actually paginates the output, this same "page 3, y=479pt"
-      // offset can land near the right text but on the wrong page (or
-      // the right page but shifted well away from the paragraph it was
-      // supposed to sit against). This paragraph (via the sorted `flow`
-      // array in the caller) is already inserted at the CORRECT position
-      // among the surrounding paragraphs, so anchoring the image to ITS
-      // OWN paragraph - not an absolute page coordinate - keeps it
-      // sitting against that same neighbouring text through whatever
-      // reflow/repagination translation causes, instead of drifting.
+      // Item - both earlier positioning attempts were still coordinate
+      // math against a source PDF whose layout translation had already
+      // changed: page-relative absolute (posOffset from the ORIGINAL
+      // PDF's page coordinates) landed on the wrong page once
+      // translated text reflowed the page breaks; paragraph-relative
+      // fixed that, but a signature's original X (its offset from the
+      // PDF's left margin) doesn't mean anything reliable once it's
+      // sitting next to DIFFERENT text of a different length ("MARR
+      // S.p.A." translated is shorter than the source line it used to
+      // share a page position with) - it ended up landing mid-word,
+      // splitting "MARR" from "S.p.A." right where the pen graphic sat.
+      // An inline image sidesteps coordinate math entirely: it's placed
+      // as its own paragraph, right where the sorted `flow` array
+      // (caller) already puts it among the surrounding paragraphs, and
+      // Word lays it out exactly like it would any other line of
+      // content - no absolute or relative offset to get wrong, and it
+      // can never overlap neighbouring text since it isn't floating.
       return '<w:p><w:r><w:drawing>' +
-        '<wp:anchor behindDoc="0" distT="91440" distB="91440" distL="114300" distR="114300" ' +
-        'simplePos="0" locked="0" layoutInCell="1" allowOverlap="1" relativeHeight="' + drawIdCounter + '">' +
-        '<wp:simplePos x="0" y="0"/>' +
-        '<wp:positionH relativeFrom="column"><wp:posOffset>' + offX + '</wp:posOffset></wp:positionH>' +
-        '<wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>' +
+        '<wp:inline distT="0" distB="0" distL="0" distR="0">' +
         '<wp:extent cx="' + cx + '" cy="' + cy + '"/>' +
         '<wp:effectExtent l="0" t="0" r="0" b="0"/>' +
-        '<wp:wrapSquare wrapText="bothSides"/>' +
         '<wp:docPr id="' + drawIdCounter + '" name="img' + drawIdCounter + '"/><wp:cNvGraphicFramePr/>' +
         '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
         '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
@@ -887,7 +896,7 @@
         '<pic:blipFill><a:blip r:embed="' + relId + '"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
         '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + cx + '" cy="' + cy + '"/></a:xfrm>' +
         '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>' +
-        '</pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>';
+        '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>';
     }
 
     // Longest single WORD's rendered width at a given font size - the
@@ -3052,7 +3061,7 @@ IMPORTANT — TRANSLATE LIKE A NATIVE PROFESSIONAL WRITER OF ${targetLanguageLab
 Do not produce a literal, word-by-word rendering that mirrors the source language's sentence structure, word order, or idioms. Instead, understand what each sentence/clause is actually saying and re-express that same meaning the way a native ${targetLanguageLabel}-speaking professional would naturally write it for a document of this document_type - using that field's own standard conventions, set phrases, and idiomatic terminology for the equivalent concept, not a dictionary-literal translation of the source wording. This matters most for formal documents (legal/contract, official government, academic, business) where the target language has its own established drafting conventions:
 - For a legal/contractual document_type: use the standard terms and set phrases a professional in that legal tradition would use for each concept (e.g. how that legal system's professionals normally phrase ending an agreement, standard boilerplate expressions, standard clause openers) - a concept-for-concept translation of what the clause legally does, not a literal word-for-word one. If a long sentence's source-language structure would read as awkward or unnatural when translated word-for-word, restructure it into the sentence structure ${targetLanguageLabel} would normally use for that kind of clause, while preserving the exact legal meaning and effect - do not change what any party is agreeing to, obligated to, or entitled to.
 - Official entity names, company/organization titles, authority names, and any term the source document treats as a defined/formal term (capitalized, quoted, or explicitly defined) should be translated to their standard recognized ${targetLanguageLabel} equivalent if one exists, and otherwise kept in a single consistent form - never translated one way in one place and a different way elsewhere.
-- Preserve clause/section numbering and structural markers exactly as given (e.g. "1.", "(a)", "Article 3", "Section II") - translate only the text that follows them, never the numbering/lettering itself, since these are used for cross-references within the document.
+- Preserve IN-SENTENCE cross-references to other parts of the document exactly as given (e.g. "see Article 15", "as defined in Clause 4", "pursuant to Section II") - translate only the text around them, never the reference itself. This does NOT apply to a numbering marker that starts the block itself (e.g. a block whose source text begins "1.", "2.", "(a)", "b)") - that marker has ALREADY been removed before this text reached you (it's rendered separately by the document's own numbering), so never reconstruct or prepend it yourself. If a block's translated text would otherwise start with a number/letter followed by a period or parenthesis in that position, you have added a numbering marker that doesn't belong there - remove it and translate only the substantive content.
 
 IMPORTANT — ELIMINATE LITERAL TRANSLATION PATTERNS:
 Rewrite awkward, stiff constructions that come from translating word-for-word into natural ${targetLanguageLabel} a native professional would actually write. For example (English source shown for illustration - apply the same principle regardless of source/target language pair): "The appearing parties mutually and reciprocally acknowledge" -> "The parties acknowledge"; "free disposal thereof" -> "full legal authority"; "interest and will" -> "intention"; "price of lease" -> "rent" (in a Real Estate document); "cannot be adapted to regulations" -> "cannot be brought into regulatory compliance". Apply this same kind of simplification and naturalization throughout, in whichever language pair you are actually translating.

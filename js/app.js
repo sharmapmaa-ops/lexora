@@ -10435,14 +10435,38 @@
                 const bodyRows = bodyTable.querySelectorAll('tbody tr');
                 if (!headerRow || !bodyRows.length) return;
 
-                // Auto layout first, on both tables, so the browser's own
-                // text measurement (not ours) decides each cell's natural
-                // single-line width - this is what we then read back.
-                headerTable.style.tableLayout = 'auto';
-                bodyTable.style.tableLayout = 'auto';
-                Array.prototype.forEach.call(headerRow.children, function (th) { th.style.width = ''; });
+                // Item - two real bugs in the previous version of this
+                // function, both of which meant it was silently measuring
+                // ALREADY-WRAPPED widths and then just re-locking that same
+                // wrong (too-narrow) size, doing nothing visible:
+                // 1) table-layout:auto still respects the WRAPPER's width
+                //    as a constraint - it doesn't let the table grow past
+                //    its container just because layout mode changed, so a
+                //    long Description value was still wrapping to fit
+                //    during the "measure" pass itself. width:max-content
+                //    below forces the table to size to its true, fully
+                //    unwrapped content width regardless of the wrapper.
+                // 2) white-space:nowrap was only ever set via a CSS class,
+                //    never verified - if the wrong shared rule happened to
+                //    apply instead (this codebase has repeatedly turned up
+                //    exactly that kind of collision on these tables), cells
+                //    would still wrap during measurement with no visible
+                //    error. Forcing it inline here, per-cell, has no such
+                //    dependency - it always wins.
+                [headerTable, bodyTable].forEach(function (t) {
+                    t.style.tableLayout = 'auto';
+                    t.style.width = 'max-content';
+                    t.style.maxWidth = 'none';
+                });
+                Array.prototype.forEach.call(headerRow.children, function (th) {
+                    th.style.width = '';
+                    th.style.whiteSpace = 'nowrap';
+                });
                 bodyRows.forEach(function (tr) {
-                    Array.prototype.forEach.call(tr.children, function (td) { td.style.width = ''; });
+                    Array.prototype.forEach.call(tr.children, function (td) {
+                        td.style.width = '';
+                        td.style.whiteSpace = 'nowrap';
+                    });
                 });
 
                 const colCount = headerRow.children.length;
@@ -10460,8 +10484,16 @@
                 // rounding safety margin) and switch to fixed now that
                 // real widths are known, so they stay put and in sync
                 // regardless of which row is scrolled into view later.
-                headerTable.style.tableLayout = 'fixed';
-                bodyTable.style.tableLayout = 'fixed';
+                // Restoring width:100% (instead of leaving max-content) is
+                // what lets the wrapper's overflow-x:auto take over again
+                // for horizontal scrolling if the measured total is wider
+                // than the card - max-content would just keep growing the
+                // table's own box instead of scrolling within the card.
+                [headerTable, bodyTable].forEach(function (t) {
+                    t.style.tableLayout = 'fixed';
+                    t.style.width = '100%';
+                    t.style.maxWidth = '';
+                });
                 Array.prototype.forEach.call(headerRow.children, function (th, i) {
                     th.style.width = Math.ceil(widths[i] + 1) + 'px';
                 });
