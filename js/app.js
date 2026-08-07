@@ -11917,12 +11917,12 @@
             }
 
             // Item 1/8 - Login is its own SECTION (like Services/Plans &
-            // Offers/Contact Us), not a popup, and its left side is a
-            // simple logo + tagline (not the fuller Home-hero panel with
-            // stats/checklists) - matches the reference design exactly:
-            // icon + wordmark, one line of copy, a vertical divider, then
-            // the plain login form on the right (no boxed/shadowed card
-            // wrapping the whole thing).
+            // Offers/Contact Us), not a popup. Two separate panels, each
+            // 50% width, full height (touches the nav above and footer
+            // below): left has the tinted background + centered logo/
+            // tagline, right stays plain white with the centered login
+            // form (no card border/shadow on either panel, no divider
+            // line between them, no hover animation on anything here).
             function buildAuthLoginSection() {
                 const nm = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora';
                 const logoPath = (COMPANY_INFO && COMPANY_INFO.logo) || 'Pictures/lexora-logo.png';
@@ -11933,8 +11933,9 @@
                                  onerror="this.onerror=null;this.src='Pictures/lexora-logo.png';" />
                             <p class="auth-login-tagline">Sign in to access your account<br/>and continue using ${escapeHtml(nm)}.</p>
                         </div>
-                        <div class="auth-login-divider"></div>
-                        <div class="auth-card auth-login-right">${buildAuthCard()}</div>
+                        <div class="auth-login-right">
+                            <div class="auth-card">${buildAuthCard()}</div>
+                        </div>
                     </div>
                 `;
             }
