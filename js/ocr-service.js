@@ -292,6 +292,9 @@
 
   function render() {
     const countText = STATE.files.length ? `${STATE.files.length} file(s) uploaded` : 'No files uploaded yet';
+    // Item 13 - picked up by updateContent() (app.js) and placed next to
+    // the breadcrumb title instead of inline in this card's header.
+    window.__pendingChargeEstimateHtml = chargeEstimate();
     return `
       <div>
         <div class="service-page-grid">
@@ -341,7 +344,6 @@
         <div class="file-list-card">
           <div class="file-list-card-header">
             <h3>📁 Uploaded Files</h3>
-            <span class="file-list-charge-estimate">${chargeEstimate()}</span>
           </div>
           <div class="card-body">
             <div class="file-table-wrapper">
@@ -363,6 +365,7 @@
           </div>
         </div>
 
+        ${window.isAdminOrDeveloper && window.isAdminOrDeveloper() ? `
         <div class="activity-log-section">
           <div class="activity-log-card">
             <div class="log-header"><h3>📋 Activity Log</h3></div>
@@ -382,15 +385,19 @@
             </div>
           </div>
         </div>
+        ` : ''}
           </div>
         </div>`;
   }
 
   function rerender() {
-    const host = document.getElementById('contentBody');
+    // Item 13 - see the matching comment in bai2.js's rerender().
+    const host = document.getElementById('serviceBodyRoot');
     if (!host || !document.getElementById('ocrInput')) return;
     host.innerHTML = render();
     if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
+    const estEl = document.getElementById('fileListChargeEstimate');
+    if (estEl) estEl.innerHTML = window.__pendingChargeEstimateHtml || '';
   }
 
   // Called when navigating away, so a half-finished run doesn't keep going

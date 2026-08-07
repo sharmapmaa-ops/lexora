@@ -25,8 +25,12 @@
   const val = (id) => (document.getElementById(id) || {}).value || '';
   const num = (id) => parseFloat(val(id));
   const chk = (id) => !!(document.getElementById(id) || {}).checked;
+  // Item 9 - no currency symbol in the client UI (receipt is server-side
+  // and unaffected). Was `... || '\u20b9'`, but that '||' fallback
+  // treats an intentionally empty symbol as falsy and silently puts the
+  // symbol back - call the function directly with no fallback instead.
   const AMT = (v) => (
-    (window.LexoraBilling && window.LexoraBilling.currencySymbol()) || '\u20b9'
+    (window.LexoraBilling ? window.LexoraBilling.currencySymbol() : '')
   ) + Math.round(v).toLocaleString('en-IN');
 
   function fld(label, inner) {

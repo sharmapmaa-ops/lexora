@@ -208,14 +208,16 @@
       const progressCell = `
         <span class="progress-label">${pct}%</span>`;
       const action = f.status === 'Success'
-        ? '<span class="file-action-link disabled">Done</span>'
+        ? '<span class="file-action-link disabled">Success</span>'
         : (f.status === 'Failed'
             ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">⚠</span>`
-            : `<span class="file-action-link disabled" title="${esc(f.status || 'Pending')}">${f.status === 'Processing' ? '\u23f3' : '\u2022'}</span>`);
+            : (f.status === 'Processing'
+                ? '<span class="file-action-link disabled">Processing…</span>'
+                : `<span class="file-action-link disabled" title="${esc(f.status || 'Pending')}">\u2022</span>`));
       return `
         <tr>
-          <td><input type="checkbox" class="file-select-checkbox" ${f.selected !== false ? 'checked' : ''}
-                     ${st.running ? 'disabled' : ''}
+          <td><input type="checkbox" class="file-select-checkbox" ${(f.selected !== false && f.status !== 'Success') ? 'checked' : ''}
+                     ${(st.running || f.status === 'Success') ? 'disabled' : ''}
                      onchange="ServiceRunner.toggleSelect('${id}', ${f.uid}, this.checked)" /></td>
           <td class="file-name"><span class="file-name-link">${esc(f.file.name)}</span></td>
           <td>${f.pageCount || '-'}</td>
@@ -346,10 +348,34 @@
     })();
   }
 
+  // Item 13 - "any service marked Paid should show this line too":
+  // ServiceRunner covers every "Other Services" tool, most of which are
+  // free, so this only produces anything when the Services Catalog
+  // marks this particular one Paid (reuses the same window.LexoraBilling
+  // rate API that Translation/Lease/BAI2/OCR/Data Extraction already do).
+  function chargeEstimateHtml(id) {
+    if (!window.LexoraBilling) return '';
+    const catalogEntry = window.SERVICES_CATALOG && window.SERVICES_CATALOG[id];
+    if (!catalogEntry || catalogEntry.type !== 'Paid') return '';
+    const st = state(id);
+    const selectedFiles = st.files.filter(function (f) { return f.selected !== false; });
+    if (!selectedFiles.length) return '';
+    const perDocument = window.LexoraBilling.isPerDocument(id);
+    const rate = Number(window.LexoraBilling.perPageRate(id)) || 0;
+    const sym = window.LexoraBilling.currencySymbol();
+    const total = selectedFiles.reduce(function (sum, f) {
+      return sum + (perDocument ? rate : rate * (f.pageCount || 1));
+    }, 0);
+    return `\ud83d\udcb0 Rate: ${sym}${rate.toFixed(2)}${perDocument ? '/document' : '/page'} \u00b7 Est. total: ${sym}${total.toFixed(2)} for ${selectedFiles.length} selected file(s)`;
+  }
+
   function render(id) {
     const svc = SERVICES[id];
     if (!svc) return '<div class="content-section"><p>This service is not available.</p></div>';
     const st = state(id);
+    // Picked up by updateContent() (app.js) and placed next to the
+    // breadcrumb title instead of inline in the Uploaded Files header.
+    window.__pendingChargeEstimateHtml = chargeEstimateHtml(id);
     const setup = typeof svc.setupHtml === 'function' ? svc.setupHtml(st) : '';
     const countText = st.files.length ? `${st.files.length} file(s) uploaded` : 'No files uploaded yet';
     const accept = svc.accept || '';
@@ -423,6 +449,7 @@
           </div>
         </div>
 
+        ${window.isAdminOrDeveloper && window.isAdminOrDeveloper() ? `
         <div class="activity-log-section">
           <div class="activity-log-card">
             <div class="log-header">
@@ -444,6 +471,7 @@
             </div>
           </div>
         </div>
+        ` : ''}
           </div>
         </div>`;
   }
@@ -486,12 +514,18 @@
   }
 
   function refresh(id) {
-    const host = document.getElementById('contentBody');
+    // Item 13 - see the matching comment in bai2.js's rerender(); targets
+    // the body-only wrapper so the breadcrumb bar (which now also carries
+    // the charge-estimate span) survives every refresh instead of being
+    // wiped on the first file pick/progress tick.
+    const host = document.getElementById('serviceBodyRoot');
     if (!host) return;
     if (!document.getElementById('srIn_' + id)) return;
     const savedSetup = _captureSetupValues(id);
     host.innerHTML = render(id);
     _restoreSetupValues(id, savedSetup);
+    const estEl = document.getElementById('fileListChargeEstimate');
+    if (estEl) estEl.innerHTML = window.__pendingChargeEstimateHtml || '';
     if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
   }
 
@@ -589,6 +623,7 @@
           await svc.process([entry.file], ctx, label);
           entry.status = 'Success';
           entry.progress = 100;
+          entry.selected = false; // Item 8 - processed files auto-uncheck
         } catch (e) {
           entry.status = 'Failed';
           entry.error = e.message || 'Processing failed';
@@ -633,7 +668,7 @@
       st.files.forEach(function (f) { if (f.selected !== false) { f.status = 'Processing'; f.progress = 5; } });
       refresh(id);
       await svc.process(selected, ctx, 'Batch');
-      st.files.forEach(function (f) { if (f.selected !== false) { f.status = 'Success'; f.progress = 100; } });
+      st.files.forEach(function (f) { if (f.selected !== false) { f.status = 'Success'; f.progress = 100; f.selected = false; } });
       await runCtx.finalize();
     } catch (e) {
       ctx.log(`Error > ${e.message || 'Processing failed'}`, 'Failed');

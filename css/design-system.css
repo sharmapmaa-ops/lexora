@@ -83,7 +83,19 @@ body {
     color: var(--ds-navy, #0b1330);
     padding: 2px 0 12px;
     margin-bottom: 4px;
+    /* Item 13 - title stays left, the per-service "💰 Rate / Est. total"
+       line (when present) sits pinned to the right of it, not stacked
+       underneath or run on immediately after the title text. */
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
 }
+
+.breadcrumb-title-text { flex-shrink: 0; }
+
+.file-list-charge-estimate:empty { display: none; }
 
 /* Nav sits in the middle, the user chip is pinned right - matches the
    mockups, and works without touching the existing markup. */
@@ -561,13 +573,20 @@ body, input, select, textarea, button {
    .file-list-card aur .activity-log-card par fixed height (280/320px) thi.
    Design system ne padding badha di to content bahar chala gaya aur har
    card ke andar apna scrollbar aa gaya. Ab cards content ke hisab se
-   grow karte hain; sirf lambi tables ke andar scroll rehta hai. */
+   grow karte hain; sirf lambi tables ke andar scroll rehta hai.
+   Item 12/14/15 - .history-card hata diya is list se: uska table-card
+   ka base rule (style.css) hamesha se 450px fixed tha, lekin yahi
+   auto-height rule same specificity + baad me load hone ki wajah se
+   use jeet raha tha (Payment History jaisa koi bhi PLAIN .history-card,
+   binaa kisi extra distinguishing class ke, silently auto-height ban
+   gaya tha) - .support-log-card/.dash-txn-card/.notif-card jaise
+   compound-class cards already apni khud ki higher-specificity fixed-
+   height rule se bach rahe the, sirf plain .history-card affected tha. */
 .service-col > .service-card,
 .service-col > .file-list-card,
 .service-col > .activity-log-section > .activity-log-card,
 .file-list-card,
 .activity-log-card,
-.history-card,
 .payment-card { height: auto; }
 
 .profile-danger-card {
@@ -952,12 +971,16 @@ body, input, select, textarea, button {
 }
 
 /* ---- 4. today's transactions ---- */
+/* Item 12/15 - was flex:1/min-height:0 (auto, content-sized within its
+   grid row); now a fixed height matching the Notification card
+   (.history-card.notif-card, height:450px) instead of auto, and the
+   pager (added alongside Support/Payment History) lives inside that
+   same fixed height rather than growing the card. */
 .dash-txn-card {
     padding: 15px 17px;
     display: flex;
     flex-direction: column;
-    min-height: 0;
-    flex: 1;
+    height: 450px;
 }
 
 .dash-txn-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }

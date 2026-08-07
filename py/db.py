@@ -979,10 +979,10 @@ VIRTUAL_TABLES = {
     "doc_services_catalog": {
         "kind": "document",
         "resource": "services-catalog",
-        "fields": ["id", "name", "type", "billingUnit", "apiAccess", "visibility", "systemConfig", "image"],
+        "fields": ["id", "name", "type", "amount", "billingUnit", "apiAccess", "visibility", "systemConfig", "image"],
         "types": {},
         "jsonb_defaults": {},
-        "field_defaults": {"type": "Free", "billingUnit": "document", "apiAccess": "No", "visibility": "Visible", "systemConfig": "No"},
+        "field_defaults": {"type": "Free", "amount": "", "billingUnit": "document", "apiAccess": "No", "visibility": "Visible", "systemConfig": "No"},
         "select_options": {
             "type": ["Paid", "Free"],
             "billingUnit": [["page", "Per Page"], ["document", "Per Document"], ["process", "Per Process"]],
@@ -1053,7 +1053,7 @@ VIRTUAL_TABLE_LABELS = {
                   "apiFeature": "API Feature"},
     "doc_contact_submissions": {"userId": "User ID", "id": "Ticket ID",
                                  "date": "Created At", "updatedAt": "Updated At"},
-    "doc_services_catalog": {"id": "Service ID", "name": "Name", "type": "Paid/Free",
+    "doc_services_catalog": {"id": "Service ID", "name": "Name", "type": "Paid/Free", "amount": "Amount",
                               "billingUnit": "Paid Billing Unit", "apiAccess": "API Access",
                               "visibility": "Visibility", "systemConfig": "System Configuration", "image": "Image"},
     "doc_system_configs": {"id": "ID", "name": "System Name"},

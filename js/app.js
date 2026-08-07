@@ -521,12 +521,12 @@
             // always uses the strictly-own getMyPaymentHistory() above, this
             // one is only for what the *page* displays.
             function isAdminOrDeveloper() {
-                // TEMPORARY: role check disabled so Admin panel shows for
-                // every logged-in user. To go back to real role-based
-                // access, restore the line below and remove this override:
-                //   return !!profileData && (profileData.role === 'Admin' || profileData.role === 'Developer');
-                return !!profileData;
+                return !!profileData && (profileData.role === 'Admin' || profileData.role === 'Developer');
             }
+            // Item 2 - other modules (bai2.js, ocr-service.js,
+            // data-extraction.js, service-runner.js) gate their own
+            // Activity Log card on this same check.
+            window.isAdminOrDeveloper = isAdminOrDeveloper;
 
             function getVisiblePaymentHistory() {
                 return isAdminOrDeveloper() ? paymentHistory.slice() : getMyPaymentHistory();
@@ -1093,6 +1093,9 @@
                 // per-document RATE and the overall total for the selection
                 // - see buildChargeEstimateHtml().
                 const chargeEstimateHtml = buildChargeEstimateHtml(serviceId, files);
+                // Item 13 - picked up by updateContent() and placed next to
+                // the breadcrumb title instead of inline here.
+                window.__pendingChargeEstimateHtml = chargeEstimateHtml;
                 const controlButtons = buildControlButtonsHTML(serviceId, files.length > 0);
 
                 // File count text for drop zone
@@ -1254,7 +1257,6 @@
                         <div class="file-list-card">
                             <div class="file-list-card-header">
                                 <h3>📁 Uploaded Files</h3>
-                                <span class="file-list-charge-estimate" id="fileListChargeEstimate">${chargeEstimateHtml}</span>
                             </div>
                             <div class="card-body">
                                 <div class="file-table-wrapper">
@@ -1287,6 +1289,7 @@
                             </div>
                         </div>
 
+                        ${isAdminOrDeveloper() ? `
                         <!-- Activity Log below (with active agent strip on top) -->
                         <div class="activity-log-section">
                             <div class="activity-log-card">
@@ -1324,6 +1327,7 @@
                                 </div>
                             </div>
                         </div>
+                        ` : ''}
                         </div>
                     </div>
 
@@ -3342,6 +3346,28 @@
                 setTimeout(() => URL.revokeObjectURL(url), 1000);
             };
 
+            // Item 7 - entering a service page should show an empty
+            // Uploaded Files card, not whatever was left behind from a
+            // previous visit. Unlike clearFiles() (the manual "Clear
+            // Files" button), this is silent - no confirm dialog, and
+            // it only touches the file LIST, leaving the Activity Log
+            // history exactly as it was.
+            function silentClearUploadedFiles(serviceId) {
+                if (serviceId === 'translation') {
+                    const removedIds = translationFiles.filter(f => f.userId === CURRENT_USER_ID).map(f => f.id);
+                    if (!removedIds.length) return;
+                    translationFiles = translationFiles.filter(f => f.userId !== CURRENT_USER_ID);
+                    removedIds.forEach(id => { delete translationFileBlobs[id]; });
+                    persistServiceFiles('translation');
+                } else if (serviceId === 'lease-abstraction') {
+                    const removedIds = leaseFiles.filter(f => f.userId === CURRENT_USER_ID).map(f => f.id);
+                    if (!removedIds.length) return;
+                    leaseFiles = leaseFiles.filter(f => f.userId !== CURRENT_USER_ID);
+                    removedIds.forEach(id => { delete leaseFileBlobs[id]; });
+                    persistServiceFiles('lease-abstraction');
+                }
+            }
+
             window.clearFiles = function(serviceId) {
                 const arrForCount = (serviceId === 'translation') ? translationFiles : leaseFiles;
                 const mine = arrForCount.filter(f => f.userId === CURRENT_USER_ID);
@@ -3722,9 +3748,12 @@
             // Wahan badalne par poore app me badal jayega - koi aur jagah
             // hardcode nahi hai.
             const CURRENCY_CODE_TO_SYMBOL = { INR: '\u20b9', USD: '$', AED: '\u062f.\u0625' };
+            // Item 9 - every amount shown client-side is now a plain
+            // number, no currency symbol, EXCEPT the receipt (which is
+            // generated server-side in py/server.py's _build_receipt_pdf
+            // and is untouched by this - it has its own symbol logic).
             function currencySymbol() {
-                const code = (COMPANY_INFO && COMPANY_INFO.currency) || '';
-                return CURRENCY_CODE_TO_SYMBOL[code] || code || '\u20b9';
+                return '';
             }
             Object.defineProperty(window, 'CURRENCY_SYMBOL', { get: currencySymbol });
 
@@ -4242,7 +4271,7 @@
                                 <div class="filter-bar-spacer"></div>
                                 <button class="filter-btn download-btn" onclick="downloadAccountStatementPdf()">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
-                                    Download Account Statement
+                                    Download Statement
                                 </button>
                                 <button class="filter-btn raise-issue-btn" onclick="openRaiseIssueModal()">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg>
@@ -4263,7 +4292,7 @@
                                             <th>Type</th>
                                             <th>Transaction ID</th>
                                             <th>Description</th>
-                                            <th style="text-align:right;">Amount (\u20b9)</th>
+                                            <th style="text-align:right;">Amount</th>
                                             <th>Status</th>
                                             <th>User ID</th>
                                         </tr>
@@ -4302,7 +4331,7 @@
 
                         <div class="balance-form-row">
                             <div class="form-group balance-amount-group">
-                                <label>Amount (\u20b9)</label>
+                                <label>Amount</label>
                                 <input type="number" id="balanceAmount" placeholder="Amount" min="1" step="1" oninput="syncPayPanelAmount()" />
                             </div>
                             <div class="form-group balance-description-group">
@@ -4923,6 +4952,7 @@
             let onMsgButtonClick = null;
 
             window.handleButtonClick = function(label) {
+                if (_msgAutoCloseTimer) { clearTimeout(_msgAutoCloseTimer); _msgAutoCloseTimer = null; }
                 if (msgOverlay) {
                     msgOverlay.style.display = 'none';
                 }
@@ -4933,6 +4963,8 @@
                 }
                 onMsgButtonClick = null;
             };
+
+            let _msgAutoCloseTimer = null;
 
             function renderMessageBox(cfg, callback) {
                 if (typeof callback === 'function') { onMsgButtonClick = callback; } else { onMsgButtonClick = null; }
@@ -4961,6 +4993,18 @@
                 requestAnimationFrame(() => {
                     msgOverlay.style.animation = 'msgFadeIn 0.2s ease';
                 });
+
+                // Item 6 - the "Process Completed" confirmation specifically
+                // auto-dismisses after 2 seconds instead of waiting for OK;
+                // every other messagebox (warnings, confirms, everything
+                // else) keeps requiring an explicit click, unchanged.
+                if (_msgAutoCloseTimer) { clearTimeout(_msgAutoCloseTimer); _msgAutoCloseTimer = null; }
+                if (cfg.message === 'Process Completed') {
+                    _msgAutoCloseTimer = setTimeout(function () {
+                        _msgAutoCloseTimer = null;
+                        if (msgOverlay.style.display !== 'none') handleButtonClick('OK');
+                    }, 2000);
+                }
             }
 
             function showMessage(title, message, buttons) {
@@ -5956,6 +6000,9 @@
             // ============================================================
             // 27. DASHBOARD FUNCTIONS
             // ============================================================
+            let todayTxnPage = 1;
+            let todayTxnPerPage = 5;
+
             function renderTodayTransactions() {
                 const tbody = document.getElementById('todayTableBody');
                 if (!tbody) return;
@@ -5963,6 +6010,12 @@
                 const myHistory = getMyPaymentHistory();
                 const todayStr = localDateStr();
                 const todayList = myHistory.filter(t => t.date === todayStr);
+
+                const total = todayList.length;
+                const pages = Math.max(1, Math.ceil(total / todayTxnPerPage));
+                if (todayTxnPage > pages) todayTxnPage = pages;
+                const start = (todayTxnPage - 1) * todayTxnPerPage;
+                const pageList = todayList.slice(start, start + todayTxnPerPage);
 
                 if (todayList.length === 0) {
                     tbody.innerHTML =
@@ -5975,8 +6028,9 @@
                         '<span class="dash-empty-sub">Once you make a transaction, it will appear here.</span>' +
                         '</td></tr>';
                 } else {
-                    renderHistoryRows(tbody, todayList);
+                    renderHistoryRows(tbody, pageList);
                 }
+                renderTodayTxnPager(total, pages, start);
                 wireSplitTableScrollSync(document);
 
                 // Wallet balance poore history par, baaki teen tiles sirf
@@ -6013,6 +6067,58 @@
                     ? (profileData.firstName + ' ' + profileData.lastName).trim()
                     : 'there');
             }
+
+            function renderTodayTxnPager(total, pages, start) {
+                const pager = document.getElementById('todayTxnPager');
+                if (!pager) return;
+
+                const shownFrom = total === 0 ? 0 : start + 1;
+                const shownTo = Math.min(start + todayTxnPerPage, total);
+
+                const nums = [];
+                if (pages <= 5) {
+                    for (let i = 1; i <= pages; i++) nums.push(i);
+                } else if (todayTxnPage <= 3) {
+                    nums.push(1, 2, 3, '\u2026', pages);
+                } else if (todayTxnPage >= pages - 2) {
+                    nums.push(1, '\u2026', pages - 2, pages - 1, pages);
+                } else {
+                    nums.push(1, '\u2026', todayTxnPage, '\u2026', pages);
+                }
+
+                const btn = (label, page, extra) =>
+                    page === null
+                        ? `<span class="pager-gap">${label}</span>`
+                        : `<button class="pager-btn ${extra || ''}" ${page ? `onclick="goTodayTxnPage(${page})"` : 'disabled'}>${label}</button>`;
+
+                pager.innerHTML = `
+                    <span class="pager-count">Showing ${shownFrom} to ${shownTo} of ${total} entries</span>
+                    <div class="pager-controls">
+                        <select class="pager-select" onchange="setTodayTxnPerPage(this.value)">
+                            ${[5, 10, 25, 50].map(n =>
+                                `<option value="${n}" ${n === todayTxnPerPage ? 'selected' : ''}>${n} per page</option>`).join('')}
+                        </select>
+                        ${btn('\u00ab', todayTxnPage > 1 ? 1 : 0)}
+                        ${btn('\u2039', todayTxnPage > 1 ? todayTxnPage - 1 : 0)}
+                        ${nums.map(n => n === '\u2026'
+                            ? btn('\u2026', null)
+                            : btn(n, n, n === todayTxnPage ? 'is-current' : '')).join('')}
+                        ${btn('\u203a', todayTxnPage < pages ? todayTxnPage + 1 : 0)}
+                        ${btn('\u00bb', todayTxnPage < pages ? pages : 0)}
+                    </div>
+                `;
+            }
+
+            window.goTodayTxnPage = function(page) {
+                todayTxnPage = page;
+                renderTodayTransactions();
+            };
+
+            window.setTodayTxnPerPage = function(value) {
+                todayTxnPerPage = Number(value) || 5;
+                todayTxnPage = 1;
+                renderTodayTransactions();
+            };
 
             // Real counts (previously hardcoded placeholder numbers) - Lease
             // Abstraction count comes from how many lease folders actually
@@ -8605,7 +8711,7 @@
                             <div><div class="admin-ov-stat-value">${activeUsers}</div><div class="admin-ov-stat-label">Active Users</div></div>
                         </div>
                         <div class="admin-ov-stat-card">
-                            <span class="admin-ov-stat-icon admin-ov-stat-icon-revenue">₹</span>
+                            <span class="admin-ov-stat-icon admin-ov-stat-icon-revenue">💰</span>
                             <div><div class="admin-ov-stat-value is-revenue">${currencySymbol()}${totalRevenue.toFixed(2)}</div><div class="admin-ov-stat-label">Total Revenue</div></div>
                         </div>
                         <div class="admin-ov-stat-card">
@@ -10244,10 +10350,23 @@
             }
 
             function updateContent(data, breadcrumb) {
+                // Item 13 - the per-service "💰 Rate / Est. total" line used
+                // to sit inside the Uploaded Files card's own header; there
+                // is no separate in-page service title anywhere else, so it
+                // now sits next to the ONE title that actually is visible
+                // for every service - this breadcrumb bar - instead. Each
+                // service's body() computation (buildServiceUploadHTML,
+                // Bai2.render, OcrService.render, DataExtraction.render,
+                // ServiceRunner.render) sets window.__pendingChargeEstimateHtml
+                // as a side effect while building its own HTML below; reset
+                // first so a stale value from the PREVIOUS page never leaks
+                // onto a page that doesn't set one.
+                window.__pendingChargeEstimateHtml = null;
                 const bodyContent = typeof data.body === 'function' ? data.body() : data.body;
                 const breadcrumbLabel = breadcrumb || 'Dashboard';
-                const breadcrumbHtml = `<div class="section-breadcrumb-bar">${escapeHtml(breadcrumbLabel)}</div>`;
-                contentBody.innerHTML = breadcrumbHtml + (bodyContent || '');
+                const estimateHtml = window.__pendingChargeEstimateHtml || '';
+                const breadcrumbHtml = `<div class="section-breadcrumb-bar"><span class="breadcrumb-title-text">${escapeHtml(breadcrumbLabel)}</span><span class="file-list-charge-estimate" id="fileListChargeEstimate">${estimateHtml}</span></div>`;
+                contentBody.innerHTML = breadcrumbHtml + '<div id="serviceBodyRoot">' + (bodyContent || '') + '</div>';
                 upgradeCardHeaders(contentBody);
                 applyCardLayout();
                 enhanceServicePage(contentBody);
@@ -10626,6 +10745,19 @@
                         data = { body: '<div class="content-section"><p>Content not available for this section.</p></div>' };
                     }
 
+                    // Item 7 - clear any leftover Uploaded Files before
+                    // this service's page actually renders, so it always
+                    // opens empty. Every module involved (bai2/ocr/data-
+                    // extraction/ServiceRunner tools) already exposes a
+                    // clearAll(); calling it now, before the DOM swap, is
+                    // safe - each one's own rerender() no-ops until its
+                    // page's elements exist.
+                    silentClearUploadedFiles(dataKey);
+                    if (dataKey === 'bai2' && window.Bai2) window.Bai2.clearAll();
+                    if (dataKey === 'ocr' && window.OcrService) window.OcrService.clearAll();
+                    if (dataKey === 'data-extraction' && window.DataExtraction) window.DataExtraction.clearAll();
+                    if (window.ServiceRunner && ServiceRunner.has(dataKey)) window.ServiceRunner.clear(dataKey);
+
                     // Remember the current breadcrumb prefix so modules that
                     // swap contentBody themselves (Other Services tool pages)
                     // can append their own tool name to it.
@@ -10812,7 +10944,7 @@
                                                 <th>Type</th>
                                                 <th>Transaction ID</th>
                                                 <th>Description</th>
-                                                <th style="text-align:right;">Amount (\u20b9)</th>
+                                                <th style="text-align:right;">Amount</th>
                                                 <th>Status</th>
                                                 <th>User ID</th>
                                             </tr>
@@ -10826,6 +10958,7 @@
                                         </table>
                                     </div>
                                 </div>
+                                <div class="history-pager" id="todayTxnPager"></div>
                             </div>
 
                             <div class="dashboard-grid">
@@ -12325,17 +12458,27 @@
                 else if (authActiveSection === 'contact') sectionHtml = buildAuthContactSection();
                 else sectionHtml = buildAuthHomeSection();
 
+                // Item 16 - postlogin pages always show a section title bar
+                // (added generically by updateContent()'s breadcrumb); the
+                // prelogin Services/Plans & Offers/Contact Us sections
+                // bypass updateContent entirely and were missing the same
+                // title. Home keeps its own hero treatment, unchanged.
+                const AUTH_SECTION_TITLES = { services: '\ud83d\udee0\ufe0f Services', plans: '\ud83d\udccb Plans & Offers', contact: '\ud83d\udcde Contact Us' };
+                const sectionTitle = AUTH_SECTION_TITLES[authActiveSection];
+                const sectionTitleHtml = sectionTitle ? `<div class="section-breadcrumb-bar">${escapeHtml(sectionTitle)}</div>` : '';
+
                 root.innerHTML = `
                     <div class="auth-page">
                         ${buildAuthTopNav()}
 
-                        <div class="auth-section-body">${sectionHtml}</div>
+                        <div class="auth-section-body">${sectionTitleHtml}${sectionHtml}</div>
 
                         ${authLoginModalOpen ? `
                         <div class="auth-login-modal-backdrop" onclick="if(event.target===this)closeAuthLoginModal()">
-                            <div class="auth-login-modal">
+                            <div class="auth-login-modal auth-login-modal-two-col">
                                 <button class="auth-login-modal-close" onclick="closeAuthLoginModal()">&times;</button>
-                                <div class="auth-card">${buildAuthCard()}</div>
+                                <div class="auth-login-modal-left">${buildAuthLeftPanel()}</div>
+                                <div class="auth-card auth-login-modal-right">${buildAuthCard()}</div>
                             </div>
                         </div>` : ''}
 

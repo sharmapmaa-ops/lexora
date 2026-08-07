@@ -633,6 +633,9 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
   // Activity Log for the field definitions.
   function render() {
     const countText = STATE.files.length ? `${STATE.files.length} file(s) uploaded` : 'No files uploaded yet';
+    // Item 13 - picked up by updateContent() (app.js) and placed next to
+    // the breadcrumb title instead of inline in this card's header.
+    window.__pendingChargeEstimateHtml = chargeEstimateHtml();
     return `
       <div>
         <div class="service-page-grid">
@@ -698,7 +701,6 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
         <div class="file-list-card">
           <div class="file-list-card-header">
             <h3>📁 Uploaded Files</h3>
-            <span class="file-list-charge-estimate" id="deChargeEstimate">${chargeEstimateHtml()}</span>
           </div>
           <div class="card-body">
             <div class="file-table-wrapper">
@@ -720,6 +722,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
           </div>
         </div>
 
+        ${window.isAdminOrDeveloper && window.isAdminOrDeveloper() ? `
         <div class="activity-log-section">
           <div class="activity-log-card">
             <div class="log-header"><h3>📋 Activity Log</h3></div>
@@ -739,6 +742,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
             </div>
           </div>
         </div>
+        ` : ''}
           </div>
         </div>
 
@@ -788,12 +792,15 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
   }
 
   function rerender() {
-    const host = document.getElementById('contentBody');
+    // Item 13 - see the matching comment in bai2.js's rerender().
+    const host = document.getElementById('serviceBodyRoot');
     if (!host || !document.getElementById('deInput')) return;
     const savedSetup = _captureSetupValues();
     host.innerHTML = render();
     _restoreSetupValues(savedSetup);
     if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
+    const estEl = document.getElementById('fileListChargeEstimate');
+    if (estEl) estEl.innerHTML = window.__pendingChargeEstimateHtml || '';
   }
 
   function toggleFieldsPanel() {

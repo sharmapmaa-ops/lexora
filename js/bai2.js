@@ -493,6 +493,9 @@
 
   function render() {
     const countText = STATE.files.length ? `${STATE.files.length} file(s) uploaded` : 'No files uploaded yet';
+    // Item 13 - picked up by updateContent() (app.js) and placed next to
+    // the breadcrumb title instead of inline in this card's header.
+    window.__pendingChargeEstimateHtml = chargeEstimate();
     return `
       <div>
         <div class="service-page-grid">
@@ -555,7 +558,6 @@
         <div class="file-list-card">
           <div class="file-list-card-header">
             <h3>📁 Uploaded Files</h3>
-            <span class="file-list-charge-estimate">${chargeEstimate()}</span>
           </div>
           <div class="card-body">
             <div class="file-table-wrapper">
@@ -577,6 +579,7 @@
           </div>
         </div>
 
+        ${window.isAdminOrDeveloper && window.isAdminOrDeveloper() ? `
         <div class="activity-log-section">
           <div class="activity-log-card">
             <div class="log-header"><h3>📋 Activity Log</h3></div>
@@ -596,6 +599,7 @@
             </div>
           </div>
         </div>
+        ` : ''}
           </div>
         </div>
 
@@ -634,12 +638,23 @@
   }
 
   function rerender() {
-    const host = document.getElementById('contentBody');
+    // Item 13 - targets the body-only wrapper (app.js's updateContent
+    // wraps every page's body in #serviceBodyRoot) instead of the whole
+    // #contentBody, so the breadcrumb bar sitting above it - which now
+    // also carries the charge-estimate span - survives every rerender
+    // instead of being wiped out on the very first file pick/progress
+    // tick (rerender() fires constantly during a run).
+    const host = document.getElementById('serviceBodyRoot');
     if (!host || !document.getElementById('baiInput')) return;
     const savedSetup = _captureSetupValues();
     host.innerHTML = render();
     _restoreSetupValues(savedSetup);
     if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
+    // render() (above) already set window.__pendingChargeEstimateHtml -
+    // updateContent() isn't in the loop for this rerender, so update the
+    // breadcrumb's estimate span directly here instead.
+    const estEl = document.getElementById('fileListChargeEstimate');
+    if (estEl) estEl.innerHTML = window.__pendingChargeEstimateHtml || '';
   }
 
   window.Bai2 = {

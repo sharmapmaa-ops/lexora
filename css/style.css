@@ -4178,6 +4178,31 @@
     max-height: 90vh;
     overflow-y: auto;
 }
+/* Item 4 - login modal shows two cards side by side: a brand/details
+   card on the left (reuses the same content as the pre-login Home
+   hero) and the actual login form on the right, same idea as the
+   Contact Us section's two-card layout. */
+.auth-login-modal-two-col {
+    max-width: 64em;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.6em;
+    align-items: stretch;
+    padding: 1.4em;
+}
+.auth-login-modal-left {
+    background: rgba(11,21,51,0.03);
+    border-radius: 1em;
+    padding: 1.6em;
+    display: flex;
+    align-items: center;
+}
+.auth-login-modal-left .auth-hero { grid-template-columns: 1fr; }
+.auth-login-modal-right { margin: 0; }
+@media (max-width: 900px) {
+    .auth-login-modal-two-col { grid-template-columns: 1fr; max-width: 30em; }
+    .auth-login-modal-left { display: none; }
+}
 .auth-login-modal-close {
     position: absolute;
     top: 0.6em;
@@ -5231,8 +5256,11 @@
        whether the newly-selected table has 2 rows or 200. Tables shorter
        than this just show blank space below their last row; tables
        taller than this scroll internally. This intentionally overrides
-       the older "let it size to content" approach for this one element. */
-    height: 200px;
+       the older "let it size to content" approach for this one element.
+       Item 14/15 - matches the Notification card's fixed height
+       (.history-card.notif-card, 450px) instead of its own smaller
+       200px, so every card with a table uses the same fixed height. */
+    height: 450px;
     overflow: auto;
     border: 1px solid rgba(0,0,139,0.15);
     border-radius: 8px;
