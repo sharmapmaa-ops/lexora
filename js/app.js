@@ -4298,7 +4298,7 @@
                                     </thead>
                                 </table>
                                 </div>
-                                <div class="history-table-wrapper" id="historyTableWrapper">
+                                <div class="history-table-wrapper report-table-scroll" id="historyTableWrapper">
                                     <table class="history-table payment-history-table" id="historyTable">
                                         <tbody id="historyTableBody"></tbody>
                                     </table>
@@ -5407,6 +5407,21 @@
                     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
                     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
             }
+
+            // Item 9 - shared by service-runner.js/bai2.js/ocr-service.js/
+            // data-extraction.js, which each used to carry their own
+            // near-identical copy of this exact status-to-Action-cell
+            // mapping. That duplication is exactly why the same bugs kept
+            // reappearing in one file after being fixed in another this
+            // session (missing "Pending" text, "Done" vs "Success", a
+            // stray bullet icon) - one function, fixed once, used
+            // everywhere, instead of four copies to keep in sync by hand.
+            window.buildFileActionCell = function (status, errorMsg) {
+                if (status === 'Success') return '<span class="file-action-link done-label">Success</span>';
+                if (status === 'Failed') return '<span class="file-action-link error-link" title="' + escapeHtml(errorMsg || 'Failed') + '">\u26a0</span>';
+                if (status === 'Processing') return '<span class="file-action-link disabled">Processing\u2026</span>';
+                return '<span class="file-action-link disabled">Pending</span>';
+            };
 
             let selectedSupportIds = new Set();
 
@@ -6928,7 +6943,7 @@
                                     </tr>
                                 </thead>
                             </table>
-                            <div class="history-table-wrapper notif-table-wrapper" id="notificationTableWrapper">
+                            <div class="history-table-wrapper notif-table-wrapper report-table-scroll" id="notificationTableWrapper">
                                 <table class="history-table notif-table" id="notificationTable">
                                     <tbody id="notificationTableBody"></tbody>
                                 </table>
@@ -7870,7 +7885,7 @@
                         <div class="history-pager">
                             ${_dbPaginationHtml(name, dbTablePage, dbTablePerPage, allRows.length)}
                         </div>
-                        <div class="db-edit-table-wrapper">
+                        <div class="db-edit-table-wrapper report-table-scroll">
                         <table class="admin-json-table db-txn-table db-edit-table">
                             <thead>
                                 <tr>
@@ -8058,7 +8073,7 @@
                     <div class="history-pager">
                         ${_dbPaginationHtml('cfg_rules', dbRulesPage, dbTablePerPage, allRows.length)}
                     </div>
-                    <div class="db-edit-table-wrapper">
+                    <div class="db-edit-table-wrapper report-table-scroll">
                     <table class="admin-json-table db-txn-table db-edit-table">
                         <thead>
                             <tr>
@@ -10876,7 +10891,7 @@
                                         </thead>
                                     </table>
                                     </div>
-                                    <div class="history-table-wrapper" id="todayTableWrapper">
+                                    <div class="history-table-wrapper report-table-scroll" id="todayTableWrapper">
                                         <table class="history-table today-table payment-history-table" id="todayTable">
                                             <tbody id="todayTableBody">
                                             </tbody>
@@ -10997,48 +11012,45 @@
                         // nahi hain (login page wali FreeServices catalogue
                         // hi reuse ki hai).
                         const freeServiceNames = authFreeTools().flatMap(g => g[1]).map(t => (t && (t.label || t)) || '').filter(Boolean);
-                        // Item 1 - this used to render as its own bannner
-                        // block above .plans-grid, with background/border
-                        // and a plain "Cancel Auto-Renewal" button. Now it
-                        // sits in the page's header (right of "Plans &
-                        // Offers", via the same __pendingChargeEstimateHtml
-                        // slot the service pages use for their rate/
-                        // estimate line - no background/border, and a
-                        // real ON/OFF toggle instead of a one-way button.
+                        // Item 2 - this sits below the plans grid (all
+                        // three cards), centered - not in the page header
+                        // (that was last round's placement; moved back per
+                        // explicit request) and not repeated per-card
+                        // (it's about the user's OWN plan, so one line
+                        // total makes sense here, not three).
                         // Item 3 - if the company has Auto Renewal turned
                         // off entirely (COMPANY_INFO.autoRenewAvailable),
                         // no user gets the toggle/choice at all - their
                         // paid plan always moves to Free at period end,
                         // and only that fact is shown, informationally.
                         const autoRenewCompanyWide = !(COMPANY_INFO && COMPANY_INFO.autoRenewAvailable === 'No');
-                        let autoRenewHeaderHtml = '';
+                        let autoRenewFooterHtml = '';
                         if (myPlan.monthlyPrice > 0) {
                             if (!autoRenewCompanyWide) {
-                                autoRenewHeaderHtml = `
-                                    <div class="auto-renew-header-block">
+                                autoRenewFooterHtml = `
+                                    <div class="auto-renew-footer-block">
                                         <span>Your ${escapeHtml(myPlanName)} plan will move to Free after ${escapeHtml(profileData.planEndDate || '')}.</span>
                                     </div>`;
                             } else if (profileData.autoRenew !== false) {
-                                autoRenewHeaderHtml = `
-                                    <div class="auto-renew-header-block">
-                                        <span>Your ${escapeHtml(myPlanName)} plan auto-renews on ${escapeHtml(profileData.planEndDate || '')} - ${currencySymbol()}${myPlan.monthlyPrice} will be deducted from your wallet balance automatically.</span>
+                                autoRenewFooterHtml = `
+                                    <div class="auto-renew-footer-block">
                                         <label class="toggle-switch" title="Auto-renewal is on">
                                             <input type="checkbox" checked onchange="toggleAutoRenew(this.checked)" />
                                             <span class="toggle-switch-track"></span>
                                         </label>
+                                        <span>Your ${escapeHtml(myPlanName)} plan auto-renews on ${escapeHtml(profileData.planEndDate || '')} - ${currencySymbol()}${myPlan.monthlyPrice} will be deducted from your wallet balance automatically.</span>
                                     </div>`;
                             } else {
-                                autoRenewHeaderHtml = `
-                                    <div class="auto-renew-header-block">
-                                        <span>Auto-renewal is off. Your ${escapeHtml(myPlanName)} plan will move to Free after ${escapeHtml(profileData.planEndDate || '')}.</span>
+                                autoRenewFooterHtml = `
+                                    <div class="auto-renew-footer-block">
                                         <label class="toggle-switch" title="Auto-renewal is off">
                                             <input type="checkbox" onchange="toggleAutoRenew(this.checked)" />
                                             <span class="toggle-switch-track"></span>
                                         </label>
+                                        <span>Your ${escapeHtml(myPlanName)} plan will move to Free after ${escapeHtml(profileData.planEndDate || '')}.</span>
                                     </div>`;
                             }
                         }
-                        window.__pendingChargeEstimateHtml = autoRenewHeaderHtml;
                         return `
                         <div class="plans-grid">
                             ${PLANS_DATA.map(plan => {
@@ -11075,6 +11087,7 @@
                                 </div>`;
                             }).join('')}
                         </div>
+                        ${autoRenewFooterHtml}
 
                     `;
                     }
@@ -11310,7 +11323,7 @@
                                 <button class="filter-btn reset-btn" onclick="resetSupportFilter()">↺ Reset</button>
                             </div>
                             <div class="card-body">
-                                <div class="support-table-scroll" id="supportTableWrapper">
+                                <div class="support-table-scroll report-table-scroll" id="supportTableWrapper">
                                     <table class="support-log-table" id="supportTable">
                                         <thead>
                                             <tr>
@@ -11989,6 +12002,7 @@
                             <p class="auth-login-tagline">Sign in to access your account<br/>and continue using ${escapeHtml(nm)}.</p>
                         </div>
                         <div class="auth-login-right">
+                            <button class="dash-hero-btn auth-login-back-btn" onclick="setAuthSection('home')">Back to Home <span>\u2192</span></button>
                             <div class="auth-card">${buildAuthCard()}</div>
                         </div>
                     </div>

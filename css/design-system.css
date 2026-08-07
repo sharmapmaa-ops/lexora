@@ -971,30 +971,20 @@ body, input, select, textarea, button {
 }
 
 /* ---- 4. today's transactions ---- */
-/* Item 12/15 - was flex:1/min-height:0 (auto, content-sized within its
-   grid row); now a fixed height matching the Notification card
-   (.history-card.notif-card, height:450px) instead of auto, and the
-   pager (added alongside Support/Payment History) lives inside that
-   same fixed height rather than growing the card. */
+/* Item: height/display/flex-direction all come from the shared
+   .history-card base rule now (style.css) - every one of these report-
+   style cards carries that class already, so there is no need for a
+   second, separately-maintained copy of the same height here (that
+   duplication, across this file AND style.css, is exactly what caused
+   the height/header bugs earlier - one card's height got updated and
+   the others didn't, or a breakpoint got missed in one of the copies).
+   Only the padding actually differs for this one card, so that's all
+   that's left here. */
 .dash-txn-card {
     padding: 15px 17px;
-    display: flex;
-    flex-direction: column;
-    height: 450px;
 }
-/* Item 3 - keeps this in sync with .history-card's own responsive
-   height steps (style.css) at the same breakpoints. Defined here
-   (design-system.css, loaded last) rather than alongside those in
-   style.css, since a same-specificity rule in the later-loaded file
-   always wins the cascade regardless of which one is inside a media
-   query - putting it in style.css only would have been silently
-   overridden by this file's own unconditional 450px rule above,
-   exactly like the earlier .history-card auto-height issue. */
-@media (max-width: 992px) { .dash-txn-card { height: 400px; } }
-@media (max-width: 768px) { .dash-txn-card { height: 380px; } }
-@media (max-width: 480px) { .dash-txn-card { height: 340px; } }
 
-.dash-txn-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.dash-txn-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-shrink: 0; }
 .dash-txn-head .ds-card-icon { width: 36px; height: 36px; }
 .dash-txn-head .ds-card-icon svg { width: 18px; height: 18px; }
 .dash-txn-head h3 { flex: 1; margin: 0; font-size: .98rem; font-weight: 700; color: var(--ds-navy); }
@@ -1031,7 +1021,8 @@ body, input, select, textarea, button {
 .today-table { table-layout: fixed; width: 100%; }
 .dash-txn-card .history-table th { background: #f8fafc; font-size: .71rem; padding: 9px 8px; border-top: none; }
 .dash-txn-card .history-table td { font-size: .77rem; padding: 8px; }
-.dash-txn-card .history-table-wrapper { flex: 1; min-height: 0; overflow-y: auto; }
+/* height/flex/overflow come from the shared .report-table-scroll class
+   on this same element now (see ROUND 12). */
 
 .dash-empty-cell { text-align: center; padding: 16px 10px; }
 .dash-empty-art  { width: 54px; height: 42px; display: block; margin: 0 auto 6px; }
@@ -1342,6 +1333,14 @@ body, input, select, textarea, button {
 
 .history-table-header-wrapper {
     overflow-x: hidden;
+    /* This must never shrink - when the body table below it fights it
+       for space inside an overflow:hidden flex column (exactly what
+       just happened when the body's height became a fixed !important
+       value instead of flex:1's "whatever's left"), a flex child with
+       no flex-shrink:0 can get squeezed toward 0 height instead of the
+       overflow simply clipping the body - which is what made the
+       header row disappear instead of just the table scrolling. */
+    flex-shrink: 0;
 }
 
 .payment-history-scroll-outer .history-table-wrapper,
@@ -1475,6 +1474,7 @@ body, input, select, textarea, button {
     padding-top: 14px;
     margin-top: 12px;
     border-top: 1px solid var(--ds-line);
+    flex-shrink: 0;
 }
 
 .pager-count    { font-size: .78rem; color: var(--ds-muted); }
@@ -1594,7 +1594,7 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
 }
 
 /* ===================== NOTIFICATIONS ===================== */
-.notif-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.notif-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-shrink: 0; }
 .notif-head h3 { margin: 0; font-size: 1.06rem; font-weight: 700; color: var(--ds-navy); }
 
 .notif-count {
@@ -1650,20 +1650,17 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
 .notif-tab.is-active { background: none; color: var(--ds-blue); border-bottom-color: var(--ds-blue); }
 .notif-tab:hover     { color: var(--ds-blue); }
 
-/* Card is a fixed 450px (.history-card, style.css) but its flex children
-   default to min-height:auto, which lets a tall content run (e.g. the
-   "All" tab with more rows than "Read"/"Unread") push past that height
-   instead of scrolling inside it - min-height:0 is what actually makes
-   the overflow-y:auto on .history-table-wrapper take effect, so the card
-   stays the same height no matter which of the 3 tabs is selected. */
-.notif-card .card-body,
-.notif-card .history-table-wrapper { min-height: 0; }
-
-/* Explicit, not inherited - the notification card must always be a fixed
-   height (never "auto"/content-sized), same principle as the Support log
-   card fix, so it doesn't visibly resize between All/Read/Unread or as
-   notifications are added/removed. */
-.history-card.notif-card { height: 450px; }
+/* Card is a fixed height (.history-card, style.css - the single shared
+   source for every report-style card's height now) but its flex
+   children default to min-height:auto, which lets a tall content run
+   (e.g. the "All" tab with more rows than "Read"/"Unread") push past
+   that height instead of scrolling inside it - min-height:0 is what
+   actually makes the overflow-y:auto on .history-table-wrapper take
+   effect, so the card stays the same height no matter which of the 3
+   tabs is selected. */
+.notif-card .card-body { min-height: 0; }
+/* .notif-card .history-table-wrapper's min-height:0 now comes from the
+   shared .report-table-scroll class on that same element (ROUND 12). */
 
 .notif-table { table-layout: fixed; width: 100%; }
 .notif-table td { vertical-align: middle; }
@@ -3763,54 +3760,45 @@ body, .center-content { background: #fff; }
    of which --ds-page declaration the cascade was actually resolving to. */
 body { background: #ffffff; }
 
-/* ---- ROUND 12 ----
-   Item: the actual TABLE scroll area (not the whole card) must be the
-   same height in every report-style card - Payment History, Today's
-   Transactions, Notification, Support, and the PostgreSQL admin table.
-   Each of these previously sized its table area differently: three
-   relied on flex:1/"whatever space is left after this card's own
-   header/filter/pager chrome" (Payment History, Today's Transactions,
-   Notification - so a card with more chrome above the table left less
-   room for rows), Support had its own explicit 272px, and PostgreSQL
-   had its own explicit 450px. All five are pinned to one identical
-   explicit height here instead. This is intentionally the LAST rule in
-   the last-loaded stylesheet, with !important, because every one of
-   these selectors already has an earlier same-or-higher-specificity
-   rule elsewhere (flex:1 in one case, explicit px in two others) that
-   would otherwise keep winning by source order - the exact failure
-   mode already hit twice before on this same set of cards. */
-.payment-history-scroll-outer .history-table-wrapper,
-.today-table-scroll-outer .history-table-wrapper,
-.dash-txn-card .history-table-wrapper,
-.notif-card .history-table-wrapper,
-.support-table-scroll,
-.db-edit-table-wrapper {
-    height: 300px !important;
-    flex: none !important;
-    min-height: 0 !important;
+/* ---- ROUND 12 (superseded by the .report-table-scroll consolidation
+   below - every one of Payment History/Today's Transactions/
+   Notification/Support/PostgreSQL's inner table-scroll areas now
+   carries this ONE shared class in its markup, so there is a single
+   place that sets height/overflow/colours/fonts for all of them,
+   instead of five separately-maintained copies that kept drifting out
+   of sync with each other - which is exactly what caused the repeated
+   height/header bugs this session). */
+.report-table-scroll {
+    height: 280px;
+    flex: none;
+    min-height: 0;
+    overflow-y: auto;
 }
 
 /* ---- ROUND 12b ----
-   Item 2/3 (login section) - no margin/gap around the two panels, and
-   their combined height must be EXACTLY the space between the nav and
-   the footer (page height - nav height - footer height), not
-   min-height:100vh's looser "at least this tall" behavior, which left
-   a visible gap above the sticky footer when the panels' own
-   height:100% didn't resolve against a truly definite parent height.
-   Scoped to only when the login section is actually showing, so every
-   other prelogin section's own spacing is untouched. */
+   Item 5 (login section) - when Login is showing, the top nav AND the
+   footer/copyright are hidden entirely (not just margin/padding
+   zeroed) - the login section is the ONLY thing on the page, and gets
+   the full 100vh so both its panels can be exactly 100% height with
+   zero gap above or below. Scoped to only when the login section is
+   actually showing, so every other prelogin section keeps its normal
+   nav+footer. */
 .auth-page:has(.auth-login-section) {
     height: 100vh;
     max-width: 100%;
-    padding-left: 0;
-    padding-right: 0;
-    padding-top: 0;
+    padding: 0;
+}
+.auth-page:has(.auth-login-section) > .auth-top-menu-bar,
+.auth-page:has(.auth-login-section) > .footer {
+    display: none;
 }
 .auth-section-body:has(> .auth-login-section) {
     padding: 0;
     margin: 0;
+    height: 100%;
 }
 .auth-login-section {
     margin: 0;
     padding: 0;
+    height: 100%;
 }

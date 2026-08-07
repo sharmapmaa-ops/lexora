@@ -207,13 +207,7 @@
       const pct = f.progress != null ? f.progress : (f.status === 'Success' ? 100 : 0);
       const progressCell = `
         <span class="progress-label">${pct}%</span>`;
-      const action = f.status === 'Success'
-        ? '<span class="file-action-link done-label">Success</span>'
-        : (f.status === 'Failed'
-            ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">⚠</span>`
-            : (f.status === 'Processing'
-                ? '<span class="file-action-link disabled">Processing…</span>'
-                : `<span class="file-action-link disabled" title="${esc(f.status || 'Pending')}">\u2022</span>`));
+      const action = window.buildFileActionCell(f.status, f.error);
       return `
         <tr>
           <td><input type="checkbox" class="file-select-checkbox" ${(f.selected !== false && f.status !== 'Success') ? 'checked' : ''}
