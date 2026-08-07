@@ -664,12 +664,27 @@
 
   function openNow(id) {
     const host = document.getElementById('contentBody');
-    if (host) host.innerHTML = render(id);
+    const base = window.__lexoraBreadcrumb || '\ud83d\udee0\ufe0f Services / Free Services';
+    const name = id === 'other-services' ? '' : titleOf(id);
+    const label = name ? base + ' / ' + name : base;
+    // Item 3/16 - drilling into an individual free-tool card used to
+    // bypass updateContent() entirely (only the top-bar label updated
+    // via setLexoraBreadcrumb), so these pages never had the same
+    // in-content title bar every other postlogin page gets. Now they do,
+    // built the same way (title left, charge-estimate slot right) and
+    // wrapped in #serviceBodyRoot so ServiceRunner's refresh() can find
+    // it without falling back to replacing the whole page.
+    window.__pendingChargeEstimateHtml = null;
+    const bodyHtml = render(id);
+    const estimateHtml = window.__pendingChargeEstimateHtml || '';
+    if (host) {
+      host.innerHTML = '<div class="section-breadcrumb-bar"><span class="breadcrumb-title-text">' + esc(label) +
+        '</span><span class="file-list-charge-estimate" id="fileListChargeEstimate">' + estimateHtml + '</span></div>' +
+        '<div id="serviceBodyRoot">' + bodyHtml + '</div>';
+    }
     if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
     if (window.setLexoraBreadcrumb) {
-      const base = window.__lexoraBreadcrumb || '\ud83d\udee0\ufe0f Services / Free Services';
-      const name = id === 'other-services' ? '' : titleOf(id);
-      window.setLexoraBreadcrumb(name ? base + ' / ' + name : base);
+      window.setLexoraBreadcrumb(label);
     }
   }
 

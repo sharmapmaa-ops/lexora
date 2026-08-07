@@ -644,7 +644,7 @@
     // also carries the charge-estimate span - survives every rerender
     // instead of being wiped out on the very first file pick/progress
     // tick (rerender() fires constantly during a run).
-    const host = document.getElementById('serviceBodyRoot');
+    const host = document.getElementById('serviceBodyRoot') || document.getElementById('contentBody');
     if (!host || !document.getElementById('baiInput')) return;
     const savedSetup = _captureSetupValues();
     host.innerHTML = render();

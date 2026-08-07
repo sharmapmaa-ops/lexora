@@ -514,11 +514,15 @@
   }
 
   function refresh(id) {
-    // Item 13 - see the matching comment in bai2.js's rerender(); targets
-    // the body-only wrapper so the breadcrumb bar (which now also carries
-    // the charge-estimate span) survives every refresh instead of being
-    // wiped on the first file pick/progress tick.
-    const host = document.getElementById('serviceBodyRoot');
+    // Item 13 - targets the body-only wrapper (app.js's updateContent
+    // wraps every page's body in #serviceBodyRoot) so the breadcrumb bar
+    // survives every refresh. BUT tools opened by drilling into "Other
+    // Services" go through FreeServices.openNow(), which replaces
+    // #contentBody directly and never creates #serviceBodyRoot - falling
+    // back to #contentBody there is what was CORRECT before, and without
+    // it this refresh() found no host at all and silently did nothing,
+    // which is exactly what broke file pick/drag-drop for those tools.
+    const host = document.getElementById('serviceBodyRoot') || document.getElementById('contentBody');
     if (!host) return;
     if (!document.getElementById('srIn_' + id)) return;
     const savedSetup = _captureSetupValues(id);

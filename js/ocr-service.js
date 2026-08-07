@@ -392,7 +392,7 @@
 
   function rerender() {
     // Item 13 - see the matching comment in bai2.js's rerender().
-    const host = document.getElementById('serviceBodyRoot');
+    const host = document.getElementById('serviceBodyRoot') || document.getElementById('contentBody');
     if (!host || !document.getElementById('ocrInput')) return;
     host.innerHTML = render();
     if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);

@@ -528,9 +528,8 @@
             // Activity Log card on this same check.
             window.isAdminOrDeveloper = isAdminOrDeveloper;
 
-            function getVisiblePaymentHistory() {
-                return isAdminOrDeveloper() ? paymentHistory.slice() : getMyPaymentHistory();
-            }
+            // NOTE: getFilteredHistory() below has its own inline default-
+            // vs-lookup logic now (item 5) and no longer calls this.
 
             function getVisibleContactSubmissions() {
                 return isAdminOrDeveloper() ? contactSubmissions.slice() : getMyContactSubmissions();
@@ -3936,18 +3935,27 @@
                 const toInput = document.getElementById('historyToDate');
                 const userInput = document.getElementById('historyUserFilter');
 
-                let base = getVisiblePaymentHistory();
-
-                if (fromInput && toInput && fromInput.value && toInput.value) {
-                    base = base.filter(t => t.date >= fromInput.value && t.date <= toInput.value);
-                }
-                if (userInput && userInput.value.trim()) {
-                    const q = userInput.value.trim().toLowerCase();
-                    base = base.filter(t => {
+                // Item 5 - by default, EVERY user (including Admin/
+                // Developer) only ever sees their OWN payment history.
+                // The User filter (Admin/Developer only) is a lookup,
+                // not a "show everyone" toggle: typing an ID/email finds
+                // that ONE specific user's transactions - it never shows
+                // multiple users' data mixed together.
+                const filterQuery = (isAdminOrDeveloper() && userInput && userInput.value.trim()) || '';
+                let base;
+                if (filterQuery) {
+                    const q = filterQuery.toLowerCase();
+                    base = paymentHistory.filter(t => {
                         const dirEntry = getUserDirectoryEntry(t.userId);
                         const email = dirEntry ? (dirEntry.email || '').toLowerCase() : '';
                         return (t.userId || '').toLowerCase().includes(q) || email.includes(q);
                     });
+                } else {
+                    base = getMyPaymentHistory();
+                }
+
+                if (fromInput && toInput && fromInput.value && toInput.value) {
+                    base = base.filter(t => t.date >= fromInput.value && t.date <= toInput.value);
                 }
                 return base;
             }
@@ -4098,47 +4106,33 @@
                 renderHistoryPager(total, pages, start);
             }
 
+            // Item 2 - the ONE pagination look every card with a table
+            // uses (Payment History, Support, Today's Transactions,
+            // PostgreSQL admin table): exactly the Notification card's
+            // pattern - "Showing X to Y of Z", a "Rows per page" select,
+            // and simple «-prev / page-of-total / next-» controls. NOT
+            // numbered page buttons (1 2 3 ... 18) - that was a
+            // different, unrelated pager style this deliberately replaces.
+            function buildNotifStylePagerHtml(page, totalPages, total, pageSize, start, goToPageFn, setPageSizeFn) {
+                if (total === 0) return '';
+                return `
+                    <span class="pager-count">Showing ${start + 1} to ${Math.min(start + pageSize, total)} of ${total}</span>
+                    <label class="pager-page-size">Rows per page
+                        <select onchange="${setPageSizeFn}(this.value)">
+                            ${[5, 10, 25, 50].map(n => `<option value="${n}" ${pageSize === n ? 'selected' : ''}>${n}</option>`).join('')}
+                        </select>
+                    </label>
+                    <div class="pager-controls">
+                        <button class="pager-btn" ${page <= 1 ? 'disabled' : ''} onclick="${goToPageFn}(${page - 1})">\u00ab</button>
+                        <button class="pager-btn is-current">${page} / ${totalPages}</button>
+                        <button class="pager-btn" ${page >= totalPages ? 'disabled' : ''} onclick="${goToPageFn}(${page + 1})">\u00bb</button>
+                    </div>`;
+            }
+
             function renderHistoryPager(total, pages, start) {
                 const pager = document.getElementById('historyPager');
                 if (!pager) return;
-
-                const shownFrom = total === 0 ? 0 : start + 1;
-                const shownTo = Math.min(start + historyPerPage, total);
-
-                // Bade page counts par "1 2 3 ... 9" - saare numbers dikhane se
-                // bar toot jata hai.
-                const nums = [];
-                if (pages <= 5) {
-                    for (let i = 1; i <= pages; i++) nums.push(i);
-                } else if (historyPage <= 3) {
-                    nums.push(1, 2, 3, '\u2026', pages);
-                } else if (historyPage >= pages - 2) {
-                    nums.push(1, '\u2026', pages - 2, pages - 1, pages);
-                } else {
-                    nums.push(1, '\u2026', historyPage, '\u2026', pages);
-                }
-
-                const btn = (label, page, extra) =>
-                    page === null
-                        ? `<span class="pager-gap">${label}</span>`
-                        : `<button class="pager-btn ${extra || ''}" ${page ? `onclick="goHistoryPage(${page})"` : 'disabled'}>${label}</button>`;
-
-                pager.innerHTML = `
-                    <span class="pager-count">Showing ${shownFrom} to ${shownTo} of ${total} entries</span>
-                    <div class="pager-controls">
-                        <select class="pager-select" onchange="setHistoryPerPage(this.value)">
-                            ${[5, 10, 25, 50].map(n =>
-                                `<option value="${n}" ${n === historyPerPage ? 'selected' : ''}>${n} per page</option>`).join('')}
-                        </select>
-                        ${btn('\u00ab', historyPage > 1 ? 1 : 0)}
-                        ${btn('\u2039', historyPage > 1 ? historyPage - 1 : 0)}
-                        ${nums.map(n => n === '\u2026'
-                            ? btn('\u2026', null)
-                            : btn(n, n, n === historyPage ? 'is-current' : '')).join('')}
-                        ${btn('\u203a', historyPage < pages ? historyPage + 1 : 0)}
-                        ${btn('\u00bb', historyPage < pages ? pages : 0)}
-                    </div>
-                `;
+                pager.innerHTML = buildNotifStylePagerHtml(historyPage, pages, total, historyPerPage, start, 'goHistoryPage', 'setHistoryPerPage');
             }
 
             window.goHistoryPage = function(page) {
@@ -5489,42 +5483,7 @@
             function renderSupportPager(total, pages, start) {
                 const pager = document.getElementById('supportPager');
                 if (!pager) return;
-
-                const shownFrom = total === 0 ? 0 : start + 1;
-                const shownTo = Math.min(start + supportPerPage, total);
-
-                const nums = [];
-                if (pages <= 5) {
-                    for (let i = 1; i <= pages; i++) nums.push(i);
-                } else if (supportPage <= 3) {
-                    nums.push(1, 2, 3, '\u2026', pages);
-                } else if (supportPage >= pages - 2) {
-                    nums.push(1, '\u2026', pages - 2, pages - 1, pages);
-                } else {
-                    nums.push(1, '\u2026', supportPage, '\u2026', pages);
-                }
-
-                const btn = (label, page, extra) =>
-                    page === null
-                        ? `<span class="pager-gap">${label}</span>`
-                        : `<button class="pager-btn ${extra || ''}" ${page ? `onclick="goSupportPage(${page})"` : 'disabled'}>${label}</button>`;
-
-                pager.innerHTML = `
-                    <span class="pager-count">Showing ${shownFrom} to ${shownTo} of ${total} entries</span>
-                    <div class="pager-controls">
-                        <select class="pager-select" onchange="setSupportPerPage(this.value)">
-                            ${[5, 10, 25, 50].map(n =>
-                                `<option value="${n}" ${n === supportPerPage ? 'selected' : ''}>${n} per page</option>`).join('')}
-                        </select>
-                        ${btn('\u00ab', supportPage > 1 ? 1 : 0)}
-                        ${btn('\u2039', supportPage > 1 ? supportPage - 1 : 0)}
-                        ${nums.map(n => n === '\u2026'
-                            ? btn('\u2026', null)
-                            : btn(n, n, n === supportPage ? 'is-current' : '')).join('')}
-                        ${btn('\u203a', supportPage < pages ? supportPage + 1 : 0)}
-                        ${btn('\u00bb', supportPage < pages ? pages : 0)}
-                    </div>
-                `;
+                pager.innerHTML = buildNotifStylePagerHtml(supportPage, pages, total, supportPerPage, start, 'goSupportPage', 'setSupportPerPage');
             }
 
             window.goSupportPage = function(page) {
@@ -6071,42 +6030,7 @@
             function renderTodayTxnPager(total, pages, start) {
                 const pager = document.getElementById('todayTxnPager');
                 if (!pager) return;
-
-                const shownFrom = total === 0 ? 0 : start + 1;
-                const shownTo = Math.min(start + todayTxnPerPage, total);
-
-                const nums = [];
-                if (pages <= 5) {
-                    for (let i = 1; i <= pages; i++) nums.push(i);
-                } else if (todayTxnPage <= 3) {
-                    nums.push(1, 2, 3, '\u2026', pages);
-                } else if (todayTxnPage >= pages - 2) {
-                    nums.push(1, '\u2026', pages - 2, pages - 1, pages);
-                } else {
-                    nums.push(1, '\u2026', todayTxnPage, '\u2026', pages);
-                }
-
-                const btn = (label, page, extra) =>
-                    page === null
-                        ? `<span class="pager-gap">${label}</span>`
-                        : `<button class="pager-btn ${extra || ''}" ${page ? `onclick="goTodayTxnPage(${page})"` : 'disabled'}>${label}</button>`;
-
-                pager.innerHTML = `
-                    <span class="pager-count">Showing ${shownFrom} to ${shownTo} of ${total} entries</span>
-                    <div class="pager-controls">
-                        <select class="pager-select" onchange="setTodayTxnPerPage(this.value)">
-                            ${[5, 10, 25, 50].map(n =>
-                                `<option value="${n}" ${n === todayTxnPerPage ? 'selected' : ''}>${n} per page</option>`).join('')}
-                        </select>
-                        ${btn('\u00ab', todayTxnPage > 1 ? 1 : 0)}
-                        ${btn('\u2039', todayTxnPage > 1 ? todayTxnPage - 1 : 0)}
-                        ${nums.map(n => n === '\u2026'
-                            ? btn('\u2026', null)
-                            : btn(n, n, n === todayTxnPage ? 'is-current' : '')).join('')}
-                        ${btn('\u203a', todayTxnPage < pages ? todayTxnPage + 1 : 0)}
-                        ${btn('\u00bb', todayTxnPage < pages ? pages : 0)}
-                    </div>
-                `;
+                pager.innerHTML = buildNotifStylePagerHtml(todayTxnPage, pages, total, todayTxnPerPage, start, 'goTodayTxnPage', 'setTodayTxnPerPage');
             }
 
             window.goTodayTxnPage = function(page) {
@@ -7074,18 +6998,7 @@
 
                 const pager = document.getElementById('notificationPager');
                 if (pager) {
-                    pager.innerHTML = mine.length === 0 ? '' : `
-                        <span class="pager-count">Showing ${startIdx + 1} to ${Math.min(startIdx + notificationPageSize, mine.length)} of ${mine.length}</span>
-                        <label class="pager-page-size">Rows per page
-                            <select onchange="setNotificationPageSize(this.value)">
-                                ${[5, 10, 25, 50].map(n => `<option value="${n}" ${notificationPageSize === n ? 'selected' : ''}>${n}</option>`).join('')}
-                            </select>
-                        </label>
-                        <div class="pager-controls">
-                            <button class="pager-btn" ${notificationPage <= 1 ? 'disabled' : ''} onclick="goToNotificationPage(${notificationPage - 1})">\u00ab</button>
-                            <button class="pager-btn is-current">${notificationPage} / ${totalPages}</button>
-                            <button class="pager-btn" ${notificationPage >= totalPages ? 'disabled' : ''} onclick="goToNotificationPage(${notificationPage + 1})">\u00bb</button>
-                        </div>`;
+                    pager.innerHTML = buildNotifStylePagerHtml(notificationPage, totalPages, mine.length, notificationPageSize, startIdx, 'goToNotificationPage', 'setNotificationPageSize');
                 }
 
                 if (mine.length === 0) {
@@ -7833,33 +7746,26 @@
             function _dbPaginationHtml(name, page, perPage, total) {
                 const pages = Math.max(1, Math.ceil(total / perPage));
                 if (page > pages) page = pages;
-                const shownFrom = total === 0 ? 0 : (page - 1) * perPage + 1;
+                if (total === 0) return '';
+                const shownFrom = (page - 1) * perPage + 1;
                 const shownTo = Math.min(total, page * perPage);
-                const nums = [];
-                if (pages <= 5) {
-                    for (let i = 1; i <= pages; i++) nums.push(i);
-                } else if (page <= 3) {
-                    nums.push(1, 2, 3, '\u2026', pages);
-                } else if (page >= pages - 2) {
-                    nums.push(1, '\u2026', pages - 2, pages - 1, pages);
-                } else {
-                    nums.push(1, '\u2026', page, '\u2026', pages);
-                }
-                const btn = (label, target, extra) =>
-                    target === null
-                        ? `<span class="pager-gap">${label}</span>`
-                        : `<button class="pager-btn ${extra || ''}" ${target ? `onclick="dbTableGoToPage('${escapeHtml(name)}', ${target})"` : 'disabled'}>${label}</button>`;
+                const n = escapeHtml(name);
+                // Item 2/15 - same Notification-card pagination pattern as
+                // Payment History/Support/Today's Transactions (see
+                // buildNotifStylePagerHtml) - not reused directly here only
+                // because these onclick handlers need the extra table `name`
+                // argument that helper's plain function-name calls don't carry.
                 return `
-                    <span class="pager-count">Showing ${shownFrom} to ${shownTo} of ${total} entries</span>
-                    <div class="pager-controls">
-                        <select class="pager-select" onchange="dbTableSetPerPage('${escapeHtml(name)}', this.value)">
-                            ${[10, 20, 50, 100].map(n => `<option value="${n}" ${n === perPage ? 'selected' : ''}>${n} per page</option>`).join('')}
+                    <span class="pager-count">Showing ${shownFrom} to ${shownTo} of ${total}</span>
+                    <label class="pager-page-size">Rows per page
+                        <select onchange="dbTableSetPerPage('${n}', this.value)">
+                            ${[10, 20, 50, 100].map(v => `<option value="${v}" ${v === perPage ? 'selected' : ''}>${v}</option>`).join('')}
                         </select>
-                        ${btn('\u00ab', page > 1 ? 1 : 0)}
-                        ${btn('\u2039', page > 1 ? page - 1 : 0)}
-                        ${nums.map(n => n === '\u2026' ? btn('\u2026', null) : btn(n, n, n === page ? 'is-current' : '')).join('')}
-                        ${btn('\u203a', page < pages ? page + 1 : 0)}
-                        ${btn('\u00bb', page < pages ? pages : 0)}
+                    </label>
+                    <div class="pager-controls">
+                        <button class="pager-btn" ${page <= 1 ? 'disabled' : ''} onclick="dbTableGoToPage('${n}', ${page - 1})">\u00ab</button>
+                        <button class="pager-btn is-current">${page} / ${pages}</button>
+                        <button class="pager-btn" ${page >= pages ? 'disabled' : ''} onclick="dbTableGoToPage('${n}', ${page + 1})">\u00bb</button>
                     </div>`;
             }
 
@@ -11815,10 +11721,10 @@
             };
 
             // Pre-login top nav (Home / Services / Plans & Offers / Contact
-            // Us + a Login button, no logo) - which of those four sections
-            // is showing, and whether the Login form popup is open.
+            // Us / Login, no logo) - which of those five sections is
+            // showing. Item 1 - Login is now a section like the others,
+            // not a popup, so there's no separate "modal open" flag.
             let authActiveSection = 'home';
-            let authLoginModalOpen = false;
 
             function authPost(path, payload) {
                 return authFetch(path, {
@@ -11945,7 +11851,7 @@
                                     </li>
                                 `).join('')}
                             </ul>
-                            <button class="auth-top-nav-login-btn" onclick="openAuthLoginModal()">Login</button>
+                            <button class="auth-top-nav-login-btn" onclick="setAuthSection('login')">Login</button>
                         </div>
                     </div>`;
             }
@@ -12005,8 +11911,22 @@
                     : '<p style="text-align:center;padding:40px;">Contact information is not available right now.</p>';
             }
 
+            // Item 1 - Login is its own SECTION (like Services/Plans &
+            // Offers/Contact Us), not a popup overlay - reuses the same
+            // two-card look (brand details left, form right) the modal
+            // version had, just rendered inline in the page body instead
+            // of a floating backdrop.
+            function buildAuthLoginSection() {
+                return `
+                    <div class="auth-login-modal-two-col auth-login-section">
+                        <div class="auth-login-modal-left">${buildAuthLeftPanel()}</div>
+                        <div class="auth-card auth-login-modal-right">${buildAuthCard()}</div>
+                    </div>
+                `;
+            }
+
             window.promptAuthLoginForService = function(label) {
-                openAuthLoginModal();
+                setAuthSection('login');
             };
 
             window.goBackToServices = function() {
@@ -12020,19 +11940,7 @@
 
             window.setAuthSection = function(section) {
                 authActiveSection = section;
-                renderAuthScreen();
-            };
-
-            window.openAuthLoginModal = function() {
-                authLoginModalOpen = true;
-                authState.step = 'login';
-                document.body.style.overflow = 'hidden';
-                renderAuthScreen();
-            };
-
-            window.closeAuthLoginModal = function() {
-                authLoginModalOpen = false;
-                document.body.style.overflow = '';
+                if (section === 'login') authState.step = 'login';
                 renderAuthScreen();
             };
 
@@ -12456,14 +12364,15 @@
                 if (authActiveSection === 'services') sectionHtml = buildAuthServicesSection();
                 else if (authActiveSection === 'plans') sectionHtml = buildAuthPlansSection();
                 else if (authActiveSection === 'contact') sectionHtml = buildAuthContactSection();
+                else if (authActiveSection === 'login') sectionHtml = buildAuthLoginSection();
                 else sectionHtml = buildAuthHomeSection();
 
                 // Item 16 - postlogin pages always show a section title bar
                 // (added generically by updateContent()'s breadcrumb); the
-                // prelogin Services/Plans & Offers/Contact Us sections
+                // prelogin Services/Plans & Offers/Contact Us/Login sections
                 // bypass updateContent entirely and were missing the same
                 // title. Home keeps its own hero treatment, unchanged.
-                const AUTH_SECTION_TITLES = { services: '\ud83d\udee0\ufe0f Services', plans: '\ud83d\udccb Plans & Offers', contact: '\ud83d\udcde Contact Us' };
+                const AUTH_SECTION_TITLES = { services: '\ud83d\udee0\ufe0f Services', plans: '\ud83d\udccb Plans & Offers', contact: '\ud83d\udcde Contact Us', login: '\ud83d\udd10 Login' };
                 const sectionTitle = AUTH_SECTION_TITLES[authActiveSection];
                 const sectionTitleHtml = sectionTitle ? `<div class="section-breadcrumb-bar">${escapeHtml(sectionTitle)}</div>` : '';
 
@@ -12472,15 +12381,6 @@
                         ${buildAuthTopNav()}
 
                         <div class="auth-section-body">${sectionTitleHtml}${sectionHtml}</div>
-
-                        ${authLoginModalOpen ? `
-                        <div class="auth-login-modal-backdrop" onclick="if(event.target===this)closeAuthLoginModal()">
-                            <div class="auth-login-modal auth-login-modal-two-col">
-                                <button class="auth-login-modal-close" onclick="closeAuthLoginModal()">&times;</button>
-                                <div class="auth-login-modal-left">${buildAuthLeftPanel()}</div>
-                                <div class="auth-card auth-login-modal-right">${buildAuthCard()}</div>
-                            </div>
-                        </div>` : ''}
 
                         <div class="footer">
                             <div class="footer-inner">
@@ -12491,7 +12391,7 @@
                         </div>
                     </div>
                 `;
-                if (authLoginModalOpen && authState.step === 'verify') {
+                if (authActiveSection === 'login' && authState.step === 'verify') {
                     wireOtpBoxes();
                     startAuthCountdown();
                 }
@@ -12812,8 +12712,6 @@
                 window.__lexoraAuthToken = token;   // for standalone service modules
                 localStorage.setItem(AUTH_SESSION_KEY, userId);
                 localStorage.setItem(AUTH_TOKEN_KEY, token);
-                authLoginModalOpen = false;
-                document.body.style.overflow = '';
                 document.getElementById('authScreen').style.display = 'none';
                 // appShell reveal happens inside initializeApp(), after the
                 // real company/user name is applied - see boot() note.
@@ -12926,8 +12824,6 @@
                 profileData = null;
                 document.getElementById('appShell').style.display = 'none';
                 authActiveSection = 'home';
-                authLoginModalOpen = false;
-                document.body.style.overflow = '';
                 authState = { step: 'login', verifyPurpose: null, userId: null, email: null,
                     expiresInMinutes: 4, emailFailed: false, resetCode: null,
                     countdownInterval: null, countdownSecondsLeft: 0 };

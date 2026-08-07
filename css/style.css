@@ -4159,29 +4159,13 @@
 .auth-hero-full .auth-stats-row,
 .auth-hero-full .auth-check-grid { justify-content: flex-start; }
 
-/* Login form popup - opens over whichever section is showing, dims and
-   blocks interaction with the rest of the page until closed. */
-.auth-login-modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.92);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 2000;
-    padding: 20px;
-}
-.auth-login-modal {
-    position: relative;
-    width: 100%;
-    max-width: 30em;
-    max-height: 90vh;
-    overflow-y: auto;
-}
-/* Item 4 - login modal shows two cards side by side: a brand/details
-   card on the left (reuses the same content as the pre-login Home
-   hero) and the actual login form on the right, same idea as the
-   Contact Us section's two-card layout. */
+/* Item 1 - Login used to be a popup that opened over whichever section
+   was showing; it's now its own section (.auth-login-section below),
+   so the old backdrop/overlay/close-button chrome is gone entirely. */
+/* Item 1/4 - this same two-card grid is used for the inline Login
+   section - .auth-login-section adds the page-in-flow centering a
+   normal section needs (the old popup version was centered by its
+   backdrop's flex centering instead). */
 .auth-login-modal-two-col {
     max-width: 64em;
     display: grid;
@@ -4189,6 +4173,12 @@
     gap: 1.6em;
     align-items: stretch;
     padding: 1.4em;
+}
+.auth-login-section {
+    margin: 2.4em auto;
+    box-shadow: 0 1px 3px rgba(11,21,51,0.08);
+    border-radius: 1em;
+    background: #fff;
 }
 .auth-login-modal-left {
     background: rgba(11,21,51,0.03);
@@ -4203,22 +4193,6 @@
     .auth-login-modal-two-col { grid-template-columns: 1fr; max-width: 30em; }
     .auth-login-modal-left { display: none; }
 }
-.auth-login-modal-close {
-    position: absolute;
-    top: 0.6em;
-    right: 0.6em;
-    width: 2em;
-    height: 2em;
-    border: none;
-    background: rgba(11,21,51,0.06);
-    border-radius: 50%;
-    font-size: 1.2em;
-    line-height: 1;
-    color: rgba(11,21,51,0.6);
-    cursor: pointer;
-    z-index: 1;
-}
-.auth-login-modal-close:hover { background: rgba(11,21,51,0.12); }
 
 .auth-topbar-logo {
     width: 3.4em;

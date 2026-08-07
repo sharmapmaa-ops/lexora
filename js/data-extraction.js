@@ -793,7 +793,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
 
   function rerender() {
     // Item 13 - see the matching comment in bai2.js's rerender().
-    const host = document.getElementById('serviceBodyRoot');
+    const host = document.getElementById('serviceBodyRoot') || document.getElementById('contentBody');
     if (!host || !document.getElementById('deInput')) return;
     const savedSetup = _captureSetupValues();
     host.innerHTML = render();
