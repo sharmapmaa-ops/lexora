@@ -4345,9 +4345,12 @@
             // Item 1 - ab tab-switch nahi hai, Add Balance aur Payment
             // History dono hamesha ek saath dikhte hain, isliye page load
             // par dono ke init function chala dete hain.
+            // Item 2 - Secure Checkout moved to its own section, so there's
+            // no pay-panel to reset here anymore (resetPayPanel() itself
+            // now navigates BACK to this exact page - calling it from here
+            // would loop).
             function renderPaymentPageContent() {
                 populateBalancePaymentMethods();
-                resetPayPanel();
                 renderPaymentHistory();
                 updateBalanceDisplay();
             }
@@ -4385,16 +4388,30 @@
                 return USER_DIRECTORY.filter(u => u.role === 'Admin' || u.role === 'Developer').map(u => u.id);
             }
 
+            // Item 1 - turning it back ON needs no confirmation (only
+            // turning OFF does, since that changes what happens at
+            // renewal time); always reloads the page after either path
+            // so the toggle's visual state matches profileData.autoRenew
+            // exactly, including when the user declines the confirm.
             window.cancelPlanAutoRenew = function() {
                 showConfirm('Cancel Auto-Renewal',
                     `Your ${profileData.plan} plan will stay active until ${profileData.planEndDate}, but won't auto-renew after that - your account will move to the Free plan instead. Continue?`,
                     function(confirmed) {
-                        if (!confirmed) return;
-                        profileData.autoRenew = false;
-                        persistProfile();
-                        addNotification(`Auto-renewal for your ${profileData.plan} plan has been cancelled. It'll remain active until ${profileData.planEndDate}, then move to Free.`);
+                        if (confirmed) {
+                            profileData.autoRenew = false;
+                            persistProfile();
+                            addNotification(`Auto-renewal for your ${profileData.plan} plan has been cancelled. It'll remain active until ${profileData.planEndDate}, then move to Free.`);
+                        }
                         loadContent('plans-offers');
                     });
+            };
+
+            window.toggleAutoRenew = function(checked) {
+                if (!checked) { cancelPlanAutoRenew(); return; }
+                profileData.autoRenew = true;
+                persistProfile();
+                addNotification(`Auto-renewal for your ${profileData.plan} plan is back on. It will renew on ${profileData.planEndDate}.`);
+                loadContent('plans-offers');
             };
 
             window.switchPlan = function(planId) {
@@ -4421,22 +4438,16 @@
                         if (window.handleUserAction) handleUserAction('Profile');
                         return;
                     }
+                    // Item 2 - Secure Checkout is its own section now;
+                    // navigate straight there instead of going to Payment
+                    // first and polling for #balanceAmount/#balanceDescription
+                    // to exist (those inputs are the Add Balance card, a
+                    // different page now - payWithRazorpay() itself no
+                    // longer reads from any DOM inputs either).
                     pendingPlanUpgrade = plan;
-                    lexoraNavigate('payment');
-                    let tries = 0;
-                    const prefillAndPay = function () {
-                        const amountInput = document.getElementById('balanceAmount');
-                        const descInput = document.getElementById('balanceDescription');
-                        if (!amountInput || !descInput) {
-                            if (++tries < 20) { setTimeout(prefillAndPay, 50); }
-                            return;
-                        }
-                        amountInput.value = plan.monthlyPrice;
-                        descInput.value = `Upgrade to ${plan.name} plan`;
-                        syncPayPanelAmount();
-                        if (window.payWithRazorpay) payWithRazorpay();
-                    };
-                    setTimeout(prefillAndPay, 0);
+                    window.__pendingCheckoutAmount = plan.monthlyPrice;
+                    window.__pendingCheckoutDescription = `Upgrade to ${plan.name} plan`;
+                    loadContent('payment', 'add-balance');
                     return;
                 }
 
@@ -4597,21 +4608,15 @@
                 if (html) mount.insertAdjacentHTML('afterbegin', '<div class="pay-panel-state">' + html + '</div>');
             }
 
+            // Item 2 - Secure Checkout is its own section (like Login),
+            // not a popup over the Payment page - "resetting" it after
+            // payment completes/is cancelled/fails means leaving this
+            // page entirely and landing back on Payment, not hiding an
+            // overlay in place.
             window.resetPayPanel = function() {
-                const panel = document.getElementById('balancePayPanel');
-                const mount = document.getElementById('rzpInlineMount');
-                const modal = document.getElementById('balanceCheckoutModal');
-                if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; }
-                if (!mount) return;
-                Array.prototype.slice.call(mount.querySelectorAll('iframe')).forEach(f => f.remove());
-                if (panel) panel.classList.remove('is-busy', 'is-inline');
-                payPanelSetState(PAY_PANEL_IDLE_HTML);
-                syncPayPanelAmount();
+                loadContent('payment');
             };
 
-            // Item 1 - Secure Checkout card ko manually band karne ka
-            // button (pehle sirf payment complete/cancel/fail par apne
-            // aap hide hota tha, koi close button nahi tha).
             window.closeCheckoutModal = function() {
                 resetPayPanel();
             };
@@ -4713,26 +4718,19 @@
                 return rzp;
             }
 
-            window.payWithRazorpay = function() {
-                const amountInput = document.getElementById('balanceAmount');
-                const descInput = document.getElementById('balanceDescription');
-
-                const amount = parseFloat(amountInput.value);
-                const description = descInput.value.trim() || 'Balance top-up';
+            // Item 2 - amount/description are passed in directly now
+            // (addBalance() collects them on the Payment page, then hands
+            // off to this dedicated Secure Checkout section - there's no
+            // #balanceAmount/#balanceDescription on THIS page to read from).
+            window.payWithRazorpay = function(amount, description) {
+                amount = parseFloat(amount);
+                description = (description || '').trim() || 'Balance top-up';
 
                 if (!amount || amount <= 0) { showWarning('Please enter a valid amount.'); return; }
                 if (typeof Razorpay === 'undefined') {
                     showWarning('Payment gateway failed to load. Please check your connection and try again.');
                     return;
                 }
-
-                // Item 3 - Secure Checkout ab ek popup card hai; baaki
-                // screen backdrop se disable rehti hai jab tak payment
-                // complete ya cancel na ho jaye (resetPayPanel ise hide
-                // karta hai - payment.failed, modal.ondismiss, aur
-                // verify-payment ke success/catch, sab wahi call karte hain).
-                const checkoutModal = document.getElementById('balanceCheckoutModal');
-                if (checkoutModal) { checkoutModal.classList.add('show'); checkoutModal.style.display = 'flex'; }
 
                 authPost('/api/payment/create-order', { userId: CURRENT_USER_ID, amount: amount })
                     .then(order => {
@@ -4783,9 +4781,6 @@
                                     const txn = result.transaction;
                                     paymentHistory.push(txn);
                                     persistPaymentHistory();
-
-                                    amountInput.value = '';
-                                    descInput.value = '';
 
                                     renderPaymentHistory();
                                     updateBalanceDisplay();
@@ -4875,7 +4870,14 @@
                     showWarning('The payment gateway could not be loaded. Please check your connection and try again.');
                     return;
                 }
-                payWithRazorpay();
+                // Item 2 - Secure Checkout is its own section now, not a
+                // popup over this page - hand the validated amount/
+                // description off and navigate; the new section's
+                // post-render hook (loadContent, breadcrumb.includes(
+                // 'Add Balance')) picks them up and starts checkout.
+                window.__pendingCheckoutAmount = amount;
+                window.__pendingCheckoutDescription = description;
+                loadContent('payment', 'add-balance');
             };
 
             // Item 2 - called from the Approve/Cancel buttons rendered
@@ -10296,6 +10298,17 @@
                     setTimeout(() => { renderPaymentPageContent(); }, 50);
                 }
 
+                // Item 2 - Secure Checkout auto-starts the moment this
+                // section finishes rendering, using the amount/description
+                // addBalance() stashed right before navigating here.
+                if (breadcrumb && breadcrumb.includes('Add Balance')) {
+                    setTimeout(() => {
+                        payWithRazorpay(window.__pendingCheckoutAmount, window.__pendingCheckoutDescription);
+                        window.__pendingCheckoutAmount = null;
+                        window.__pendingCheckoutDescription = null;
+                    }, 50);
+                }
+
                 if (breadcrumb === '📊 Dashboard') {
                     setTimeout(renderTodayTransactions, 50);
                 }
@@ -10620,6 +10633,7 @@
                         bai2: 'BAI2',
                         'content-writing-tool': 'Content Writing Tool',
                         'humanize-document-tool': 'Humanize Document Tool',
+                        'add-balance': 'Add Balance',
                     };
 
                     if (subId) {
@@ -10983,16 +10997,49 @@
                         // nahi hain (login page wali FreeServices catalogue
                         // hi reuse ki hai).
                         const freeServiceNames = authFreeTools().flatMap(g => g[1]).map(t => (t && (t.label || t)) || '').filter(Boolean);
-                        const autoRenewBanner = (myPlan.monthlyPrice > 0 && profileData.autoRenew !== false) ? `
-                            <div class="auto-renew-banner">
-                                <span>Your ${escapeHtml(myPlanName)} plan auto-renews on ${escapeHtml(profileData.planEndDate || '')} - ${currencySymbol()}${myPlan.monthlyPrice} will be deducted from your wallet balance automatically.</span>
-                                <button class="filter-btn" onclick="cancelPlanAutoRenew()">Cancel Auto-Renewal</button>
-                            </div>` : (myPlan.monthlyPrice > 0 ? `
-                            <div class="auto-renew-banner is-cancelled">
-                                <span>Auto-renewal is off. Your ${escapeHtml(myPlanName)} plan will move to Free after ${escapeHtml(profileData.planEndDate || '')}.</span>
-                            </div>` : '');
+                        // Item 1 - this used to render as its own bannner
+                        // block above .plans-grid, with background/border
+                        // and a plain "Cancel Auto-Renewal" button. Now it
+                        // sits in the page's header (right of "Plans &
+                        // Offers", via the same __pendingChargeEstimateHtml
+                        // slot the service pages use for their rate/
+                        // estimate line - no background/border, and a
+                        // real ON/OFF toggle instead of a one-way button.
+                        // Item 3 - if the company has Auto Renewal turned
+                        // off entirely (COMPANY_INFO.autoRenewAvailable),
+                        // no user gets the toggle/choice at all - their
+                        // paid plan always moves to Free at period end,
+                        // and only that fact is shown, informationally.
+                        const autoRenewCompanyWide = !(COMPANY_INFO && COMPANY_INFO.autoRenewAvailable === 'No');
+                        let autoRenewHeaderHtml = '';
+                        if (myPlan.monthlyPrice > 0) {
+                            if (!autoRenewCompanyWide) {
+                                autoRenewHeaderHtml = `
+                                    <div class="auto-renew-header-block">
+                                        <span>Your ${escapeHtml(myPlanName)} plan will move to Free after ${escapeHtml(profileData.planEndDate || '')}.</span>
+                                    </div>`;
+                            } else if (profileData.autoRenew !== false) {
+                                autoRenewHeaderHtml = `
+                                    <div class="auto-renew-header-block">
+                                        <span>Your ${escapeHtml(myPlanName)} plan auto-renews on ${escapeHtml(profileData.planEndDate || '')} - ${currencySymbol()}${myPlan.monthlyPrice} will be deducted from your wallet balance automatically.</span>
+                                        <label class="toggle-switch" title="Auto-renewal is on">
+                                            <input type="checkbox" checked onchange="toggleAutoRenew(this.checked)" />
+                                            <span class="toggle-switch-track"></span>
+                                        </label>
+                                    </div>`;
+                            } else {
+                                autoRenewHeaderHtml = `
+                                    <div class="auto-renew-header-block">
+                                        <span>Auto-renewal is off. Your ${escapeHtml(myPlanName)} plan will move to Free after ${escapeHtml(profileData.planEndDate || '')}.</span>
+                                        <label class="toggle-switch" title="Auto-renewal is off">
+                                            <input type="checkbox" onchange="toggleAutoRenew(this.checked)" />
+                                            <span class="toggle-switch-track"></span>
+                                        </label>
+                                    </div>`;
+                            }
+                        }
+                        window.__pendingChargeEstimateHtml = autoRenewHeaderHtml;
                         return `
-                        ${autoRenewBanner}
                         <div class="plans-grid">
                             ${PLANS_DATA.map(plan => {
                                 // Tier tay karta hai colour aur button style:
@@ -11077,9 +11124,17 @@
                         </div>
 
                         ${buildPaymentHistoryCardHtml()}
-
-                        <div class="balance-checkout-modal" id="balanceCheckoutModal" style="display:none;">
-                            <div class="balance-checkout-backdrop"></div>
+                        `;
+                    }
+                },
+                'add-balance': {
+                    // Item 2 - Secure Checkout is its own section (like
+                    // Login), reached only via addBalance() navigating
+                    // here with window.__pendingCheckoutAmount/Description
+                    // already set - never shown as a popup over Payment.
+                    body: function() {
+                        return `
+                        <div class="balance-checkout-section">
                             <div class="balance-pay-panel" id="balancePayPanel">
                                 <div class="pay-panel-head">
                                     <span class="ds-card-icon">
@@ -11091,8 +11146,8 @@
                                         <div class="pay-panel-title">Secure Checkout</div>
                                         <div class="pay-panel-sub">Safe &amp; secure payment via Razorpay</div>
                                     </div>
-                                    <div class="pay-panel-amount" id="payPanelAmount">${currencySymbol()}0.00</div>
-                                    <button class="pay-panel-close-btn" onclick="closeCheckoutModal()" aria-label="Close" title="Close">
+                                    <div class="pay-panel-amount" id="payPanelAmount">${currencySymbol()}${(Number(window.__pendingCheckoutAmount) || 0).toFixed(2)}</div>
+                                    <button class="pay-panel-close-btn" onclick="closeCheckoutModal()" aria-label="Back to Payment" title="Back to Payment">
                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
                                     </button>
                                 </div>
