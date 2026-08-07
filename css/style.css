@@ -5351,6 +5351,7 @@
    toggle switch next to it when the user actually has a choice. */
 .auto-renew-footer-block {
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 10px;
@@ -5360,6 +5361,14 @@
     text-align: center;
     max-width: 40em;
     margin: 20px auto 0;
+}
+/* Item - toggle sits above its text now (was side-by-side), and is 3x
+   its previous size - every other measurement on .toggle-switch is in
+   em relative to its own font-size, so scaling that up here scales
+   the whole toggle (track + thumb) proportionally instead of just
+   width/height alone. */
+.auto-renew-footer-block .toggle-switch {
+    font-size: 3em;
 }
 
 /* Reusable ON/OFF pill toggle - checkbox visually hidden, track+thumb

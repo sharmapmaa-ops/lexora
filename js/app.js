@@ -11023,13 +11023,28 @@
                         // no user gets the toggle/choice at all - their
                         // paid plan always moves to Free at period end,
                         // and only that fact is shown, informationally.
+                        // Item - "2026-08-30" -> "30th August 2026".
+                        // Shared here since a plan's end/renewal date
+                        // shows up in more than this one place.
+                        const formatOrdinalDate = (isoDate) => {
+                            if (!isoDate) return '';
+                            const d = new Date(isoDate + 'T00:00:00');
+                            if (isNaN(d.getTime())) return isoDate;
+                            const day = d.getDate();
+                            const suffix = (day % 10 === 1 && day !== 11) ? 'st'
+                                : (day % 10 === 2 && day !== 12) ? 'nd'
+                                : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
+                            const month = d.toLocaleString('en-US', { month: 'long' });
+                            return `${day}${suffix} ${month} ${d.getFullYear()}`;
+                        };
                         const autoRenewCompanyWide = !(COMPANY_INFO && COMPANY_INFO.autoRenewAvailable === 'No');
                         let autoRenewFooterHtml = '';
                         if (myPlan.monthlyPrice > 0) {
+                            const endDateNice = formatOrdinalDate(profileData.planEndDate);
                             if (!autoRenewCompanyWide) {
                                 autoRenewFooterHtml = `
                                     <div class="auto-renew-footer-block">
-                                        <span>Your ${escapeHtml(myPlanName)} plan will move to Free after ${escapeHtml(profileData.planEndDate || '')}.</span>
+                                        <span>Your ${escapeHtml(myPlanName)} plan will move to Free after ${endDateNice}.</span>
                                     </div>`;
                             } else if (profileData.autoRenew !== false) {
                                 autoRenewFooterHtml = `
@@ -11038,7 +11053,7 @@
                                             <input type="checkbox" checked onchange="toggleAutoRenew(this.checked)" />
                                             <span class="toggle-switch-track"></span>
                                         </label>
-                                        <span>Your ${escapeHtml(myPlanName)} plan auto-renews on ${escapeHtml(profileData.planEndDate || '')} - ${currencySymbol()}${myPlan.monthlyPrice} will be deducted from your wallet balance automatically.</span>
+                                        <span>Your ${escapeHtml(myPlanName)} plan auto-renews on ${endDateNice}.</span>
                                     </div>`;
                             } else {
                                 autoRenewFooterHtml = `
@@ -11047,7 +11062,7 @@
                                             <input type="checkbox" onchange="toggleAutoRenew(this.checked)" />
                                             <span class="toggle-switch-track"></span>
                                         </label>
-                                        <span>Your ${escapeHtml(myPlanName)} plan will move to Free after ${escapeHtml(profileData.planEndDate || '')}.</span>
+                                        <span>Your ${escapeHtml(myPlanName)} plan will move to Free after ${endDateNice}.</span>
                                     </div>`;
                             }
                         }
