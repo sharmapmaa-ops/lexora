@@ -2078,12 +2078,22 @@
             overflow-x: visible;
         }
 
-        #historyTableHeader {
+        #historyTableHeader,
+        #todayTableHeader {
+            /* Item 4 - Today's Transactions was missing this entirely
+               (only Payment History had it, by id, so it never applied
+               to Today's Transactions' own header table) - that's what
+               made its header look like it had different/extra spacing
+               even though the two tables share the same base styling.
+               padding-right removed here - the newer, more robust fix
+               for the header/body scrollbar mismatch now lives on
+               .history-table-header-wrapper (design-system.css) and
+               applies to both tables already; keeping a second,
+               smaller value here too would just double up on it. */
             border: 1px solid rgba(0,0,139,0.1);
             border-bottom: none;
             border-radius: 4px 4px 0 0;
             flex-shrink: 0;
-            padding-right: 6px;
         }
 
         .history-table thead th {
@@ -5357,6 +5367,19 @@
     flex-shrink: 0;
 }
 .db-edit-table-actions-bottom .db-table-select-row { margin-top: 0; }
+/* Item 1 - buttons and pagination sit in ONE row now (buttons left,
+   pagination right via .history-pager's own right-alignment), instead
+   of the buttons being their own separate row above the pager. */
+.db-table-footer-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 12px;
+}
+.db-table-footer-row .db-edit-table-actions-bottom { margin-top: 0; }
+.db-table-footer-row .history-pager { margin-top: 0; padding-top: 0; border-top: none; }
 
 .db-pagination {
     display: flex;

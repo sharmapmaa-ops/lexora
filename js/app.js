@@ -6944,12 +6944,9 @@
                 return `
                     <div class="history-card notif-card">
                         <div class="notif-head">
-                            <h3>🔔 Notifications</h3>
-                            <span class="notif-count">${mine.length}</span>
-                            <button class="notif-mark-all" onclick="bulkMarkNotifications(true, true)">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M3 6.5l9 6.5 9-6.5"/></svg>
-                                Mark all as read
-                            </button>
+                            <span class="ds-card-icon is-filled">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a5 5 0 0 0-5 5v3.4c0 .5-.2 1-.5 1.4L5 15h14l-1.5-2.2c-.3-.4-.5-.9-.5-1.4V8a5 5 0 0 0-5-5z"/><path d="M9.5 18a2.5 2.5 0 0 0 5 0"/></svg>
+                            </span>
                         </div>
                         <div class="notif-tabs">${tab('all', 'All')}${tab('unread', 'Unread')}${tab('read', 'Read')}</div>
                         <div class="card-body notif-table-scroll-outer">
@@ -7921,15 +7918,17 @@
                             </tbody>
                         </table>
                         </div>
-                        <div class="db-edit-table-actions-bottom">
-                            <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${escapeHtml(name)}')">+ Add Row</button>
-                            <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Row(s)</button>
-                            <button class="admin-btn admin-btn-save" onclick="dbTableSaveAll('${escapeHtml(name)}')">\u{1F4BE} Save</button>
-                            <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
-                            <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
-                        </div>
-                        <div class="history-pager">
-                            ${_dbPaginationHtml(name, dbTablePage, dbTablePerPage, allRows.length)}
+                        <div class="db-table-footer-row">
+                            <div class="db-edit-table-actions-bottom">
+                                <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${escapeHtml(name)}')">+ Add Row</button>
+                                <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Row(s)</button>
+                                <button class="admin-btn admin-btn-save" onclick="dbTableSaveAll('${escapeHtml(name)}')">\u{1F4BE} Save</button>
+                                <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
+                                <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
+                            </div>
+                            <div class="history-pager">
+                                ${_dbPaginationHtml(name, dbTablePage, dbTablePerPage, allRows.length)}
+                            </div>
                         </div>`;
                     host.dataset.rows = JSON.stringify(allRows);
                     host.dataset.pageStart = String(pageStart);
@@ -11337,7 +11336,7 @@
                                         </svg>
                                     </span>
                                     <div>
-                                        <h3 data-iconified="1">Supports: Log</h3>
+                                        <h3 data-iconified="1">Support: Ticket Details</h3>
                                         <p class="ds-card-sub">Track and manage all your support requests in one place.</p>
                                     </div>
                                 </div>
