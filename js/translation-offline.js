@@ -1274,27 +1274,49 @@
     let ops;
     try { ops = await page.getOperatorList(); } catch (e) { return []; }
 
-    // Signature/form-field WIDGET annotations (digital-signature stamps,
-    // "sign here" boxes) sometimes surface their appearance-stream
-    // artwork through the same paint ops as real page content, but they
-    // are never something a translated flowing document should show as
-    // a floating picture - inserting one produces a stray, wrongly-
-    // placed graphic (and can inflate a page's content past its own
-    // height, spilling the signature block onto a spurious extra page).
-    // Any detected "image" that overlaps a widget annotation's own
-    // rectangle is therefore dropped before it ever becomes a picture.
+    // Signature/form-field WIDGET annotations (e-signature fields, "sign
+    // here" boxes) sometimes surface their appearance-stream artwork
+    // through the same paint ops as real page content - that copy is
+    // dropped (see overlapsAnnotation below) so it never becomes a
+    // SECOND, duplicate picture. But the annotation itself may be a
+    // real, meaningful signature (someone's actual pen-drawn signature,
+    // captured as vector paths inside a nested Form XObject the way
+    // most e-signature platforms render one - never a paintImageXObject
+    // op this operator-list walk can see at all) - dropping it entirely
+    // was throwing away real signed content, not just placeholder
+    // stamps. Any Widget/Sig annotation that actually HAS visible
+    // appearance content (hasAppearance - an unsigned, still-blank
+    // field has none) is captured as its own image region instead, to
+    // be cropped straight from the rendered page canvas below (the one
+    // place that DOES know how to paint whatever's really inside a
+    // signature field, vector paths included).
     let annotRects = [];
+    let signatureRects = [];
     try {
       const annots = await page.getAnnotations({ intent: 'display' });
-      annotRects = (annots || [])
-        .filter(function (a) { return a.subtype === 'Widget' || a.fieldType === 'Sig'; })
+      const widgetAnnots = (annots || []).filter(function (a) { return a.subtype === 'Widget' || a.fieldType === 'Sig'; });
+      annotRects = widgetAnnots.map(function (a) {
+        const r = a.rect; // [x1, y1, x2, y2] in PDF user space (bottom-origin)
+        const x0 = Math.min(r[0], r[2]), x1 = Math.max(r[0], r[2]);
+        const y0 = Math.min(r[1], r[3]), y1 = Math.max(r[1], r[3]);
+        return { xPt: x0, yPt: pageH - y1, wPt: x1 - x0, hPt: y1 - y0 };
+      });
+      signatureRects = widgetAnnots
+        // hasAppearance === false means pdf.js is sure this field is
+        // still blank/unsigned (nothing to crop); treat anything else
+        // (true, or the property missing entirely on an older pdf.js
+        // build) as "assume it might have real content" - the cost of
+        // over-including an actually-blank field is one empty picture
+        // in the output, not silently losing a real signature because
+        // of a property name that turned out not to exist.
+        .filter(function (a) { return a.hasAppearance !== false; })
         .map(function (a) {
-          const r = a.rect; // [x1, y1, x2, y2] in PDF user space (bottom-origin)
+          const r = a.rect;
           const x0 = Math.min(r[0], r[2]), x1 = Math.max(r[0], r[2]);
           const y0 = Math.min(r[1], r[3]), y1 = Math.max(r[1], r[3]);
           return { xPt: x0, yPt: pageH - y1, wPt: x1 - x0, hPt: y1 - y0 };
         });
-    } catch (e) { /* annotations optional - proceed without the exclusion list */ }
+    } catch (e) { /* annotations optional - proceed without the exclusion/signature lists */ }
     function overlapsAnnotation(box) {
       return annotRects.some(function (a) {
         const ox = Math.min(box.xPt + box.wPt, a.xPt + a.wPt) - Math.max(box.xPt, a.xPt);
@@ -1303,7 +1325,7 @@
       });
     }
 
-    const images = [];
+    const images = signatureRects.slice();
     const stack = [];
     let ctm = [1, 0, 0, 1, 0, 0];
     function concat(base, add) {
@@ -1491,16 +1513,35 @@
       // WITH IMAGE (client-side render): text-layer extraction above used
       // the raw page at scale 1 (points) for exact coordinate math; this
       // is a separate, higher-pixel-scale render of the SAME page purely
-      // for a crisp-looking background, and doubles as the source we crop
-      // real embedded images out of (see rawImages -> pg.images below).
+      // for a crisp-looking background.
+      //
+      // BUG FIX: this canvas used to ONLY get created `if (withImage)`,
+      // and cropping real embedded images (rawImages, above) out of it
+      // was gated on that SAME canvas existing - so with "With Image"
+      // left off (the default for plain text-based translation), any
+      // real pictures the PDF actually contained were detected but then
+      // silently dropped, every time, regardless of the user's intent
+      // for the background. Preserving a document's actual embedded
+      // pictures and rendering a nice page background are two different
+      // things; a canvas is now built whenever EITHER is needed
+      // (rawImages.length > 0 covers "this page really does have
+      // pictures to keep"), and only used AS the background if withImage
+      // is also on.
       let bgCanvas = null, bgScale = 1;
-      if (withImage) {
+      if (withImage || rawImages.length) {
         bgScale = Math.min(3.0, 2000 / Math.max(vp1.width, vp1.height));
         const bgVp = page.getViewport({ scale: bgScale });
         bgCanvas = document.createElement('canvas');
         bgCanvas.width = Math.round(bgVp.width);
         bgCanvas.height = Math.round(bgVp.height);
-        await page.render({ canvasContext: bgCanvas.getContext('2d'), viewport: bgVp }).promise;
+        // annotationMode renders Widget/signature-field appearances onto
+        // this canvas too (not just the page's own content-stream ops) -
+        // needed so a real pen-drawn signature (which lives entirely in
+        // an annotation's appearance stream, often as vector paths a
+        // simple operator-list walk can't see at all) actually has
+        // pixels here to crop out for signatureRects, above.
+        const annotationMode = (pdfjsLib.AnnotationMode && pdfjsLib.AnnotationMode.ENABLE_FORMS) || 2;
+        await page.render({ canvasContext: bgCanvas.getContext('2d'), viewport: bgVp, annotationMode: annotationMode }).promise;
 
         // CLEAN IMAGE (text-based mode): DETERMINISTIC, not AI-based.
         // Text-based mode already knows the EXACT position of every line
@@ -1517,7 +1558,10 @@
         // A page that's almost entirely body text has no real
         // "background" for an image model to fall back to, but we don't
         // need to guess at all since we already have the ground truth.)
-        if (cleanImage) {
+        // Only relevant when withImage is actually being used AS the
+        // background - skip it when this canvas exists purely to crop
+        // real pictures out of, since there's no background being kept.
+        if (cleanImage && withImage) {
           const cctx = bgCanvas.getContext('2d');
           cctx.fillStyle = '#ffffff';
           const pad = 1;   // small padding so anti-aliased glyph edges don't peek out
