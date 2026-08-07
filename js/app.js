@@ -5426,9 +5426,14 @@
             let selectedSupportIds = new Set();
 
             function renderSupportRows(tbody, list) {
+                // Item 10 - column order is Date, Time, Ticket ID, Type,
+                // Subject, Message, Status, Response, then User ID last
+                // (Admin/Developer only - see the matching change to the
+                // <thead> above).
+                const showUserCol = isAdminOrDeveloper();
                 if (list.length === 0) {
                     tbody.innerHTML =
-                        '<tr><td colspan="10" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No submissions found.</td></tr>';
+                        `<tr><td colspan="${showUserCol ? 10 : 9}" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No submissions found.</td></tr>`;
                     return;
                 }
                 // Defensive: backfill an id for any record that's missing one
@@ -5441,15 +5446,15 @@
                 tbody.innerHTML = sorted.map(item => `
                     <tr class="support-row ${selectedSupportIds.has(item.id) ? 'row-checked' : ''} ${selectedSupportId === item.id ? 'selected' : ''}">
                         <td onclick="event.stopPropagation();"><input type="checkbox" class="support-row-check" data-id="${item.id}" ${selectedSupportIds.has(item.id) ? 'checked' : ''} onchange="toggleSupportRowCheck('${item.id}', this)" /></td>
-                        <td onclick="selectSupportRow('${item.id}')"><span style="font-weight:500;color:darkblue;">${escapeHtml(item.id)}</span></td>
                         <td onclick="selectSupportRow('${item.id}')">${item.date}</td>
                         <td onclick="selectSupportRow('${item.id}')">${item.time}</td>
-                        <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.userId || '')}</td>
+                        <td onclick="selectSupportRow('${item.id}')"><span style="font-weight:500;color:darkblue;">${escapeHtml(item.id)}</span></td>
                         <td onclick="selectSupportRow('${item.id}')">${item.type}</td>
                         <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.subject)}</td>
                         <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.message)}</td>
                         <td onclick="selectSupportRow('${item.id}')"><span class="status-badge ${item.status === 'Resolved' ? 'status-resolved' : 'status-pending'}">${escapeHtml(item.status)}</span></td>
                         <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.response)}</td>
+                        ${showUserCol ? `<td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.userId || '')}</td>` : ''}
                     </tr>
                 `).join('');
             }
@@ -5460,21 +5465,30 @@
                 const statusInput = document.getElementById('supportStatusFilter');
                 const userInput = document.getElementById('supportUserFilter');
 
-                let base = getVisibleContactSubmissions();
+                // Item 9 - by default, EVERY user (including Admin/
+                // Developer) only ever sees their OWN support tickets.
+                // The User filter (Admin/Developer only) is a lookup,
+                // not a "show everyone" toggle: typing an ID/email finds
+                // that ONE specific user's tickets - it never shows
+                // multiple users' tickets mixed together.
+                const userQuery = (isAdminOrDeveloper() && userInput && userInput.value.trim()) || '';
+                let base;
+                if (userQuery) {
+                    const q = userQuery.toLowerCase();
+                    base = contactSubmissions.filter(t => {
+                        const dirEntry = getUserDirectoryEntry(t.userId);
+                        const email = dirEntry ? (dirEntry.email || '').toLowerCase() : '';
+                        return (t.userId || '').toLowerCase().includes(q) || email.includes(q);
+                    });
+                } else {
+                    base = getMyContactSubmissions();
+                }
 
                 if (fromInput && toInput && fromInput.value && toInput.value) {
                     base = base.filter(t => t.date >= fromInput.value && t.date <= toInput.value);
                 }
                 if (statusInput && statusInput.value) {
                     base = base.filter(t => t.status === statusInput.value);
-                }
-                if (userInput && userInput.value.trim()) {
-                    const q = userInput.value.trim().toLowerCase();
-                    base = base.filter(t => {
-                        const dirEntry = getUserDirectoryEntry(t.userId);
-                        const email = dirEntry ? (dirEntry.email || '').toLowerCase() : '';
-                        return (t.userId || '').toLowerCase().includes(q) || email.includes(q);
-                    });
                 }
                 return base;
             }
@@ -5568,11 +5582,17 @@
             window.applySupportFilter = function() {
                 const fromInput = document.getElementById('supportFromDate');
                 const toInput = document.getElementById('supportToDate');
-                if (!fromInput.value || !toInput.value) {
+                // Item 9 - this now fires on ANY filter field changing
+                // (Status/User/dates), not just a "Filter" button click
+                // (which no longer exists) - only complain about dates
+                // when exactly ONE of the two is filled in; leaving both
+                // blank simply means "no date filter", same as
+                // getFilteredSupport() itself already treats it.
+                if ((fromInput.value && !toInput.value) || (!fromInput.value && toInput.value)) {
                     showWarning('Please select both From and To dates.');
                     return;
                 }
-                if (fromInput.value > toInput.value) {
+                if (fromInput.value && toInput.value && fromInput.value > toInput.value) {
                     showWarning('"From" date cannot be after "To" date.');
                     return;
                 }
@@ -11350,25 +11370,25 @@
                                         <thead>
                                             <tr>
                                                 <th><input type="checkbox" onchange="toggleSupportSelectAll(this)" /></th>
-                                                <th>Ticket ID</th>
                                                 <th>Date</th>
                                                 <th>Time</th>
-                                                <th>User ID</th>
+                                                <th>Ticket ID</th>
                                                 <th>Type</th>
                                                 <th>Subject</th>
                                                 <th>Message</th>
                                                 <th>Status</th>
                                                 <th>Response</th>
+                                                ${isAdminOrDeveloper() ? '<th>User ID</th>' : ''}
                                             </tr>
                                         </thead>
                                         <tbody id="supportTableBody"></tbody>
                                     </table>
                                 </div>
-                                <div class="history-pager" id="supportPager"></div>
                                 <div class="support-log-footer-row">
                                     <button class="filter-btn delete-btn" onclick="deleteSelectedSupport()">🗑️ Delete</button>
                                     <a class="support-create-new-link" onclick="openMessagePopup('compose')">➕ Create New</a>
                                 </div>
+                                <div class="history-pager" id="supportPager"></div>
                             </div>
                         </div>
                     `;

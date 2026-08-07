@@ -1704,13 +1704,12 @@
 
         .support-log-card.support-log-full {
             max-width: 100%;
-            /* height comes from the shared .history-card base rule now
-               (auto) - max-height/overflow-y stay as this card's own
-               extra safety net (its filter-bar+pager chrome is
-               heavier than the others), so if content still somehow
-               needs it, the whole card scrolls instead of clipping. */
-            max-height: 88vh;
-            overflow-y: auto;
+            /* height comes from the shared .history-card base rule
+               (auto) - no max-height/overflow-y safety net anymore
+               either (item 6): with height:auto the card should just
+               grow to fit its content naturally, not get its own
+               scrollbar the moment content brushes against an
+               arbitrary 88vh cap. */
         }
 
         .support-log-card.support-log-full .card-body {
@@ -1806,15 +1805,15 @@
            columns (Subject/Message/Response) wrap instead of forcing a
            horizontal scrollbar. */
         .support-log-table th:nth-child(1), .support-log-table td:nth-child(1) { width: 32px; white-space: nowrap; }
-        .support-log-table th:nth-child(2), .support-log-table td:nth-child(2) { width: 11%; white-space: nowrap; }
-        .support-log-table th:nth-child(3), .support-log-table td:nth-child(3) { width: 8%; white-space: nowrap; }
-        .support-log-table th:nth-child(4), .support-log-table td:nth-child(4) { width: 7%; white-space: nowrap; }
-        .support-log-table th:nth-child(5), .support-log-table td:nth-child(5) { width: 9%; white-space: nowrap; }
-        .support-log-table th:nth-child(6), .support-log-table td:nth-child(6) { width: 7%; white-space: nowrap; }
-        .support-log-table th:nth-child(7), .support-log-table td:nth-child(7) { width: 14%; white-space: normal; }
-        .support-log-table th:nth-child(8), .support-log-table td:nth-child(8) { width: 16%; white-space: normal; }
-        .support-log-table th:nth-child(9), .support-log-table td:nth-child(9) { width: 8%; white-space: nowrap; }
-        .support-log-table th:nth-child(10), .support-log-table td:nth-child(10) { width: 14%; white-space: normal; }
+        .support-log-table th:nth-child(2), .support-log-table td:nth-child(2) { width: 8%; white-space: nowrap; }
+        .support-log-table th:nth-child(3), .support-log-table td:nth-child(3) { width: 7%; white-space: nowrap; }
+        .support-log-table th:nth-child(4), .support-log-table td:nth-child(4) { width: 11%; white-space: nowrap; }
+        .support-log-table th:nth-child(5), .support-log-table td:nth-child(5) { width: 7%; white-space: nowrap; }
+        .support-log-table th:nth-child(6), .support-log-table td:nth-child(6) { width: 14%; white-space: normal; }
+        .support-log-table th:nth-child(7), .support-log-table td:nth-child(7) { width: 16%; white-space: normal; }
+        .support-log-table th:nth-child(8), .support-log-table td:nth-child(8) { width: 8%; white-space: nowrap; }
+        .support-log-table th:nth-child(9), .support-log-table td:nth-child(9) { width: 14%; white-space: normal; }
+        .support-log-table th:nth-child(10), .support-log-table td:nth-child(10) { width: 9%; white-space: nowrap; }
 
         .support-log-table thead th {
             /* background/color/font-weight/padding all come from the
