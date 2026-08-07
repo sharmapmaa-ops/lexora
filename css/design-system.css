@@ -3808,7 +3808,7 @@ body { background: #ffffff; }
    of sync with each other - which is exactly what caused the repeated
    height/header bugs this session). */
 .report-table-scroll {
-    height: 180px;
+    height: 280px;
     flex: none;
     min-height: 0;
     overflow-y: auto;

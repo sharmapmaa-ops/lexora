@@ -1628,7 +1628,7 @@
             border: 2px solid blue;
             border-radius: 8px;
             padding: 20px;
-            height: 480px;
+            height: auto;
             display: flex;
             flex-direction: column;
         }
@@ -1705,10 +1705,10 @@
         .support-log-card.support-log-full {
             max-width: 100%;
             /* height comes from the shared .history-card base rule now
-               (also 480px) - max-height/overflow-y stay as this card's
-               own extra safety net (its filter-bar+pager chrome is
+               (auto) - max-height/overflow-y stay as this card's own
+               extra safety net (its filter-bar+pager chrome is
                heavier than the others), so if content still somehow
-               doesn't fit, the whole card scrolls instead of clipping. */
+               needs it, the whole card scrolls instead of clipping. */
             max-height: 88vh;
             overflow-y: auto;
         }
@@ -3388,7 +3388,7 @@
             }
             .history-card,
             .dash-txn-card {
-                height: 430px;
+                height: auto;
             }
             .balance-grid {
                 grid-template-columns: 1fr 1fr 1fr;
@@ -3515,7 +3515,7 @@
 
             .history-card,
             .dash-txn-card {
-                height: 410px;
+                height: auto;
                 padding: 16px;
             }
 
@@ -3700,7 +3700,7 @@
 
             .history-card,
             .dash-txn-card {
-                height: 370px;
+                height: auto;
                 padding: 12px;
             }
 
@@ -3795,7 +3795,7 @@
 }
 
 .admin-db-card {
-    height: 480px !important;
+    height: auto !important;
     max-height: 88vh;
     overflow-y: auto;
 }
