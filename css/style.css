@@ -5329,25 +5329,70 @@
     margin-bottom: 14px;
 }
 
-.auto-renew-banner {
+/* Item 1 - the auto-renewal line sits in the page header now (right of
+   "Plans & Offers"), not as its own boxed banner above the plan cards -
+   plain text, no background/border, with a real toggle switch under it. */
+.auto-renew-header-block {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    background: #EFF6FF;
-    border: 1px solid #BFDBFE;
-    border-radius: 10px;
-    padding: 12px 16px;
-    margin-bottom: 16px;
-    font-size: 0.85rem;
-    color: #1E3A8A;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--ds-muted, rgba(11,21,51,0.6));
+    text-align: right;
+    max-width: 32em;
+}
+/* The shared header-right slot (.file-list-charge-estimate) normally
+   holds the short "💰 Rate: ..." pill for service pages - its
+   background/padding/nowrap would otherwise wrap this multi-line,
+   no-background auto-renew block in an unwanted pill/box too. */
+.file-list-charge-estimate:has(.auto-renew-header-block) {
+    background: none;
+    padding: 0;
+    white-space: normal;
 }
 
-.auto-renew-banner.is-cancelled {
-    background: #FEF3C7;
-    border-color: #FDE68A;
-    color: #92400E;
+/* Reusable ON/OFF pill toggle - checkbox visually hidden, track+thumb
+   drawn from CSS, no dependency on any specific feature's markup. */
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 2.4em;
+    height: 1.3em;
+    cursor: pointer;
+    flex-shrink: 0;
 }
+.toggle-switch input {
+    position: absolute;
+    opacity: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    cursor: pointer;
+    z-index: 1;
+}
+.toggle-switch-track {
+    position: absolute;
+    inset: 0;
+    background: rgba(11,21,51,0.18);
+    border-radius: 999px;
+    transition: background 0.15s;
+}
+.toggle-switch-track::before {
+    content: '';
+    position: absolute;
+    top: 0.15em;
+    left: 0.15em;
+    width: 1em;
+    height: 1em;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.15s;
+    box-shadow: 0 1px 2px rgba(11,21,51,0.25);
+}
+.toggle-switch input:checked ~ .toggle-switch-track { background: #1257f5; }
+.toggle-switch input:checked ~ .toggle-switch-track::before { transform: translateX(1.1em); }
 
 .profile-danger-card-full {
     grid-column: 1 / -1;
@@ -6125,33 +6170,19 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
     width: auto;
 }
 
-/* Secure Checkout - ab inline panel nahi, ek popup modal hai. Backdrop
-   baaki screen ko disable rakhta hai jab tak payment complete/cancel
-   na ho jaye (resetPayPanel() hi ise hide karta hai). */
-.balance-checkout-modal {
-    display: none;
-    position: fixed;
-    inset: 0;
-    z-index: 2000;
+/* Item 2 - Secure Checkout is its own section now (like Login), not a
+   popup modal - the panel just sits centered on the page, no backdrop,
+   no fixed/overlay positioning. */
+.balance-checkout-section {
+    display: flex;
     align-items: center;
     justify-content: center;
+    min-height: 60vh;
     padding: 24px;
     box-sizing: border-box;
 }
 
-.balance-checkout-modal.show {
-    display: flex;
-}
-
-.balance-checkout-backdrop {
-    position: absolute;
-    inset: 0;
-    background: rgba(11, 21, 51, 0.6);
-}
-
-.balance-checkout-modal .balance-pay-panel {
-    position: relative;
-    z-index: 1;
+.balance-checkout-section .balance-pay-panel {
     width: min(480px, 94vw);
     max-height: 88vh;
     overflow: auto;
