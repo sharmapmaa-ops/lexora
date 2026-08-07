@@ -1381,8 +1381,26 @@
     const tc = await page.getTextContent();
     let colors = [];
     try { colors = await extractColors(page); } catch(e){ log('P' + pageNo + ' color extract fail: ' + e.message, 'warn'); }
-    const colorOk = colors.length === tc.items.length;
-    if (!colorOk && colors.length) log('P' + pageNo + ': color count mismatch (' + colors.length + ' vs ' + tc.items.length + '), default black', 'warn');
+    // Item - colors.length and tc.items.length routinely don't match
+    // exactly (extractColors counts one entry per raw showText-family
+    // OPERATOR call in the content stream, while tc.items is PDF.js's
+    // OWN text-run segmentation, which splits/merges runs differently -
+    // two different units of counting that were never actually
+    // guaranteed to line up 1:1 in the first place). This used to
+    // discard EVERY colour on the page the moment the two totals
+    // disagreed even slightly, falling back to plain black for
+    // literally all text - losing real colour information (e.g. a red
+    // warning clause, a blue hyperlink) on what was probably just a
+    // handful of runs near the mismatch, not the whole page. Using
+    // colors[idx] directly instead: both arrays are still built in the
+    // same stream/reading order, so a positional lookup is a reasonable
+    // best-effort match per item, and simply falls back to black for
+    // any individual item beyond what colour data is available -
+    // instead of an all-or-nothing black wash for the entire page over
+    // what's usually only a small count discrepancy.
+    if (colors.length && colors.length !== tc.items.length) {
+      log('P' + pageNo + ': color count is ' + colors.length + ' vs ' + tc.items.length + ' text item(s) - matching by position, not discarding', 'info');
+    }
 
     const fontMap = await resolveFonts(page, tc.items);
     const pageH = vp1.height;
@@ -1406,7 +1424,7 @@
         bold: !!fi.bold,
         italic: !!fi.italic,
         family: fi.family || genericFamily(st.fontFamily),
-        color: colorOk ? (colors[idx] || '000000') : '000000',
+        color: colors[idx] || '000000',
         srcIdx: idx   // original PDF content-stream order - the actual
                        // LOGICAL reading order, independent of visual
                        // x-position. Needed because right-to-left text
@@ -1528,6 +1546,7 @@
       // pictures to keep"), and only used AS the background if withImage
       // is also on.
       let bgCanvas = null, bgScale = 1;
+      let images = [];
       if (withImage || rawImages.length) {
         bgScale = Math.min(3.0, 2000 / Math.max(vp1.width, vp1.height));
         const bgVp = page.getViewport({ scale: bgScale });
@@ -1542,6 +1561,35 @@
         // pixels here to crop out for signatureRects, above.
         const annotationMode = (pdfjsLib.AnnotationMode && pdfjsLib.AnnotationMode.ENABLE_FORMS) || 2;
         await page.render({ canvasContext: bgCanvas.getContext('2d'), viewport: bgVp, annotationMode: annotationMode }).promise;
+
+        // Crop each detected image/signature region out of the canvas
+        // BEFORE any cleaning happens below, into its own small JPEG, so
+        // it can be re-inserted as a real floating picture at its
+        // original spot instead of being lost entirely. This MUST run
+        // before the cleanImage step (not after, as it previously did):
+        // a signature stamp routinely overlaps nearby real text (e.g.
+        // sitting right across a party's printed name/company line just
+        // above the signature block) - cropping after cleanImage would
+        // pick up a chunk of that overlapping text having already been
+        // painted white, i.e. a corner of the signature erased/cut off
+        // before it was ever captured.
+        images = [];
+        if (rawImages.length) {
+          rawImages.forEach(function (im) {
+            const sx = Math.max(0, Math.round(im.xPt * bgScale));
+            const sy = Math.max(0, Math.round(im.yPt * bgScale));
+            const sw = Math.min(bgCanvas.width - sx, Math.round(im.wPt * bgScale));
+            const sh = Math.min(bgCanvas.height - sy, Math.round(im.hPt * bgScale));
+            if (sw < 4 || sh < 4) return;
+            const crop = document.createElement('canvas');
+            crop.width = sw; crop.height = sh;
+            crop.getContext('2d').drawImage(bgCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+            images.push({
+              xPt: im.xPt, yPt: im.yPt, wPt: im.wPt, hPt: im.hPt,
+              base64: crop.toDataURL('image/jpeg', 0.92).split(',')[1]
+            });
+          });
+        }
 
         // CLEAN IMAGE (text-based mode): DETERMINISTIC, not AI-based.
         // Text-based mode already knows the EXACT position of every line
@@ -1571,28 +1619,6 @@
           });
           log('P' + p + ': background image cleaned (' + lines.length + ' text region(s) painted over)');
         }
-      }
-
-      // Crop each detected image region out of the (already text-cleaned)
-      // background canvas into its own small JPEG, so it can be
-      // re-inserted as a real floating picture at its original spot
-      // instead of being lost entirely.
-      const images = [];
-      if (bgCanvas && rawImages.length) {
-        rawImages.forEach(function (im) {
-          const sx = Math.max(0, Math.round(im.xPt * bgScale));
-          const sy = Math.max(0, Math.round(im.yPt * bgScale));
-          const sw = Math.min(bgCanvas.width - sx, Math.round(im.wPt * bgScale));
-          const sh = Math.min(bgCanvas.height - sy, Math.round(im.hPt * bgScale));
-          if (sw < 4 || sh < 4) return;
-          const crop = document.createElement('canvas');
-          crop.width = sw; crop.height = sh;
-          crop.getContext('2d').drawImage(bgCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
-          images.push({
-            xPt: im.xPt, yPt: im.yPt, wPt: im.wPt, hPt: im.hPt,
-            base64: crop.toDataURL('image/jpeg', 0.92).split(',')[1]
-          });
-        });
       }
 
       pages.push({ lines: lines, images: images, wPt: vp1.width, hPt: vp1.height });
