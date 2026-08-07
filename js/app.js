@@ -11929,11 +11929,8 @@
                 return `
                     <div class="auth-login-section">
                         <div class="auth-login-left">
-                            <div class="auth-login-logo-row">
-                                <img class="auth-login-logo-icon" src="${logoPath}" alt="${escapeHtml(nm)}"
-                                     onerror="this.onerror=null;this.src='Pictures/lexora-logo.png';" />
-                                <span class="auth-login-wordmark">${escapeHtml(nm.toUpperCase())}</span>
-                            </div>
+                            <img class="auth-login-logo-icon" src="${logoPath}" alt="${escapeHtml(nm)}"
+                                 onerror="this.onerror=null;this.src='Pictures/lexora-logo.png';" />
                             <p class="auth-login-tagline">Sign in to access your account<br/>and continue using ${escapeHtml(nm)}.</p>
                         </div>
                         <div class="auth-login-divider"></div>
@@ -12389,7 +12386,10 @@
                 // prelogin Services/Plans & Offers/Contact Us/Login sections
                 // bypass updateContent entirely and were missing the same
                 // title. Home keeps its own hero treatment, unchanged.
-                const AUTH_SECTION_TITLES = { services: '\ud83d\udee0\ufe0f Services', plans: '\ud83d\udccb Plans & Offers', contact: '\ud83d\udcde Contact Us', login: '\ud83d\udd10 Login' };
+                // Item 1 - Login intentionally has no section title bar
+                // (matches the reference design - the form itself is the
+                // whole page, nothing sits above it).
+                const AUTH_SECTION_TITLES = { services: '\ud83d\udee0\ufe0f Services', plans: '\ud83d\udccb Plans & Offers', contact: '\ud83d\udcde Contact Us' };
                 const sectionTitle = AUTH_SECTION_TITLES[authActiveSection];
                 const sectionTitleHtml = sectionTitle ? `<div class="section-breadcrumb-bar">${escapeHtml(sectionTitle)}</div>` : '';
 

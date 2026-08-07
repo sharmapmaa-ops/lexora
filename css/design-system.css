@@ -3754,3 +3754,11 @@ body, .center-content { background: #fff; }
     .admin-ov-stat-row { grid-template-columns: repeat(2, 1fr); }
     .admin-ov-row-2col { grid-template-columns: 1fr; }
 }
+
+/* ---- ROUND 11 ----
+   Item 4 (login section) - the page background was still showing a
+   faint blue-gray tint despite several earlier passes' stated intent
+   of "plain white" (--ds-page redeclared #ffffff multiple times
+   above) - forcing it directly on body removes any doubt, regardless
+   of which --ds-page declaration the cascade was actually resolving to. */
+body { background: #ffffff; }
