@@ -4109,6 +4109,7 @@
                 renderHistoryRows(tbody, filtered.slice(start, start + historyPerPage), true);
                 updateSummary(filtered);
                 renderHistoryPager(total, pages, start);
+                wireSplitTableScrollSync(document);
             }
 
             // Item 2 - the ONE pagination look every card with a table
@@ -5433,7 +5434,7 @@
                 const showUserCol = isAdminOrDeveloper();
                 if (list.length === 0) {
                     tbody.innerHTML =
-                        `<tr><td colspan="${showUserCol ? 9 : 8}" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No submissions found.</td></tr>`;
+                        `<tr><td colspan="${showUserCol ? 8 : 7}" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No submissions found.</td></tr>`;
                     return;
                 }
                 // Defensive: backfill an id for any record that's missing one
@@ -5452,7 +5453,6 @@
                         <td onclick="selectSupportRow('${item.id}')">${item.type}</td>
                         <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.subject)}</td>
                         <td onclick="selectSupportRow('${item.id}')"><span class="status-badge ${item.status === 'Resolved' ? 'status-resolved' : 'status-pending'}">${escapeHtml(item.status)}</span></td>
-                        <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.response)}</td>
                         ${showUserCol ? `<td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.userId || '')}</td>` : ''}
                     </tr>
                 `).join('');
@@ -10357,6 +10357,62 @@
                 URL.revokeObjectURL(url);
             };
 
+            // Item - "autofit, nothing ever wraps" for the split header/
+            // body report tables (Today's Transactions, Payment History):
+            // table-layout:fixed with hand-picked px widths (the previous
+            // approach) always risked drifting out of sync with whatever
+            // text actually needs to show, in either table independently.
+            // This instead MEASURES how wide each column's content really
+            // is (header label vs every currently-visible row's value,
+            // both tables) with table-layout:auto, then locks both
+            // tables to those SAME explicit widths - so they can never
+            // disagree with each other, and no column is ever narrower
+            // than its own content demands (nothing to wrap).
+            function autofitSplitTableColumns(headerTableId, bodyTableId) {
+                const headerTable = document.getElementById(headerTableId);
+                const bodyTable = document.getElementById(bodyTableId);
+                if (!headerTable || !bodyTable) return;
+                const headerRow = headerTable.querySelector('thead tr');
+                const bodyRows = bodyTable.querySelectorAll('tbody tr');
+                if (!headerRow || !bodyRows.length) return;
+
+                // Auto layout first, on both tables, so the browser's own
+                // text measurement (not ours) decides each cell's natural
+                // single-line width - this is what we then read back.
+                headerTable.style.tableLayout = 'auto';
+                bodyTable.style.tableLayout = 'auto';
+                Array.prototype.forEach.call(headerRow.children, function (th) { th.style.width = ''; });
+                bodyRows.forEach(function (tr) {
+                    Array.prototype.forEach.call(tr.children, function (td) { td.style.width = ''; });
+                });
+
+                const colCount = headerRow.children.length;
+                const widths = new Array(colCount).fill(0);
+                Array.prototype.forEach.call(headerRow.children, function (th, i) {
+                    widths[i] = Math.max(widths[i], th.getBoundingClientRect().width);
+                });
+                bodyRows.forEach(function (tr) {
+                    Array.prototype.forEach.call(tr.children, function (td, i) {
+                        if (i < colCount) widths[i] = Math.max(widths[i], td.getBoundingClientRect().width);
+                    });
+                });
+
+                // Lock both tables to the SAME measured widths (+1px
+                // rounding safety margin) and switch to fixed now that
+                // real widths are known, so they stay put and in sync
+                // regardless of which row is scrolled into view later.
+                headerTable.style.tableLayout = 'fixed';
+                bodyTable.style.tableLayout = 'fixed';
+                Array.prototype.forEach.call(headerRow.children, function (th, i) {
+                    th.style.width = Math.ceil(widths[i] + 1) + 'px';
+                });
+                if (bodyRows[0]) {
+                    Array.prototype.forEach.call(bodyRows[0].children, function (td, i) {
+                        td.style.width = Math.ceil(widths[i] + 1) + 'px';
+                    });
+                }
+            }
+
             function wireSplitTableScrollSync(container) {
                 const pairs = [
                     ['historyTableHeaderWrapper', 'historyTableWrapper'],
@@ -10371,6 +10427,8 @@
                         headerWrap.scrollLeft = bodyWrap.scrollLeft;
                     });
                 });
+                autofitSplitTableColumns('historyTableHeader', 'historyTable');
+                autofitSplitTableColumns('todayTableHeader', 'todayTable');
             }
 
             function updateContent(data, breadcrumb) {
@@ -11440,7 +11498,6 @@
                                                 <th>Type</th>
                                                 <th>Subject</th>
                                                 <th>Status</th>
-                                                <th>Response</th>
                                                 ${isAdminOrDeveloper() ? '<th>User ID</th>' : ''}
                                             </tr>
                                         </thead>

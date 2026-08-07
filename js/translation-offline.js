@@ -856,13 +856,26 @@
       const cx = Math.max(1, Math.round(img.wPt * EMU));
       const cy = Math.max(1, Math.round(img.hPt * EMU));
       const offX = Math.max(0, Math.round(img.xPt * EMU));
-      const offY = Math.max(0, Math.round(img.yPt * EMU));
+      // Item - was relativeFrom="page" with an absolute Y computed from
+      // the ORIGINAL PDF's page coordinates. That assumes the translated
+      // flowing document breaks into pages at exactly the same spots the
+      // source PDF did, which is very often false - translated text is
+      // routinely longer or shorter than the source, so by the time
+      // Word actually paginates the output, this same "page 3, y=479pt"
+      // offset can land near the right text but on the wrong page (or
+      // the right page but shifted well away from the paragraph it was
+      // supposed to sit against). This paragraph (via the sorted `flow`
+      // array in the caller) is already inserted at the CORRECT position
+      // among the surrounding paragraphs, so anchoring the image to ITS
+      // OWN paragraph - not an absolute page coordinate - keeps it
+      // sitting against that same neighbouring text through whatever
+      // reflow/repagination translation causes, instead of drifting.
       return '<w:p><w:r><w:drawing>' +
         '<wp:anchor behindDoc="0" distT="91440" distB="91440" distL="114300" distR="114300" ' +
         'simplePos="0" locked="0" layoutInCell="1" allowOverlap="1" relativeHeight="' + drawIdCounter + '">' +
         '<wp:simplePos x="0" y="0"/>' +
-        '<wp:positionH relativeFrom="page"><wp:posOffset>' + offX + '</wp:posOffset></wp:positionH>' +
-        '<wp:positionV relativeFrom="page"><wp:posOffset>' + offY + '</wp:posOffset></wp:positionV>' +
+        '<wp:positionH relativeFrom="column"><wp:posOffset>' + offX + '</wp:posOffset></wp:positionH>' +
+        '<wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>' +
         '<wp:extent cx="' + cx + '" cy="' + cy + '"/>' +
         '<wp:effectExtent l="0" t="0" r="0" b="0"/>' +
         '<wp:wrapSquare wrapText="bothSides"/>' +
