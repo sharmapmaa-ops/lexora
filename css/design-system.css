@@ -3696,7 +3696,23 @@ body, .center-content { background: #fff; }
 .db-table-row .admin-btn { padding: 5px 12px; font-size: .76rem; }
 
 /* ---- Admin Overview (Profile > Overview) ---- */
-.admin-ov-header { padding: 4px 2px 20px; }
+.admin-ov-header {
+    padding: 4px 2px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 14px;
+}
+.admin-ov-header h2 { margin: 0; }
+/* Item 11 - Start Date/End Date/Clear, same look as Payment History's
+   own date filter (.history-filter-bar), just without that bar's
+   usual bottom border/margin since this sits inline with the title. */
+.admin-ov-date-filter {
+    margin: 0;
+    padding: 0;
+    border: none;
+}
 .admin-ov-header h2 { margin: 0 0 4px; font-size: 1.35rem; font-weight: 800; color: var(--ds-navy); }
 .admin-ov-header p { margin: 0; font-size: .88rem; color: var(--ds-blue); }
 
@@ -3821,12 +3837,15 @@ body { background: #ffffff; }
     height: 280px;
     flex: none;
     min-height: 0;
-    overflow-y: auto;
-    /* Item 16 - reserves scrollbar width even on pages/tabs where this
-       particular table doesn't have enough rows to actually need one,
-       so the header-wrapper's matching padding-right (above) always
-       lines up with real available space here, instead of the columns
-       shifting depending on whether a scrollbar happens to be showing. */
+    /* Item 8/16 - "auto" only reserves scrollbar width WHEN a scrollbar
+       is actually showing, so a page with few enough rows to not need
+       one ends up slightly WIDER than the header (which always reserves
+       matching space via its own padding-right below) - "scroll" always
+       reserves that space, scrollbar visible or not, so the available
+       width for columns is identical regardless of row count. Kept
+       scrollbar-gutter too as a belt-and-suspenders for browsers where
+       it's supported. */
+    overflow-y: scroll;
     scrollbar-gutter: stable;
 }
 

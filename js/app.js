@@ -5433,7 +5433,7 @@
                 const showUserCol = isAdminOrDeveloper();
                 if (list.length === 0) {
                     tbody.innerHTML =
-                        `<tr><td colspan="${showUserCol ? 10 : 9}" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No submissions found.</td></tr>`;
+                        `<tr><td colspan="${showUserCol ? 9 : 8}" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No submissions found.</td></tr>`;
                     return;
                 }
                 // Defensive: backfill an id for any record that's missing one
@@ -5451,7 +5451,6 @@
                         <td onclick="selectSupportRow('${item.id}')"><span style="font-weight:500;color:darkblue;">${escapeHtml(item.id)}</span></td>
                         <td onclick="selectSupportRow('${item.id}')">${item.type}</td>
                         <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.subject)}</td>
-                        <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.message)}</td>
                         <td onclick="selectSupportRow('${item.id}')"><span class="status-badge ${item.status === 'Resolved' ? 'status-resolved' : 'status-pending'}">${escapeHtml(item.status)}</span></td>
                         <td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.response)}</td>
                         ${showUserCol ? `<td onclick="selectSupportRow('${item.id}')">${escapeHtml(item.userId || '')}</td>` : ''}
@@ -6943,11 +6942,6 @@
 
                 return `
                     <div class="history-card notif-card">
-                        <div class="notif-head">
-                            <span class="ds-card-icon is-filled">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a5 5 0 0 0-5 5v3.4c0 .5-.2 1-.5 1.4L5 15h14l-1.5-2.2c-.3-.4-.5-.9-.5-1.4V8a5 5 0 0 0-5-5z"/><path d="M9.5 18a2.5 2.5 0 0 0 5 0"/></svg>
-                            </span>
-                        </div>
                         <div class="notif-tabs">${tab('all', 'All')}${tab('unread', 'Unread')}${tab('read', 'Read')}</div>
                         <div class="card-body notif-table-scroll-outer">
                             <table class="history-table notif-table" id="notificationTableHeader">
@@ -6989,7 +6983,13 @@
 
             window.setNotificationFilter = function(id) {
                 notificationFilter = id;
-                const body = document.getElementById('contentBody');
+                // Item 1 - was replacing the WHOLE #contentBody, which
+                // wipes out the breadcrumb bar (the page's title) that
+                // updateContent() put there - same root cause as the
+                // earlier bai2/ocr/service-runner "header disappears on
+                // interaction" bugs. Targets the body-only wrapper
+                // instead, same fix as those.
+                const body = document.getElementById('serviceBodyRoot') || document.getElementById('contentBody');
                 if (!body) return;
                 body.innerHTML = buildNotificationBody();
                 upgradeCardHeaders(body);
@@ -8591,6 +8591,34 @@
                 }).join('')}</ul>`;
             }
 
+            let adminOverviewFromDate = '';
+            let adminOverviewToDate = '';
+
+            window.applyOverviewDateFilter = function() {
+                const fromInput = document.getElementById('overviewFromDate');
+                const toInput = document.getElementById('overviewToDate');
+                if (fromInput.value && toInput.value && fromInput.value > toInput.value) {
+                    showWarning('"From" date cannot be after "To" date.');
+                    return;
+                }
+                adminOverviewFromDate = fromInput.value;
+                adminOverviewToDate = toInput.value;
+                _rerenderAdminOverview();
+            };
+
+            window.clearOverviewDateFilter = function() {
+                adminOverviewFromDate = '';
+                adminOverviewToDate = '';
+                _rerenderAdminOverview();
+            };
+
+            function _rerenderAdminOverview() {
+                const host = document.getElementById('serviceBodyRoot') || document.getElementById('contentBody');
+                if (!host) return;
+                host.innerHTML = buildAdminOverviewBody();
+                if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
+            }
+
             function buildAdminOverviewBody() {
                 if (!isAdminOrDeveloper()) {
                     return `<div class="content-section"><h3>🔒 Access restricted</h3><p>This page is only available to Admin and Developer accounts.</p></div>`;
@@ -8610,6 +8638,24 @@
                     return !isNaN(d.getTime()) && d >= cutoff;
                 }).length;
 
+                // Item 11 - Start/End date (top-right, next to the "Overview"
+                // title) narrow the transaction/ticket-based stats below to
+                // that period; leaving both blank (the default) means "no
+                // period restriction at all" - every transaction/ticket ever
+                // recorded. User-count stats (Total/Active Users) describe
+                // the CURRENT state of accounts, not something that has a
+                // meaningful "as of a past date range" reading, so those
+                // stay period-independent either way.
+                const inRange = function (dateStr) {
+                    if (!adminOverviewFromDate && !adminOverviewToDate) return true;
+                    if (!dateStr) return false;
+                    if (adminOverviewFromDate && dateStr < adminOverviewFromDate) return false;
+                    if (adminOverviewToDate && dateStr > adminOverviewToDate) return false;
+                    return true;
+                };
+                const periodPaymentHistory = paymentHistory.filter(function (t) { return inRange(t.date); });
+                const periodContactSubmissions = contactSubmissions.filter(function (t) { return inRange(t.date); });
+
                 // Real money received has two possible paymentTypes:
                 // 'Razorpay' (direct checkout, server-verified - always
                 // real, no status gate needed) and 'Balance Received'
@@ -8619,7 +8665,7 @@
                 // Developer-account "mirror" copy (_creditDeveloperRevenueRecord) -
                 // that mirror is only for the Developer's own Payment
                 // History view, not a reliable source for this total.
-                const totalRevenue = paymentHistory
+                const totalRevenue = periodPaymentHistory
                     .filter(function (t) {
                         if (t.paymentType === 'Razorpay') return true;
                         if (t.paymentType === 'Balance Received') return t.status === 'approved';
@@ -8627,7 +8673,7 @@
                     })
                     .reduce(function (sum, t) { return sum + (Number(t.credit) || 0); }, 0);
 
-                const openTickets = contactSubmissions.filter(function (t) { return t.status !== 'Resolved'; }).length;
+                const openTickets = periodContactSubmissions.filter(function (t) { return t.status !== 'Resolved'; }).length;
 
                 const planCounts = {};
                 USER_DIRECTORY.forEach(function (u) {
@@ -8637,7 +8683,7 @@
                 const planEntries = Object.entries(planCounts).sort(function (a, b) { return b[1] - a[1]; });
 
                 const serviceCounts = {};
-                paymentHistory.forEach(function (t) {
+                periodPaymentHistory.forEach(function (t) {
                     if (t.paymentType !== 'Service Fee') return;
                     const name = _adminOverviewServiceNameFromDescription(t.description);
                     serviceCounts[name] = (serviceCounts[name] || 0) + 1;
@@ -8650,7 +8696,20 @@
                 return `
                     <div class="admin-ov-header">
                         <h2>Overview</h2>
-                        <p>Platform-wide stats across every user and service.</p>
+                        <div class="history-filter-bar admin-ov-date-filter">
+                            <div class="filter-group">
+                                <label>From Date</label>
+                                <input type="date" id="overviewFromDate" value="${escapeHtml(adminOverviewFromDate)}" onchange="applyOverviewDateFilter()" />
+                            </div>
+                            <div class="filter-group">
+                                <label>To Date</label>
+                                <input type="date" id="overviewToDate" value="${escapeHtml(adminOverviewToDate)}" onchange="applyOverviewDateFilter()" />
+                            </div>
+                            <button class="filter-btn reset-btn" onclick="clearOverviewDateFilter()">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+                                Clear
+                            </button>
+                        </div>
                     </div>
                     <div class="admin-ov-stat-row">
                         <div class="admin-ov-stat-card">
@@ -11328,19 +11387,6 @@
                     }
                     return `
                         <div class="history-card support-log-card support-log-full">
-                            <div class="support-log-header-row">
-                                <div class="ds-card-head support-head">
-                                    <span class="ds-card-icon is-filled">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                                            <rect x="5" y="4" width="14" height="17" rx="2"/><rect x="9" y="2.5" width="6" height="3.5" rx="1.2"/><path d="M9 11h6M9 15h4"/>
-                                        </svg>
-                                    </span>
-                                    <div>
-                                        <h3 data-iconified="1">Support: Ticket Details</h3>
-                                        <p class="ds-card-sub">Track and manage all your support requests in one place.</p>
-                                    </div>
-                                </div>
-                            </div>
                             <div class="history-filter-bar">
                                 <div class="filter-group">
                                     <label>From Date</label>
@@ -11380,7 +11426,6 @@
                                                 <th>Ticket ID</th>
                                                 <th>Type</th>
                                                 <th>Subject</th>
-                                                <th>Message</th>
                                                 <th>Status</th>
                                                 <th>Response</th>
                                                 ${isAdminOrDeveloper() ? '<th>User ID</th>' : ''}
@@ -11389,11 +11434,13 @@
                                         <tbody id="supportTableBody"></tbody>
                                     </table>
                                 </div>
-                                <div class="support-log-footer-row">
-                                    <button class="filter-btn delete-btn" onclick="deleteSelectedSupport()">🗑️ Delete</button>
-                                    <a class="support-create-new-link" onclick="openMessagePopup('compose')">➕ Create New</a>
+                                <div class="db-table-footer-row">
+                                    <div class="support-log-footer-row">
+                                        <button class="filter-btn delete-btn" onclick="deleteSelectedSupport()">🗑️ Delete</button>
+                                        <a class="support-create-new-link" onclick="openMessagePopup('compose')">➕ Create New</a>
+                                    </div>
+                                    <div class="history-pager" id="supportPager"></div>
                                 </div>
-                                <div class="history-pager" id="supportPager"></div>
                             </div>
                         </div>
                     `;
@@ -11446,13 +11493,6 @@
 
                         return `
                         <div class="contact-page">
-                            <div class="contact-hero">
-                                <div class="contact-hero-copy">
-                                    <h2>We're here to help! <span class="dash-wave">\u{1F44B}</span></h2>
-                                    <p>Have a question or need support? Our team is ready to assist you.</p>
-                                </div>
-                            </div>
-
                             <div class="contact-grid">
                                 <div class="company-details-card">
                                     <div class="ds-card-head">

@@ -1797,7 +1797,7 @@
                all-pixel column widths, not a mix of px and %) - keeps
                columns from unpredictably squeezing/wrapping differently
                than those tables do. */
-            min-width: 1040px;
+            min-width: 940px;
         }
 
         .support-log-table th,
@@ -1814,16 +1814,15 @@
         /* Short, fixed-content columns stay on one line; the free-text
            columns (Subject/Message/Response) wrap instead of forcing a
            horizontal scrollbar. */
-        .support-log-table th:nth-child(1), .support-log-table td:nth-child(1) { width: 32px; white-space: nowrap; }
-        .support-log-table th:nth-child(2), .support-log-table td:nth-child(2) { width: 90px; white-space: nowrap; }
+        .support-log-table th:nth-child(1), .support-log-table td:nth-child(1) { width: 28px; text-align: center; padding-right: 2px; white-space: nowrap; }
+        .support-log-table th:nth-child(2), .support-log-table td:nth-child(2) { width: 90px; padding-left: 6px; white-space: nowrap; }
         .support-log-table th:nth-child(3), .support-log-table td:nth-child(3) { width: 70px; white-space: nowrap; }
         .support-log-table th:nth-child(4), .support-log-table td:nth-child(4) { width: 110px; white-space: nowrap; }
         .support-log-table th:nth-child(5), .support-log-table td:nth-child(5) { width: 70px; white-space: nowrap; }
-        .support-log-table th:nth-child(6), .support-log-table td:nth-child(6) { width: 150px; white-space: normal; }
-        .support-log-table th:nth-child(7), .support-log-table td:nth-child(7) { width: 180px; white-space: normal; }
-        .support-log-table th:nth-child(8), .support-log-table td:nth-child(8) { width: 90px; white-space: nowrap; }
-        .support-log-table th:nth-child(9), .support-log-table td:nth-child(9) { width: 150px; white-space: normal; }
-        .support-log-table th:nth-child(10), .support-log-table td:nth-child(10) { width: 100px; white-space: nowrap; }
+        .support-log-table th:nth-child(6), .support-log-table td:nth-child(6) { width: 200px; white-space: normal; }
+        .support-log-table th:nth-child(7), .support-log-table td:nth-child(7) { width: 90px; white-space: nowrap; }
+        .support-log-table th:nth-child(8), .support-log-table td:nth-child(8) { width: 180px; white-space: normal; }
+        .support-log-table th:nth-child(9), .support-log-table td:nth-child(9) { width: 100px; white-space: nowrap; }
 
         .support-log-table thead th {
             /* background/color/font-weight/padding all come from the
@@ -6263,6 +6262,14 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
     margin: 0;
     box-sizing: border-box;
     width: 100%;
+}
+/* Item 5 - the margin was coming from the PAGE's own side padding
+   (.center-content, ~22-30px each side, meant for normal postlogin
+   pages) - Add Balance needs to override that specifically so this
+   section is genuinely edge-to-edge, not just internally padding:0. */
+.center-content:has(.balance-checkout-section) {
+    padding-left: 0;
+    padding-right: 0;
 }
 
 .balance-checkout-section .balance-pay-panel {
