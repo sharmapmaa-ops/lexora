@@ -7712,6 +7712,7 @@
 
             window.refreshDbStatus = async function() {
                 const body = document.getElementById('dbStatusBody');
+                const footer = document.getElementById('dbStatusFooter');
                 if (!body) return;
                 body.innerHTML = '<p class="ds-card-sub">Checking\u2026</p>';
                 try {
@@ -7720,7 +7721,9 @@
                     if (!res.ok) throw new Error(d.error || 'Could not read database status.');
 
                     // Store / Host / Server ab ek hi line me (pehle 3 alag
-                    // table rows the).
+                    // table rows the). Item 3 - this line now lives OUTSIDE
+                    // the PostgreSQL card entirely (#dbStatusFooter, below
+                    // the whole card+tabs strip), not inside it.
                     let statusLine;
                     if (!d.enabled) {
                         statusLine = dbChip(false, 'JSON files') + ' <span class="db-note">'
@@ -7742,8 +7745,8 @@
                            (duplicate nahi banenge).</div>`
                         : '';
 
-                    body.innerHTML = `<div class="db-status-line">${statusLine}</div>${errorLine}${warn}
-                    <div id="dbTablesBox"></div>`;
+                    if (footer) footer.innerHTML = `<div class="db-status-line">${statusLine}</div>${errorLine}${warn}`;
+                    body.innerHTML = `<div id="dbTablesBox"></div>`;
                     renderDbTables();
                 } catch (err) {
                     body.innerHTML = `<p class="db-note is-bad">${escapeHtml(err.message)}</p>`;
@@ -7896,11 +7899,6 @@
                                 </select>
                             </div>
                             <button class="admin-btn" id="dbFilterToggleBtn" onclick="dbToggleFilterRow()">\u{1F50D} Filter</button>
-                            <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${escapeHtml(name)}')">+ Add Row</button>
-                            <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Row(s)</button>
-                            <button class="admin-btn admin-btn-save" onclick="dbTableSaveAll('${escapeHtml(name)}')">\u{1F4BE} Save</button>
-                            <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
-                            <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
                         </div>
                         <div class="db-edit-table-wrapper report-table-scroll">
                         <table class="admin-json-table db-txn-table db-edit-table">
@@ -7922,6 +7920,13 @@
                                     </tr>`).join('')}
                             </tbody>
                         </table>
+                        </div>
+                        <div class="db-edit-table-actions-bottom">
+                            <button class="admin-btn admin-btn-add-folder" onclick="dbTableAddRow('${escapeHtml(name)}')">+ Add Row</button>
+                            <button class="admin-btn admin-btn-delete" onclick="dbTableDeleteSelected('${escapeHtml(name)}')">\u{1F5D1} Delete Row(s)</button>
+                            <button class="admin-btn admin-btn-save" onclick="dbTableSaveAll('${escapeHtml(name)}')">\u{1F4BE} Save</button>
+                            <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
+                            <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
                         </div>
                         <div class="history-pager">
                             ${_dbPaginationHtml(name, dbTablePage, dbTablePerPage, allRows.length)}
@@ -8711,10 +8716,6 @@
 
             function buildAdminFilesBody() {
                 return `
-                    <div class="admin-migration-row">
-                        <button class="admin-btn admin-btn-save" onclick="runFullMigration()">\u2934 Run Migration</button>
-                        <span style="font-size:0.78rem;color:rgba(0,0,0,0.5);">One button for every one-time setup step - click whenever asked to.</span>
-                    </div>
                     <div class="svc-strip">
                         <div class="svc-tabs">
                             <button type="button" class="svc-tab is-active" onclick="switchAdminTab(0, this)">\u{1F5C4} PostgreSQL</button>
@@ -8734,6 +8735,11 @@
                                 </div>
                             </div>
                         </div>
+                    </div>
+                    <div class="db-status-footer" id="dbStatusFooter"></div>
+                    <div class="admin-migration-row">
+                        <button class="admin-btn admin-btn-save" onclick="runFullMigration()">\u2934 Run Migration</button>
+                        <span style="font-size:0.78rem;color:rgba(0,0,0,0.5);">One button for every one-time setup step - click whenever asked to.</span>
                     </div>
                 `;
             }

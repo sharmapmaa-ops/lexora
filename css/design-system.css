@@ -1357,6 +1357,16 @@ body, input, select, textarea, button {
        overflow simply clipping the body - which is what made the
        header row disappear instead of just the table scrolling. */
     flex-shrink: 0;
+    /* Item 16 - the sibling body wrapper below (.report-table-scroll)
+       gets a vertical scrollbar whenever it has enough rows, which eats
+       into ITS available width and shifts every column left slightly
+       compared to this header (which never has a scrollbar of its own)
+       - the classic split header/body table misalignment. Reserving
+       the same width here, always, keeps both tables' columns lined up
+       whether or not the body actually needs to scroll on any given
+       page. */
+    padding-right: 16px;
+    box-sizing: border-box;
 }
 
 .payment-history-scroll-outer .history-table-wrapper,
@@ -3812,6 +3822,12 @@ body { background: #ffffff; }
     flex: none;
     min-height: 0;
     overflow-y: auto;
+    /* Item 16 - reserves scrollbar width even on pages/tabs where this
+       particular table doesn't have enough rows to actually need one,
+       so the header-wrapper's matching padding-right (above) always
+       lines up with real available space here, instead of the columns
+       shifting depending on whether a scrollbar happens to be showing. */
+    scrollbar-gutter: stable;
 }
 
 /* ---- ROUND 12b ----
