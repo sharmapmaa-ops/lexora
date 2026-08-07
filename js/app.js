@@ -7882,9 +7882,6 @@
                             <button class="admin-btn admin-btn-download" onclick="dbTableDownloadCsv('${escapeHtml(name)}')">\u2B07\uFE0F Download</button>
                             <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
                         </div>
-                        <div class="history-pager">
-                            ${_dbPaginationHtml(name, dbTablePage, dbTablePerPage, allRows.length)}
-                        </div>
                         <div class="db-edit-table-wrapper report-table-scroll">
                         <table class="admin-json-table db-txn-table db-edit-table">
                             <thead>
@@ -7905,6 +7902,9 @@
                                     </tr>`).join('')}
                             </tbody>
                         </table>
+                        </div>
+                        <div class="history-pager">
+                            ${_dbPaginationHtml(name, dbTablePage, dbTablePerPage, allRows.length)}
                         </div>
                         <div class="db-table-caption">${allRows.length} row(s)</div>`;
                     host.dataset.rows = JSON.stringify(allRows);
@@ -8070,9 +8070,6 @@
                         <button class="admin-btn admin-btn-download" onclick="downloadRulesCsv()">\u2B07\uFE0F Download</button>
                         <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
                     </div>
-                    <div class="history-pager">
-                        ${_dbPaginationHtml('cfg_rules', dbRulesPage, dbTablePerPage, allRows.length)}
-                    </div>
                     <div class="db-edit-table-wrapper report-table-scroll">
                     <table class="admin-json-table db-txn-table db-edit-table">
                         <thead>
@@ -8093,6 +8090,9 @@
                                 </tr>`).join('')}
                         </tbody>
                     </table>
+                    </div>
+                    <div class="history-pager">
+                        ${_dbPaginationHtml('cfg_rules', dbRulesPage, dbTablePerPage, allRows.length)}
                     </div>
                     <div class="db-table-caption">${allRows.length} rule(s) - ${allRows.filter(r => r._editable).length} approved (editable), ${allRows.filter(r => !r._editable).length} pending. Approve/reject from the Lease Abstraction rules review screen.</div>`;
                 _wireDbRowChangeTracking(host);

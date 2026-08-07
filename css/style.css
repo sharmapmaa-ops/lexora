@@ -5280,12 +5280,25 @@
 }
 
 /* Header aur filter row scroll ke saath upar chipke rehte hain - sirf
-   data (tbody) neeche scroll hota hai (item 1.11). */
+   data (tbody) neeche scroll hota hai (item 1.11).
+   Item - background/color forced to match every other report-card
+   table's shared light header style (design-system.css) - this
+   selector's own specificity (tr:first-child pushes it above the
+   shared rule) was winning regardless of file order, which is why
+   this was the one table still showing a dark navy header while
+   Payment History/Today's Transactions/Notification/Support all
+   showed the light one. !important here specifically because this
+   codebase turned out to have several layers of same-selector,
+   different-value declarations for table headers (see the ROUND 13
+   history in design-system.css) - after finding and removing four of
+   them already, forcing the win here is the reliable way to be sure a
+   fifth, still-undiscovered one isn't still lurking. */
 .db-edit-table thead tr:first-child th {
     position: sticky;
     top: 0;
     z-index: 3;
-    background: #0b1330;
+    background: #f7f9fd !important;
+    color: var(--ds-muted) !important;
 }
 
 .db-edit-table thead tr.db-filter-row th {
@@ -5296,7 +5309,7 @@
 
 .db-filter-row th {
     padding: 4px 8px 8px;
-    background: #0b1330;
+    background: #f7f9fd !important;
 }
 
 .db-filter-input {
