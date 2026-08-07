@@ -7913,7 +7913,7 @@
                                 ${rows.map((r, i) => `
                                     <tr data-row-index="${pageStart + i}">
                                         <td><input type="checkbox" class="db-row-select" /></td>
-                                        ${cols.map(c => `<td>${_dbCellToInput(c, r[c.name])}</td>`).join('')}
+                                        ${cols.map(c => `<td>${_dbCellDisplayHtml(c, r[c.name])}</td>`).join('')}
                                     </tr>`).join('')}
                             </tbody>
                         </table>
@@ -7980,14 +7980,27 @@
             // (password jaisi masked columns).
             let _dbTableColumns = [];
 
-            function _dbCellToInput(col, value) {
+            // Item 2 - cells show PLAIN TEXT by default now, and only
+            // become an editable input/select/textarea when THAT one
+            // cell is clicked - not every editable cell all the time
+            // (which is what made the whole table look like a wall of
+            // input boxes). Clicking a different cell (or clicking/
+            // tabbing away) commits whatever was typed back into plain
+            // text first, then opens the newly-clicked cell - only ever
+            // one cell open at a time.
+            function _dbCellDisplayHtml(col, value) {
                 const raw = value == null ? '' : (typeof value === 'object' ? JSON.stringify(value) : String(value));
-                const safe = escapeHtml(raw).replace(/"/g, '&quot;');
+                const safe = escapeHtml(raw);
                 if (!col.editable) {
-                    return `<input type="text" value="${safe}" disabled title="Ye column edit nahi ho sakta" />`;
+                    return `<span class="db-cell-display is-readonly" title="Ye column edit nahi ho sakta">${safe}</span>`;
                 }
+                return `<span class="db-cell-display" data-col="${escapeHtml(col.name)}" data-value="${safe.replace(/"/g, '&quot;')}" onclick="_dbCellEnterEdit(this)">${safe || '\u00a0'}</span>`;
+            }
+
+            function _dbBuildCellInputHtml(col, raw) {
+                const safe = escapeHtml(raw).replace(/"/g, '&quot;');
                 if (Array.isArray(col.options) && col.options.length) {
-                    return `<select class="db-cell-input" data-col="${escapeHtml(col.name)}">
+                    return `<select class="db-cell-input" data-col="${escapeHtml(col.name)}" onblur="_dbCellExitEdit(this)">
                         ${col.options.map(opt => {
                             const [val, label] = Array.isArray(opt) ? opt : [opt, opt];
                             return `<option value="${escapeHtml(val)}" ${val === raw ? 'selected' : ''}>${escapeHtml(label)}</option>`;
@@ -7995,15 +8008,56 @@
                     </select>`;
                 }
                 if (col.type === 'jsonb' || col.type === 'json') {
-                    return `<textarea class="db-cell-input db-cell-json" rows="2" data-col="${escapeHtml(col.name)}">${escapeHtml(raw)}</textarea>`;
+                    return `<textarea class="db-cell-input db-cell-json" rows="2" data-col="${escapeHtml(col.name)}" onblur="_dbCellExitEdit(this)">${escapeHtml(raw)}</textarea>`;
                 }
-                return `<input type="text" class="db-cell-input" data-col="${escapeHtml(col.name)}" value="${safe}" ${col.primaryKey ? 'title="Primary key - naya row banate waqt hi set karein"' : ''} />`;
+                return `<input type="text" class="db-cell-input" data-col="${escapeHtml(col.name)}" value="${safe}" onblur="_dbCellExitEdit(this)" ${col.primaryKey ? 'title="Primary key - naya row banate waqt hi set karein"' : ''} />`;
+            }
+
+            // Currently-open editable cell (at most one, table-wide) -
+            // clicking any other cell commits and closes this one first.
+            let _dbOpenEditCell = null;
+
+            window._dbCellEnterEdit = function(displaySpan) {
+                if (_dbOpenEditCell && _dbOpenEditCell !== displaySpan) {
+                    _dbCommitAndCloseCell(_dbOpenEditCell);
+                }
+                const td = displaySpan.parentElement;
+                const colName = displaySpan.dataset.col;
+                const col = (_dbTableColumns || []).find(c => c.name === colName) || { name: colName, editable: true };
+                const raw = displaySpan.dataset.value || '';
+                td.innerHTML = _dbBuildCellInputHtml(col, raw);
+                const input = td.querySelector('.db-cell-input');
+                _dbOpenEditCell = input;
+                input._dbCol = col;
+                input.focus();
+                if (input.select) input.select();
+            };
+
+            window._dbCellExitEdit = function(input) {
+                // A click landing on a DIFFERENT cell fires that cell's
+                // own enter-edit first (see above), which already closed
+                // this one - avoid closing it a second time on the blur
+                // that follows.
+                if (_dbOpenEditCell !== input) return;
+                _dbCommitAndCloseCell(input);
+            };
+
+            function _dbCommitAndCloseCell(input) {
+                const td = input.parentElement;
+                const col = input._dbCol;
+                const newVal = input.value;
+                td.innerHTML = _dbCellDisplayHtml(col, newVal);
+                _dbOpenEditCell = null;
             }
 
             function _dbReadRowInputs(tr) {
                 const values = {};
-                tr.querySelectorAll('[data-col]').forEach(input => {
-                    values[input.dataset.col] = input.value;
+                // Item 2 - most cells are plain-text .db-cell-display
+                // spans now (data-value holds the current value), not
+                // live inputs - only the ONE cell currently being edited
+                // (if any) is a real input/select/textarea (.value).
+                tr.querySelectorAll('[data-col]').forEach(el => {
+                    values[el.dataset.col] = ('value' in el) ? el.value : (el.dataset.value || '');
                 });
                 return values;
             }
@@ -8363,7 +8417,12 @@
                             if (name === 'doc_plans' && c.primaryKey) {
                                 return `<td><input type="text" class="db-cell-input" data-col="${escapeHtml(c.name)}" value="${escapeHtml(suggestedId)}" title="Unique plan id - edit if you want a specific one" /></td>`;
                             }
-                            return `<td>${_dbCellToInput(c, '')}</td>`;
+                            // New row cells go straight to input mode (not
+                            // display-then-click) - the user just clicked
+                            // Add Row specifically to fill these in, so
+                            // requiring an extra click per field first
+                            // would be pure friction here.
+                            return `<td>${_dbBuildCellInputHtml(c, '')}</td>`;
                         }).join('')}
                     </tr>`;
                 tbody.insertAdjacentHTML('beforeend', rowHtml);

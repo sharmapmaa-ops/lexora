@@ -5119,6 +5119,15 @@
     border-collapse: collapse;
     width: 100%;
     font-size: 0.78rem;
+    /* Item 1/2 - explicit (not just relying on the CSS default) so it's
+       clear this table autofits on purpose: every column sizes to
+       whatever its own content/input actually needs, nothing wraps. */
+    table-layout: auto;
+}
+
+.db-edit-table td,
+.db-edit-table th {
+    white-space: nowrap;
 }
 
 .admin-json-table thead th {
@@ -5182,6 +5191,31 @@
     outline: none;
     border-color: darkblue;
     background: white;
+}
+
+/* Item 2 - the plain-text look every editable cell shows until clicked
+   - deliberately looks like ordinary table text (no border/background),
+   so the table doesn't look like a wall of input boxes; a click swaps
+   just that one cell for the real input/select/textarea above. */
+.db-cell-display {
+    display: block;
+    padding: 6px 8px;
+    min-height: 1.2em;
+    cursor: text;
+    border-radius: 5px;
+    border: 1px solid transparent;
+}
+.db-cell-display:hover {
+    background: rgba(0,0,139,0.04);
+    border-color: rgba(0,0,0,0.1);
+}
+.db-cell-display.is-readonly {
+    cursor: not-allowed;
+    color: rgba(0,0,0,0.45);
+}
+.db-cell-display.is-readonly:hover {
+    background: none;
+    border-color: transparent;
 }
 
 .db-cell-json {

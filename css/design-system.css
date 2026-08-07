@@ -1294,43 +1294,18 @@ body, input, select, textarea, button {
     overflow: visible;
     text-overflow: clip;
 }
-.payment-history-table { table-layout: fixed; width: 100%; min-width: 1215px; }
+.payment-history-table { table-layout: fixed; width: 100%; }
 
-/* Item 7,8,9 - column widths follow the requested priority order:
-   Description largest, Transaction ID large, Date medium, Amount/
-   Status/Type/Time fixed, Download/checkbox small. The table's
-   min-width above plus overflow-x:auto on the wrapper (below) means
-   narrow containers scroll horizontally instead of crushing any
-   column below a readable width. */
-.payment-history-table th:nth-child(1),  .payment-history-table td:nth-child(1)  { width: 36px; }
-.payment-history-table th:nth-child(2),  .payment-history-table td:nth-child(2)  { width: 40px; }
-.payment-history-table th:nth-child(3),  .payment-history-table td:nth-child(3)  { width: 115px; }
-.payment-history-table th:nth-child(4),  .payment-history-table td:nth-child(4)  { width: 64px; }
-.payment-history-table th:nth-child(5),  .payment-history-table td:nth-child(5)  { width: 100px; }
-.payment-history-table th:nth-child(6),  .payment-history-table td:nth-child(6)  { width: 200px; }
-.payment-history-table th:nth-child(7),  .payment-history-table td:nth-child(7)  { width: 340px; }
-.payment-history-table th:nth-child(8),  .payment-history-table td:nth-child(8)  { width: 100px; }
-.payment-history-table th:nth-child(9),  .payment-history-table td:nth-child(9)  { width: 110px; }
-.payment-history-table th:nth-child(10), .payment-history-table td:nth-child(10) { width: 110px; }
-
-/* Item 1 - the Download header shows a small icon instead of
-   truncated text, with a tooltip for clarity. */
-
-/* Item 3 - Today's Transactions (dashboard) shares Payment History's
-   styling via the .payment-history-table class, but has no checkbox
-   column, so every column shifts one position earlier - these
-   .today-table-specific rules (2 classes = higher specificity, always
-   wins regardless of source order) repoint the same widths. */
-.today-table.payment-history-table { min-width: 1179px; }
-.today-table.payment-history-table th:nth-child(1),  .today-table.payment-history-table td:nth-child(1)  { width: 40px; text-align: center; }
-.today-table.payment-history-table th:nth-child(2),  .today-table.payment-history-table td:nth-child(2)  { width: 115px; }
-.today-table.payment-history-table th:nth-child(3),  .today-table.payment-history-table td:nth-child(3)  { width: 64px; }
-.today-table.payment-history-table th:nth-child(4),  .today-table.payment-history-table td:nth-child(4)  { width: 100px; }
-.today-table.payment-history-table th:nth-child(5),  .today-table.payment-history-table td:nth-child(5)  { width: 200px; }
-.today-table.payment-history-table th:nth-child(6),  .today-table.payment-history-table td:nth-child(6)  { width: 340px; }
-.today-table.payment-history-table th:nth-child(7),  .today-table.payment-history-table td:nth-child(7)  { width: 100px; }
-.today-table.payment-history-table th:nth-child(8),  .today-table.payment-history-table td:nth-child(8)  { width: 110px; }
-.today-table.payment-history-table th:nth-child(9),  .today-table.payment-history-table td:nth-child(9)  { width: 110px; }
+/* Item 1 (autofit) - the fixed per-column px widths that used to live
+   here are gone - autofitSplitTableColumns() (app.js) now measures each
+   column's real content (header label + every visible row's value,
+   across BOTH the header and body <table>) and sets matching explicit
+   widths on both at render time, so a column is never wider or
+   narrower than what its own data actually needs. Leaving the old
+   guesses here would just fight that measurement (JS inline styles do
+   win over these either way, but a stale, wrong set of numbers sitting
+   here is misleading and easy to accidentally re-introduce a mismatch
+   from in a future edit). */
 
 /* Item 6 (old req) - the header and body are separate <table>
    elements (so the header can stay put while only the body scrolls
