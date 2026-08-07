@@ -208,7 +208,7 @@
       const progressCell = `
         <span class="progress-label">${pct}%</span>`;
       const action = f.status === 'Success'
-        ? '<span class="file-action-link disabled">Success</span>'
+        ? '<span class="file-action-link done-label">Success</span>'
         : (f.status === 'Failed'
             ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">⚠</span>`
             : (f.status === 'Processing'
@@ -217,7 +217,7 @@
       return `
         <tr>
           <td><input type="checkbox" class="file-select-checkbox" ${(f.selected !== false && f.status !== 'Success') ? 'checked' : ''}
-                     ${(st.running || f.status === 'Success') ? 'disabled' : ''}
+                     ${st.running ? 'disabled' : ''}
                      onchange="ServiceRunner.toggleSelect('${id}', ${f.uid}, this.checked)" /></td>
           <td class="file-name"><span class="file-name-link">${esc(f.file.name)}</span></td>
           <td>${f.pageCount || '-'}</td>
@@ -533,12 +533,30 @@
     if (window.lexoraEnhancePage) window.lexoraEnhancePage(host);
   }
 
+  // Item 4c - most of the 24 registered tools' own process() never call
+  // ctx.pages(n) (only 2 of them do), so the Pages column stayed blank
+  // for everything else. This detects it independently the moment a
+  // PDF is added, using pdf.js (already loaded globally for the
+  // translation pipeline) - works for every tool without each one
+  // needing its own page-counting code.
+  async function _autoDetectPageCount(entry, id) {
+    if (!window.pdfjsLib || !/\.pdf$/i.test(entry.file.name || '')) return;
+    try {
+      const buf = await entry.file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+      entry.pageCount = pdf.numPages;
+      refresh(id);
+    } catch (e) { /* not a readable PDF - leave the Pages cell blank */ }
+  }
+
   // ── interactions ───────────────────────────────────────────────────
   function onPick(id, ev) {
     const st = state(id);
     const picked = Array.from((ev.target && ev.target.files) || []);
     picked.forEach(function (f) {
-      st.files.push({ uid: st.nextId++, file: f, selected: true, status: 'Pending' });
+      const entry = { uid: st.nextId++, file: f, selected: true, status: 'Pending' };
+      st.files.push(entry);
+      _autoDetectPageCount(entry, id);
     });
     refresh(id);
   }
@@ -553,7 +571,9 @@
     const dropped = Array.from((ev.dataTransfer && ev.dataTransfer.files) || []);
     if (!dropped.length) return;
     dropped.forEach(function (f) {
-      st.files.push({ uid: st.nextId++, file: f, selected: true, status: 'Pending' });
+      const entry = { uid: st.nextId++, file: f, selected: true, status: 'Pending' };
+      st.files.push(entry);
+      _autoDetectPageCount(entry, id);
     });
     refresh(id);
   }

@@ -4005,7 +4005,12 @@
             }
 
             function renderHistoryRows(tbody, list, includeCheckbox) {
-                const colCount = includeCheckbox ? 10 : 9;
+                // Item 1 - the User ID column only exists for Admin/
+                // Developer; a plain user's own history never had
+                // anything to gain from seeing their own ID repeated on
+                // every row, and it must not be exposed to them either.
+                const showUserCol = isAdminOrDeveloper();
+                const colCount = (includeCheckbox ? 9 : 8) + (showUserCol ? 1 : 0);
                 if (list.length === 0) {
                     tbody.innerHTML =
                         `<tr><td colspan="${colCount}" style="text-align:center;padding:20px;color:rgba(0,0,0,0.4);">No transactions found.</td></tr>`;
@@ -4054,7 +4059,7 @@
                         <td>${descriptionText}</td>
                         <td class="${isCredit ? 'credit' : 'debit'}" style="text-align:right;font-weight:600;">${amountText}</td>
                         <td>${txnStatusPill(transaction.status)}</td>
-                        <td>${escapeHtml(transaction.userId || '')}</td>
+                        ${showUserCol ? '<td>' + escapeHtml(transaction.userId || '') + '</td>' : ''}
                     `;
                     tbody.appendChild(tr);
                 });
@@ -4288,7 +4293,7 @@
                                             <th>Description</th>
                                             <th style="text-align:right;">Amount</th>
                                             <th>Status</th>
-                                            <th>User ID</th>
+                                            ${isAdminOrDeveloper() ? '<th>User ID</th>' : ''}
                                         </tr>
                                     </thead>
                                 </table>
@@ -10852,7 +10857,7 @@
                                                 <th>Description</th>
                                                 <th style="text-align:right;">Amount</th>
                                                 <th>Status</th>
-                                                <th>User ID</th>
+                                                ${isAdminOrDeveloper() ? '<th>User ID</th>' : ''}
                                             </tr>
                                         </thead>
                                     </table>
@@ -11911,16 +11916,28 @@
                     : '<p style="text-align:center;padding:40px;">Contact information is not available right now.</p>';
             }
 
-            // Item 1 - Login is its own SECTION (like Services/Plans &
-            // Offers/Contact Us), not a popup overlay - reuses the same
-            // two-card look (brand details left, form right) the modal
-            // version had, just rendered inline in the page body instead
-            // of a floating backdrop.
+            // Item 1/8 - Login is its own SECTION (like Services/Plans &
+            // Offers/Contact Us), not a popup, and its left side is a
+            // simple logo + tagline (not the fuller Home-hero panel with
+            // stats/checklists) - matches the reference design exactly:
+            // icon + wordmark, one line of copy, a vertical divider, then
+            // the plain login form on the right (no boxed/shadowed card
+            // wrapping the whole thing).
             function buildAuthLoginSection() {
+                const nm = (COMPANY_INFO && COMPANY_INFO.name) || 'Lexora';
+                const logoPath = (COMPANY_INFO && COMPANY_INFO.logo) || 'Pictures/lexora-logo.png';
                 return `
-                    <div class="auth-login-modal-two-col auth-login-section">
-                        <div class="auth-login-modal-left">${buildAuthLeftPanel()}</div>
-                        <div class="auth-card auth-login-modal-right">${buildAuthCard()}</div>
+                    <div class="auth-login-section">
+                        <div class="auth-login-left">
+                            <div class="auth-login-logo-row">
+                                <img class="auth-login-logo-icon" src="${logoPath}" alt="${escapeHtml(nm)}"
+                                     onerror="this.onerror=null;this.src='Pictures/lexora-logo.png';" />
+                                <span class="auth-login-wordmark">${escapeHtml(nm.toUpperCase())}</span>
+                            </div>
+                            <p class="auth-login-tagline">Sign in to access your account<br/>and continue using ${escapeHtml(nm)}.</p>
+                        </div>
+                        <div class="auth-login-divider"></div>
+                        <div class="auth-card auth-login-right">${buildAuthCard()}</div>
                     </div>
                 `;
             }

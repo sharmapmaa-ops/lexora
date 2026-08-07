@@ -441,12 +441,14 @@
       const cls = statusClass(f.status);
       const pct = f.progress != null ? f.progress : (f.status === 'Success' ? 100 : 0);
       const action = f.status === 'Success'
-        ? `<span class="file-action-link" title="Delivered">✓</span>`
+        ? '<span class="file-action-link done-label">Success</span>'
         : (f.status === 'Failed'
             ? `<span class="file-action-link error-link" title="${esc(f.error || 'Failed')}">⚠</span>`
-            : `<span class="file-action-link disabled" title="${esc(f.status)}">${f.status === 'Processing' ? '\u23f3' : '\u2022'}</span>`);
+            : (f.status === 'Processing'
+                ? '<span class="file-action-link disabled">Processing…</span>'
+                : '<span class="file-action-link disabled">Pending</span>'));
       return `<tr>
-        <td><input type="checkbox" class="file-select-checkbox" ${f.selected !== false ? 'checked' : ''}
+        <td><input type="checkbox" class="file-select-checkbox" ${(f.selected !== false && f.status !== 'Success') ? 'checked' : ''}
                    ${STATE.running ? 'disabled' : ''} onchange="Bai2.toggleSelect(${f.uid}, this.checked)" /></td>
         <td class="file-name"><span class="file-name-link">${esc(f.file.name)}</span></td>
         <td>${f.pageCount || '-'}</td>

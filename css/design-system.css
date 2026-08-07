@@ -982,6 +982,17 @@ body, input, select, textarea, button {
     flex-direction: column;
     height: 450px;
 }
+/* Item 3 - keeps this in sync with .history-card's own responsive
+   height steps (style.css) at the same breakpoints. Defined here
+   (design-system.css, loaded last) rather than alongside those in
+   style.css, since a same-specificity rule in the later-loaded file
+   always wins the cascade regardless of which one is inside a media
+   query - putting it in style.css only would have been silently
+   overridden by this file's own unconditional 450px rule above,
+   exactly like the earlier .history-card auto-height issue. */
+@media (max-width: 992px) { .dash-txn-card { height: 400px; } }
+@media (max-width: 768px) { .dash-txn-card { height: 380px; } }
+@media (max-width: 480px) { .dash-txn-card { height: 340px; } }
 
 .dash-txn-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .dash-txn-head .ds-card-icon { width: 36px; height: 36px; }
@@ -1451,10 +1462,14 @@ body, input, select, textarea, button {
 .txn-type-badge.debit  { color: #dc2626; }
 
 /* ---- pagination footer ---- */
+/* Item 2 - was justify-content:space-between (spread count/page-size/
+   controls across the full width); Notification's own pager
+   (.notif-footer-pager) instead keeps those three tight together and
+   pinned to the right - matching that exactly here too. */
 .history-pager {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 14px;
     flex-wrap: wrap;
     padding-top: 14px;

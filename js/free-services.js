@@ -674,6 +674,12 @@
     // built the same way (title left, charge-estimate slot right) and
     // wrapped in #serviceBodyRoot so ServiceRunner's refresh() can find
     // it without falling back to replacing the whole page.
+    // Item 6 - drilling into a tool this way bypassed loadContent()'s
+    // auto-clear (added for item 7) entirely, so files from a previous
+    // visit kept reappearing. Clearing here, right before render(id)
+    // builds this visit's HTML, covers this second entry point the
+    // same way loadContent() covers the main-menu one.
+    if (window.ServiceRunner && ServiceRunner.has(id)) window.ServiceRunner.clear(id);
     window.__pendingChargeEstimateHtml = null;
     const bodyHtml = render(id);
     const estimateHtml = window.__pendingChargeEstimateHtml || '';
