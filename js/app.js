@@ -5515,6 +5515,7 @@
                 const start = (supportPage - 1) * supportPerPage;
                 renderSupportRows(tbody, sorted.slice(start, start + supportPerPage));
                 renderSupportPager(total, pages, start);
+                autofitSingleTableColumns('supportTable');
             }
 
             function renderSupportPager(total, pages, start) {
@@ -7921,7 +7922,7 @@
                             <button class="admin-btn" id="dbFilterToggleBtn" onclick="dbToggleFilterRow()">\u{1F50D} Filter</button>
                         </div>
                         <div class="db-edit-table-wrapper report-table-scroll rt-wrap-full">
-                        <table class="admin-json-table db-txn-table db-edit-table rt-table">
+                        <table class="admin-json-table db-txn-table db-edit-table rt-table" id="dbEditTableUsers">
                             <thead>
                                 <tr>
                                     <th><input type="checkbox" onchange="dbTableToggleAll(this)" /></th>
@@ -7956,6 +7957,7 @@
                     host.dataset.rows = JSON.stringify(allRows);
                     host.dataset.pageStart = String(pageStart);
                     _wireDbRowChangeTracking(host);
+                    autofitSingleTableColumns('dbEditTableUsers');
                 } catch (err) {
                     host.innerHTML = `<p class="db-note is-bad" style="padding:14px;">${escapeHtml(err.message)}</p>`;
                 }
@@ -8171,7 +8173,7 @@
                         <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
                     </div>
                     <div class="db-edit-table-wrapper report-table-scroll rt-wrap-full">
-                    <table class="admin-json-table db-txn-table db-edit-table rt-table">
+                    <table class="admin-json-table db-txn-table db-edit-table rt-table" id="dbEditTableRules">
                         <thead>
                             <tr>
                                 <th><input type="checkbox" onchange="dbTableToggleAll(this)" /></th>
@@ -8196,6 +8198,7 @@
                     </div>
                     <div class="db-table-caption">${allRows.length} rule(s) - ${allRows.filter(r => r._editable).length} approved (editable), ${allRows.filter(r => !r._editable).length} pending. Approve/reject from the Lease Abstraction rules review screen.</div>`;
                 _wireDbRowChangeTracking(host);
+                autofitSingleTableColumns('dbEditTableRules');
             }
 
             window.addBlankRuleRow = async function() {
@@ -10458,17 +10461,18 @@
 
             // Item - "autofit, nothing ever wraps" for the split header/
             // body report tables (Today's Transactions, Payment History,
-            // Notification). Three genuinely DIFFERENT technical
-            // strategies for keeping the header <table> and body <table>'s
-            // columns in agreement are implemented below and switchable
-            // live (see the "Table Mode" control on Today's Transactions/
-            // Payment History) - static code review alone hasn't reliably
-            // predicted which one actually renders correctly in a real
-            // browser after several attempts, so rather than guess again,
-            // all three ship at once and whichever one visually works can
-            // be reported back and kept, the other two deleted.
-            window.__rtTableMode = window.__rtTableMode || (localStorage.getItem('rtTableMode') || 'colgroup');
-
+            // Notification). CONFIRMED working by live testing (three
+            // approaches shipped side-by-side, switchable without
+            // redeploy, and this is the one that actually rendered
+            // correctly) - display:grid on both the header <tr> and every
+            // body <tr>, with the identical grid-template-columns string
+            // applied to each. Grid tracks are a completely different
+            // browser layout engine from table column sizing, so this
+            // sidesteps table-layout:fixed's "which row counts" ambiguity
+            // (colgroup and per-row explicit widths were both tried and
+            // did NOT render correctly) altogether - each row
+            // independently gets told the same track sizes, with no
+            // reliance on any one row being authoritative for the others.
             function autofitSplitTableColumns(headerTableId, bodyTableId) {
                 const headerTable = document.getElementById(headerTableId);
                 const bodyTable = document.getElementById(bodyTableId);
@@ -10477,7 +10481,6 @@
                 const bodyRows = bodyTable.querySelectorAll('tbody tr');
                 if (!headerRow || !bodyRows.length) return;
 
-                // ---- shared measurement pass (same for every mode) ----
                 [headerTable, bodyTable].forEach(function (t) {
                     t.style.tableLayout = 'auto';
                     t.style.width = 'max-content';
@@ -10506,88 +10509,71 @@
                     });
                 });
                 const px = widths.map(function (w) { return Math.ceil(w + 1); });
+                const template = px.map(function (w) { return w + 'px'; }).join(' ');
 
-                [headerTable, bodyTable].forEach(function (t) {
-                    t.style.tableLayout = 'fixed';
-                    t.style.width = 'auto';
-                    t.style.maxWidth = '';
-                    const oldColgroup = t.querySelector(':scope > colgroup');
-                    if (oldColgroup) oldColgroup.remove();
-                    Array.prototype.forEach.call(t.querySelectorAll('th, td'), function (cell) {
-                        cell.style.width = '';
+                headerTable.style.width = 'auto';
+                bodyTable.style.width = 'auto';
+                headerRow.style.display = 'grid';
+                headerRow.style.gridTemplateColumns = template;
+                Array.prototype.forEach.call(headerRow.children, function (th) {
+                    th.style.width = 'auto';
+                    th.style.boxSizing = 'border-box';
+                });
+                bodyRows.forEach(function (tr) {
+                    tr.style.display = 'grid';
+                    tr.style.gridTemplateColumns = template;
+                    Array.prototype.forEach.call(tr.children, function (td) {
+                        td.style.width = 'auto';
+                        td.style.boxSizing = 'border-box';
                     });
                 });
-
-                // ---- mode-specific apply pass ----
-                const mode = window.__rtTableMode;
-                if (mode === 'allrows') {
-                    // MODE B: explicit width on EVERY cell of EVERY row in
-                    // BOTH tables (not just header + first body row) - the
-                    // most brute-force, no-shortcuts option: nothing is
-                    // ever inferred from "the first row", every single
-                    // cell states its own column's width directly.
-                    Array.prototype.forEach.call(headerRow.children, function (th, i) {
-                        th.style.width = px[i] + 'px';
-                    });
-                    bodyRows.forEach(function (tr) {
-                        Array.prototype.forEach.call(tr.children, function (td, i) {
-                            if (i < colCount) td.style.width = px[i] + 'px';
-                        });
-                    });
-                } else if (mode === 'grid') {
-                    // MODE C: abandon table-layout column-width mechanics
-                    // entirely for the WIDTH concern - display:grid on
-                    // both <tr> elements (rows), with the exact same
-                    // grid-template-columns string applied to the header
-                    // row and every body row. Grid tracks are a completely
-                    // different browser layout engine from table column
-                    // sizing, so this sidesteps table-layout:fixed's
-                    // "which row counts" ambiguity altogether - each row
-                    // independently gets told the same track sizes.
-                    const template = px.map(function (w) { return w + 'px'; }).join(' ');
-                    headerRow.style.display = 'grid';
-                    headerRow.style.gridTemplateColumns = template;
-                    Array.prototype.forEach.call(headerRow.children, function (th) {
-                        th.style.width = 'auto';
-                        th.style.boxSizing = 'border-box';
-                    });
-                    bodyRows.forEach(function (tr) {
-                        tr.style.display = 'grid';
-                        tr.style.gridTemplateColumns = template;
-                        Array.prototype.forEach.call(tr.children, function (td) {
-                            td.style.width = 'auto';
-                            td.style.boxSizing = 'border-box';
-                        });
-                    });
-                } else {
-                    // MODE A (default): <colgroup>/<col> - the standards-
-                    // defined, browser-native mechanism for fixing a
-                    // table's column widths independent of any row's own
-                    // cell widths.
-                    [headerTable, bodyTable].forEach(function (t) {
-                        const colgroup = document.createElement('colgroup');
-                        px.forEach(function (w) {
-                            const col = document.createElement('col');
-                            col.style.width = w + 'px';
-                            colgroup.appendChild(col);
-                        });
-                        t.insertBefore(colgroup, t.firstChild);
-                    });
-                }
             }
 
-            // Item - lets the CURRENT table's column-width strategy be
-            // switched live, from the small "Table Mode" control on
-            // Today's Transactions/Payment History, with no redeploy -
-            // try each one, see which actually renders correctly, report
-            // back which one, and everything else gets deleted afterward.
-            window.setRtTableMode = function(mode) {
-                window.__rtTableMode = mode;
-                localStorage.setItem('rtTableMode', mode);
-                if (document.getElementById('todayTableBody')) renderTodayTransactions();
-                if (document.getElementById('historyTableBody')) renderPaymentHistory();
-                if (document.getElementById('notificationTableBody')) renderNotificationTable();
-            };
+            // Item - same proven technique (CSS grid rows, see
+            // autofitSplitTableColumns above) applied to the single-<table>
+            // report cards (Support, PostgreSQL admin) - these don't have
+            // a separate header table to keep in sync with, but were
+            // still relying on table-layout:auto's shrink-to-fit behavior
+            // for width, which this session found to be inconsistent
+            // across contexts more than once already. Grid rows sidestep
+            // that the same way, for the same reason, even though there's
+            // only one <table> element here.
+            function autofitSingleTableColumns(tableId) {
+                const table = document.getElementById(tableId);
+                if (!table) return;
+                const headRow = table.querySelector('thead tr');
+                const bodyRows = table.querySelectorAll('tbody tr');
+                if (!headRow || !bodyRows.length) return;
+
+                table.style.width = 'max-content';
+                table.style.maxWidth = 'none';
+                Array.prototype.forEach.call(table.querySelectorAll('th, td'), function (cell) {
+                    cell.style.width = '';
+                    cell.style.whiteSpace = 'nowrap';
+                });
+
+                const colCount = headRow.children.length;
+                const widths = new Array(colCount).fill(0);
+                Array.prototype.forEach.call(headRow.children, function (th, i) {
+                    widths[i] = Math.max(widths[i], th.getBoundingClientRect().width);
+                });
+                bodyRows.forEach(function (tr) {
+                    Array.prototype.forEach.call(tr.children, function (td, i) {
+                        if (i < colCount) widths[i] = Math.max(widths[i], td.getBoundingClientRect().width);
+                    });
+                });
+                const template = widths.map(function (w) { return Math.ceil(w + 1) + 'px'; }).join(' ');
+
+                table.style.width = 'auto';
+                table.style.maxWidth = '';
+                headRow.style.display = 'grid';
+                headRow.style.gridTemplateColumns = template;
+                bodyRows.forEach(function (tr) { tr.style.display = 'grid'; tr.style.gridTemplateColumns = template; });
+                Array.prototype.forEach.call(table.querySelectorAll('th, td'), function (cell) {
+                    cell.style.width = 'auto';
+                    cell.style.boxSizing = 'border-box';
+                });
+            }
 
             function wireSplitTableScrollSync(container) {
                 const pairs = [
@@ -11205,11 +11191,6 @@
                                         </svg>
                                     </span>
                                     <h3>Today's Transactions</h3>
-                                    <select onchange="setRtTableMode(this.value)" title="Debug: table column-width strategy for Today's Transactions/Payment History/Notification - pick whichever renders correctly here, then report back which one" style="font-size:0.72rem;padding:3px 6px;border-radius:6px;border:1px solid rgba(0,0,139,0.2);margin-right:8px;">
-                                        <option value="colgroup" ${(window.__rtTableMode || 'colgroup') === 'colgroup' ? 'selected' : ''}>Mode A: colgroup</option>
-                                        <option value="allrows" ${window.__rtTableMode === 'allrows' ? 'selected' : ''}>Mode B: all-rows width</option>
-                                        <option value="grid" ${window.__rtTableMode === 'grid' ? 'selected' : ''}>Mode C: CSS grid</option>
-                                    </select>
                                     <button class="dash-view-all" onclick="lexoraNavigatePaymentTab('history')">View All Transactions <span>\u2192</span></button>
                                 </div>
                                 <div class="card-body today-table-scroll-outer">
