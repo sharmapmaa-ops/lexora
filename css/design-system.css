@@ -1712,6 +1712,17 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
     background: var(--ds-blue);
     margin-top: 5px;
     flex-shrink: 0;
+    /* Item - was only ever used inside a flex row before (where width/
+       height on a span works regardless of its own display value); now
+       also sits plainly next to the Date text with no flex wrapper
+       (Date/Time are separate columns, notification-icon and the "X
+       minutes ago" line are gone), so it needs its own inline-block to
+       actually render as a small circle instead of collapsing to
+       nothing the way width/height do on a plain inline span. */
+    display: inline-block;
+    vertical-align: middle;
+    margin-top: 0;
+    margin-right: 6px;
 }
 
 .notif-dot.is-read { background: #c6d0e0; }

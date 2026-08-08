@@ -6979,7 +6979,8 @@
                                 <thead>
                                     <tr>
                                         <th style="width:38px;"><input type="checkbox" onchange="toggleNotificationSelectAll(this)" /></th>
-                                        <th style="width:230px;">Date &amp; Time</th>
+                                        <th style="width:120px;">Date</th>
+                                        <th style="width:110px;">Time</th>
                                         <th>Notification</th>
                                         <th style="width:46px;"></th>
                                     </tr>
@@ -7072,7 +7073,7 @@
                 }
 
                 if (mine.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="4" class="dash-empty-cell">'
+                    tbody.innerHTML = '<tr><td colspan="5" class="dash-empty-cell">'
                         + '<svg class="dash-empty-art" viewBox="0 0 72 56" fill="none">'
                         + '<path d="M8 26h14l4 7h20l4-7h14v20a4 4 0 0 1-4 4H12a4 4 0 0 1-4-4z" fill="#dbe8fe"/>'
                         + '<path d="M8 26 18 8h36l10 18" stroke="#bcd6fb" stroke-width="3" stroke-linejoin="round" fill="none"/></svg>'
@@ -7088,7 +7089,6 @@
                     const actionsHtml = needsAction
                         ? '<span class="notification-action-hint">\u23f3 Action required - click to Approve/Cancel</span>'
                         : (n.handledResult ? `<span class="notification-handled-tag">${escapeHtml(n.handledResult)}</span>` : '');
-                    const icon = notificationIcon(n);
                     // Pehli line title, baaki detail - mockup me dono alag
                     // weight/colour me hain.
                     const parts = String(n.description || '').split(/[.:]\s+/);
@@ -7099,24 +7099,15 @@
                     <tr class="${n.read ? '' : 'notification-unread'}">
                         <td onclick="event.stopPropagation();"><input type="checkbox" class="notification-row-check" data-id="${n.id}" ${selectedNotificationIds.has(n.id) ? 'checked' : ''} onchange="toggleNotificationRowCheck('${n.id}', this)" /></td>
                         <td>
-                            <div class="notif-when">
-                                <span class="notif-dot ${n.read ? 'is-read' : ''}"></span>
-                                <div>
-                                    <span class="notif-date">${escapeHtml(n.date)} ${escapeHtml(n.time || '')}</span>
-                                    <span class="notif-ago">${notificationAgo(n.date, n.time)}</span>
-                                </div>
-                            </div>
+                            <span class="notif-dot ${n.read ? 'is-read' : ''}"></span>
+                            ${escapeHtml(n.date)}
                         </td>
+                        <td>${escapeHtml(n.time || '')}</td>
                         <td>
-                            <div class="notif-row">
-                                <span class="notif-row-icon is-${icon[0]}">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${icon[1]}</svg>
-                                </span>
-                                <div class="notif-row-text">
-                                    <a class="notification-desc-link" onclick="openNotificationPopup('${n.id}')">${escapeHtml(title)}</a>
-                                    ${detail ? `<span class="notif-row-detail">${escapeHtml(detail)}</span>` : ''}
-                                    ${actionsHtml}
-                                </div>
+                            <div class="notif-row-text">
+                                <a class="notification-desc-link" onclick="openNotificationPopup('${n.id}')">${escapeHtml(title)}</a>
+                                ${detail ? `<span class="notif-row-detail">${escapeHtml(detail)}</span>` : ''}
+                                ${actionsHtml}
                             </div>
                         </td>
                         <td class="notif-menu-cell"><button class="notif-menu-btn" onclick="openNotificationPopup('${n.id}')" aria-label="Open notification">\u22ee</button></td>
@@ -9992,7 +9983,24 @@
                     return;
                 }
 
-                const pagePath = action === 'AdminOverview' ? 'Overview' : action;
+                // Item - the breadcrumb title used to be built from the
+                // plain `action` string alone (no icon), even though
+                // MENU_CONFIG.profileMenu already has a proper "emoji +
+                // label" for every one of these ("👤 My Profile", "🎫
+                // Support", etc.) - it just wasn't being reused here.
+                // Looks up the matching menu entry and keeps its emoji,
+                // but drops "My "/"Admin" prefixes the label itself
+                // carries for the DROPDOWN specifically (e.g. "My
+                // Profile" -> "Profile"), since the page title should
+                // just say "Profile", matching what was asked for
+                // earlier - only the missing icon is being restored here.
+                const menuEntry = (MENU_CONFIG.profileMenu || []).find(function (m) { return m.action === action; });
+                const pagePath = (function () {
+                    const plain = action === 'AdminOverview' ? 'Overview' : action;
+                    if (!menuEntry) return plain;
+                    const iconMatch = /^(\S+)\s/.exec(menuEntry.label || '');
+                    return iconMatch ? (iconMatch[1] + ' ' + plain) : plain;
+                })();
                 resetContentArea();
 
                 setTimeout(() => {

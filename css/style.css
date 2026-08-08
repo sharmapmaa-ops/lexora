@@ -1795,17 +1795,21 @@
 
         .support-log-table {
             border-collapse: collapse;
-            width: 100%;
+            /* Item - width:100% was the actual bug: table-layout:auto
+               sizes columns to their content ONLY as a starting point -
+               forcing the table's own width to 100% of the card then
+               told the browser to distribute the REMAINING leftover
+               space across all columns anyway, stretching every column
+               past what its content needed (visible as the large gaps
+               after short values like dates/times/status). Removing the
+               forced 100% lets the table's real width just be the sum
+               of what its columns actually need - narrower than the
+               card is the correct, genuinely-autofit result when the
+               content doesn't need the full width, exactly like Payment
+               History/Today's Transactions' own (JS-measured, not CSS)
+               autofit already does. */
+            width: auto;
             font-size: 0.78rem;
-            /* Item - autofit, no wrapping anywhere: table-layout:auto
-               lets the browser size every column to whatever its
-               content actually needs (checkbox tiny, Subject/Message as
-               wide as the longest real value currently on screen), and
-               white-space:nowrap (below) means that's a real "widest
-               line" measurement, not a wrapped multi-line guess. If the
-               total ends up wider than the card, the wrapper below
-               scrolls horizontally instead of anything wrapping or
-               getting squeezed - the actual complaint being fixed here. */
             table-layout: auto;
         }
 
@@ -6041,12 +6045,22 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
 
 #notificationTableHeader th:nth-child(2),
 #notificationTable td:nth-child(2) {
-    width: 150px;
+    width: 120px;
 }
 
 #notificationTableHeader th:nth-child(3),
 #notificationTable td:nth-child(3) {
+    width: 110px;
+}
+
+#notificationTableHeader th:nth-child(4),
+#notificationTable td:nth-child(4) {
     width: auto;
+}
+
+#notificationTableHeader th:nth-child(5),
+#notificationTable td:nth-child(5) {
+    width: 46px;
 }
 
 
