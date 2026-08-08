@@ -8876,6 +8876,7 @@
                         <div class="svc-tabs">
                             <button type="button" class="svc-tab is-active" onclick="switchAdminTab(0, this)">\u{1F5C4} PostgreSQL</button>
                             <button type="button" class="svc-tab" onclick="switchAdminTab(1, this)">\u{1F6E0}\uFE0F Maintenance Mode</button>
+                            <button type="button" class="svc-tab" onclick="switchAdminTab(2, this)">\u{1F916} Claude</button>
                         </div>
                         <div class="svc-panes">
                             <div class="svc-pane is-active">
@@ -8888,6 +8889,18 @@
                                     <div class="card-body" id="maintenanceCardBody">
                                         <p class="ds-card-sub">Loading\u2026</p>
                                     </div>
+                                </div>
+                            </div>
+                            <div class="svc-pane">
+                                <div class="admin-files-card history-card svc-card-inner" id="claudeDebugCard">
+                                    <p class="ds-card-sub" style="margin-bottom:14px;">
+                                        Jab bhi koi topic (ya kayi topics) pe kaam chal raha ho jisme multiple possible
+                                        fixes ho sakte hain, wo sab yahan ek saath, ek dropdown ke through, live
+                                        switchable milenge - koi redeploy/re-test cycle nahi. Jo bhi topic ka jo
+                                        solution sahi kaam kare, bata dena - wahi permanent kar diya jayega aur baaki
+                                        options yahan se hata diye jayenge.
+                                    </p>
+                                    <div id="claudeDebugPanel"><p class="ds-card-sub">Abhi koi active topic nahi hai.</p></div>
                                 </div>
                             </div>
                         </div>
@@ -8905,6 +8918,71 @@
                 if (!strip) return;
                 strip.querySelectorAll('.svc-tab').forEach((x, i) => x.classList.toggle('is-active', i === index));
                 strip.querySelectorAll('.svc-pane').forEach((x, i) => x.classList.toggle('is-active', i === index));
+            };
+
+            // Item - "Claude" admin tab: a reusable, persistent multi-
+            // solution debug panel. Whenever a topic has several possible
+            // fixes and static code review can't reliably predict which
+            // one actually renders/behaves correctly in a real browser,
+            // EVERY candidate ships at once here instead of one guess at
+            // a time - each topic gets its own dropdown, switching it
+            // applies that specific solution live (no redeploy), and
+            // whichever one is reported back as correct gets kept
+            // permanently in the real code while the rest are deleted -
+            // from here AND from the underlying implementation.
+            //
+            // Usage (from within a fix):
+            //   ClaudeDebug.clear();  // wipes whatever the previous topic(s) left
+            //   ClaudeDebug.addTopic('Translation: Image position wrong', [
+            //       { name: 'Solution A: inline anchor',   value: 'a' },
+            //       { name: 'Solution B: page-relative',   value: 'b' },
+            //   ], function(chosenValue) { /* apply chosenValue live */ });
+            //   ClaudeDebug.addTopic('OCR: table not detected', [ ... ], function(v) { ... });
+            window.ClaudeDebug = {
+                _topics: [],
+                clear: function () {
+                    this._topics = [];
+                    this._render();
+                },
+                addTopic: function (label, options, applyFn) {
+                    this._topics.push({
+                        label: label,
+                        options: options,
+                        applyFn: applyFn,
+                        current: options && options[0] ? options[0].value : null,
+                    });
+                    this._render();
+                    // Apply the first option immediately so the topic
+                    // starts in a defined, visible state rather than
+                    // whatever the page happened to render before this
+                    // topic was registered.
+                    if (applyFn && options && options[0]) applyFn(options[0].value);
+                },
+                _select: function (topicIndex, value) {
+                    const t = this._topics[topicIndex];
+                    if (!t) return;
+                    t.current = value;
+                    if (t.applyFn) t.applyFn(value);
+                },
+                _render: function () {
+                    const container = document.getElementById('claudeDebugPanel');
+                    if (!container) return;
+                    if (!this._topics.length) {
+                        container.innerHTML = '<p class="ds-card-sub">Abhi koi active topic nahi hai.</p>';
+                        return;
+                    }
+                    container.innerHTML = this._topics.map(function (t, i) {
+                        return `
+                            <div class="claude-debug-topic">
+                                <h4>Topic ${i + 1}: ${escapeHtml(t.label)}</h4>
+                                <select onchange="ClaudeDebug._select(${i}, this.value)">
+                                    ${t.options.map(function (o) {
+                                        return `<option value="${escapeHtml(o.value)}" ${o.value === t.current ? 'selected' : ''}>${escapeHtml(o.name)}</option>`;
+                                    }).join('')}
+                                </select>
+                            </div>`;
+                    }).join('');
+                },
             };
 
             // Gathers every currently-registered service (both free tools
@@ -10527,6 +10605,16 @@
                         td.style.boxSizing = 'border-box';
                     });
                 });
+
+                // Item - same reset as autofitSingleTableColumns below -
+                // an old scrollLeft from before this re-render (e.g. a
+                // wider table before a filter/delete/pagination change)
+                // otherwise persists and gets clamped into a confusing
+                // position once the content is narrower.
+                [headerTable, bodyTable].forEach(function (t) {
+                    const wrap = t.closest('.report-table-scroll, .rt-wrap-top, .rt-wrap-bottom');
+                    if (wrap) wrap.scrollLeft = 0;
+                });
             }
 
             // Item - same proven technique (CSS grid rows, see
@@ -10573,6 +10661,23 @@
                     cell.style.width = 'auto';
                     cell.style.boxSizing = 'border-box';
                 });
+
+                // Item - after a delete/filter/pagination re-render, this
+                // table is very often narrower than it was a moment ago
+                // (fewer/shorter values now that a row's gone) - but the
+                // WRAPPER div's own scroll position isn't part of what
+                // gets rebuilt here (only the table's cells/rows are), so
+                // an old scrollLeft from when the table was wider just
+                // silently persists. The browser then clamps that now-
+                // too-large scrollLeft to whatever the new, smaller
+                // scrollable range allows, which can land on a position
+                // that shows the tail end of the table with the earlier
+                // columns (checkbox, Date, ...) scrolled out of view -
+                // exactly what "delete a row and the whole view looks
+                // broken" was. Resetting scroll position back to the
+                // start on every re-render keeps it predictable.
+                const scrollWrapper = table.closest('.report-table-scroll, .rt-wrap-full, .rt-wrap-bottom');
+                if (scrollWrapper) scrollWrapper.scrollLeft = 0;
             }
 
             function wireSplitTableScrollSync(container) {
@@ -10975,7 +11080,7 @@
                         // a sub-page of Payment the way Services' children
                         // do - it's its own standalone Secure Checkout page).
                         breadcrumb = subId === 'add-balance'
-                            ? 'Add Balance'
+                            ? '\ud83d\udcb3 Add Balance'
                             : parent.label + ' / ' + (sub ? sub.label : ((SERVICES_CATALOG[subId] && SERVICES_CATALOG[subId].name && SERVICES_CATALOG[subId].name.trim()) || UNLISTED_LABELS[subId] || subId));
                         activeSubItemId = subId;
                     } else {
@@ -11483,6 +11588,16 @@
                     // here with window.__pendingCheckoutAmount/Description
                     // already set - never shown as a popup over Payment.
                     body: function() {
+                        // Item - "Back to Payment" moved out of the
+                        // checkout panel itself (was a close-button on
+                        // the panel's own header) and into the shared
+                        // breadcrumb slot instead, next to "Add Balance" -
+                        // same right-side-of-title spot the rate-estimate/
+                        // auto-renew bits on other pages already use.
+                        window.__pendingChargeEstimateHtml =
+                            '<button class="filter-btn reset-btn" onclick="closeCheckoutModal()">' +
+                            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5M11 18l-6-6 6-6"/></svg>' +
+                            'Back to Payment</button>';
                         return `
                         <div class="balance-checkout-section">
                             <div class="balance-pay-panel" id="balancePayPanel">
@@ -11497,9 +11612,6 @@
                                         <div class="pay-panel-sub">Safe &amp; secure payment via Razorpay</div>
                                     </div>
                                     <div class="pay-panel-amount" id="payPanelAmount">${currencySymbol()}${(Number(window.__pendingCheckoutAmount) || 0).toFixed(2)}</div>
-                                    <button class="pay-panel-close-btn" onclick="closeCheckoutModal()" aria-label="Back to Payment" title="Back to Payment">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
-                                    </button>
                                 </div>
                                 <div class="pay-panel-body" id="rzpInlineMount"></div>
                             </div>

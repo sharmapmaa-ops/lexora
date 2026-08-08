@@ -806,9 +806,40 @@
         '<w:sz w:val="' + sz + '"/><w:szCs w:val="' + sz + '"/>' + spacing +
         '</w:rPr>' + br + '<w:t xml:space="preserve">' + esc(seg.text) + '</w:t></w:r>';
     }
+    // Item - PDF text extraction sometimes represents the space between
+    // two words purely via horizontal KERNING/positioning rather than an
+    // actual space glyph in the text stream - this seems to specifically
+    // happen right at a style change (e.g. regular text ending, a bold
+    // term beginning), which is exactly where a paragraph gets split into
+    // separate segments/runs here. The result: "hereinafter, AF Logistics"
+    // in the source PDF was losing its space and coming out as
+    // "hereinafter,AF Logistics" in the translated output, only ever at
+    // segment boundaries, never within a single (same-style) run of text.
+    // This adds a space back between two adjacent segments' text UNLESS
+    // one is already there, or the boundary is right after opening
+    // punctuation ("(", "[", "{", a quote) or right before closing
+    // punctuation (")", "]", "}", ",", ".", ";", ":", "!", "?", a quote) -
+    // those genuinely shouldn't get a space, so this only fills in the
+    // gap for actual word-to-word boundaries.
+    function v14NeedsSpaceBetween(prevText, nextText) {
+      if (!prevText || !nextText) return false;
+      if (/\s$/.test(prevText) || /^\s/.test(nextText)) return false;
+      if (/[(\[{'"\u2018\u201c]$/.test(prevText)) return false;
+      if (/^[)\]},.;:!?'"\u2019\u201d]/.test(nextText)) return false;
+      return true;
+    }
     function paragraphRunsXml(p) {
-      return (p.segments || []).map(function (seg) {
-        return seg.text ? segRunXml(seg, p.trackingPt) : (seg.lineBreakBefore ? '<w:r><w:br/></w:r>' : '');
+      const segs = p.segments || [];
+      return segs.map(function (seg, i) {
+        if (!seg.text) return seg.lineBreakBefore ? '<w:r><w:br/></w:r>' : '';
+        let text = seg.text;
+        if (i > 0 && !seg.lineBreakBefore) {
+          const prev = segs[i - 1];
+          if (prev && prev.text && v14NeedsSpaceBetween(prev.text, text)) {
+            text = ' ' + text;
+          }
+        }
+        return segRunXml(Object.assign({}, seg, { text: text }), p.trackingPt);
       }).join('');
     }
 
@@ -1718,12 +1749,38 @@
 
         const isBlock = v14IsBlockParagraph(paraLines, contentRightPt - contentLeftPt);
         const segments = v14BuildSegments(paraLines, isBlock);
-        // Strip the list marker from the START of the first segment only
-        // (re-detecting on the segment's own text keeps this exact,
-        // since the segment was built from the same source runs).
+        // Strip the detected list marker out of the segments that
+        // actually hold it - NOT always just "re-match the marker regex
+        // against segments[0].text", because that regex requires
+        // trailing whitespace+more-text to confirm a bare number is
+        // really a marker (not just a naked "4)" that means something
+        // else) - and a numbered clause's "4." is very often its OWN
+        // separate BOLD run in the source PDF (clause labels are
+        // frequently bold, the body text after them isn't), landing as
+        // its own first segment with nothing but "4." in it. That
+        // segment alone never matches the regex (no trailing text to
+        // see), so it was never getting stripped - staying in as its
+        // own literal bold "4." text run, sent to translation and
+        // re-inserted, DUPLICATING the real Word auto-number this exact
+        // marker was already correctly feeding into numPr below.
         if (listInfo && segments.length) {
-          const stripped = v14DetectListMarker(segments[0].text);
-          if (stripped) segments[0].text = stripped.clean.trim();
+          const markerMatch = originalText.match(/^([•▪◦‣∙○●*·-]|\(?[a-zA-Z0-9ivxlcdmIVXLCDM]{1,6}[.)])\s+/);
+          const markerText = markerMatch ? markerMatch[1].trim() : null;
+          if (markerText && segments[0].text.trim() === markerText) {
+            // The marker was its OWN whole segment (e.g. a bold "4." with
+            // nothing else in that run) - drop it entirely instead of
+            // trying to strip text out of it.
+            segments.shift();
+            // Whatever's now first was originally the SECOND segment -
+            // if it had lineBreakBefore set (only possible for a block
+            // paragraph whose marker sat on its own physical line), that
+            // would insert a stray blank line at the very start of the
+            // paragraph now that it's actually the first thing in it.
+            if (segments[0]) segments[0].lineBreakBefore = false;
+          } else {
+            const stripped = v14DetectListMarker(segments[0].text);
+            if (stripped) segments[0].text = stripped.clean.trim();
+          }
         }
 
         const r0 = (paraLines[0].runs && paraLines[0].runs[0]) || {};

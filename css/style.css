@@ -6360,36 +6360,19 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
     white-space: nowrap;
 }
 
-.pay-panel-close-btn {
-    border: none;
-    background: rgba(0,0,139,0.06);
-    color: rgba(0,0,0,0.55);
-    width: 30px;
-    height: 30px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: 0.15s;
-}
-
-.pay-panel-close-btn svg { width: 16px; height: 16px; }
-
-.pay-panel-close-btn:hover {
-    background: rgba(220,38,38,0.12);
-    color: #dc2626;
-}
+/* .pay-panel-close-btn removed - the close/back action moved out of
+   this panel entirely, into the "Back to Payment" button on the
+   breadcrumb (right of "Add Balance" - see the page's body() function,
+   app.js, which sets it via window.__pendingChargeEstimateHtml). */
 
 .pay-panel-body {
     position: relative;
     flex: 1;
-    /* Razorpay ka checkout apne aap ~600px ka hota hai. Container chhota
-       hua to wo apne andar hi scrollbar laga deta hai - card bada karne
-       par bhi wahi scrollbar dikhta tha. Isliye panel ko checkout ki
-       poori natural height di gayi hai. */
-    min-height: 620px;
+    /* Item - min-height:620px removed (was forcing a fixed minimum,
+       the opposite of "auto"). Razorpay's own checkout widget renders
+       at whatever height IT needs - this container just grows to fit
+       it naturally now, instead of pre-reserving a guessed amount of
+       space. */
     display: flex;
     flex-direction: column;
 }
@@ -6489,4 +6472,31 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
 
 @media (max-width: 980px) {
     .balance-topup-layout { grid-template-columns: 1fr; }
+}
+
+/* ---- Claude debug panel (Admin > Claude tab) ---- */
+.claude-debug-topic {
+    border: 1px solid rgba(0,0,139,0.12);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+.claude-debug-topic h4 {
+    margin: 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: darkblue;
+}
+.claude-debug-topic select {
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(0,0,139,0.2);
+    font-size: 0.8rem;
+    background: #fbfbfd;
+    min-width: 220px;
 }
