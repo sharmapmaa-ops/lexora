@@ -4097,6 +4097,7 @@
             function renderPaymentHistory() {
                 const tbody = document.getElementById('historyTableBody');
                 if (!tbody) return;
+                _syncUserIdHeaderCell('historyTableHeader', isAdminOrDeveloper());
 
                 // Dates start blank by default - getFilteredHistory() already
                 // returns every transaction for this user when no range is set.
@@ -5500,6 +5501,7 @@
             function renderSupportTable() {
                 const tbody = document.getElementById('supportTableBody');
                 if (!tbody) return;
+                _syncUserIdHeaderCell('supportTable', isAdminOrDeveloper());
 
                 // Deliberately no default From/To pre-fill - every submission
                 // shows by default; a date range only narrows things down
@@ -6003,9 +6005,38 @@
             let todayTxnPage = 1;
             let todayTxnPerPage = 5;
 
+            // Item - keeps the header's User ID <th> in sync with
+            // whatever renderHistoryRows (below) actually decides for
+            // the body on THIS call, every time this runs (not just once
+            // when the page first loads) - the header used to only ever
+            // get built once, as part of the page's initial HTML, while
+            // the body re-evaluates isAdminOrDeveloper() itself on every
+            // call; if those two evaluations ever disagreed for any
+            // reason, the header would permanently show one fewer column
+            // than the body actually has - exactly what a header with no
+            // "User ID" label but a body still showing a User ID value in
+            // every row looks like.
+            function _syncUserIdHeaderCell(theadTableId, showUserCol) {
+                const table = document.getElementById(theadTableId);
+                if (!table) return;
+                const headRow = table.querySelector('thead tr');
+                if (!headRow) return;
+                const cells = headRow.children;
+                const lastCell = cells[cells.length - 1];
+                const hasUserIdTh = lastCell && lastCell.textContent.trim() === 'User ID';
+                if (showUserCol && !hasUserIdTh) {
+                    const th = document.createElement('th');
+                    th.textContent = 'User ID';
+                    headRow.appendChild(th);
+                } else if (!showUserCol && hasUserIdTh) {
+                    headRow.removeChild(lastCell);
+                }
+            }
+
             function renderTodayTransactions() {
                 const tbody = document.getElementById('todayTableBody');
                 if (!tbody) return;
+                _syncUserIdHeaderCell('todayTableHeader', isAdminOrDeveloper());
 
                 const myHistory = getMyPaymentHistory();
                 const todayStr = localDateStr();
