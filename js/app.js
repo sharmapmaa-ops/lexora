@@ -10457,16 +10457,17 @@
             };
 
             // Item - "autofit, nothing ever wraps" for the split header/
-            // body report tables (Today's Transactions, Payment History):
-            // table-layout:fixed with hand-picked px widths (the previous
-            // approach) always risked drifting out of sync with whatever
-            // text actually needs to show, in either table independently.
-            // This instead MEASURES how wide each column's content really
-            // is (header label vs every currently-visible row's value,
-            // both tables) with table-layout:auto, then locks both
-            // tables to those SAME explicit widths - so they can never
-            // disagree with each other, and no column is ever narrower
-            // than its own content demands (nothing to wrap).
+            // body report tables (Today's Transactions, Payment History,
+            // Notification). Uses <colgroup>/<col> to set column widths,
+            // NOT per-cell inline widths on just the first body row -
+            // that was the actual, confirmed bug: table-layout:fixed
+            // determining a column's width from "whatever the first row's
+            // cell says" is NOT a fully reliable cross-browser mechanism,
+            // especially for keeping TWO SEPARATE <table> elements (header
+            // vs body) in exact agreement - <colgroup> is the real,
+            // authoritative, standards-defined way to fix a table's
+            // column widths, independent of any particular row's own
+            // cell widths, which is exactly the guarantee needed here.
             function autofitSplitTableColumns(headerTableId, bodyTableId) {
                 const headerTable = document.getElementById(headerTableId);
                 const bodyTable = document.getElementById(bodyTableId);
@@ -10475,24 +10476,6 @@
                 const bodyRows = bodyTable.querySelectorAll('tbody tr');
                 if (!headerRow || !bodyRows.length) return;
 
-                // Item - two real bugs in the previous version of this
-                // function, both of which meant it was silently measuring
-                // ALREADY-WRAPPED widths and then just re-locking that same
-                // wrong (too-narrow) size, doing nothing visible:
-                // 1) table-layout:auto still respects the WRAPPER's width
-                //    as a constraint - it doesn't let the table grow past
-                //    its container just because layout mode changed, so a
-                //    long Description value was still wrapping to fit
-                //    during the "measure" pass itself. width:max-content
-                //    below forces the table to size to its true, fully
-                //    unwrapped content width regardless of the wrapper.
-                // 2) white-space:nowrap was only ever set via a CSS class,
-                //    never verified - if the wrong shared rule happened to
-                //    apply instead (this codebase has repeatedly turned up
-                //    exactly that kind of collision on these tables), cells
-                //    would still wrap during measurement with no visible
-                //    error. Forcing it inline here, per-cell, has no such
-                //    dependency - it always wins.
                 [headerTable, bodyTable].forEach(function (t) {
                     t.style.tableLayout = 'auto';
                     t.style.width = 'max-content';
@@ -10520,38 +10503,29 @@
                     });
                 });
 
-                // Lock both tables to the SAME measured widths (+1px
-                // rounding safety margin) and switch to fixed now that
-                // real widths are known, so they stay put and in sync
-                // regardless of which row is scrolled into view later.
-                // Item - width:auto here (NOT '100%', which this used to
-                // restore) is the actual fix for "the last/widest column
-                // still stretches to fill leftover space": table-layout:
-                // fixed with an explicit table width that doesn't match
-                // the sum of its own explicitly-set column widths makes
-                // browsers PROPORTIONALLY SCALE every column up to fill
-                // that width - so even though each column had a real,
-                // correct measured pixel value, forcing width:100% right
-                // after setting them was quietly stretching all of them
-                // (worst on whichever column had the most "slack") to
-                // add up to 100% anyway. width:auto lets the table's own
-                // width just BE the sum of its explicit column widths -
-                // narrower than the card when content doesn't need the
-                // full width (the wrapper's overflow-x:auto scrolls if
-                // it's ever wider instead).
                 [headerTable, bodyTable].forEach(function (t) {
                     t.style.tableLayout = 'fixed';
                     t.style.width = 'auto';
                     t.style.maxWidth = '';
-                });
-                Array.prototype.forEach.call(headerRow.children, function (th, i) {
-                    th.style.width = Math.ceil(widths[i] + 1) + 'px';
-                });
-                if (bodyRows[0]) {
-                    Array.prototype.forEach.call(bodyRows[0].children, function (td, i) {
-                        td.style.width = Math.ceil(widths[i] + 1) + 'px';
+                    // Clear any per-cell widths a previous run of this
+                    // function may have left behind - <colgroup> below is
+                    // now the ONLY source of column widths, so a stray
+                    // cell-level width could only ever fight it.
+                    Array.prototype.forEach.call(t.querySelectorAll('th, td'), function (cell) {
+                        cell.style.width = '';
                     });
-                }
+                    let colgroup = t.querySelector(':scope > colgroup');
+                    if (!colgroup) {
+                        colgroup = document.createElement('colgroup');
+                        t.insertBefore(colgroup, t.firstChild);
+                    }
+                    colgroup.innerHTML = '';
+                    for (let i = 0; i < colCount; i++) {
+                        const col = document.createElement('col');
+                        col.style.width = Math.ceil(widths[i] + 1) + 'px';
+                        colgroup.appendChild(col);
+                    }
+                });
             }
 
             function wireSplitTableScrollSync(container) {
