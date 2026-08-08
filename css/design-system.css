@@ -1681,7 +1681,12 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
 /* .notif-card .history-table-wrapper's min-height:0 now comes from the
    shared .report-table-scroll class on that same element (ROUND 12). */
 
-.notif-table { table-layout: fixed; width: 100%; }
+/* Item - dead code: this table's width/layout are fully JS-owned now
+   (autofitSplitTableColumns, app.js, sets inline styles per render -
+   inline always beats a class rule regardless of what it says), so
+   this class-level table-layout:fixed/width:100% was never actually
+   winning, just sitting here as a second, confusing "source of truth"
+   for a decision JS already makes. */
 .notif-table td { vertical-align: middle; }
 
 .notif-row { display: flex; align-items: flex-start; gap: 13px; }
