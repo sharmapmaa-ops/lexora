@@ -456,7 +456,153 @@
     });
   }
 
-  function v14DetectTables(lines) {
+  // Item - table/structure fidelity improvement. The existing detector
+  // above works PURELY from text-position clustering (do several rows
+  // of text happen to line up into 2+ columns) - it has no idea whether
+  // the source PDF actually DREW a table (ruled borders/gridlines) at
+  // all. Most financial-report and structured-data tables genuinely do
+  // have real drawn borders, and those borders are a far more reliable,
+  // exact signal for where a column boundary actually sits than
+  // averaging where text happened to start - text can be inset from its
+  // cell's true border by an inconsistent amount, especially with mixed
+  // alignment (numbers right-aligned, labels left-aligned) within the
+  // same table. This walks the page's content-stream the same way
+  // extractOfflineImages does (tracking the CTM through save/restore/
+  // transform), collecting axis-aligned rectangles thin enough in one
+  // dimension to be a ruled line (a hairline stroke, or a thin filled
+  // bar - both common ways PDF generators draw table borders) rather
+  // than a real filled shape or a text glyph. Returns two arrays of
+  // page-space coordinates: vertical line X-positions (candidate column
+  // boundaries) and horizontal line Y-positions (candidate row
+  // boundaries) - used below to SNAP an already-detected table's
+  // column positions to the nearest real line when one exists nearby,
+  // rather than trusting the text-position average alone.
+  async function extractOfflineTableLines(page, pageH) {
+    const F = pdfjsLib.OPS;
+    let ops;
+    try { ops = await page.getOperatorList(); } catch (e) { return { vLines: [], hLines: [], fills: [] }; }
+
+    const vLines = [], hLines = [], fills = [];
+    const stack = [];
+    let ctm = [1, 0, 0, 1, 0, 0];
+    let fillStack = [], fillColor = null;
+    function concat(base, add) {
+      return [
+        add[0] * base[0] + add[1] * base[2],
+        add[0] * base[1] + add[1] * base[3],
+        add[2] * base[0] + add[3] * base[2],
+        add[2] * base[1] + add[3] * base[3],
+        add[4] * base[0] + add[5] * base[2] + base[4],
+        add[4] * base[1] + add[5] * base[3] + base[5]
+      ];
+    }
+    // Slim, thin-rectangle-only path reader: pdf.js encodes a
+    // constructPath's args as [opsArray, coordsArray] where opsArray is
+    // a sequence of OPS.moveTo/lineTo/rectangle/closePath codes and
+    // coordsArray is the flat [x0,y0,x1,y1,...] list consumed in that
+    // order - this just tracks the running bounding box of whatever
+    // path was built, which is all a THIN-RECTANGLE classification
+    // needs (an actual curved/complex path would also produce a
+    // bounding box here, but would essentially never end up thin
+    // enough in one dimension to pass the hairline check below, so no
+    // separate curve-detection is needed to avoid false positives).
+    // Entirely wrapped in try/catch: this is a refinement, never a
+    // requirement - if the argsArray shape here ever doesn't match what
+    // this assumes (a pdf.js internal detail that could change across
+    // versions), the whole thing just yields no lines rather than
+    // breaking table detection or the translation itself.
+    try {
+      for (let i = 0; i < ops.fnArray.length; i++) {
+        const fn = ops.fnArray[i], args = ops.argsArray[i] || [];
+        if (fn === F.save) {
+          stack.push(ctm.slice());
+          fillStack.push(fillColor);
+        } else if (fn === F.restore) {
+          ctm = stack.length ? stack.pop() : ctm;
+          fillColor = fillStack.length ? fillStack.pop() : fillColor;
+        } else if (fn === F.transform) {
+          ctm = concat(ctm, args);
+        } else if (fn === F.setFillRGBColor && args && args.length >= 3) {
+          fillColor = [args[0], args[1], args[2]];
+        } else if (fn === F.setFillGray && args && args.length >= 1) {
+          const g = Math.round(args[0] * 255);
+          fillColor = [g, g, g];
+        } else if (fn === F.setFillCMYKColor && args && args.length >= 4) {
+          const c = args[0], m = args[1], y = args[2], k = args[3];
+          fillColor = [
+            Math.round(255 * (1 - c) * (1 - k)),
+            Math.round(255 * (1 - m) * (1 - k)),
+            Math.round(255 * (1 - y) * (1 - k))
+          ];
+        } else if (fn === F.constructPath) {
+          const coords = args[1];
+          const pathOps = args[0];
+          if (!coords || typeof coords.length !== 'number' || !coords.length) continue;
+          let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+          for (let c = 0; c + 1 < coords.length; c += 2) {
+            const cx = coords[c], cy = coords[c + 1];
+            if (typeof cx !== 'number' || typeof cy !== 'number') continue;
+            const px = ctm[0] * cx + ctm[2] * cy + ctm[4];
+            const py = ctm[1] * cx + ctm[3] * cy + ctm[5];
+            if (px < minX) minX = px; if (px > maxX) maxX = px;
+            if (py < minY) minY = py; if (py > maxY) maxY = py;
+          }
+          if (!isFinite(minX) || !isFinite(minY)) continue;
+          const w = maxX - minX, h = maxY - minY;
+          // "Thin enough to be a ruled line, long enough to be a table
+          // border rather than punctuation/a glyph stroke": under 2.5pt
+          // in the thin dimension, over 15pt in the long one.
+          if (h < 2.5 && w > 15) {
+            hLines.push({ yPt: pageH - (minY + maxY) / 2, x0Pt: minX, x1Pt: maxX });
+          } else if (w < 2.5 && h > 15) {
+            vLines.push({ xPt: (minX + maxX) / 2, y0Pt: pageH - maxY, y1Pt: pageH - minY });
+          } else if (w > 15 && h > 4 && fillColor &&
+                     !(fillColor[0] > 248 && fillColor[1] > 248 && fillColor[2] > 248)) {
+            // A wider filled rectangle (not thin - a real shaded region,
+            // not a ruled line) in a non-white color: candidate ROW
+            // shading (a colored header band, alternating-row tint -
+            // both very common in financial-report tables). Not every
+            // fill on the page is table shading (a colored callout box,
+            // a logo backdrop), so this only actually gets USED below
+            // where it overlaps a CONFIRMED table row's Y-range - a
+            // false candidate here that never overlaps a real table row
+            // is simply never applied to anything.
+            fills.push({
+              yTopPt: pageH - maxY, yBottomPt: pageH - minY,
+              color: fillColor.map(function (v) { return Math.max(0, Math.min(255, Math.round(v))); })
+            });
+          }
+        }
+      }
+    } catch (e) { /* refinement only - proceed with whatever lines were found before the failure, or none */ }
+    return { vLines: vLines, hLines: hLines, fills: fills };
+  }
+
+  // Snaps each of a detected table's column start-positions to the
+  // nearest real vertical line within a small tolerance, if one exists -
+  // leaves a column's position exactly as the text-clustering average
+  // computed it if no matching drawn line is nearby (most tables mix
+  // ruled and unruled columns, or have none at all, so this is a
+  // refinement on top of the existing detector, never a requirement).
+  function v14SnapColumnsToLines(colStarts, vLines, tablePt) {
+    if (!vLines || !vLines.length) return colStarts;
+    const tolerance = 10;
+    return colStarts.map(function (x) {
+      let best = null, bestDist = tolerance;
+      vLines.forEach(function (v) {
+        // Only consider a vertical line that actually spans (at least
+        // roughly overlaps) this table's own row range, not some
+        // unrelated ruled line elsewhere on the page that happens to
+        // share a similar X position.
+        if (tablePt && (v.y1Pt < tablePt.topPt - 20 || v.y0Pt > tablePt.bottomPt + 20)) return;
+        const d = Math.abs(v.xPt - x);
+        if (d < bestDist) { bestDist = d; best = v.xPt; }
+      });
+      return best != null ? best : x;
+    });
+  }
+
+  function v14DetectTables(lines, vLines) {
     const rows = v14GroupIntoRows(lines);
     const tables = [];
     const usedLines = new Set();
@@ -510,7 +656,17 @@
               endIdx++;
             }
             const grownBlock = rows.slice(startIdx, endIdx);
-            tables.push({ rows: grownBlock, colStarts: colStarts });
+            // Refine the text-clustering average toward a real drawn
+            // border, when one exists close by - see
+            // v14SnapColumnsToLines/extractOfflineTableLines above for
+            // why this specifically helps mixed-alignment tables
+            // (numbers right-aligned, labels left-aligned) where the
+            // pure text-position average can land noticeably off from
+            // where the column's actual ruled edge is.
+            const snappedColStarts = v14SnapColumnsToLines(colStarts, vLines, {
+              topPt: grownBlock[0].yTop, bottomPt: grownBlock[grownBlock.length - 1].yBottom
+            });
+            tables.push({ rows: grownBlock, colStarts: snappedColStarts });
             grownBlock.forEach(function (R) { R.lines.forEach(function (L) { usedLines.add(L); }); });
             i = endIdx;
             continue;
@@ -942,6 +1098,45 @@
         '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>';
     }
 
+    // Item - a per-page BACKGROUND image (colored bands, borders, logos,
+    // letterhead graphics - the source PDF page with body text painted
+    // out, see pageBg capture in the extraction loop above), inserted as
+    // its own zero-height paragraph right at the start of that page's
+    // content flow (caller). behindDoc="1" + relativeFrom="page" is the
+    // key combination: Word resolves "page" using whichever OUTPUT page
+    // this specific anchor paragraph actually lands on, not a fixed
+    // page-number - so as long as this paragraph is correctly positioned
+    // FIRST in that page's own flow (which the caller guarantees), the
+    // background stays correctly paired with its own content even after
+    // translation reflow shifts which page number that ends up being.
+    function pageBackgroundXml(dataUrl, wPt, hPt) {
+      drawIdCounter++;
+      mediaCounter++;
+      const relId = 'rIdPic' + mediaCounter;
+      const file = 'media/pic' + mediaCounter + '.jpg';
+      const base64 = String(dataUrl || '').split(',')[1] || '';
+      if (!base64) return '';
+      media.push({ id: relId, file: file, base64: base64 });
+      const cx = Math.max(1, Math.round(wPt * EMU));
+      const cy = Math.max(1, Math.round(hPt * EMU));
+      return '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="1" w:lineRule="exact"/></w:pPr><w:r><w:drawing>' +
+        '<wp:anchor behindDoc="1" distT="0" distB="0" distL="0" distR="0" simplePos="0" locked="0" layoutInCell="1" allowOverlap="1" relativeHeight="' + drawIdCounter + '">' +
+        '<wp:simplePos x="0" y="0"/>' +
+        '<wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>' +
+        '<wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV>' +
+        '<wp:extent cx="' + cx + '" cy="' + cy + '"/>' +
+        '<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>' +
+        '<wp:docPr id="' + drawIdCounter + '" name="pagebg' + drawIdCounter + '"/><wp:cNvGraphicFramePr/>' +
+        '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
+        '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+        '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+        '<pic:nvPicPr><pic:cNvPr id="' + drawIdCounter + '" name="pagebg.jpg"/><pic:cNvPicPr/></pic:nvPicPr>' +
+        '<pic:blipFill><a:blip r:embed="' + relId + '"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
+        '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + cx + '" cy="' + cy + '"/></a:xfrm>' +
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>' +
+        '</pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>';
+    }
+
     // Longest single WORD's rendered width at a given font size - the
     // real minimum a column can be without forcing an ugly mid-word
     // break (Word only wraps at spaces/hyphens; a column narrower than
@@ -1032,23 +1227,61 @@
       const total = widths.reduce(function (a, b) { return a + b; }, 0);
 
       const gridCols = widths.map(function (w) { return '<w:gridCol w:w="' + Math.round(w * 20) + '"/>'; }).join('');
-      const borderXml = '<w:tblBorders>' +
-        ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(function (side) {
-          return '<w:' + side + ' w:val="single" w:sz="4" w:space="0" w:color="999999"/>';
-        }).join('') + '</w:tblBorders>';
+      // Item - only draw a full grid of borders when the source PDF
+      // actually had ruled lines detected for this table (see
+      // hasRuledLines, set from extractOfflineTableLines above) - a
+      // table found purely by text-alignment, with no real drawn border
+      // in the source at all, gets just a thin header-underline instead
+      // (the common convention for "borderless" financial-report
+      // tables: a rule under the header row, nothing else), rather than
+      // a uniform grid that was never actually in the original.
+      const borderXml = table.hasRuledLines
+        ? '<w:tblBorders>' +
+          ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(function (side) {
+            return '<w:' + side + ' w:val="single" w:sz="4" w:space="0" w:color="999999"/>';
+          }).join('') + '</w:tblBorders>'
+        : '<w:tblBorders>' +
+          ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(function (side) {
+            return '<w:' + side + ' w:val="none" w:sz="0" w:space="0" w:color="auto"/>';
+          }).join('') + '</w:tblBorders>';
       const sz = Math.max(2, Math.round(fontPt * 2));
       let rowsXml = '';
-      table.grid.forEach(function (row) {
+      table.grid.forEach(function (row, rowIdx) {
         let cellsXml = '';
+        // Item - borderless tables (no ruled lines found in the source,
+        // see hasRuledLines above) still get ONE visual cue: a thin rule
+        // under the header row, matching the common real-world
+        // convention for this table style, instead of either a full
+        // grid that was never there or literally zero visual structure
+        // at all.
+        const headerUnderline = (!table.hasRuledLines && rowIdx === 0)
+          ? '<w:bottom w:val="single" w:sz="6" w:space="0" w:color="666666"/>'
+          : '';
+        const shade = (table.rowShades && table.rowShades[rowIdx])
+          ? '<w:shd w:val="clear" w:color="auto" w:fill="' +
+            table.rowShades[rowIdx].map(function (v) { return v.toString(16).padStart(2, '0'); }).join('').toUpperCase() + '"/>'
+          : '';
+        const tcBorders = headerUnderline ? '<w:tcBorders>' + headerUnderline + '</w:tcBorders>' : '';
+        const rowShadeColor = table.rowShades && table.rowShades[rowIdx];
+        // Luminance check: a genuinely DARK header/row fill (common for
+        // a bold-colored header band) needs white text for readability -
+        // the source's own text color at that spot is often black
+        // simply because the PDF renderer draws glyphs in whatever the
+        // page's default text color is, on TOP of the colored fill
+        // underneath, which still looks fine in the original but would
+        // read as black-on-dark-navy (illegible) once shading is added
+        // here without this check.
+        const shadeIsDark = rowShadeColor && (0.299 * rowShadeColor[0] + 0.587 * rowShadeColor[1] + 0.114 * rowShadeColor[2]) < 128;
         row.forEach(function (cell) {
           let w = 0;
           for (let k = cell.col; k < cell.col + cell.span && k < nCols; k++) w += widths[k] || 40;
           const bold = cell.bold ? '<w:b/><w:bCs/>' : '';
           const italic = cell.italic ? '<w:i/><w:iCs/>' : '';
-          const col = /^[0-9A-F]{6}$/i.test(cell.color || '') ? cell.color.toUpperCase() : '000000';
+          let col = /^[0-9A-F]{6}$/i.test(cell.color || '') ? cell.color.toUpperCase() : '000000';
+          if (shadeIsDark && col === '000000') col = 'FFFFFF';
           const fam = esc(cell.family || 'Arial');
           const span = cell.span > 1 ? '<w:gridSpan w:val="' + cell.span + '"/>' : '';
-          cellsXml += '<w:tc><w:tcPr><w:tcW w:w="' + Math.round(w * 20) + '" w:type="dxa"/>' + span + '</w:tcPr>' +
+          cellsXml += '<w:tc><w:tcPr><w:tcW w:w="' + Math.round(w * 20) + '" w:type="dxa"/>' + span + tcBorders + shade + '</w:tcPr>' +
             '<w:p><w:pPr><w:spacing w:before="20" w:after="20"/></w:pPr><w:r><w:rPr>' + bold + italic +
             '<w:rFonts w:ascii="' + fam + '" w:hAnsi="' + fam + '" w:cs="' + fam + '"/>' +
             '<w:color w:val="' + col + '"/><w:sz w:val="' + sz + '"/><w:szCs w:val="' + sz + '"/></w:rPr>' +
@@ -1074,6 +1307,26 @@
         .concat((pg.images || []).map(function (im) { return { kind: 'image', topPt: im.yPt, data: im }; }))
         .concat((pg.tables || []).map(function (t) { return { kind: 'table', topPt: t.topPt, data: t }; }));
       flow.sort(function (a, b) { return a.topPt - b.topPt; });
+
+      // Item - inserts this PDF page's captured background (see
+      // pageBg capture, extraction loop above) as a full-page,
+      // behind-the-text floating image, right at the START of this
+      // page's own content. Anchored to the FIRST paragraph in this
+      // page's flow (not an absolute page-position) is the deliberate
+      // choice here: translated text is very often a different length
+      // than the source, so the OUTPUT document's actual page breaks
+      // routinely land in different places than the source PDF's did -
+      // an absolute "page N" position would end up behind the wrong
+      // content once that drift happens. Anchoring to "wherever this
+      // page's own content actually starts flowing" keeps the
+      // background paired with ITS OWN content correctly even after
+      // reflow, at the cost of not being pixel-identical to the source
+      // if the translated page runs shorter/longer than the original -
+      // an inherent tradeoff of preserving per-page backgrounds through
+      // a translation that can change document length, not a bug.
+      if (pg.pageBg) {
+        bodyXml += pageBackgroundXml(pg.pageBg, pg.wPt, pg.hPt);
+      }
 
       flow.forEach(function (item, idx) {
         const isLastFlowItem = idx === flow.length - 1;
@@ -1592,6 +1845,7 @@
       if (lines.length) autofitPage(lines, vp1.width, vp1.height, p);
       totalLines += lines.length;
       const rawImages = await extractOfflineImages(page, vp1.height, p);
+      const tableLines = await extractOfflineTableLines(page, vp1.height);
 
       // WITH IMAGE (client-side render): text-layer extraction above used
       // the raw page at scale 1 (points) for exact coordinate math; this
@@ -1686,7 +1940,56 @@
         }
       }
 
-      pages.push({ lines: lines, images: images, wPt: vp1.width, hPt: vp1.height });
+      // Item - "does the source PDF have a per-page background (colored
+      // bands, borders, logos, letterhead graphics - anything that
+      // ISN'T the body text) that should carry through into the
+      // translated Word doc?" The cleaned bgCanvas above (text regions
+      // painted white, everything else untouched) is already exactly
+      // the right image for that - genuinely NEW page content doesn't
+      // need generating, just capturing before it goes out of scope.
+      // Downscaled and JPEG-compressed here (not the full bgScale
+      // canvas) since this is a big full-page image inserted once per
+      // page - keeping every page's background at full 2000px-wide
+      // resolution would make the output .docx enormous for no visible
+      // benefit once it's sized down to a page in Word anyway.
+      let pageBgDataUrl = null;
+      if (bgCanvas) {
+        // Item - skip embedding entirely if this page's cleaned
+        // background is just plain white (the overwhelmingly common
+        // case for ordinary text documents that have no real letterhead/
+        // border/colored-band design) - a blank white full-page JPEG
+        // adds real file size and Word-render cost for zero visible
+        // difference from not having a background image at all. Sampled,
+        // not every pixel - a 40x40 grid is more than enough to catch
+        // any real design element while staying fast.
+        const sctx = bgCanvas.getContext('2d');
+        let hasVisibleContent = false;
+        const full = sctx.getImageData(0, 0, bgCanvas.width, bgCanvas.height).data;
+        const stepX = Math.max(1, Math.floor(bgCanvas.width / 40));
+        const stepY = Math.max(1, Math.floor(bgCanvas.height / 40));
+        outer:
+        for (let y = 0; y < bgCanvas.height; y += stepY) {
+          for (let x = 0; x < bgCanvas.width; x += stepX) {
+            const idx = (y * bgCanvas.width + x) * 4;
+            if (full[idx] < 250 || full[idx + 1] < 250 || full[idx + 2] < 250) { hasVisibleContent = true; break outer; }
+          }
+        }
+        if (hasVisibleContent) {
+          const maxBgPx = 1000;
+          const bgDownscale = Math.min(1, maxBgPx / Math.max(bgCanvas.width, bgCanvas.height));
+          if (bgDownscale < 1) {
+            const small = document.createElement('canvas');
+            small.width = Math.round(bgCanvas.width * bgDownscale);
+            small.height = Math.round(bgCanvas.height * bgDownscale);
+            small.getContext('2d').drawImage(bgCanvas, 0, 0, small.width, small.height);
+            pageBgDataUrl = small.toDataURL('image/jpeg', 0.75);
+          } else {
+            pageBgDataUrl = bgCanvas.toDataURL('image/jpeg', 0.75);
+          }
+        }
+      }
+
+      pages.push({ lines: lines, images: images, wPt: vp1.width, hPt: vp1.height, pageBg: pageBgDataUrl, tableLines: tableLines });
       log('P' + p + ': ' + lines.length + ' text line(s) + ' + images.length + ' image(s) extracted (no API)');
       // Text-based extraction is fully local, so this page cost 0 API
       // calls - but it still reports its text count and still gets its
@@ -1728,19 +2031,50 @@
       // grouper (which only understands "close together = same
       // paragraph") would flatten a payment schedule's rows into
       // unlabelled runs of numbers, exactly as seen before this existed.
-      const tableResult = v14DetectTables(allUsableLines);
+      const tableResult = v14DetectTables(allUsableLines, pg.tableLines && pg.tableLines.vLines);
       const usableLines = allUsableLines.filter(function (L) { return !tableResult.usedLines.has(L); });
       pg.tables = tableResult.tables.map(function (t) {
         const allX = t.rows.reduce(function (acc, R) { return acc.concat(R.lines.map(l => l.xPt)); }, []);
         const allX2 = t.rows.reduce(function (acc, R) { return acc.concat(R.lines.map(l => l.xPt + l.wPt)); }, []);
+        const topPt = Math.min.apply(null, t.rows.map(R => R.yTop));
+        const bottomPt = Math.max.apply(null, t.rows.map(R => R.yBottom));
+        // Item - "does this table actually have drawn borders in the
+        // source at all?" A genuinely ruled table (any real gridline
+        // found overlapping its row range) keeps the existing uniform
+        // grid rendering; a table detected PURELY from text-position
+        // alignment (very common for financial tables that rely only on
+        // whitespace, no visible ruling at all) renders with none -
+        // matching the source's own borderless look instead of adding
+        // visual structure that was never actually there.
+        const hasRuledLines = !!(pg.tableLines && (
+          (pg.tableLines.vLines || []).some(function (v) { return v.y1Pt >= topPt - 5 && v.y0Pt <= bottomPt + 5; }) ||
+          (pg.tableLines.hLines || []).some(function (h) { return h.yPt >= topPt - 5 && h.yPt <= bottomPt + 5; })
+        ));
+        // Item - per-row shading: for each of this table's ROWS, is
+        // there a detected fill (extractOfflineTableLines, above) whose
+        // Y-range substantially covers this specific row? Matched by
+        // ROW (not per-cell) since a shaded band almost always covers
+        // an entire row's height in real documents (a colored header
+        // bar, an alternating-row tint) - per-cell precision would add
+        // real complexity for a case that essentially never occurs.
+        const rowShades = t.rows.map(function (R) {
+          const fills = (pg.tableLines && pg.tableLines.fills) || [];
+          const match = fills.find(function (f) {
+            const overlap = Math.min(f.yBottomPt, R.yBottom) - Math.max(f.yTopPt, R.yTop);
+            return overlap > (R.yBottom - R.yTop) * 0.6;
+          });
+          return match ? match.color : null;
+        });
         return {
           grid: v14BuildTableGrid(t),
           colStarts: t.colStarts,
-          topPt: Math.min.apply(null, t.rows.map(R => R.yTop)),
-          bottomPt: Math.max.apply(null, t.rows.map(R => R.yBottom)),
+          topPt: topPt,
+          bottomPt: bottomPt,
+          rowShades: rowShades,
           leftPt: Math.min.apply(null, allX),
           rightPt: Math.max.apply(null, allX2),
-          rtl: t.rows.some(function (R) { return R.lines.some(function (L) { return L.rtl; }); })
+          rtl: t.rows.some(function (R) { return R.lines.some(function (L) { return L.rtl; }); }),
+          hasRuledLines: hasRuledLines
         };
       });
       if (pg.tables.length) log(pg.tables.length + ' table(s) detected (' + tableResult.usedLines.size + ' line(s) reserved for table cells)', 'info');
@@ -3351,6 +3685,68 @@ Return ONLY this JSON shape, nothing else:
 
     const targetCountry = window.getSetupPref ? window.getSetupPref('translation', 'targetCountry', '') : '';
 
+    // Item - PII masking layer. High-confidence sensitive-data patterns
+    // (email addresses, IBAN-style bank account numbers, credit-card-
+    // shaped digit sequences, phone numbers) get replaced with plain
+    // placeholder tokens BEFORE this text ever leaves the browser for
+    // the translation API - the underlying LLM provider never actually
+    // sees the real value at all, not just "is instructed to leave it
+    // unchanged" (which the existing NAMES AND IDENTIFIERS prompt rule
+    // already does, but that still means transmitting the real value).
+    // Tokens get swapped back for the real values locally, after
+    // translation, before anything is written into the output document -
+    // this step is invisible to the model entirely on both ends.
+    // Deliberately conservative pattern set (only very high-confidence
+    // PII shapes) - a missed edge case here means a real value is sent
+    // like before (no worse than the current baseline), but an
+    // OVER-eager pattern could mangle a legitimate reference number,
+    // quantity, or date, which would be a real regression - so common,
+    // ambiguous "just some digits" patterns are deliberately NOT masked.
+    const piiMap = {};
+    let piiCounter = 0;
+    function maskPiiInText(text) {
+      if (!text) return text;
+      let masked = text;
+      const patterns = [
+        // Email addresses.
+        /[\w.+-]+@[\w-]+\.[\w.-]+/g,
+        // IBAN-format bank account (2 letters + 2 digits + up to 30
+        // alnum, spaced or not) - specific enough not to false-positive
+        // on ordinary text.
+        /\b[A-Z]{2}\d{2}[A-Z0-9]{4,30}\b/g,
+        // Credit-card-shaped: 4 groups of 4 digits (spaced or dashed),
+        // or 13-19 digits run together - deliberately requires the
+        // GROUPED shape or a long enough run that it's very unlikely to
+        // be an ordinary document reference number.
+        /\b(?:\d{4}[ -]){3}\d{4}\b|\b\d{13,19}\b/g,
+        // Phone numbers: an optional + / country code, then 8+ digits
+        // with typical separators - requires at least one separator or
+        // a leading + so a bare long integer (already covered above)
+        // isn't double-matched here.
+        /\+?\d{1,3}[\s.-]?\(?\d{2,4}\)?(?:[\s.-]\d{2,4}){2,4}/g,
+      ];
+      patterns.forEach(function (re) {
+        masked = masked.replace(re, function (match) {
+          piiCounter++;
+          const token = '[[PII' + piiCounter + ']]';
+          piiMap[token] = match;
+          return token;
+        });
+      });
+      return masked;
+    }
+    function unmaskPiiInText(text) {
+      if (!text) return text;
+      let out = text;
+      Object.keys(piiMap).forEach(function (token) {
+        if (out.indexOf(token) !== -1) out = out.split(token).join(piiMap[token]);
+      });
+      return out;
+    }
+    compact.forEach(function (b) { if (b.text) b.text = maskPiiInText(b.text); });
+    if (piiCounter > 0) log('PII masking: ' + piiCounter + ' sensitive value(s) masked before sending to translation.', 'info');
+
+
     // Classify domain first (separate, focused, cheap call) so the main
     // translation call can be given the domain expert persona + exact
     // terminology glossary up front, instead of guessing terminology
@@ -3494,6 +3890,18 @@ Return ONLY this JSON shape, nothing else:
       try { console.error('Review pass failed, shipping unreviewed translation:', reviewErr.message); } catch (e) {}
       log('Review pass could not complete (' + reviewErr.message + ') - using the primary translation as-is.', 'warn');
     }
+
+    // Restore the real PII values now that both translation and review
+    // are fully done - this is the only point downstream code ever sees
+    // the actual sensitive values again, entirely locally, never sent
+    // back over the network.
+    if (piiCounter > 0 && result && Array.isArray(result.translations)) {
+      result.translations = result.translations.map(function (t) {
+        return t && typeof t.translated_text === 'string'
+          ? Object.assign({}, t, { translated_text: unmaskPiiInText(t.translated_text) })
+          : t;
+      });
+    }
     return result;
   }
 
@@ -3537,6 +3945,8 @@ This is different from an isolated one-off issue in a single entry (that's just 
 
 ALSO SEPARATELY, watch for a THIRD kind of thing: any correction you made above that reflects a GENERALIZABLE rule - something that would be equally true for ANY future document in this same domain/language pair, not just something specific to this one document. For example "translate X term as Y, never Z" or "never shorten phrase X" is generalizable; fixing a typo in this specific document's own text, or a date/name/number specific to this document, is NOT - those only apply here. Only include something here if you would confidently tell a translator "always do this from now on", not just "this one time". Most corrections are NOT generalizable - leave "learned_rules" empty unless something genuinely is. Before including anything here, check it against the RULES ALREADY KNOWN list below (if given) - never repeat one of those, even rephrased.${existingRulesBlock}
 
+FINALLY, after reviewing every entry (and after accounting for the corrections you're making - i.e. score the translation as it will read AFTER your corrections are applied, not as it read before), give an overall semantic-faithfulness score: your honest professional judgment of what percentage of the source document's legal/practical meaning, obligations, and factual content is preserved EXACTLY and correctly in the (corrected) translation, as a single integer 0-100. This is not a grammar/style score - a translation that reads awkwardly but preserves every obligation, date, and amount correctly still scores high; one that reads beautifully but drops or changes a single obligation, date, or amount scores low. Be honest and calibrated, not automatically generous - most competent translations of a well-extracted source score in the 90s, but a genuine problem (a dropped clause, a changed number, a reversed obligation) should pull the score down accordingly, and you have already been looking for exactly these things above.
+
 Return ONLY this JSON shape, nothing else, no commentary:
 {
   "corrections": [
@@ -3547,7 +3957,9 @@ Return ONLY this JSON shape, nothing else, no commentary:
   ],
   "learned_rules": [
     {"rule_text": "A general, standalone instruction phrased for a future translator/reviewer, not referencing this specific document"}
-  ]
+  ],
+  "faithfulness_score": 0,
+  "faithfulness_notes": "One sentence on what, if anything, kept this below 100"
 }`;
   }
 
@@ -3601,6 +4013,10 @@ Return ONLY this JSON shape, nothing else, no commentary:
     const corrections = parsed && Array.isArray(parsed.corrections) ? parsed.corrections : [];
     const codeIssues = parsed && Array.isArray(parsed.code_issues) ? parsed.code_issues : [];
     const learnedRules = parsed && Array.isArray(parsed.learned_rules) ? parsed.learned_rules : [];
+    const score = parsed && typeof parsed.faithfulness_score === 'number' ? Math.max(0, Math.min(100, Math.round(parsed.faithfulness_score))) : null;
+    if (score != null) {
+      log('Faithfulness score: ' + score + '/100' + (parsed.faithfulness_notes ? ' - ' + parsed.faithfulness_notes : ''), score >= 90 ? 'info' : 'warn');
+    }
 
     if (codeIssues.length) {
       v14SaveCodeIssues(codeIssues, domainInfo).catch(function (e) {

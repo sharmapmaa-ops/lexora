@@ -8877,6 +8877,7 @@
                             <button type="button" class="svc-tab is-active" onclick="switchAdminTab(0, this)">\u{1F5C4} PostgreSQL</button>
                             <button type="button" class="svc-tab" onclick="switchAdminTab(1, this)">\u{1F6E0}\uFE0F Maintenance Mode</button>
                             <button type="button" class="svc-tab" onclick="switchAdminTab(2, this)">\u{1F916} Claude</button>
+                            <button type="button" class="svc-tab" onclick="switchAdminTab(3, this)">\u{1F30D} Translation Health</button>
                         </div>
                         <div class="svc-panes">
                             <div class="svc-pane is-active">
@@ -8903,6 +8904,17 @@
                                     <div id="claudeDebugPanel"><p class="ds-card-sub">Abhi koi active topic nahi hai.</p></div>
                                 </div>
                             </div>
+                            <div class="svc-pane">
+                                <div class="admin-files-card history-card svc-card-inner" id="translationHealthCard">
+                                    <p class="ds-card-sub" style="margin-bottom:14px;">
+                                        Translation Rules, Translation Domains, aur Translation Code Issues - teeno
+                                        ek hi jagah, "aapki nazar chahiye" wale items highlighted. Ye tab khulte hi
+                                        automatically load hoti hai - kisi bhi review-session ke liye bas is tab ka
+                                        screenshot bhej dena kaafi hai.
+                                    </p>
+                                    <div id="translationHealthPanel"><p class="ds-card-sub">Loading\u2026</p></div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="db-status-footer" id="dbStatusFooter"></div>
@@ -8918,6 +8930,89 @@
                 if (!strip) return;
                 strip.querySelectorAll('.svc-tab').forEach((x, i) => x.classList.toggle('is-active', i === index));
                 strip.querySelectorAll('.svc-pane').forEach((x, i) => x.classList.toggle('is-active', i === index));
+                if (index === 3) loadTranslationHealthPanel();
+            };
+
+            // Item - one-screen view of all three self-improvement tables
+            // (Translation Rules / Domains / Code Issues) together, with
+            // anything needing a human decision visually flagged -
+            // pending rules (active=No), New-status code issues. Built
+            // specifically so "check the translation [tables]" has one
+            // obvious place to look instead of three separate PostgreSQL
+            // table switches.
+            window.loadTranslationHealthPanel = async function() {
+                const panel = document.getElementById('translationHealthPanel');
+                if (!panel) return;
+                panel.innerHTML = '<p class="ds-card-sub">Loading\u2026</p>';
+                try {
+                    const fetcher = window.authFetch || window.fetch;
+                    const [rulesRes, domainsRes, issuesRes] = await Promise.all([
+                        fetcher('/api/data/translation-rules'),
+                        fetcher('/api/data/translation-domains'),
+                        fetcher('/api/data/translation-code-issues'),
+                    ]);
+                    const rules = rulesRes.ok ? await rulesRes.json() : [];
+                    const domains = domainsRes.ok ? await domainsRes.json() : [];
+                    const issues = issuesRes.ok ? await issuesRes.json() : [];
+
+                    const pendingRules = (rules || []).filter(r => (r.active || 'Yes') === 'No');
+                    const activeRules = (rules || []).filter(r => (r.active || 'Yes') !== 'No');
+                    const newIssues = (issues || []).filter(i => (i.status || 'New') === 'New');
+                    const otherIssues = (issues || []).filter(i => (i.status || 'New') !== 'New');
+
+                    panel.innerHTML = `
+                        <div class="th-summary-row">
+                            <div class="th-summary-box ${pendingRules.length ? 'is-alert' : ''}">
+                                <div class="th-summary-count">${pendingRules.length}</div>
+                                <div class="th-summary-label">Rule(s) awaiting your review</div>
+                            </div>
+                            <div class="th-summary-box ${newIssues.length ? 'is-alert' : ''}">
+                                <div class="th-summary-count">${newIssues.length}</div>
+                                <div class="th-summary-label">Code issue(s) flagged (New)</div>
+                            </div>
+                            <div class="th-summary-box">
+                                <div class="th-summary-count">${(domains || []).length}</div>
+                                <div class="th-summary-label">Domain(s) known total</div>
+                            </div>
+                        </div>
+
+                        <h4 class="th-section-head">\u26a0\ufe0f Rules awaiting your review (active = No)</h4>
+                        ${pendingRules.length ? pendingRules.map(r => `
+                            <div class="th-row is-pending">
+                                <div class="th-row-text"><strong>${escapeHtml(r.ruleText || '')}</strong></div>
+                                <div class="th-row-meta">${escapeHtml(r.category || '')} \u00b7 ${escapeHtml(r.note || '')}</div>
+                            </div>`).join('') : '<p class="ds-card-sub">None pending.</p>'}
+
+                        <h4 class="th-section-head">\u2705 Active rules (already live in every translation prompt)</h4>
+                        ${activeRules.length ? activeRules.map(r => `
+                            <div class="th-row">
+                                <div class="th-row-text">${escapeHtml(r.ruleText || '')}</div>
+                                <div class="th-row-meta">${escapeHtml(r.category || '')}</div>
+                            </div>`).join('') : '<p class="ds-card-sub">None yet.</p>'}
+
+                        <h4 class="th-section-head">\u26a0\ufe0f Code issues flagged (status = New)</h4>
+                        ${newIssues.length ? newIssues.map(i => `
+                            <div class="th-row is-pending">
+                                <div class="th-row-text"><strong>${escapeHtml(i.description || '')}</strong></div>
+                                <div class="th-row-meta">Evidence: "${escapeHtml(i.evidence || '')}" \u00b7 ${escapeHtml(i.domain || '')} / ${escapeHtml(i.docType || '')} \u00b7 ${escapeHtml(i.flaggedAt || '')}</div>
+                            </div>`).join('') : '<p class="ds-card-sub">None flagged.</p>'}
+
+                        ${otherIssues.length ? `<h4 class="th-section-head">Already-reviewed code issues</h4>` + otherIssues.map(i => `
+                            <div class="th-row">
+                                <div class="th-row-text">${escapeHtml(i.description || '')}</div>
+                                <div class="th-row-meta">Status: ${escapeHtml(i.status || '')}</div>
+                            </div>`).join('') : ''}
+
+                        <h4 class="th-section-head">\u{1F310} Known domains</h4>
+                        ${(domains || []).length ? domains.map(d => `
+                            <div class="th-row">
+                                <div class="th-row-text"><strong>${escapeHtml(d.domain || '')}</strong> ${d.autoGenerated === 'Yes' ? '<span class="th-tag">auto-generated</span>' : ''}</div>
+                                <div class="th-row-meta">${escapeHtml((d.role || '').slice(0, 140))}${(d.role || '').length > 140 ? '\u2026' : ''}</div>
+                            </div>`).join('') : '<p class="ds-card-sub">None saved yet (only the 13 built-in ones exist so far).</p>'}
+                    `;
+                } catch (err) {
+                    panel.innerHTML = '<p class="ds-card-sub is-bad">Could not load: ' + escapeHtml(err.message) + '</p>';
+                }
             };
 
             // Item - "Claude" admin tab: a reusable, persistent multi-

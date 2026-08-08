@@ -72,7 +72,34 @@ Isse pehle `table-layout:fixed` + colgroup + per-row-width — teeno try kiye
 gaye the aur unreliable nikle the. **Grid wapas table-layout wale kisi
 approach se replace mat karo bina explicitly confirm kiye.**
 
-## 4. General rules (is poori session se seekhe gaye)
+## 4. "Translation Health" (self-improving translation pipeline)
+
+`translation-offline.js` me ab teen self-improving DB-tables hain (Admin panel
+me automatically dikhti hain, generic PostgreSQL viewer ke through):
+
+- **Translation Rules** (`translation-rules`) — har translation ke prompt me
+  inject hoti hain. **Naye rows `active: No` ke saath save hoti hain** (reviewer
+  khud detect karke suggest karta hai) — koi bhi row LIVE tabhi hoti hai jab
+  koi human use `Yes` kare.
+- **Translation Domains** (`translation-domains`) — naye domain (jo 13
+  hardcoded me se match nahi karte) automatically generate + save hote hain,
+  aur **turant live** ho jaate hain (kam risk, sirf usi domain ko affect
+  karta hai).
+- **Translation Code Issues** (`translation-code-issues`) — reviewer ko agar
+  koi systematic/structural pattern (translation-quality nahi, pipeline-bug
+  jaisa) mile, wo yahan flag hota hai (`status: New`). **Kabhi bhi koi code
+  khud change/deploy nahi hota** — sirf detect+flag, decide+fix hamesha
+  human ke haath me.
+
+**User jab bhi bole "translation check karo"**, Admin Panel → **"🌍
+Translation Health"** tab dekho (`loadTranslationHealthPanel()`,
+`js/app.js`) — teeno tables ek hi jagah, jo bhi human-attention chahiye
+(pending rules, New-status issues) highlighted milega. Har pending rule ke
+liye apni ACCEPT/REJECT/MODIFY recommendation dena, apni general
+software-engineering aur domain-judgement se — user isi advice ke aadhar
+par decide karega.
+
+## 5. General rules (is poori session se seekhe gaye)
 
 - **Guess mat karo.** Agar kisi bug ka exact root cause pata nahi hai, ya to
   actual code trace karo (grep, view, cross-reference) jab tak concrete

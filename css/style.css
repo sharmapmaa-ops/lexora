@@ -6500,3 +6500,37 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
     background: #fbfbfd;
     min-width: 220px;
 }
+
+/* ---- Translation Health panel (Admin > Translation Health tab) ---- */
+.th-summary-row { display: flex; gap: 14px; margin-bottom: 20px; flex-wrap: wrap; }
+.th-summary-box {
+    flex: 1;
+    min-width: 160px;
+    border: 1px solid rgba(0,0,139,0.12);
+    border-radius: 8px;
+    padding: 14px 16px;
+    text-align: center;
+}
+.th-summary-box.is-alert { border-color: #f2a93b; background: #fffaf0; }
+.th-summary-count { font-size: 1.8rem; font-weight: 700; color: darkblue; }
+.th-summary-box.is-alert .th-summary-count { color: #b45309; }
+.th-summary-label { font-size: 0.78rem; color: rgba(0,0,0,0.55); margin-top: 4px; }
+.th-section-head { margin: 22px 0 10px; font-size: 0.9rem; }
+.th-row {
+    border: 1px solid rgba(0,0,139,0.08);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+}
+.th-row.is-pending { border-color: #f2a93b; background: #fffaf0; }
+.th-row-text { font-size: 0.85rem; color: #1a1a1a; }
+.th-row-meta { font-size: 0.75rem; color: rgba(0,0,0,0.5); margin-top: 4px; }
+.th-tag {
+    display: inline-block;
+    font-size: 0.68rem;
+    background: rgba(0,0,139,0.08);
+    color: darkblue;
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-right: 4px;
+}
