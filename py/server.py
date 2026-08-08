@@ -794,6 +794,20 @@ ALLOWED_RESOURCES = {
     # Messaging Settings + AI Prompts (this message's items 1,2).
     "messaging-settings",
     "ai-prompts",
+    # Translation Rules (see db.py's DOCUMENT_RESOURCES comment) -
+    # admin-editable, self-growing terminology/phrasing corrections fed
+    # into every translation's prompt at runtime.
+    "translation-rules",
+    # Translation Domains (see db.py's DOCUMENT_RESOURCES comment) -
+    # self-expanding domain-expert persona library, auto-populated by
+    # the translation pipeline whenever it meets a domain not already
+    # covered by the 13 hardcoded ones or a previously-saved one here.
+    "translation-domains",
+    # Translation Code Issues (see db.py's DOCUMENT_RESOURCES comment) -
+    # DETECTION-ONLY queue the reviewer pass writes to when it spots a
+    # likely pipeline/structural bug - never auto-fixed, always needs a
+    # human to look at it.
+    "translation-code-issues",
 }
 
 # json files that must never be served as static files (contain secrets).
@@ -1159,6 +1173,34 @@ AI_PROMPT_SEED = [
      "Removes all readable text from a page image while keeping logos, seals, photos, and background graphics untouched - used to produce the clean background behind the repositioned text in the output document."),
     ("Lease Abstraction", 1, "AI Prompts/lease-abstraction-1.txt",
      "Extracts the ~33 standard lease clauses/fields (parties, dates, rent, renewal terms, etc.) from a lease document's text into the structured JSON the app displays and exports."),
+]
+
+# Item - "Translation Rules" (Admin > PostgreSQL > Translation Rules
+# table) - starting set of corrections already learned from real
+# reviewer feedback on translated output. Each is fetched by the
+# browser-side translation pipeline and appended to that run's prompt -
+# adding a new row here (or from the Admin table directly) takes effect
+# on the very next translation, no code change needed. This is the seed
+# only; the table itself is meant to keep growing as more corrections
+# get found.
+TRANSLATION_RULES_SEED = [
+    # (id, ruleText, category, note-for-the-admin-reading-this-later)
+    ("withdraw-not-terminate",
+     "A party's right to unilaterally exit a contract without alleging breach (e.g. Italian \"recesso\" and equivalent civil-law concepts) must be translated as \"withdraw\"/\"right of withdrawal\", NOT \"terminate\"/\"termination\". Keep this distinct from a party ending the contract FOR BREACH, which is legitimately \"terminate\"/\"termination\" - conflating the two loses a real legal distinction between a no-fault exit right and a breach-based remedy.",
+     "Terminology",
+     "From a reviewer's real-document QA pass (2026-08-08) - Italian lease amendment agreements distinguish recesso (withdrawal) from risoluzione (termination); our output was using 'terminate' for both."),
+    ("registration-statutory-period-wording",
+     "For a clause about a document being registered with a tax/revenue authority within a legally mandated period, prefer the phrasing \"registration within the mandatory statutory period\" over \"fixed-term registration\" - it reads as more natural, standard legal English for this concept.",
+     "Terminology",
+     "Reviewer feedback (2026-08-08): 'fixed-term registration' is understandable but not the most natural legal English."),
+    ("preserve-in-the-name-and-on-behalf-of",
+     "\"in the name and on behalf of\" is a set legal-agency phrase (acting IN THE NAME OF a principal, not merely generally \"on behalf of\" them) and must be translated in full, never shortened to just \"on behalf of\" even though it may read as slightly wordy - the fuller phrase carries real legal content the shorter one drops.",
+     "Terminology",
+     "Reviewer feedback (2026-08-08, multiple independent reviews) consistently flagged this exact shortening as losing legal nuance."),
+    ("ocr-duplicate-detection",
+     "Before translating each paragraph/block, check whether it contains an accidentally duplicated sentence, line, or trailing phrase (a common OCR/text-extraction artifact - e.g. a full sentence immediately followed by just its own last few words repeated). If duplicated text looks like an extraction artifact rather than something the source document intentionally repeats, translate it only once - never carry an accidental duplication through into the translated output.",
+     "Quality Check",
+     "Safety-net addition (2026-08-08) after finding genuine duplicate-content bugs in real output - the underlying extraction/chunking bug should be fixed at the code level too, this is a backup check, not a substitute for that."),
 ]
 
 
@@ -6302,6 +6344,23 @@ class Handler(SimpleHTTPRequestHandler):
         if added or backfilled:
             db.replace_documents("ai-prompts", rows)
         summary.append(f"AI Prompts: added {added} placeholder row(s), backfilled {backfilled} description(s)")
+
+        # ---- Translation Rules: seed with corrections already learned
+        # from real translation review feedback. Same "only add what's
+        # missing" safety as above - re-running this never resets a rule
+        # an Admin has since edited or deactivated.
+        rows = db.list_documents("translation-rules")
+        existing_ids = {r.get("id") for r in rows}
+        added = 0
+        for rule_id, rule_text, category, note in TRANSLATION_RULES_SEED:
+            if rule_id in existing_ids:
+                continue
+            rows.append({"id": rule_id, "ruleText": rule_text, "category": category,
+                         "active": "Yes", "note": note})
+            added += 1
+        if added:
+            db.replace_documents("translation-rules", rows)
+        summary.append(f"Translation Rules: added {added} rule(s)")
 
         return 200, {"ok": True, "summary": summary}
 

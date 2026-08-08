@@ -877,8 +877,20 @@
       let lvls = '';
       for (let lvl = 0; lvl < 3; lvl++) {
         const indent = 360 + lvl * 360;
+        // Item - the exact, confirmed root cause of every sub-clause
+        // showing "a." "a." instead of "a." "b.": this used the SAME
+        // lvlText ("%1.") for all three ilvl levels. %N in OOXML
+        // numbering refers to the Nth level's OWN counter (1-indexed by
+        // depth), not "whichever level this <w:lvl> node happens to be" -
+        // ilvl=0 needs %1, ilvl=1 needs %2, ilvl=2 needs %3. With every
+        // level hardcoded to %1, a sub-clause at ilvl=1 was displaying
+        // ilvl=0's counter instead of its own - and since nothing at
+        // ilvl=0 was actually incrementing between two sub-clauses of the
+        // same top-level item, that borrowed counter just stayed on "a"
+        // for both of them.
+        const lvlText = d.text.replace('%1', '%' + (lvl + 1));
         lvls += '<w:lvl w:ilvl="' + lvl + '"><w:start w:val="1"/>' +
-          '<w:numFmt w:val="' + d.fmt + '"/><w:lvlText w:val="' + esc(d.text) + '"/>' +
+          '<w:numFmt w:val="' + d.fmt + '"/><w:lvlText w:val="' + esc(lvlText) + '"/>' +
           '<w:lvlJc w:val="left"/><w:pPr><w:ind w:left="' + indent + '" w:hanging="360"/></w:pPr>' + rPr + '</w:lvl>';
       }
       return '<w:abstractNum w:abstractNumId="' + id + '">' + lvls + '</w:abstractNum>';
@@ -3035,20 +3047,109 @@ STRICT RULES:
     }
   };
 
+  // Item - fetches domain-expert profiles that got auto-generated for
+  // PREVIOUS documents (see v14GenerateAndSaveDomainExpert below) -
+  // merged with the 13 hardcoded ones, this is the FULL set of domains
+  // the pipeline already knows how to handle without generating
+  // anything new. Never blocks/fails translation if this can't be
+  // reached - just means today's run treats every dynamic domain as new
+  // again, at worst (still correct, just skips the "reuse a saved one"
+  // shortcut for this one run).
+  async function v14FetchDynamicDomains() {
+    try {
+      const fetcher = window.authFetch || window.fetch;
+      const res = await fetcher('/api/data/translation-domains');
+      if (!res.ok) return {};
+      const rows = await res.json();
+      const out = {};
+      (Array.isArray(rows) ? rows : []).forEach(function (r) {
+        if (r && r.domain && r.role) out[r.domain] = { role: r.role, terms: r.terms || '' };
+      });
+      return out;
+    } catch (e) {
+      return {};
+    }
+  }
+
+  // Item - the self-expansion step. Called only when the classifier (see
+  // v14ClassifyTranslationDomain) names a domain that matches NEITHER
+  // the 13 hardcoded ones NOR anything already saved from a previous
+  // document. Generates a {role, terms} profile in the exact same shape
+  // and style as the hand-written ones - via its own small, focused LLM
+  // call - then saves it so every future document in this same domain
+  // reuses it instantly instead of generating one again.
+  async function v14GenerateAndSaveDomainExpert(model, domain, docType, sampleText) {
+    const genPrompt = `You are building a domain-expert persona profile for a document translation system, for the domain "${domain}" (a document of type "${docType}" was just classified into this domain, sample text below for context).
+
+Produce exactly two things, in the SAME style as these existing examples for OTHER domains:
+- Real Estate role: "a senior commercial real estate attorney and certified native translator with 20+ years drafting leases, purchase agreements, and management contracts"
+- Real Estate terms (a comma-separated glossary, each entry "English Term (equivalent1, equivalent2, ...)" giving 2-4 other major languages' equivalents): "Lessor (arrendador, bailleur, Vermieter, locatore), Lessee/Tenant (arrendatario, locataire, Mieter, conduttore), Premises (inmueble, locaux, Mietsache, locali), ..."
+
+For "${domain}" specifically: write a "role" describing the single most appropriate senior professional (20+ years experience) who would actually be handed a "${docType}" document to review/use in real life - a job title that exists in the real world for this domain - plus "and certified native translator". Then write a "terms" glossary of 10-14 of the most important recurring technical/professional terms in this exact domain, each with equivalents in 2-4 other major world languages, same comma-separated format as the example.
+
+SAMPLE TEXT FROM THE ACTUAL DOCUMENT (for context on what this domain's documents actually contain):
+${String(sampleText || '').slice(0, 1000)}
+
+Return ONLY this JSON shape, nothing else:
+{"role": "...", "terms": "..."}`;
+
+    const data = await v14ProxyJson({
+      model: model,
+      temperature: 0.2,
+      max_tokens: 800,
+      messages: [{ role: 'user', content: genPrompt }]
+    });
+    const raw = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    if (!raw) throw new Error('No content received generating a new domain-expert profile.');
+    const parsed = JSON.parse(v14CleanJsonResponse(raw));
+    if (!parsed || !parsed.role) throw new Error('Malformed domain-expert profile response.');
+    const profile = { role: String(parsed.role).trim(), terms: String(parsed.terms || '').trim() };
+
+    // Save it (best-effort - a failed save just means this domain gets
+    // regenerated next time instead of reused, not a translation
+    // failure) so future documents in this domain reuse it instantly.
+    try {
+      const fetcher = window.authFetch || window.fetch;
+      const listRes = await fetcher('/api/data/translation-domains');
+      const existing = listRes.ok ? (await listRes.json()) : [];
+      const rows = Array.isArray(existing) ? existing.slice() : [];
+      const slug = domain.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      rows.push({ id: slug || ('domain-' + Date.now()), domain: domain, role: profile.role, terms: profile.terms, autoGenerated: 'Yes' });
+      await fetcher('/api/data/translation-domains', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(rows)
+      });
+    } catch (saveErr) {
+      try { console.error('Could not save new domain-expert profile:', saveErr.message); } catch (e) {}
+    }
+    return profile;
+  }
+
   // Quick, cheap, focused call (~1500 chars of sample text) BEFORE the
   // main translation - the model's full attention goes to classification
   // alone, which is more reliable than asking it to classify AND
   // translate in the same call. Falls back to General Business on any
   // failure so translation always proceeds even if this step errors out.
+  //
+  // Item - domain naming is now OPEN, not constrained to the 13
+  // hardcoded ones: the classifier names whatever domain actually fits
+  // best (e.g. "Aviation", "Maritime Law"), and the caller
+  // (v14TranslateAllPages) is responsible for checking that name against
+  // the hardcoded + previously-saved-dynamic sets and generating a new
+  // profile on the spot if it's genuinely new - see
+  // v14GenerateAndSaveDomainExpert above. This function itself no longer
+  // decides "known vs unknown" or falls back to General Business for an
+  // unrecognized name - it just reports what it saw.
   async function v14ClassifyTranslationDomain(model, sampleText) {
-    const domains = Object.keys(TRANSLATION_DOMAIN_EXPERTS);
+    const knownExamples = Object.keys(TRANSLATION_DOMAIN_EXPERTS).slice(0, 6).join(', ');
     const systemPrompt = [
       'You are a document classifier. Given a sample of text from a document, identify:',
-      '1. Domain: one of [' + domains.join(', ') + ']',
+      '1. Domain: the single professional/industry field this document actually belongs to (e.g. ' + knownExamples + ', Aviation, Maritime Law, Agriculture, Education, Energy, Telecommunications, Automotive, Pharmaceutical, or whatever field genuinely fits best - do NOT force-fit into a generic category if a more specific, accurate field name exists). Use a short (1-3 word) standard industry/field name.',
       '2. Document type: a brief 2-4 word descriptor (e.g. "Lease Agreement", "Medical Report", "Invoice", "Employment Contract", "Tax Filing")',
       '',
       'Output ONLY this format, nothing else:',
-      'DOMAIN: <one from list>',
+      'DOMAIN: <1-3 word field name>',
       'TYPE: <2-4 words>'
     ].join('\n');
 
@@ -3065,28 +3166,44 @@ STRICT RULES:
       const content = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
       const domainMatch = content.match(/DOMAIN:\s*([^\n]+)/i);
       const typeMatch = content.match(/TYPE:\s*([^\n]+)/i);
-      const detected = (domainMatch && domainMatch[1] || '').trim();
-
-      let matched = 'General Business';
-      for (const d of domains) {
-        if (d.toLowerCase() === detected.toLowerCase()) { matched = d; break; }
-      }
-      if (matched === 'General Business' && detected) {
-        for (const d of domains) {
-          if (detected.toLowerCase().includes(d.toLowerCase()) || d.toLowerCase().includes(detected.toLowerCase())) { matched = d; break; }
-        }
-      }
-      return { domain: matched, docType: (typeMatch && typeMatch[1] || 'Document').trim() };
+      const detected = (domainMatch && domainMatch[1] || '').trim() || 'General Business';
+      return { domain: detected, docType: (typeMatch && typeMatch[1] || 'Document').trim() };
     } catch (err) {
       log('Domain detection failed, continuing with General Business terminology: ' + err.message, 'warn');
       return { domain: 'General Business', docType: 'Document' };
     }
   }
 
+  // Item - fetches the current, admin-editable set of active
+  // "Translation Rules" (Admin > PostgreSQL > Translation Rules) and
+  // formats them for direct inclusion in the translation prompt. This
+  // is the actual self-improvement mechanism: every correction learned
+  // from real reviewer feedback becomes a row in this table instead of
+  // a one-off code edit, and a NEW row (added by an Admin at any time,
+  // no redeploy) takes effect on the very next translation automatically,
+  // since this runs fresh before every translate call. Never blocks or
+  // fails a translation if the fetch doesn't work (offline, DB down,
+  // not logged in yet) - just proceeds with no extra rules that run.
+  async function v14FetchTranslationRules() {
+    try {
+      const fetcher = window.authFetch || window.fetch;
+      const res = await fetcher('/api/data/translation-rules');
+      if (!res.ok) return '';
+      const rows = await res.json();
+      const active = (Array.isArray(rows) ? rows : [])
+        .filter(function (r) { return (r.active || 'Yes') !== 'No' && (r.ruleText || '').trim(); })
+        .map(function (r) { return '- ' + r.ruleText.trim(); });
+      if (!active.length) return '';
+      return '\n\nLEARNED CORRECTIONS (from real translation review feedback - apply every one of these):\n' + active.join('\n');
+    } catch (e) {
+      return '';
+    }
+  }
+
   // ---- TRANSLATION (single final call, whole document — v14 exact) ----
   // LAST me, ek hi call, saare pages saath — page-boundary-crossing
   // paragraphs ki continuity per-page translation tod deti hai.
-  function v14BuildTranslationPrompt(targetLanguageLabel, targetCountry, domainInfo) {
+  function v14BuildTranslationPrompt(targetLanguageLabel, targetCountry, domainInfo, learnedRulesBlock) {
     const countryInstruction = targetCountry
       ? `\n\nTARGET COUNTRY SPECIFIED: ${targetCountry}. Use the standard variant of ${targetLanguageLabel} as spoken/written in ${targetCountry} specifically - its spelling conventions, its official/legal terminology, its units and formatting conventions (dates, currency, addresses), and the terms ${targetCountry}'s own administrative/legal system actually uses for each concept. This takes priority over guessing a variant from the source document.`
       : '';
@@ -3122,6 +3239,11 @@ Do not produce a literal, word-by-word rendering that mirrors the source languag
 
 IMPORTANT — ELIMINATE LITERAL TRANSLATION PATTERNS:
 Rewrite awkward, stiff constructions that come from translating word-for-word into natural ${targetLanguageLabel} a native professional would actually write. For example (English source shown for illustration - apply the same principle regardless of source/target language pair): "The appearing parties mutually and reciprocally acknowledge" -> "The parties acknowledge"; "free disposal thereof" -> "full legal authority"; "interest and will" -> "intention"; "price of lease" -> "rent" (in a Real Estate document); "cannot be adapted to regulations" -> "cannot be brought into regulatory compliance". Apply this same kind of simplification and naturalization throughout, in whichever language pair you are actually translating.
+This does NOT license shortening a set legal phrase that carries a specific combined meaning just because it sounds wordy - e.g. "in the name and on behalf of" (a distinct legal-agency concept in many jurisdictions - acting IN THE NAME OF a principal, not merely generally "on behalf of" them) must stay complete, not become just "on behalf of". The difference from the examples above: those trim genuinely redundant restatement (saying the same thing twice - "mutually AND reciprocally"), this would drop actual legal content the source phrase specifically conveys. If unsure whether a phrase is redundant filler or a set legal term-of-art, keep it complete rather than risk losing meaning.
+
+IMPORTANT — TERMINOLOGY PREFERENCES FOR THIS DOCUMENT TYPE (real estate / lease):
+- A party's right to unilaterally exit a contract without alleging breach ("recesso" in Italian, and equivalent concepts in other civil-law languages) should be translated as "withdraw"/"right of withdrawal" - NOT "terminate"/"termination". Keep this distinct from a party ending the contract FOR BREACH (which is legitimately "terminate"/"termination"). Conflating the two loses a real legal distinction between a no-fault contractual exit right and a breach-based remedy.
+- For a clause about a document being registered with a tax/revenue authority within a legally mandated period, prefer the phrasing "registration within the mandatory statutory period" over "fixed-term registration" - it reads as more natural, standard legal English for this concept.
 
 IMPORTANT — NEVER ALTER FACTUAL DATA WHILE TRANSLATING:
 The following must come through EXACTLY as in the source, never re-worded, re-formatted, recalculated, converted, or "corrected": dates, personal and organization names, addresses, all numbers, monetary amounts and currency symbols/codes, units of measurement, identifiers (tax/VAT/registration/file/account numbers), and cross-references to laws, articles, or clauses. Translate the words around them, but copy these through verbatim. Do not convert a currency into another currency, do not convert units, and do not change a date's format or calendar. Do not add any information that is not in the source, and do not omit any information that is.
@@ -3173,7 +3295,7 @@ Return ONLY this JSON shape, nothing else:
     {"id": "pg1_b0", "translated_text": "..."},
     {"id": "pg1_b1", "translated_text": "..."}
   ]
-}`;
+}` + (learnedRulesBlock || '');
   }
 
   async function v14TranslateAllPages(model, allPagesJsonArr, targetLanguageLabel, enableParagraphGrouping) {
@@ -3236,9 +3358,52 @@ Return ONLY this JSON shape, nothing else:
     const sampleText = compact.slice(0, 25).map(b => b.text).filter(Boolean).join('\n').slice(0, 1500);
     log('Detecting document domain for terminology matching...', 'info');
     const domainInfo = await v14ClassifyTranslationDomain(model, sampleText);
-    log(`Detected domain: ${domainInfo.domain} (${domainInfo.docType})`, 'info');
 
-    const prompt = v14BuildTranslationPrompt(targetLanguageLabel, targetCountry, domainInfo) +
+    // Item - self-expansion: check the classified domain against the 13
+    // hardcoded personas AND every domain already saved from a previous
+    // document (fetched fresh here so a domain another user's document
+    // saved five minutes ago is already available). Only if it matches
+    // NEITHER does this generate (and save) a new one - most documents
+    // hit an existing match and skip straight past this.
+    let matchedDomainKey = null;
+    const dynamicDomains = await v14FetchDynamicDomains();
+    const knownDomainNames = Object.keys(TRANSLATION_DOMAIN_EXPERTS).concat(Object.keys(dynamicDomains));
+    for (const d of knownDomainNames) {
+      if (d.toLowerCase() === domainInfo.domain.toLowerCase()) { matchedDomainKey = d; break; }
+    }
+    if (!matchedDomainKey) {
+      for (const d of knownDomainNames) {
+        if (domainInfo.domain.toLowerCase().includes(d.toLowerCase()) || d.toLowerCase().includes(domainInfo.domain.toLowerCase())) {
+          matchedDomainKey = d; break;
+        }
+      }
+    }
+    if (matchedDomainKey) {
+      // Merge in case this came from dynamicDomains (not already in
+      // TRANSLATION_DOMAIN_EXPERTS) - the prompt builders below just do
+      // a plain TRANSLATION_DOMAIN_EXPERTS[domainInfo.domain] lookup, so
+      // having it there under the SAME key name they'll look up is what
+      // actually makes this usable without changing those functions.
+      if (!TRANSLATION_DOMAIN_EXPERTS[matchedDomainKey] && dynamicDomains[matchedDomainKey]) {
+        TRANSLATION_DOMAIN_EXPERTS[matchedDomainKey] = dynamicDomains[matchedDomainKey];
+      }
+      domainInfo.domain = matchedDomainKey;
+      log(`Detected domain: ${domainInfo.domain} (${domainInfo.docType})`, 'info');
+    } else {
+      log(`Detected a new domain not seen before: "${domainInfo.domain}" - generating a matching expert profile...`, 'info');
+      try {
+        const newProfile = await v14GenerateAndSaveDomainExpert(model, domainInfo.domain, domainInfo.docType, sampleText);
+        TRANSLATION_DOMAIN_EXPERTS[domainInfo.domain] = newProfile;
+        log(`New domain profile created and saved for future documents: "${domainInfo.domain}"`, 'info');
+      } catch (genErr) {
+        log('Could not generate a new domain profile (' + genErr.message + ') - continuing with General Business terminology instead.', 'warn');
+        domainInfo.domain = 'General Business';
+      }
+    }
+
+    const learnedRulesBlock = await v14FetchTranslationRules();
+
+    const prompt = v14BuildTranslationPrompt(targetLanguageLabel, targetCountry, domainInfo, learnedRulesBlock) +
       '\n\nINPUT BLOCKS (full document, all pages, reading order):\n' +
       JSON.stringify(compact);
 
@@ -3295,18 +3460,252 @@ Return ONLY this JSON shape, nothing else:
     // output (same issue diagnosed and fixed for OCR). A genuine second
     // chance needs a different temperature, not a repeat of the same
     // request.
+    let result;
     try {
-      return await attemptTranslation(0);
+      result = await attemptTranslation(0);
     } catch (firstErr) {
       try { console.error('Translation attempt 1 failed:', firstErr.message); } catch (e) {}
       log('Translation response was invalid (' + firstErr.message + ') — retrying with a fresh attempt...', 'warn');
       try {
-        return await attemptTranslation(0.3);
+        result = await attemptTranslation(0.3);
       } catch (secondErr) {
         try { console.error('Translation attempt 2 also failed:', secondErr.message); } catch (e) {}
         throw new Error('Translation failed after 2 attempts: ' + secondErr.message);
       }
     }
+
+    // ---- REVIEWER PASS ----
+    // A second, independent call reviewing the translation just produced -
+    // not as the same translator re-checking its own work, but as a
+    // domain-matched, target-country-qualified professional (e.g. an
+    // attorney licensed in the TARGET country specifically, for a legal
+    // document - not a generic "translator", and not licensed just
+    // anywhere) reading it the way a real reviewer in that field and
+    // jurisdiction would. Corrections it finds are applied directly to
+    // the output, not just reported - the goal is a better translation
+    // delivered, not a report the person has to act on themselves.
+    try {
+      result.translations = await v14ReviewTranslation(model, compact, result.translations, targetLanguageLabel, targetCountry, domainInfo);
+    } catch (reviewErr) {
+      // The review pass improving quality is a bonus, not a
+      // requirement - if it fails for any reason (network, malformed
+      // response, etc.), the already-good primary translation still
+      // ships rather than the whole job failing over a QA step.
+      try { console.error('Review pass failed, shipping unreviewed translation:', reviewErr.message); } catch (e) {}
+      log('Review pass could not complete (' + reviewErr.message + ') - using the primary translation as-is.', 'warn');
+    }
+    return result;
+  }
+
+  // Item - builds the reviewer's persona: takes the SAME domain-expert
+  // role already used for the translator (TRANSLATION_DOMAIN_EXPERTS),
+  // but frames it as someone licensed/qualified specifically in the
+  // TARGET country, reviewing a colleague's translation for professional
+  // accuracy - not as a translator, as the domain professional who would
+  // actually be handed this document to use (an attorney for a legal
+  // document, a physician for a medical one, a CPA for a financial one,
+  // and so on), in that country's own jurisdiction/practice.
+  function v14BuildReviewerPrompt(targetLanguageLabel, targetCountry, domainInfo, existingRuleTexts) {
+    const expert = domainInfo && TRANSLATION_DOMAIN_EXPERTS[domainInfo.domain];
+    const countryPhrase = targetCountry
+      ? `licensed and currently qualified to practice in ${targetCountry} specifically (not generically "wherever ${targetLanguageLabel} is spoken" - ${targetCountry}'s own professional licensing, terminology conventions, and regulatory/legal standards)`
+      : `licensed and qualified to practice professionally in a jurisdiction where ${targetLanguageLabel} is the working language`;
+    const roleDesc = expert
+      ? expert.role.replace(/\s*and\s+certified\s+native\s+translator\b/i, '').trim()
+      : `a senior professional`;
+    const existingRulesBlock = (existingRuleTexts && existingRuleTexts.length)
+      ? `\n\nRULES ALREADY KNOWN (already in effect or already suggested by a previous review - do NOT suggest any of these again, in this or different wording, and do not flag a correction as "learned_rules"-worthy if it's just applying one of these):\n${existingRuleTexts.map(function (r) { return '- ' + r; }).join('\n')}`
+      : '';
+    return `You are ${roleDesc}, ${countryPhrase}. You have been handed a colleague's ${targetLanguageLabel} translation of a ${(domainInfo && domainInfo.docType) || 'document'} to professionally review before it goes into real use - not as a linguist checking grammar, but as the domain professional who would actually rely on this document, checking it the way you would check any colleague's work product in your own field before signing off on it.
+
+You will receive a list of paragraph entries, each with: id, the ORIGINAL source text, and the CURRENT ${targetLanguageLabel} translation.
+
+For each entry, check specifically for:
+- Terminology a professional in your field, in ${targetCountry || 'your jurisdiction'} specifically, would never phrase this way - including your field's standard terms, defined-term consistency, and country-specific conventions.
+- Any meaning that was lost, changed, added, or that no longer matches what the original actually says or legally/professionally means.
+- Duplicated sentences, lines, or trailing phrases that look like an extraction/OCR artifact rather than something the source intentionally repeats.
+- Numbering, dates, names, amounts, and identifiers that do not exactly match the original.
+- Phrasing that is technically correct but that no working professional in your field would actually write this way in a real ${(domainInfo && domainInfo.docType) || 'document'}.
+
+Only include an entry in your response if you are making an actual correction to it. If an entry's current translation is already correct and professionally sound, do NOT include it at all - most entries in a good translation need no change.
+
+SEPARATELY from those per-entry wording corrections, also watch for a DIFFERENT kind of problem: a PATTERN across multiple entries that looks like a defect in the software that PRODUCED this translation, not a wording/quality choice - for example:
+- The same short trailing phrase repeated right after several different, unrelated sentences (suggests a text-extraction/chunking bug, not a translation choice)
+- A sequence of items that should be numbered/lettered in order (a, b, c... or 1, 2, 3...) but several of them show the SAME number/letter instead of incrementing
+- The same formatting defect (e.g. missing spacing at the same kind of position, a value cut off at the same kind of boundary) recurring identically across multiple unrelated entries
+This is different from an isolated one-off issue in a single entry (that's just a normal correction, above) - only flag something here if the SAME kind of defect shows up more than once in a way that looks systematic rather than coincidental. If you see nothing like this, leave "code_issues" empty - most documents have none.
+
+ALSO SEPARATELY, watch for a THIRD kind of thing: any correction you made above that reflects a GENERALIZABLE rule - something that would be equally true for ANY future document in this same domain/language pair, not just something specific to this one document. For example "translate X term as Y, never Z" or "never shorten phrase X" is generalizable; fixing a typo in this specific document's own text, or a date/name/number specific to this document, is NOT - those only apply here. Only include something here if you would confidently tell a translator "always do this from now on", not just "this one time". Most corrections are NOT generalizable - leave "learned_rules" empty unless something genuinely is. Before including anything here, check it against the RULES ALREADY KNOWN list below (if given) - never repeat one of those, even rephrased.${existingRulesBlock}
+
+Return ONLY this JSON shape, nothing else, no commentary:
+{
+  "corrections": [
+    {"id": "pg1_b0", "corrected_text": "..."}
+  ],
+  "code_issues": [
+    {"description": "Plain-language description of the systematic pattern observed", "evidence": "A short verbatim example from the text showing it"}
+  ],
+  "learned_rules": [
+    {"rule_text": "A general, standalone instruction phrased for a future translator/reviewer, not referencing this specific document"}
+  ]
+}`;
+  }
+
+  async function v14ReviewTranslation(model, compact, translations, targetLanguageLabel, targetCountry, domainInfo) {
+    if (!translations || !translations.length) return translations;
+    const byId = {};
+    translations.forEach(function (t) { if (t && t.id) byId[t.id] = t.translated_text; });
+    const pairs = compact
+      .filter(function (b) { return b.text && b.text.trim() && byId[b.id] != null; })
+      .map(function (b) { return { id: b.id, original: b.text, current_translation: byId[b.id] }; });
+    if (!pairs.length) return translations;
+
+    log('Reviewing translation as a ' + ((domainInfo && domainInfo.domain) || 'domain') + ' professional qualified in ' + (targetCountry || targetLanguageLabel) + '...', 'info');
+    // Item - the reviewer needs to SEE what's already known before it
+    // can avoid suggesting it again (a post-hoc exact-text duplicate
+    // check alone isn't reliable - the same underlying rule can get
+    // phrased differently each time an LLM generates it). Pulls BOTH
+    // active and not-yet-approved rules, since a not-yet-approved
+    // suggestion from an earlier document is still "already suggested",
+    // not something to suggest again as if new.
+    let existingRuleTexts = [];
+    try {
+      const fetcher = window.authFetch || window.fetch;
+      const rulesRes = await fetcher('/api/data/translation-rules');
+      if (rulesRes.ok) {
+        const rulesRows = await rulesRes.json();
+        existingRuleTexts = (Array.isArray(rulesRows) ? rulesRows : [])
+          .map(function (r) { return (r.ruleText || '').trim(); })
+          .filter(Boolean);
+      }
+    } catch (e) { /* proceed without the list - worst case, a rare re-suggestion gets caught by the exact-text check in v14SaveLearnedRules instead */ }
+
+    const prompt = v14BuildReviewerPrompt(targetLanguageLabel, targetCountry, domainInfo, existingRuleTexts) +
+      '\n\nENTRIES TO REVIEW:\n' + JSON.stringify(pairs);
+    const maxTokens = Math.min(40000, Math.max(8000, pairs.length * 150));
+    const data = await v14ProxyJson({
+      model: model,
+      temperature: 0,
+      max_tokens: maxTokens,
+      messages: [{ role: 'user', content: prompt }]
+    });
+    const raw = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    if (!raw) return translations;
+    let parsed;
+    try {
+      parsed = JSON.parse(v14CleanJsonResponse(raw));
+    } catch (e) {
+      try { parsed = JSON.parse(v14RepairUnescapedQuotes(v14CleanJsonResponse(raw))); }
+      catch (e2) { return translations; }
+    }
+    const corrections = parsed && Array.isArray(parsed.corrections) ? parsed.corrections : [];
+    const codeIssues = parsed && Array.isArray(parsed.code_issues) ? parsed.code_issues : [];
+    const learnedRules = parsed && Array.isArray(parsed.learned_rules) ? parsed.learned_rules : [];
+
+    if (codeIssues.length) {
+      v14SaveCodeIssues(codeIssues, domainInfo).catch(function (e) {
+        try { console.error('Could not save flagged code issue(s):', e.message); } catch (err) {}
+      });
+    }
+    if (learnedRules.length) {
+      v14SaveLearnedRules(learnedRules, domainInfo).catch(function (e) {
+        try { console.error('Could not save learned rule(s):', e.message); } catch (err) {}
+      });
+    }
+
+    if (!corrections.length) {
+      log('Review pass: no wording corrections needed' + (codeIssues.length ? (', ' + codeIssues.length + ' possible code-level issue(s) flagged for review') : '') + (learnedRules.length ? (', ' + learnedRules.length + ' possible new rule(s) suggested for review') : '') + '.', 'info');
+      return translations;
+    }
+    const correctionMap = {};
+    corrections.forEach(function (c) {
+      if (c && c.id && typeof c.corrected_text === 'string' && c.corrected_text.trim()) {
+        correctionMap[c.id] = c.corrected_text.trim();
+      }
+    });
+    let appliedCount = 0;
+    const refined = translations.map(function (t) {
+      if (t && t.id && correctionMap[t.id] != null) {
+        appliedCount++;
+        return Object.assign({}, t, { translated_text: correctionMap[t.id] });
+      }
+      return t;
+    });
+    log('Review pass: ' + appliedCount + ' correction(s) applied' + (codeIssues.length ? (', ' + codeIssues.length + ' possible code-level issue(s) flagged for review') : '') + (learnedRules.length ? (', ' + learnedRules.length + ' possible new rule(s) suggested for review') : '') + '.', 'info');
+    return refined;
+  }
+
+  // Item - saves reviewer-flagged structural/systematic patterns to the
+  // "Translation Code Issues" table (Admin > PostgreSQL) - DETECTION
+  // ONLY. This never touches, generates, or deploys any code itself -
+  // it just records what the reviewer noticed, with status "New", for
+  // an actual human (Admin/developer) to look at, confirm, and fix
+  // deliberately. Best-effort save (a failure here never affects the
+  // translation itself, which has already completed by this point).
+  async function v14SaveCodeIssues(codeIssues, domainInfo) {
+    const fetcher = window.authFetch || window.fetch;
+    const listRes = await fetcher('/api/data/translation-code-issues');
+    const existing = listRes.ok ? (await listRes.json()) : [];
+    const rows = Array.isArray(existing) ? existing.slice() : [];
+    const now = new Date().toISOString();
+    codeIssues.forEach(function (issue) {
+      if (!issue || !issue.description) return;
+      rows.push({
+        id: 'issue-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+        description: String(issue.description).trim(),
+        evidence: String(issue.evidence || '').trim(),
+        domain: (domainInfo && domainInfo.domain) || '',
+        docType: (domainInfo && domainInfo.docType) || '',
+        flaggedAt: now,
+        status: 'New',
+      });
+    });
+    await fetcher('/api/data/translation-code-issues', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rows)
+    });
+  }
+
+  // Item - saves reviewer-suggested GENERALIZABLE rules to "Translation
+  // Rules" (Admin > PostgreSQL) - the same table v14FetchTranslationRules
+  // reads from and injects into every future prompt. Unlike Translation
+  // Domains (which auto-activate immediately, since a wrong domain
+  // profile only affects documents in that one narrow domain), a bad
+  // rule here would inject wrong guidance into EVERY future translation
+  // regardless of domain - real risk, not just narrow-scope risk. So
+  // these save with active="No": captured automatically so nothing
+  // discovered is lost, but NOT live in any prompt until a human
+  // reviews it in the Admin table and flips it to "Yes" - deliberately
+  // a lower level of trust than Domains gets, matched to the bigger
+  // blast radius a bad row here would have.
+  async function v14SaveLearnedRules(learnedRules, domainInfo) {
+    const fetcher = window.authFetch || window.fetch;
+    const listRes = await fetcher('/api/data/translation-rules');
+    const existing = listRes.ok ? (await listRes.json()) : [];
+    const rows = Array.isArray(existing) ? existing.slice() : [];
+    // Skip near-duplicates of a rule already present (active or not) -
+    // otherwise the same pattern found across many documents in the
+    // same domain would pile up as repeated near-identical rows.
+    const existingTexts = rows.map(function (r) { return (r.ruleText || '').toLowerCase().trim(); });
+    learnedRules.forEach(function (rule) {
+      if (!rule || !rule.rule_text) return;
+      const text = String(rule.rule_text).trim();
+      if (!text || existingTexts.indexOf(text.toLowerCase()) !== -1) return;
+      rows.push({
+        id: 'rule-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+        ruleText: text,
+        category: 'Terminology',
+        active: 'No',
+        note: 'Auto-suggested by the reviewer pass (domain: ' + ((domainInfo && domainInfo.domain) || 'n/a') +
+          ') - review and switch Active to Yes to actually use this in future translations.',
+      });
+    });
+    await fetcher('/api/data/translation-rules', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rows)
+    });
   }
 
   // id-match karke original text ko translated text se REPLACE karta hai.
