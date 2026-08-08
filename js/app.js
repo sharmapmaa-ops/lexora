@@ -4280,8 +4280,8 @@
                                 </button>
                             </div>
                             <div class="card-body payment-history-scroll-outer">
-                                <div class="history-table-header-wrapper" id="historyTableHeaderWrapper">
-                                <table class="history-table payment-history-table" id="historyTableHeader">
+                                <div class="history-table-header-wrapper rt-wrap-top" id="historyTableHeaderWrapper">
+                                <table class="history-table payment-history-table rt-table" id="historyTableHeader">
                                     <thead>
                                         <tr>
                                             <th style="width:36px;"><input type="checkbox" id="historySelectAll" onchange="toggleSelectAllTransactions(this.checked)" /></th>
@@ -4300,8 +4300,8 @@
                                     </thead>
                                 </table>
                                 </div>
-                                <div class="history-table-wrapper report-table-scroll" id="historyTableWrapper">
-                                    <table class="history-table payment-history-table" id="historyTable">
+                                <div class="history-table-wrapper report-table-scroll rt-wrap-bottom" id="historyTableWrapper">
+                                    <table class="history-table payment-history-table rt-table" id="historyTable">
                                         <tbody id="historyTableBody"></tbody>
                                     </table>
                                 </div>
@@ -6975,7 +6975,7 @@
                     <div class="history-card notif-card">
                         <div class="notif-tabs">${tab('all', 'All')}${tab('unread', 'Unread')}${tab('read', 'Read')}</div>
                         <div class="card-body notif-table-scroll-outer">
-                            <table class="history-table notif-table" id="notificationTableHeader">
+                            <table class="history-table notif-table rt-table" id="notificationTableHeader">
                                 <thead>
                                     <tr>
                                         <th style="width:38px;"><input type="checkbox" onchange="toggleNotificationSelectAll(this)" /></th>
@@ -6986,8 +6986,8 @@
                                     </tr>
                                 </thead>
                             </table>
-                            <div class="history-table-wrapper notif-table-wrapper report-table-scroll" id="notificationTableWrapper">
-                                <table class="history-table notif-table" id="notificationTable">
+                            <div class="history-table-wrapper notif-table-wrapper report-table-scroll rt-wrap-bottom" id="notificationTableWrapper">
+                                <table class="history-table notif-table rt-table" id="notificationTable">
                                     <tbody id="notificationTableBody"></tbody>
                                 </table>
                             </div>
@@ -7920,8 +7920,8 @@
                             </div>
                             <button class="admin-btn" id="dbFilterToggleBtn" onclick="dbToggleFilterRow()">\u{1F50D} Filter</button>
                         </div>
-                        <div class="db-edit-table-wrapper report-table-scroll">
-                        <table class="admin-json-table db-txn-table db-edit-table">
+                        <div class="db-edit-table-wrapper report-table-scroll rt-wrap-full">
+                        <table class="admin-json-table db-txn-table db-edit-table rt-table">
                             <thead>
                                 <tr>
                                     <th><input type="checkbox" onchange="dbTableToggleAll(this)" /></th>
@@ -8170,8 +8170,8 @@
                         <button class="admin-btn admin-btn-download" onclick="downloadRulesCsv()">\u2B07\uFE0F Download</button>
                         <button class="admin-btn" onclick="refreshDbStatus()">\u21BB Refresh</button>
                     </div>
-                    <div class="db-edit-table-wrapper report-table-scroll">
-                    <table class="admin-json-table db-txn-table db-edit-table">
+                    <div class="db-edit-table-wrapper report-table-scroll rt-wrap-full">
+                    <table class="admin-json-table db-txn-table db-edit-table rt-table">
                         <thead>
                             <tr>
                                 <th><input type="checkbox" onchange="dbTableToggleAll(this)" /></th>
@@ -11173,8 +11173,8 @@
                                     <button class="dash-view-all" onclick="lexoraNavigatePaymentTab('history')">View All Transactions <span>\u2192</span></button>
                                 </div>
                                 <div class="card-body today-table-scroll-outer">
-                                    <div class="history-table-header-wrapper" id="todayTableHeaderWrapper">
-                                    <table class="history-table today-table payment-history-table" id="todayTableHeader">
+                                    <div class="history-table-header-wrapper rt-wrap-top" id="todayTableHeaderWrapper">
+                                    <table class="history-table today-table payment-history-table rt-table" id="todayTableHeader">
                                         <thead>
                                             <tr>
                                                 <th title="Download Receipt">
@@ -11192,8 +11192,8 @@
                                         </thead>
                                     </table>
                                     </div>
-                                    <div class="history-table-wrapper report-table-scroll" id="todayTableWrapper">
-                                        <table class="history-table today-table payment-history-table" id="todayTable">
+                                    <div class="history-table-wrapper report-table-scroll rt-wrap-bottom" id="todayTableWrapper">
+                                        <table class="history-table today-table payment-history-table rt-table" id="todayTable">
                                             <tbody id="todayTableBody">
                                             </tbody>
                                         </table>
@@ -11628,8 +11628,8 @@
                                 </button>
                             </div>
                             <div class="card-body">
-                                <div class="support-table-scroll report-table-scroll" id="supportTableWrapper">
-                                    <table class="history-table support-log-table" id="supportTable">
+                                <div class="support-table-scroll report-table-scroll rt-wrap-full" id="supportTableWrapper">
+                                    <table class="history-table support-log-table rt-table" id="supportTable">
                                         <thead>
                                             <tr>
                                                 <th><input type="checkbox" onchange="toggleSupportSelectAll(this)" /></th>

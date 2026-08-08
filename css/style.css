@@ -2079,31 +2079,15 @@
             overflow-x: visible;
         }
 
-        #historyTableHeader,
-        #todayTableHeader,
-        #notificationTableHeader {
-            /* Item 4 - Today's Transactions was missing this entirely
-               (only Payment History had it, by id, so it never applied
-               to Today's Transactions' own header table) - that's what
-               made its header look like it had different/extra spacing
-               even though the two tables share the same base styling.
-               padding-right removed here - the newer, more robust fix
-               for the header/body scrollbar mismatch now lives on
-               .history-table-header-wrapper (design-system.css) and
-               applies to both tables already; keeping a second,
-               smaller value here too would just double up on it.
-               Item (common css) - Notification's header <table> gets
-               this too now (it had no border/radius at all before, an
-               actual visible difference from the other four cards) -
-               radius is 6px everywhere across all five tables' wrapper/
-               header borders now, replacing what used to be three
-               different values (4px here, 4px on Support's wrapper, 8px
-               on PostgreSQL's) picked independently of each other. */
-            border: 1px solid rgba(0,0,139,0.1);
-            border-bottom: none;
-            border-radius: 6px 6px 0 0;
-            flex-shrink: 0;
-        }
+        /* This border/radius/flex-shrink block was removed entirely -
+           it lived on the header <table> elements themselves, but
+           border/radius for split-header tables now live ONLY on their
+           WRAPPING divs (.rt-wrap-top, design-system.css's unified
+           report-table system) - having both would have double-
+           bordered these headers (once on the div, once on the table
+           inside it). flex-shrink:0 (needed so the header row can never
+           get squeezed to nothing - see the earlier note on that exact
+           bug) now lives on .rt-wrap-top too. */
 
         .history-table thead th {
             /* background/color/font-weight/padding come from the shared

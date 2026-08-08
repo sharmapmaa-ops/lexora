@@ -3876,3 +3876,103 @@ body { background: #ffffff; }
     padding: 0;
     height: 100%;
 }
+
+/* =====================================================================
+   UNIFIED REPORT-TABLE SYSTEM (single source of truth)
+   =====================================================================
+   Used by ALL FIVE report-style tables - Payment History, Today's
+   Transactions, Notification, Support, PostgreSQL admin. This is the
+   direct answer to being asked "why not just build ONE shared CSS
+   system instead of patching five separate ones over and over" -
+   every table/th/td/border/radius/font rule that used to be scattered
+   (and duplicated, and silently conflicting) across both CSS files for
+   these five tables is replaced by exactly the rules below. Nothing
+   else in either file should declare .rt-table/.rt-wrap-*
+   backgrounds/fonts/borders/radii - if a future change is needed, it
+   belongs HERE, once, not as a sixth new override somewhere else.
+
+   Column WIDTHS are deliberately NOT here - those are inherently
+   per-table content, set by JS (autofitSplitTableColumns() / the
+   single-table equivalent, app.js) at render time, not something a
+   shared stylesheet rule could express. */
+
+/* Item (single unified system) - every property below is !important.
+   This session repeatedly turned up ANOTHER hidden, previously-
+   unnoticed conflicting declaration for these same five tables (same
+   selector, different value, written at some earlier point and never
+   cleaned up) - four separate times, across two files. Rather than
+   claim this file is now exhaustively free of every such duplicate
+   (which turned out wrong three times already), !important makes this
+   block unconditionally the last word for these five tables' shared
+   look, regardless of whatever else does or doesn't still exist
+   elsewhere. Column WIDTHS are the one exception - JS sets those
+   per-element via inline style at render time, which already beats
+   !important by definition, so they're untouched by this. */
+.rt-table {
+    border-collapse: collapse !important;
+    font-size: 0.79rem !important;
+}
+.rt-table thead th {
+    background: #f7f9fd !important;
+    color: var(--ds-muted) !important;
+    font-size: 0.78rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.2px !important;
+    text-align: left !important;
+    padding: 12px 14px !important;
+    border-bottom: 1px solid var(--ds-line) !important;
+    border-top: 1px solid var(--ds-line) !important;
+    white-space: nowrap !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+}
+.rt-table tbody td {
+    padding: 8px 14px !important;
+    font-size: 0.79rem !important;
+    color: var(--ds-ink) !important;
+    vertical-align: middle !important;
+    height: 40px !important;
+    white-space: nowrap !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+    border-bottom: 1px solid var(--ds-line) !important;
+}
+.rt-table tbody tr:hover { background: #f9fbff !important; }
+.rt-table tbody tr:last-child td { border-bottom: none !important; }
+.rt-table th:first-child,
+.rt-table td:first-child { text-align: center !important; }
+
+/* Split header/body tables (two separate <table> elements - Payment
+   History, Today's Transactions, Notification): header gets the top-
+   rounded half of the border, the body wrapper gets the bottom-rounded
+   half, together reading as one continuous bordered box. */
+.rt-wrap-top {
+    border: 1px solid rgba(0,0,139,0.1) !important;
+    border-bottom: none !important;
+    border-radius: 6px 6px 0 0 !important;
+    flex-shrink: 0 !important;
+    padding-right: 16px !important;
+    box-sizing: border-box !important;
+    overflow-x: hidden !important;
+}
+.rt-wrap-bottom {
+    border: 1px solid rgba(0,0,139,0.1) !important;
+    border-top: none !important;
+    border-radius: 0 0 6px 6px !important;
+    overflow-y: scroll !important;
+    scrollbar-gutter: stable !important;
+    height: 280px !important;
+    flex: none !important;
+    min-height: 0 !important;
+}
+
+/* Single <table> report cards (Support, PostgreSQL admin): one full-
+   radius wrapper instead of a split top/bottom pair. */
+.rt-wrap-full {
+    border: 1px solid rgba(0,0,139,0.1) !important;
+    border-radius: 6px !important;
+    overflow-x: auto !important;
+    overflow-y: scroll !important;
+    scrollbar-gutter: stable !important;
+    height: 280px !important;
+}
