@@ -8985,6 +8985,24 @@
                 },
             };
 
+            // Item - registers the current active debug topic per the
+            // "put multiple solutions in the Claude tab" workflow. Clears
+            // whatever was there before (per that same rule: only the
+            // topic currently being worked matters, not old ones).
+            ClaudeDebug.clear();
+            ClaudeDebug.addTopic(
+                'Support/PostgreSQL: view breaks after add/delete, only page-refresh fixes it',
+                [
+                    { name: 'Solution 1: reset grid state before every re-measure (default, high-confidence fix)', value: 'reset-before-measure' },
+                    { name: 'Solution 2: same reset + forced reflow before measuring', value: 'reflow-forced' },
+                    { name: 'Solution 3: clone header row fresh (like a real refresh) before measuring', value: 'rebuild-clone' },
+                ],
+                function (chosen) {
+                    window.__autofitFixMode = chosen;
+                    if (document.getElementById('supportTableBody')) renderSupportTable();
+                }
+            );
+
             // Gathers every currently-registered service (both free tools
             // and the fixed set of paid ones) and asks the backend to add
             // any not already a row in the Services Catalog - existing
@@ -10559,6 +10577,21 @@
                 const bodyRows = bodyTable.querySelectorAll('tbody tr');
                 if (!headerRow || !bodyRows.length) return;
 
+                // Item - same fix as autofitSingleTableColumns: the header
+                // <table> (and its <tr>) persists across re-renders here
+                // too (only the body table's <tbody> gets replaced), so
+                // on the SECOND and later calls, headerRow already carries
+                // display:grid + a gridTemplateColumns from the previous
+                // run - which was never being reset before measuring
+                // again, so "natural width" was actually being read
+                // through the OLD grid track sizes. Resetting both back to
+                // nothing before every measurement pass is what a full
+                // page refresh was accidentally doing (fresh elements,
+                // nothing left over), which is why that always "fixed" it.
+                headerRow.style.display = '';
+                headerRow.style.gridTemplateColumns = '';
+                bodyRows.forEach(function (tr) { tr.style.display = ''; tr.style.gridTemplateColumns = ''; });
+
                 [headerTable, bodyTable].forEach(function (t) {
                     t.style.tableLayout = 'auto';
                     t.style.width = 'max-content';
@@ -10629,9 +10662,50 @@
             function autofitSingleTableColumns(tableId) {
                 const table = document.getElementById(tableId);
                 if (!table) return;
-                const headRow = table.querySelector('thead tr');
+                let headRow = table.querySelector('thead tr');
                 const bodyRows = table.querySelectorAll('tbody tr');
                 if (!headRow || !bodyRows.length) return;
+
+                // Item - "view breaks after add/delete, fixed only by a
+                // full page refresh" traced to a real bug: the HEADER row
+                // element persists across re-renders (only <tbody>'s
+                // innerHTML gets replaced, not the header), so on every
+                // call AFTER the first, headRow already has display:grid
+                // + a gridTemplateColumns from the PREVIOUS run still
+                // applied - and that was never reset before measuring
+                // again, so the "natural width" measurement below was
+                // reading widths already constrained by the OLD grid
+                // tracks, not the true content width. A page refresh
+                // recreates the header fresh (no leftover grid state),
+                // which is why that always "fixed" it.
+                //
+                // Solution 1 (default) fixes exactly that: reset display/
+                // gridTemplateColumns to nothing on every row (header +
+                // body) before measuring, every single call. Two
+                // alternate strategies are also wired up via the "Claude"
+                // admin tab in case this one turns out not to be the
+                // whole story - see ClaudeDebug topic "Support/PostgreSQL:
+                // view breaks after add/delete".
+                const mode = window.__autofitFixMode || 'reset-before-measure';
+
+                if (mode === 'rebuild-clone') {
+                    // Solution 3 (most aggressive): don't trust incremental
+                    // style resets at all - clone the header row into a
+                    // brand-new element (guaranteed zero leftover state,
+                    // exactly what a page refresh gives you) and swap it
+                    // in BEFORE measuring anything, rather than resetting
+                    // the existing element's styles.
+                    const freshHead = headRow.cloneNode(true);
+                    freshHead.style.display = '';
+                    freshHead.style.gridTemplateColumns = '';
+                    headRow.parentNode.replaceChild(freshHead, headRow);
+                    headRow = freshHead;
+                    bodyRows.forEach(function (tr) { tr.style.display = ''; tr.style.gridTemplateColumns = ''; });
+                } else if (mode === 'reset-before-measure' || mode === 'reflow-forced') {
+                    headRow.style.display = '';
+                    headRow.style.gridTemplateColumns = '';
+                    bodyRows.forEach(function (tr) { tr.style.display = ''; tr.style.gridTemplateColumns = ''; });
+                }
 
                 table.style.width = 'max-content';
                 table.style.maxWidth = 'none';
@@ -10639,6 +10713,17 @@
                     cell.style.width = '';
                     cell.style.whiteSpace = 'nowrap';
                 });
+
+                if (mode === 'reflow-forced') {
+                    // Solution 2: same reset as above, PLUS an explicit
+                    // forced-reflow read (void table.offsetHeight) between
+                    // the reset and the measurement - guards against any
+                    // subtler case where the browser hasn't actually
+                    // recomputed layout yet at the point getBoundingClientRect()
+                    // gets called, which the plain reset alone wouldn't
+                    // catch.
+                    void table.offsetHeight;
+                }
 
                 const colCount = headRow.children.length;
                 const widths = new Array(colCount).fill(0);
@@ -10662,20 +10747,6 @@
                     cell.style.boxSizing = 'border-box';
                 });
 
-                // Item - after a delete/filter/pagination re-render, this
-                // table is very often narrower than it was a moment ago
-                // (fewer/shorter values now that a row's gone) - but the
-                // WRAPPER div's own scroll position isn't part of what
-                // gets rebuilt here (only the table's cells/rows are), so
-                // an old scrollLeft from when the table was wider just
-                // silently persists. The browser then clamps that now-
-                // too-large scrollLeft to whatever the new, smaller
-                // scrollable range allows, which can land on a position
-                // that shows the tail end of the table with the earlier
-                // columns (checkbox, Date, ...) scrolled out of view -
-                // exactly what "delete a row and the whole view looks
-                // broken" was. Resetting scroll position back to the
-                // start on every re-render keeps it predictable.
                 const scrollWrapper = table.closest('.report-table-scroll, .rt-wrap-full, .rt-wrap-bottom');
                 if (scrollWrapper) scrollWrapper.scrollLeft = 0;
             }
