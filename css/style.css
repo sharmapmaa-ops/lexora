@@ -1653,7 +1653,10 @@
             overflow-y: auto;
             border: 1px solid rgba(0,0,139,0.1);
             border-top: none;
-            border-radius: 0 0 4px 4px;
+            /* Item (common css) - 6px everywhere now, matching the
+               header table's own border-radius above (and Support/
+               PostgreSQL's single-table wrappers, further down). */
+            border-radius: 0 0 6px 6px;
         }
 
         /* Today's Transactions (dashboard) has 8 columns, one more than the
@@ -1780,7 +1783,10 @@
            unique to this one card, not duplicated anywhere else. */
         .support-table-scroll {
             border: 1px solid rgba(0,0,139,0.1);
-            border-radius: 4px;
+            /* Item (common css) - 6px, matching every other report-
+               table's wrapper/header border-radius now (was 4px here,
+               independently of the other four). */
+            border-radius: 6px;
             /* Item 11 - the table now has a min-width (like Payment
                History's), so this needs to scroll horizontally instead
                of letting the wider table overflow/squeeze oddly. */
@@ -2072,7 +2078,8 @@
         }
 
         #historyTableHeader,
-        #todayTableHeader {
+        #todayTableHeader,
+        #notificationTableHeader {
             /* Item 4 - Today's Transactions was missing this entirely
                (only Payment History had it, by id, so it never applied
                to Today's Transactions' own header table) - that's what
@@ -2082,10 +2089,17 @@
                for the header/body scrollbar mismatch now lives on
                .history-table-header-wrapper (design-system.css) and
                applies to both tables already; keeping a second,
-               smaller value here too would just double up on it. */
+               smaller value here too would just double up on it.
+               Item (common css) - Notification's header <table> gets
+               this too now (it had no border/radius at all before, an
+               actual visible difference from the other four cards) -
+               radius is 6px everywhere across all five tables' wrapper/
+               header borders now, replacing what used to be three
+               different values (4px here, 4px on Support's wrapper, 8px
+               on PostgreSQL's) picked independently of each other. */
             border: 1px solid rgba(0,0,139,0.1);
             border-bottom: none;
-            border-radius: 4px 4px 0 0;
+            border-radius: 6px 6px 0 0;
             flex-shrink: 0;
         }
 
@@ -5131,20 +5145,30 @@
 }
 
 .admin-json-table thead th {
+    /* background/color/padding come from the shared .history-table/
+       .admin-json-table thead th rule now (design-system.css) - this
+       used to say background:#0b1330; color:white; padding:10px 10px
+       here, another of the same dead-but-misleading duplicate-selector
+       overrides found and removed across these report tables (only
+       wasn't visible because the shared rule, equal specificity, loads
+       later and was already winning). */
     position: sticky;
     top: 0;
-    background: #0b1330;
-    color: white;
-    padding: 10px 10px;
     text-align: left;
     white-space: nowrap;
     z-index: 1;
 }
 
 .admin-json-table tbody td {
-    padding: 6px 8px;
+    /* padding/font-size/height/white-space come from the shared
+       .payment-history-table/.support-log-table/.notif-table/
+       .admin-json-table tbody td rule now (design-system.css) - this
+       used to set its own different, smaller padding (6px 8px vs the
+       shared rule's 8px 14px), which IS what was winning (no shared
+       rule covered .admin-json-table tbody td at all before), and is
+       exactly why this table's rows looked visibly tighter/different
+       from the other four. */
     border-bottom: 1px solid rgba(0,0,139,0.08);
-    white-space: nowrap;
 }
 
 .admin-json-table tbody tr:nth-child(even) {
@@ -5198,12 +5222,21 @@
    so the table doesn't look like a wall of input boxes; a click swaps
    just that one cell for the real input/select/textarea above. */
 .db-cell-display {
+    /* Item (common css) - no padding of its own now: the shared
+       .admin-json-table tbody td rule (design-system.css) already
+       gives the CELL itself the same padding every other report
+       table's cells use - this span having its OWN padding too was
+       stacking on top of that, making PostgreSQL's cell content sit
+       visibly more inset than the other four tables'. Kept as a real
+       (zero-size) box only so the hover highlight below still has a
+       box to draw. */
     display: block;
-    padding: 6px 8px;
     min-height: 1.2em;
     cursor: text;
     border-radius: 5px;
     border: 1px solid transparent;
+    margin: -8px -14px;
+    padding: 8px 14px;
 }
 .db-cell-display:hover {
     background: rgba(0,0,139,0.04);
@@ -5315,13 +5348,16 @@
 .db-edit-table-wrapper {
     /* height/overflow now come from the shared .report-table-scroll
        class on this same element (ROUND 12, design-system.css) - genuine
-       one-off differences (border, margin-top) stay here. Switching the
+       one-off differences (margin-top) stay here. border/border-radius
+       now match every other report-table's wrapper too (Item, common
+       css) - was its own 1px rgba(0,0,139,0.15)/8px here, independently
+       of the other four's 1px rgba(0,0,139,0.1)/6px. Switching the
        Table select dropdown must never resize this card either way,
        regardless of whether the newly-selected table has 2 rows or 200 -
        tables shorter than the shared height just show blank space below
        their last row; taller ones scroll internally. */
-    border: 1px solid rgba(0,0,139,0.15);
-    border-radius: 8px;
+    border: 1px solid rgba(0,0,139,0.1);
+    border-radius: 6px;
     margin-top: 10px;
 }
 

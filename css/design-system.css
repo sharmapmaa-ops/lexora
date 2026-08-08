@@ -1365,7 +1365,8 @@ body, input, select, textarea, button {
    columns were wide enough. */
 .payment-history-table tbody td,
 .support-log-table tbody td,
-.notif-table tbody td {
+.notif-table tbody td,
+.admin-json-table tbody td {
     padding: 8px 14px;
     font-size: .79rem;
     vertical-align: middle;
