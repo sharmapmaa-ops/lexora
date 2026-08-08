@@ -10458,16 +10458,17 @@
 
             // Item - "autofit, nothing ever wraps" for the split header/
             // body report tables (Today's Transactions, Payment History,
-            // Notification). Uses <colgroup>/<col> to set column widths,
-            // NOT per-cell inline widths on just the first body row -
-            // that was the actual, confirmed bug: table-layout:fixed
-            // determining a column's width from "whatever the first row's
-            // cell says" is NOT a fully reliable cross-browser mechanism,
-            // especially for keeping TWO SEPARATE <table> elements (header
-            // vs body) in exact agreement - <colgroup> is the real,
-            // authoritative, standards-defined way to fix a table's
-            // column widths, independent of any particular row's own
-            // cell widths, which is exactly the guarantee needed here.
+            // Notification). Three genuinely DIFFERENT technical
+            // strategies for keeping the header <table> and body <table>'s
+            // columns in agreement are implemented below and switchable
+            // live (see the "Table Mode" control on Today's Transactions/
+            // Payment History) - static code review alone hasn't reliably
+            // predicted which one actually renders correctly in a real
+            // browser after several attempts, so rather than guess again,
+            // all three ship at once and whichever one visually works can
+            // be reported back and kept, the other two deleted.
+            window.__rtTableMode = window.__rtTableMode || (localStorage.getItem('rtTableMode') || 'colgroup');
+
             function autofitSplitTableColumns(headerTableId, bodyTableId) {
                 const headerTable = document.getElementById(headerTableId);
                 const bodyTable = document.getElementById(bodyTableId);
@@ -10476,18 +10477,20 @@
                 const bodyRows = bodyTable.querySelectorAll('tbody tr');
                 if (!headerRow || !bodyRows.length) return;
 
+                // ---- shared measurement pass (same for every mode) ----
                 [headerTable, bodyTable].forEach(function (t) {
                     t.style.tableLayout = 'auto';
                     t.style.width = 'max-content';
                     t.style.maxWidth = 'none';
+                    Array.prototype.forEach.call(t.querySelectorAll('th, td'), function (cell) {
+                        cell.style.width = '';
+                    });
                 });
                 Array.prototype.forEach.call(headerRow.children, function (th) {
-                    th.style.width = '';
                     th.style.whiteSpace = 'nowrap';
                 });
                 bodyRows.forEach(function (tr) {
                     Array.prototype.forEach.call(tr.children, function (td) {
-                        td.style.width = '';
                         td.style.whiteSpace = 'nowrap';
                     });
                 });
@@ -10502,31 +10505,89 @@
                         if (i < colCount) widths[i] = Math.max(widths[i], td.getBoundingClientRect().width);
                     });
                 });
+                const px = widths.map(function (w) { return Math.ceil(w + 1); });
 
                 [headerTable, bodyTable].forEach(function (t) {
                     t.style.tableLayout = 'fixed';
                     t.style.width = 'auto';
                     t.style.maxWidth = '';
-                    // Clear any per-cell widths a previous run of this
-                    // function may have left behind - <colgroup> below is
-                    // now the ONLY source of column widths, so a stray
-                    // cell-level width could only ever fight it.
+                    const oldColgroup = t.querySelector(':scope > colgroup');
+                    if (oldColgroup) oldColgroup.remove();
                     Array.prototype.forEach.call(t.querySelectorAll('th, td'), function (cell) {
                         cell.style.width = '';
                     });
-                    let colgroup = t.querySelector(':scope > colgroup');
-                    if (!colgroup) {
-                        colgroup = document.createElement('colgroup');
-                        t.insertBefore(colgroup, t.firstChild);
-                    }
-                    colgroup.innerHTML = '';
-                    for (let i = 0; i < colCount; i++) {
-                        const col = document.createElement('col');
-                        col.style.width = Math.ceil(widths[i] + 1) + 'px';
-                        colgroup.appendChild(col);
-                    }
                 });
+
+                // ---- mode-specific apply pass ----
+                const mode = window.__rtTableMode;
+                if (mode === 'allrows') {
+                    // MODE B: explicit width on EVERY cell of EVERY row in
+                    // BOTH tables (not just header + first body row) - the
+                    // most brute-force, no-shortcuts option: nothing is
+                    // ever inferred from "the first row", every single
+                    // cell states its own column's width directly.
+                    Array.prototype.forEach.call(headerRow.children, function (th, i) {
+                        th.style.width = px[i] + 'px';
+                    });
+                    bodyRows.forEach(function (tr) {
+                        Array.prototype.forEach.call(tr.children, function (td, i) {
+                            if (i < colCount) td.style.width = px[i] + 'px';
+                        });
+                    });
+                } else if (mode === 'grid') {
+                    // MODE C: abandon table-layout column-width mechanics
+                    // entirely for the WIDTH concern - display:grid on
+                    // both <tr> elements (rows), with the exact same
+                    // grid-template-columns string applied to the header
+                    // row and every body row. Grid tracks are a completely
+                    // different browser layout engine from table column
+                    // sizing, so this sidesteps table-layout:fixed's
+                    // "which row counts" ambiguity altogether - each row
+                    // independently gets told the same track sizes.
+                    const template = px.map(function (w) { return w + 'px'; }).join(' ');
+                    headerRow.style.display = 'grid';
+                    headerRow.style.gridTemplateColumns = template;
+                    Array.prototype.forEach.call(headerRow.children, function (th) {
+                        th.style.width = 'auto';
+                        th.style.boxSizing = 'border-box';
+                    });
+                    bodyRows.forEach(function (tr) {
+                        tr.style.display = 'grid';
+                        tr.style.gridTemplateColumns = template;
+                        Array.prototype.forEach.call(tr.children, function (td) {
+                            td.style.width = 'auto';
+                            td.style.boxSizing = 'border-box';
+                        });
+                    });
+                } else {
+                    // MODE A (default): <colgroup>/<col> - the standards-
+                    // defined, browser-native mechanism for fixing a
+                    // table's column widths independent of any row's own
+                    // cell widths.
+                    [headerTable, bodyTable].forEach(function (t) {
+                        const colgroup = document.createElement('colgroup');
+                        px.forEach(function (w) {
+                            const col = document.createElement('col');
+                            col.style.width = w + 'px';
+                            colgroup.appendChild(col);
+                        });
+                        t.insertBefore(colgroup, t.firstChild);
+                    });
+                }
             }
+
+            // Item - lets the CURRENT table's column-width strategy be
+            // switched live, from the small "Table Mode" control on
+            // Today's Transactions/Payment History, with no redeploy -
+            // try each one, see which actually renders correctly, report
+            // back which one, and everything else gets deleted afterward.
+            window.setRtTableMode = function(mode) {
+                window.__rtTableMode = mode;
+                localStorage.setItem('rtTableMode', mode);
+                if (document.getElementById('todayTableBody')) renderTodayTransactions();
+                if (document.getElementById('historyTableBody')) renderPaymentHistory();
+                if (document.getElementById('notificationTableBody')) renderNotificationTable();
+            };
 
             function wireSplitTableScrollSync(container) {
                 const pairs = [
@@ -11144,6 +11205,11 @@
                                         </svg>
                                     </span>
                                     <h3>Today's Transactions</h3>
+                                    <select onchange="setRtTableMode(this.value)" title="Debug: table column-width strategy for Today's Transactions/Payment History/Notification - pick whichever renders correctly here, then report back which one" style="font-size:0.72rem;padding:3px 6px;border-radius:6px;border:1px solid rgba(0,0,139,0.2);margin-right:8px;">
+                                        <option value="colgroup" ${(window.__rtTableMode || 'colgroup') === 'colgroup' ? 'selected' : ''}>Mode A: colgroup</option>
+                                        <option value="allrows" ${window.__rtTableMode === 'allrows' ? 'selected' : ''}>Mode B: all-rows width</option>
+                                        <option value="grid" ${window.__rtTableMode === 'grid' ? 'selected' : ''}>Mode C: CSS grid</option>
+                                    </select>
                                     <button class="dash-view-all" onclick="lexoraNavigatePaymentTab('history')">View All Transactions <span>\u2192</span></button>
                                 </div>
                                 <div class="card-body today-table-scroll-outer">
