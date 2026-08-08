@@ -7114,6 +7114,7 @@
                     </tr>`;
                 }).join('');
                 updateNotificationBadge();
+                autofitSplitTableColumns('notificationTableHeader', 'notificationTable');
             }
 
             window.setNotificationPageSize = function(value) {
@@ -10523,14 +10524,24 @@
                 // rounding safety margin) and switch to fixed now that
                 // real widths are known, so they stay put and in sync
                 // regardless of which row is scrolled into view later.
-                // Restoring width:100% (instead of leaving max-content) is
-                // what lets the wrapper's overflow-x:auto take over again
-                // for horizontal scrolling if the measured total is wider
-                // than the card - max-content would just keep growing the
-                // table's own box instead of scrolling within the card.
+                // Item - width:auto here (NOT '100%', which this used to
+                // restore) is the actual fix for "the last/widest column
+                // still stretches to fill leftover space": table-layout:
+                // fixed with an explicit table width that doesn't match
+                // the sum of its own explicitly-set column widths makes
+                // browsers PROPORTIONALLY SCALE every column up to fill
+                // that width - so even though each column had a real,
+                // correct measured pixel value, forcing width:100% right
+                // after setting them was quietly stretching all of them
+                // (worst on whichever column had the most "slack") to
+                // add up to 100% anyway. width:auto lets the table's own
+                // width just BE the sum of its explicit column widths -
+                // narrower than the card when content doesn't need the
+                // full width (the wrapper's overflow-x:auto scrolls if
+                // it's ever wider instead).
                 [headerTable, bodyTable].forEach(function (t) {
                     t.style.tableLayout = 'fixed';
-                    t.style.width = '100%';
+                    t.style.width = 'auto';
                     t.style.maxWidth = '';
                 });
                 Array.prototype.forEach.call(headerRow.children, function (th, i) {

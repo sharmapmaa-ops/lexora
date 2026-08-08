@@ -1638,6 +1638,14 @@ h3 .ds-card-icon svg { width: 17px; height: 17px; }
 .notif-mark-all svg { width: 16px; height: 16px; }
 .notif-mark-all:hover { background: rgba(18,87,245,.05); }
 
+/* Item - was relying on the default overflow:visible, which just spills
+   the table past the card's edge instead of scrolling once the now-
+   strictly-autofit columns (including "Notification", which can be a
+   full sentence) add up wider than the card. */
+.notif-table-scroll-outer {
+    overflow-x: auto;
+}
+
 .notif-tabs {
     display: flex;
     gap: 26px;

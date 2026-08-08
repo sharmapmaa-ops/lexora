@@ -1795,20 +1795,18 @@
 
         .support-log-table {
             border-collapse: collapse;
-            /* Item - width:100% was the actual bug: table-layout:auto
-               sizes columns to their content ONLY as a starting point -
-               forcing the table's own width to 100% of the card then
-               told the browser to distribute the REMAINING leftover
-               space across all columns anyway, stretching every column
-               past what its content needed (visible as the large gaps
-               after short values like dates/times/status). Removing the
-               forced 100% lets the table's real width just be the sum
-               of what its columns actually need - narrower than the
-               card is the correct, genuinely-autofit result when the
-               content doesn't need the full width, exactly like Payment
-               History/Today's Transactions' own (JS-measured, not CSS)
-               autofit already does. */
-            width: auto;
+            /* Item - width:100% was one real bug (fixed last round);
+               width:auto alone can STILL resolve to "fill available
+               space" for a <table> in some browsers/contexts, because
+               table width has always been one of the more ambiguous
+               corners of the CSS2.1 box model spec - "auto" was never
+               as unambiguous a "shrink to fit content" instruction for
+               tables specifically as it is for most other elements.
+               width:fit-content has an unambiguous, spec-defined
+               shrink-to-fit meaning with no such ambiguity - the table
+               is exactly as wide as its content needs, full stop,
+               regardless of how much space its wrapper has to offer. */
+            width: fit-content;
             font-size: 0.78rem;
             table-layout: auto;
         }
@@ -6032,37 +6030,17 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
    Today's Transactions / Payment History used - only 3 columns here, but
    the same header/body misalignment bug applies whenever a table is split
    this way and either side is left to auto-size independently. ===== */
-#notificationTableHeader,
-#notificationTable {
-    table-layout: fixed;
-    width: 100%;
-}
-
-#notificationTableHeader th:nth-child(1),
-#notificationTable td:nth-child(1) {
-    width: 32px;
-}
-
-#notificationTableHeader th:nth-child(2),
-#notificationTable td:nth-child(2) {
-    width: 120px;
-}
-
-#notificationTableHeader th:nth-child(3),
-#notificationTable td:nth-child(3) {
-    width: 110px;
-}
-
-#notificationTableHeader th:nth-child(4),
-#notificationTable td:nth-child(4) {
-    width: auto;
-}
-
-#notificationTableHeader th:nth-child(5),
-#notificationTable td:nth-child(5) {
-    width: 46px;
-}
-
+/* Item - column widths for this table now come entirely from JS
+   (autofitSplitTableColumns(), app.js) - it measures each column's
+   real content and sets matching explicit widths on both the header
+   and body <table>. The old approach here (table-layout:fixed +
+   width:100% + one nth-child column left as width:auto to "soak up"
+   whatever's left) is exactly what was making the last/auto column
+   stretch beyond its own content instead of genuinely autofitting -
+   fixed-layout tables always distribute a table's OWN specified width
+   across its columns, auto-width columns included, which is the
+   opposite of "size to content" the moment the table's width doesn't
+   equal the sum its columns actually need. */
 
 /* ===== BACK BUTTON INSIDE A CARD HEADER ===== */
 /* Title on the left, back button pushed to the right edge of the same row. */
