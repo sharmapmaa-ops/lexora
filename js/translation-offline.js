@@ -1345,11 +1345,23 @@
       // before the next one) for a document that never needed page-
       // aligned backgrounds in the first place. This only changes
       // behavior for the new feature's own documents.
-      if (pIdx > 0 && pg.pageBg) {
+      //
+      // ALSO requires flow.length (this page actually has real content
+      // to show) - genuine root cause of a stray, entirely blank
+      // trailing page: forcing a page-break onto a fresh page and then
+      // having NOTHING follow it (an empty flow - e.g. this page's only
+      // "content" was the background/image itself, with nothing left
+      // over as an extractable paragraph) left that forced break with
+      // nothing on the page it created, which is exactly what an extra
+      // blank page at the end of the document looks like. If there's no
+      // real content to pair the background with, the break (and the
+      // background image itself, which would be pointless floating
+      // behind nothing) is simply skipped.
+      if (pIdx > 0 && pg.pageBg && flow.length > 0) {
         bodyXml += '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
       }
 
-      if (pg.pageBg) {
+      if (pg.pageBg && flow.length > 0) {
         bodyXml += pageBackgroundXml(pg.pageBg, pg.wPt, pg.hPt);
       }
 
@@ -1385,6 +1397,17 @@
         bodyXml += '<w:p>' + pPr + runsXml + '</w:p>';
       });
 
+      // Item - genuine root cause of a stray, entirely blank trailing
+      // page (3-page source PDF becoming 5 output pages, with the last
+      // one blank): this specifically EXCLUDED the case where the LAST
+      // PDF page's own flow is empty (e.g. that page's real content is
+      // reserved into a background/image with nothing else extractable
+      // as a paragraph, or the page break inserted above for a detected
+      // per-page background pushed onto a fresh page with nothing after
+      // it). When that happens, no closing sectPr paragraph was EVER
+      // written for it - leaving Word to end the document mid-section,
+      // which routinely renders as a dangling extra blank page rather
+      // than cleanly finishing on the previous page's content.
       if (flow.length === 0 && !isLastPage) {
         bodyXml += '<w:p><w:pPr><w:sectPr>' + sectPrXml(pg) + '</w:sectPr></w:pPr></w:p>';
       }

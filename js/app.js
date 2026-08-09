@@ -4072,7 +4072,11 @@
                         ? `<span class="txn-type-badge credit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M12 7v8M8.5 11.5 12 15l3.5-3.5"/></svg> Credit</span>`
                         : `<span class="txn-type-badge debit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M15.5 12.5 12 9l-3.5 3.5M12 17V9"/></svg> Debit</span>`;
                     const amountValue = isCredit ? Number(transaction.credit) : -Number(transaction.debit);
-                    const amountText = `${amountValue >= 0 ? '+' : '-'}${formatMoney(Math.abs(amountValue))}`;
+                    // Item - no leading +/- on the amount itself anymore -
+                    // the Type badge (Credit/Debit, right above) already
+                    // says which one this is, and the sign was redundant
+                    // with it.
+                    const amountText = formatMoney(Math.abs(amountValue));
                     tr.innerHTML = `
                         ${includeCheckbox ? `<td><input type="checkbox" class="txn-select-checkbox" data-txn-id="${transaction.id}" ${selectedTransactionIds.has(transaction.id) ? 'checked' : ''} onchange="toggleSelectTransaction('${transaction.id}', this.checked)" /></td>` : ''}
                         <td class="txn-download-cell">${receiptIcon}</td>
@@ -4273,7 +4277,7 @@
             function buildPaymentHistoryCardHtml() {
                 return `
                         <div class="history-card">
-                            <h3>💳 Payment History</h3>
+                            <h3>💳 Transaction History</h3>
                             <div class="history-filter-bar">
                                 <div class="filter-group">
                                     <label>From Date</label>
@@ -8902,6 +8906,7 @@
                             <button type="button" class="svc-tab" onclick="switchAdminTab(1, this)">\u{1F6E0}\uFE0F Maintenance Mode</button>
                             <button type="button" class="svc-tab" onclick="switchAdminTab(2, this)">\u{1F916} Claude</button>
                             <button type="button" class="svc-tab" onclick="switchAdminTab(3, this)">\u{1F30D} Translation Health</button>
+                            <button type="button" class="svc-tab" onclick="switchAdminTab(4, this)">\u{1F4B0} Send Amount</button>
                         </div>
                         <div class="svc-panes">
                             <div class="svc-pane is-active">
@@ -8939,6 +8944,32 @@
                                     <div id="translationHealthPanel"><p class="ds-card-sub">Loading\u2026</p></div>
                                 </div>
                             </div>
+                            <div class="svc-pane">
+                                <div class="admin-files-card history-card svc-card-inner" id="adminSendAmountCard">
+                                    <p class="ds-card-sub" style="margin-bottom:14px;">
+                                        Kisi bhi user ke Lexora wallet me seedha balance add karo - refund ho, goodwill
+                                        credit ho, ya koi aur wajah - <strong>koi real paisa transfer nahi hota</strong>,
+                                        sirf unke wallet-balance me add hota hai, aur unki Transaction History me ek
+                                        entry ban jaati hai (exactly ek normal top-up jaisi hi dikhegi unhe).
+                                    </p>
+                                    <div class="admin-send-amount-form">
+                                        <div class="filter-group">
+                                            <label>User</label>
+                                            <select id="adminSendAmountUserId"></select>
+                                        </div>
+                                        <div class="filter-group">
+                                            <label>Amount (${currencySymbol()})</label>
+                                            <input type="number" id="adminSendAmountValue" min="0.01" step="0.01" placeholder="e.g. 500" />
+                                        </div>
+                                        <div class="filter-group" style="flex:2;min-width:220px;">
+                                            <label>Description</label>
+                                            <input type="text" id="adminSendAmountDescription" placeholder="e.g. Refund for failed translation (TXN045)" />
+                                        </div>
+                                        <button class="admin-btn admin-btn-save" onclick="submitAdminSendAmount()">\u2795 Add to Wallet</button>
+                                    </div>
+                                    <div id="adminSendAmountMsg"></div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="db-status-footer" id="dbStatusFooter"></div>
@@ -8955,6 +8986,7 @@
                 strip.querySelectorAll('.svc-tab').forEach((x, i) => x.classList.toggle('is-active', i === index));
                 strip.querySelectorAll('.svc-pane').forEach((x, i) => x.classList.toggle('is-active', i === index));
                 if (index === 3) loadTranslationHealthPanel();
+                if (index === 4) loadAdminSendAmountUserList();
             };
 
             // Item - one-screen view of all three self-improvement tables
@@ -9037,6 +9069,64 @@
                 } catch (err) {
                     panel.innerHTML = '<p class="ds-card-sub is-bad">Could not load: ' + escapeHtml(err.message) + '</p>';
                 }
+            };
+
+            // Item - "Send Amount" admin tab: adds wallet balance directly
+            // to any user, with a description, no real money involved -
+            // just a normal credit-type Transaction History entry, exactly
+            // like a self-serve wallet top-up would create, except an
+            // Admin is doing it for someone else (refunds, goodwill
+            // credit, correcting a billing mistake, etc).
+            window.loadAdminSendAmountUserList = async function() {
+                const sel = document.getElementById('adminSendAmountUserId');
+                if (!sel) return;
+                if (!USER_DIRECTORY.length) await loadUserDirectory();
+                sel.innerHTML = USER_DIRECTORY.map(function (u) {
+                    const label = [u.id, [u.firstName, u.lastName].filter(Boolean).join(' '), u.email].filter(Boolean).join(' - ');
+                    return `<option value="${escapeHtml(u.id)}">${escapeHtml(label)}</option>`;
+                }).join('');
+            };
+
+            window.submitAdminSendAmount = async function() {
+                const userSel = document.getElementById('adminSendAmountUserId');
+                const amountInput = document.getElementById('adminSendAmountValue');
+                const descInput = document.getElementById('adminSendAmountDescription');
+                const msgBox = document.getElementById('adminSendAmountMsg');
+                const targetUserId = userSel ? userSel.value : '';
+                const amount = Number(amountInput ? amountInput.value : 0);
+                const description = (descInput && descInput.value.trim()) || 'Balance added by Admin';
+
+                if (!targetUserId) { showWarning('Select a user first.'); return; }
+                if (!amount || amount <= 0) { showWarning('Enter a valid amount greater than 0.'); return; }
+
+                const now = new Date();
+                const txnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                paymentHistory.push({
+                    id: txnId,
+                    date: localDateStr(now),
+                    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+                    userId: targetUserId,
+                    paymentType: 'Balance Received',
+                    paymentMode: 'Admin Credit',
+                    // No approval step needed - an Admin directly adding
+                    // this already IS the approval; status stays unset
+                    // (same as any other already-settled transaction) so
+                    // it counts toward the user's balance immediately,
+                    // not sitting in pending_approval like a self-serve
+                    // top-up request would.
+                    status: 'approved',
+                    description: description,
+                    credit: amount,
+                    debit: 0
+                });
+                await persistPaymentHistory();
+                addNotificationFor(targetUserId, `${currencySymbol()}${amount.toFixed(2)} was added to your wallet by our team - ${description} (${txnId}).`);
+
+                if (msgBox) {
+                    msgBox.innerHTML = `<p class="ds-card-sub" style="color:#16a34a;margin-top:10px;">\u2713 ${currencySymbol()}${amount.toFixed(2)} added to ${escapeHtml(targetUserId)}'s wallet (${txnId}).</p>`;
+                }
+                if (amountInput) amountInput.value = '';
+                if (descInput) descInput.value = '';
             };
 
             // Item - "Claude" admin tab: a reusable, persistent multi-
@@ -12057,7 +12147,7 @@
                         ].filter(r => r[2]);
 
                         const faqs = [
-                            ['Billing & Payments', 'Wallet top-ups are charged per document, and every transaction shows up in Payment History with its receipt.'],
+                            ['Billing & Payments', 'Wallet top-ups are charged per document, and every transaction shows up in Transaction History with its receipt.'],
                             ['Account & Access', 'Use Forgot Password on the login screen to reset access. Two-factor authentication can be switched on from your Profile.'],
                             ['Data & Security', "Files are processed for your job and are not used to train models. Only you and your account's admins can see your documents."],
                             ['OCR & Data Extraction', 'OCR rebuilds scanned or photographed pages into editable Word. Data Extraction lets you define your own fields and returns a clean table.'],

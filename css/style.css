@@ -6534,3 +6534,22 @@ tr.notification-unread { background: rgba(0,0,139,0.025); }
     border-radius: 4px;
     margin-right: 4px;
 }
+
+/* ---- Admin "Send Amount" form (Admin > Send Amount tab) ---- */
+.admin-send-amount-form {
+    display: flex;
+    align-items: flex-end;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+.admin-send-amount-form select,
+.admin-send-amount-form input[type="number"],
+.admin-send-amount-form input[type="text"] {
+    padding: 8px 10px;
+    border: 1px solid rgba(0,0,139,0.2);
+    border-radius: 6px;
+    font-size: 0.82rem;
+    min-width: 160px;
+    box-sizing: border-box;
+}
