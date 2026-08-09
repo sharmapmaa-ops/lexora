@@ -372,7 +372,7 @@
         if (perDocument && pagesDone > 0) charged = rate;
 
         // Charge once, only now that the file has fully succeeded.
-        const txnId = billing.charge(`BAI2 - ${entry.file.name}`, charged);
+        const txnId = billing.charge(billing.chargeDescription('bai2', 'BAI2', pagesDone), charged);
         log(`${label} > Page(All) > API Call(s) > JSON=${jsonCalls}, IMAGE=0`, 'Info');
         log(`${label} > Page(All) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${charged.toFixed(2)}` +
             (perDocument ? ' (flat per-document rate)' : ` (${pagesDone} page(s) @ ${CURRENCY_SYMBOL}${rate}/page)`), 'Info');

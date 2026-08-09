@@ -297,7 +297,7 @@
             // catalog yet or has no override set.
             function getServiceBillingUnit(serviceId) {
                 const override = SERVICES_CATALOG[serviceId] && SERVICES_CATALOG[serviceId].billingUnit;
-                if (override === 'page' || override === 'document') return override;
+                if (override === 'page' || override === 'document' || override === 'process') return override;
                 return getMyPlan().billingUnit || 'document';
             }
 
@@ -337,6 +337,30 @@
             // plan's own setting otherwise.
             function isPerDocumentBilling(serviceId) {
                 return getServiceBillingUnit(serviceId) !== 'page';
+            }
+
+            // Item - Payment History entries used to show the actual
+            // uploaded FILE NAME ("Translation - Agreement - Original.pdf"),
+            // which mixes user file content into a billing record for no
+            // real reason and looks inconsistent from one document type
+            // to the next. Every paid-service charge now goes through
+            // this instead: just the service name, plus a unit-count
+            // that matches how it's actually billed - "N page(s)" when
+            // billingUnit is 'page' (since that's the number the price
+            // was calculated FROM), "1 file" when it's 'document' (each
+            // transaction already corresponds to exactly one finished
+            // file), and nothing extra at all when it's 'process' (a
+            // flat per-run charge has no natural "how many" to show).
+            function buildServiceChargeDescription(serviceId, serviceLabel, pageCount) {
+                const unit = getServiceBillingUnit(serviceId);
+                if (unit === 'page') {
+                    const n = Math.max(1, pageCount || 1);
+                    return `${serviceLabel} - ${n} page${n === 1 ? '' : 's'}`;
+                }
+                if (unit === 'process') {
+                    return serviceLabel;
+                }
+                return `${serviceLabel} - 1 file`;
             }
 
             // Est. charge shown on the Uploaded Files card - only when at
@@ -2204,7 +2228,7 @@
                             userId: CURRENT_USER_ID,
                             paymentType: 'Service Fee',
                             paymentMode: 'Wallet Balance',
-                            description: `Lease Abstraction - ${file.name}`,
+                            description: buildServiceChargeDescription('lease-abstraction', 'Lease Abstraction', file.pageCount),
                             credit: 0,
                             debit: chargeAmount
                         });
@@ -2904,7 +2928,7 @@
                                     userId: CURRENT_USER_ID,
                                     paymentType: 'Service Fee',
                                     paymentMode: 'Wallet Balance',
-                                    description: `Translation - ${file.name} (${modeName}${isTranslate ? ' ' + targetLanguage : ' Original'})`,
+                                    description: buildServiceChargeDescription('translation', 'Translation', pagesCharged),
                                     credit: 0,
                                     debit: totalCharged
                                 });
@@ -3011,7 +3035,7 @@
                             userId: CURRENT_USER_ID,
                             paymentType: 'Service Fee',
                             paymentMode: 'Wallet Balance',
-                            description: `Translation - ${file.name}`,
+                            description: buildServiceChargeDescription('translation', 'Translation', file.pageCount),
                             credit: 0,
                             debit: chargeAmount
                         });
@@ -10669,8 +10693,24 @@
                 const bodyTable = document.getElementById(bodyTableId);
                 if (!headerTable || !bodyTable) return;
                 const headerRow = headerTable.querySelector('thead tr');
-                const bodyRows = bodyTable.querySelectorAll('tbody tr');
-                if (!headerRow || !bodyRows.length) return;
+                const allBodyRows = bodyTable.querySelectorAll('tbody tr');
+                if (!headerRow) return;
+                const colCount0 = headerRow.children.length;
+                // Item - same fix as autofitSingleTableColumns: an empty
+                // table's "No data found" placeholder row has ONE colspan
+                // cell, not colCount real cells - measuring it as a
+                // normal row attributes its whole width to column 1
+                // alone and starves every other column, and the old
+                // early-return here (`|| !bodyRows.length`) meant an
+                // empty table did nothing at all, leaving the header
+                // stuck on whatever columns it had the last time real
+                // data existed.
+                const bodyRows = Array.prototype.filter.call(allBodyRows, function (tr) {
+                    return tr.children.length >= colCount0;
+                });
+                const otherRows = Array.prototype.filter.call(allBodyRows, function (tr) {
+                    return tr.children.length < colCount0;
+                });
 
                 // Item - same fix as autofitSingleTableColumns: the header
                 // <table> (and its <tr>) persists across re-renders here
@@ -10733,6 +10773,10 @@
                         td.style.boxSizing = 'border-box';
                     });
                 });
+                // Same reasoning as autofitSingleTableColumns: leave the
+                // placeholder row as a normal block row, not forced into
+                // the grid template.
+                otherRows.forEach(function (tr) { tr.style.display = ''; tr.style.gridTemplateColumns = ''; });
 
                 // Item - same reset as autofitSingleTableColumns below -
                 // an old scrollLeft from before this re-render (e.g. a
@@ -10758,8 +10802,28 @@
                 const table = document.getElementById(tableId);
                 if (!table) return;
                 let headRow = table.querySelector('thead tr');
-                const bodyRows = table.querySelectorAll('tbody tr');
-                if (!headRow || !bodyRows.length) return;
+                const allBodyRows = table.querySelectorAll('tbody tr');
+                if (!headRow) return;
+                const colCount0 = headRow.children.length;
+                // Item - an empty table shows a single "No data found"
+                // row with ONE colspan cell, not colCount real cells.
+                // Two bugs from that: (1) the OLD early-return here
+                // (`|| !bodyRows.length`) meant an empty table did
+                // NOTHING at all - the header just kept whatever grid
+                // columns were left over from the last time it DID have
+                // rows, stale and wrong; (2) even fixing that, treating
+                // the colspan row as a normal row during measurement
+                // attributes its entire (often wide) message width to
+                // column 1 alone, starving every other column. Real data
+                // rows (colCount cells) and this kind of placeholder row
+                // (fewer cells) need different handling, so they're
+                // split apart right away.
+                const bodyRows = Array.prototype.filter.call(allBodyRows, function (tr) {
+                    return tr.children.length >= colCount0;
+                });
+                const otherRows = Array.prototype.filter.call(allBodyRows, function (tr) {
+                    return tr.children.length < colCount0;
+                });
 
                 // Item - "view breaks after add/delete, fixed only by a
                 // full page refresh" traced to a real bug: the HEADER row
@@ -10837,6 +10901,13 @@
                 headRow.style.display = 'grid';
                 headRow.style.gridTemplateColumns = template;
                 bodyRows.forEach(function (tr) { tr.style.display = 'grid'; tr.style.gridTemplateColumns = template; });
+                // The "No data found" placeholder row (otherRows, above)
+                // is deliberately left as a normal block row, not forced
+                // into the grid template - its one wide colspan cell has
+                // nothing meaningful to align against individual column
+                // tracks, so it just spans the table's own full width
+                // instead.
+                otherRows.forEach(function (tr) { tr.style.display = ''; tr.style.gridTemplateColumns = ''; });
                 Array.prototype.forEach.call(table.querySelectorAll('th, td'), function (cell) {
                     cell.style.width = 'auto';
                     cell.style.boxSizing = 'border-box';
@@ -11673,7 +11744,7 @@
                                 const isDowngrade = plan.monthlyPrice < myPlan.monthlyPrice;
                                 let ctaLabel;
                                 if (isMine) ctaLabel = '\u2713 Current Plan';
-                                else if (isDowngrade) ctaLabel = 'Available after current plan expires';
+                                else if (isDowngrade) ctaLabel = '';
                                 else if (plan.monthlyPrice > 0) ctaLabel = 'Upgrade Now';
                                 else ctaLabel = 'Get Started';
                                 return `
@@ -11689,9 +11760,10 @@
                                         ${plan.supportFeature === 'Yes' ? `<li>${tick}Email Support</li>` : ''}
                                         ${plan.apiFeature === 'Yes' ? `<li>${tick}API Documentation Access</li>` : ''}
                                     </ul>
-                                    <button class="plan-cta-btn ${isMine ? 'is-current' : ''}" ${(isMine || isDowngrade) ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
+                                    ${isDowngrade ? '' : `
+                                    <button class="plan-cta-btn ${isMine ? 'is-current' : ''}" ${isMine ? 'disabled' : `onclick="switchPlan('${plan.id}')"`}>
                                         ${ctaLabel}
-                                    </button>
+                                    </button>`}
                                 </div>`;
                             }).join('')}
                         </div>
@@ -12118,6 +12190,7 @@
             window.LexoraBilling = {
                 perPageRate: function (serviceId) { return getServicePrice(serviceId || 'translation', 1); },
                 isPerDocument: function (serviceId) { return isPerDocumentBilling(serviceId); },
+                chargeDescription: function (serviceId, serviceLabel, pageCount) { return buildServiceChargeDescription(serviceId, serviceLabel, pageCount); },
                 planName: function () { return getMyPlan().name; },
                 currencySymbol: function () { return currencySymbol(); },
                 balance: function () { return getCurrentBalance(); },
@@ -13508,7 +13581,21 @@
                 profileData = null;
                 document.getElementById('appShell').style.display = 'none';
                 authActiveSection = 'home';
-                authState = { step: 'login', verifyPurpose: null, userId: null, email: null,
+                // Item - defensive: step was being left as 'login' even
+                // though authActiveSection (the thing renderAuthScreen()
+                // actually branches on) is correctly 'home' right above.
+                // Static reading of renderAuthScreen() doesn't show
+                // anything currently keying off authState.step outside
+                // the login section's own render path, so this may not
+                // be the actual mechanism behind "logout shows login
+                // instead of Home" - but leaving step on 'login' after a
+                // logout is misleading residual state regardless, and
+                // clearing it removes one plausible way something could
+                // still be reading it. If Home still doesn't show after
+                // this, the real cause is elsewhere and needs to be
+                // traced with the actual behavior in hand (e.g. what the
+                // browser's address bar/URL shows right after logout).
+                authState = { step: null, verifyPurpose: null, userId: null, email: null,
                     expiresInMinutes: 4, emailFailed: false, resetCode: null,
                     countdownInterval: null, countdownSecondsLeft: 0 };
                 const authScreen = document.getElementById('authScreen');

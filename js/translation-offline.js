@@ -1324,6 +1324,31 @@
       // if the translated page runs shorter/longer than the original -
       // an inherent tradeoff of preserving per-page backgrounds through
       // a translation that can change document length, not a bug.
+      // Item - genuine root cause of backgrounds landing on the wrong
+      // page (or overlapping the previous page's tail content): this is
+      // a continuously-FLOWING document - there was no explicit page
+      // break between one PDF source page's content and the next one at
+      // all, ever, for ANY page (only the very LAST page gets its own
+      // sectPr). Word's own automatic pagination decides where page
+      // breaks actually fall based on how much content fits, which
+      // routinely does NOT line up with where one source page's content
+      // ended and the next one's began - so "page 2's background,
+      // anchored to page 2's own first paragraph" could still end up
+      // sharing an actual Word page with the tail end of page 1's
+      // content, if Word's pagination hadn't broken there anyway.
+      //
+      // Only forced when THIS page actually has a background to
+      // preserve (pg.pageBg) - deliberately NOT unconditional for every
+      // page, since the overwhelming majority of documents have no
+      // per-page background at all and forcing a break there would just
+      // waste space (a short translated page leaving a big blank gap
+      // before the next one) for a document that never needed page-
+      // aligned backgrounds in the first place. This only changes
+      // behavior for the new feature's own documents.
+      if (pIdx > 0 && pg.pageBg) {
+        bodyXml += '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
+      }
+
       if (pg.pageBg) {
         bodyXml += pageBackgroundXml(pg.pageBg, pg.wPt, pg.hPt);
       }
@@ -1529,9 +1554,28 @@
     const ops = await page.getOperatorList();
     const out = [];
     let cur = '000000';
+    // Item - root cause of stray/wrong text colors (a gray "666666" or
+    // similar showing up on text that should be plain black): this
+    // never tracked PDF's own save/restore (q/Q) state at all. A fill
+    // color set temporarily for some OTHER graphic element (a table
+    // rule, a decorative shape, a border) inside its own save/restore
+    // block is meant to be forgotten the moment that block's restore
+    // happens - but `cur` here just kept whatever the last color-set op
+    // was, permanently, regardless of save/restore, so ANY such
+    // temporary graphic color happening to appear before real text in
+    // the content stream leaked into that text's color entirely by
+    // accident. Tracking a color stack alongside save/restore (the same
+    // pattern already used for CTM tracking in extractOfflineImages/
+    // extractOfflineTableLines) makes this respect the PDF's own
+    // scoping the way any real renderer would.
+    const colorStack = [];
     for (let i = 0; i < ops.fnArray.length; i++){
       const fn = ops.fnArray[i], args = ops.argsArray[i] || [];
-      if (fn === F.setFillRGBColor && args.length >= 3){
+      if (fn === F.save) {
+        colorStack.push(cur);
+      } else if (fn === F.restore) {
+        if (colorStack.length) cur = colorStack.pop();
+      } else if (fn === F.setFillRGBColor && args.length >= 3){
         cur = toHex(args[0], args[1], args[2]);
       } else if (fn === F.setFillGray && args.length >= 1){
         cur = toHex(args[0], args[0], args[0]);
@@ -1936,7 +1980,24 @@
             cctx.fillRect(L.xPt * bgScale - pad, L.yPt * bgScale - pad,
               L.wPt * bgScale + pad * 2, L.hPt * bgScale + pad * 2);
           });
-          log('P' + p + ': background image cleaned (' + lines.length + ' text region(s) painted over)');
+          // Item - was only painting over TEXT regions, never the
+          // page's own real images (rawImages, cropped separately just
+          // above into `images`) - meaning a page's background snapshot
+          // still had a full copy of, say, a chart or logo baked
+          // straight into the background JPEG's pixels, UNEDITABLE and
+          // impossible to exclude, WHILE that exact same picture also
+          // got extracted and re-inserted as its own separate floating
+          // image - the result was the same picture visibly appearing
+          // TWICE in the output (once "trapped" in the background,
+          // once as its own real picture). Painting over image regions
+          // here too keeps the background genuinely limited to design
+          // elements (colors, borders, letterhead) that aren't already
+          // being carried through some other way.
+          rawImages.forEach(function (im) {
+            cctx.fillRect(im.xPt * bgScale - pad, im.yPt * bgScale - pad,
+              im.wPt * bgScale + pad * 2, im.hPt * bgScale + pad * 2);
+          });
+          log('P' + p + ': background image cleaned (' + lines.length + ' text region(s), ' + rawImages.length + ' image region(s) painted over)');
         }
       }
 
@@ -3945,6 +4006,8 @@ This is different from an isolated one-off issue in a single entry (that's just 
 
 ALSO SEPARATELY, watch for a THIRD kind of thing: any correction you made above that reflects a GENERALIZABLE rule - something that would be equally true for ANY future document in this same domain/language pair, not just something specific to this one document. For example "translate X term as Y, never Z" or "never shorten phrase X" is generalizable; fixing a typo in this specific document's own text, or a date/name/number specific to this document, is NOT - those only apply here. Only include something here if you would confidently tell a translator "always do this from now on", not just "this one time". Most corrections are NOT generalizable - leave "learned_rules" empty unless something genuinely is. Before including anything here, check it against the RULES ALREADY KNOWN list below (if given) - never repeat one of those, even rephrased.${existingRulesBlock}
 
+A SPECIFIC FAILURE PATTERN TO AVOID: if this document has many similarly-shaped fields/entries (e.g. a form with dozens of "This field indicates the amount of the X fee..." descriptions, one per named fee), do NOT produce one "rule" per field just because you noticed the same template repeated with a different field name each time - "ensure the full descriptive phrase for the brokerage fee field is maintained", "...for the waste removal fee field...", "...for the engineering supervision fee field..." are NOT ten different generalizable rules, they are the SAME one-off observation about THIS document's own field list, restated with different nouns - and it usually isn't even a real rule at all (a translator should preserve full meaning for EVERY field description as a matter of course, that's not a special instruction this document taught you, it's just... translating correctly). If you find yourself about to write several "learned_rules" entries that share the same sentence structure with only a name/noun swapped, that is the signal to write AT MOST ONE, phrased generally enough to cover all of them ("preserve full descriptive text in field-description entries, don't summarize them" - once, covering every fee/field this applies to), or more likely, none at all, because "translate completely and accurately" was never a document-specific discovery to begin with. A genuinely new rule is a surprising, specific correction to a term/phrase/convention - not a restatement of the general instruction to translate well.
+
 FINALLY, after reviewing every entry (and after accounting for the corrections you're making - i.e. score the translation as it will read AFTER your corrections are applied, not as it read before), give an overall semantic-faithfulness score: your honest professional judgment of what percentage of the source document's legal/practical meaning, obligations, and factual content is preserved EXACTLY and correctly in the (corrected) translation, as a single integer 0-100. This is not a grammar/style score - a translation that reads awkwardly but preserves every obligation, date, and amount correctly still scores high; one that reads beautifully but drops or changes a single obligation, date, or amount scores low. Be honest and calibrated, not automatically generous - most competent translations of a well-extracted source score in the 90s, but a genuine problem (a dropped clause, a changed number, a reversed obligation) should pull the score down accordingly, and you have already been looking for exactly these things above.
 
 Return ONLY this JSON shape, nothing else, no commentary:
@@ -4104,7 +4167,21 @@ Return ONLY this JSON shape, nothing else, no commentary:
     // otherwise the same pattern found across many documents in the
     // same domain would pile up as repeated near-identical rows.
     const existingTexts = rows.map(function (r) { return (r.ruleText || '').toLowerCase().trim(); });
+    // Item - hard cap, independent of the prompt instruction above: even
+    // with the strengthened "don't produce one rule per templated field"
+    // guidance, this is a second, code-level backstop against the exact
+    // failure this session found in real output (a single large form
+    // document produced 20+ near-identical "preserve the full
+    // description for field X" rules, one per field). A genuinely new,
+    // generalizable insight from ONE document reviewing ONE more time is
+    // rare - if the model proposes more than a handful, something's
+    // already gone wrong the same way it did before, and only the first
+    // few get a chance to actually be reviewed rather than burying them
+    // in a flood of near-duplicates.
+    const MAX_NEW_RULES_PER_DOCUMENT = 5;
+    let savedCount = 0;
     learnedRules.forEach(function (rule) {
+      if (savedCount >= MAX_NEW_RULES_PER_DOCUMENT) return;
       if (!rule || !rule.rule_text) return;
       const text = String(rule.rule_text).trim();
       if (!text || existingTexts.indexOf(text.toLowerCase()) !== -1) return;
@@ -4116,7 +4193,11 @@ Return ONLY this JSON shape, nothing else, no commentary:
         note: 'Auto-suggested by the reviewer pass (domain: ' + ((domainInfo && domainInfo.domain) || 'n/a') +
           ') - review and switch Active to Yes to actually use this in future translations.',
       });
+      savedCount++;
     });
+    if (learnedRules.length > MAX_NEW_RULES_PER_DOCUMENT) {
+      log('Review pass suggested ' + learnedRules.length + ' new rule(s) - only the first ' + MAX_NEW_RULES_PER_DOCUMENT + ' were saved (likely template-repetition, see Translation Health).', 'warn');
+    }
     await fetcher('/api/data/translation-rules', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

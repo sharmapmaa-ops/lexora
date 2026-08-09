@@ -461,7 +461,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
         if (perDocument && pagesDone > 0) fileCharged = perPageRate;
 
         // Charge once, only now that the file has fully succeeded.
-        const txnId = billing.charge(`Data Extraction - ${entry.file.name}`, fileCharged);
+        const txnId = billing.charge(billing.chargeDescription('data-extraction', 'Data Extraction', pagesDone), fileCharged);
         log(`${label} > Page(All) > API Call(s) > JSON=${fileJson}, IMAGE=${fileImage}`, 'Info');
         log(`${label} > Page(All) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${fileCharged.toFixed(2)}` +
             (perDocument ? ' (flat per-document rate)' : ` (${pagesDone} page(s) @ ${CURRENCY_SYMBOL}${perPageRate}/page)`), 'Info');
