@@ -8907,6 +8907,8 @@
                             <button type="button" class="svc-tab" onclick="switchAdminTab(2, this)">\u{1F916} Claude</button>
                             <button type="button" class="svc-tab" onclick="switchAdminTab(3, this)">\u{1F30D} Translation Health</button>
                             <button type="button" class="svc-tab" onclick="switchAdminTab(4, this)">\u{1F4B0} Send Amount</button>
+                            <button type="button" class="svc-tab" onclick="switchAdminTab(5, this)">\u{1F9EA} Syncfusion Test</button>
+                            <button type="button" class="svc-tab" onclick="switchAdminTab(6, this)">\u{1F9EA} Aspose Test</button>
                         </div>
                         <div class="svc-panes">
                             <div class="svc-pane is-active">
@@ -8968,6 +8970,60 @@
                                         <button class="admin-btn admin-btn-save" onclick="submitAdminSendAmount()">\u2795 Add to Wallet</button>
                                     </div>
                                     <div id="adminSendAmountMsg"></div>
+                                </div>
+                            </div>
+                            <div class="svc-pane">
+                                <div class="admin-files-card history-card svc-card-inner" id="syncfusionTestCard">
+                                    <p class="ds-card-sub" style="margin-bottom:14px;">
+                                        <strong>Isolated experiment</strong> - poori tarah alag hai humari asli
+                                        Translation service se, use kabhi touch nahi karta. Yahan sirf compare kiya
+                                        ja sakta hai ki Syncfusion humare existing layout-preserving pipeline se
+                                        behtar table/formatting-fidelity deta hai ya nahi. Result seedha download ho
+                                        jayega, koi Payment History entry ya wallet-charge nahi hoga.
+                                    </p>
+                                    <div class="admin-send-amount-form">
+                                        <div class="filter-group">
+                                            <label>Test PDF</label>
+                                            <input type="file" id="sfTestFile" accept="application/pdf" />
+                                        </div>
+                                        <div class="filter-group">
+                                            <label>Target Language</label>
+                                            <input type="text" id="sfTestLanguage" value="English" />
+                                        </div>
+                                        <button class="admin-btn admin-btn-save" onclick="runSyncfusionTest()">\u25b6 Run Test</button>
+                                    </div>
+                                    <div id="sfTestResult"></div>
+                                </div>
+                            </div>
+                            <div class="svc-pane">
+                                <div class="admin-files-card history-card svc-card-inner" id="asposeTestCard">
+                                    <p class="ds-card-sub" style="margin-bottom:14px;">
+                                        <strong>Isolated experiment</strong> - Syncfusion test se bilkul alag, humari
+                                        asli Translation service ko kabhi touch nahi karta. "Structure Only" mode
+                                        Aspose ke apne PDF\u2192DOCX conversion ko test karta hai (translation involve
+                                        nahi hoti, koi LLM-cost nahi) - table/format-fidelity dekhne ke liye sabse
+                                        tez tarika. "Full Pipeline" mode translation bhi karta hai (real LLM-call
+                                        lagegi).
+                                    </p>
+                                    <div class="admin-send-amount-form">
+                                        <div class="filter-group">
+                                            <label>Test PDF</label>
+                                            <input type="file" id="asTestFile" accept="application/pdf" />
+                                        </div>
+                                        <div class="filter-group">
+                                            <label>Mode</label>
+                                            <select id="asTestMode">
+                                                <option value="structure">Structure Only (no translation, no LLM cost)</option>
+                                                <option value="full">Full Pipeline (with translation)</option>
+                                            </select>
+                                        </div>
+                                        <div class="filter-group">
+                                            <label>Target Language</label>
+                                            <input type="text" id="asTestLanguage" value="English" />
+                                        </div>
+                                        <button class="admin-btn admin-btn-save" onclick="runAsposeTest()">\u25b6 Run Test</button>
+                                    </div>
+                                    <div id="asTestResult"></div>
                                 </div>
                             </div>
                         </div>
@@ -9087,8 +9143,7 @@
                 }).join('');
             };
 
-            window.submitAdminSendAmount = async function() {
-                const userSel = document.getElementById('adminSendAmountUserId');
+            window.submitAdminSendAmount = async function() {                const userSel = document.getElementById('adminSendAmountUserId');
                 const amountInput = document.getElementById('adminSendAmountValue');
                 const descInput = document.getElementById('adminSendAmountDescription');
                 const msgBox = document.getElementById('adminSendAmountMsg');
@@ -9127,6 +9182,118 @@
                 }
                 if (amountInput) amountInput.value = '';
                 if (descInput) descInput.value = '';
+            };
+
+            // Item - isolated Syncfusion-comparison test tool. Reads the
+            // uploaded PDF as base64, POSTs it to the standalone
+            // "/api/test/syncfusion-translate" route (py/
+            // syncfusion_test_pipeline.py) - completely separate from
+            // the real Translation service's own upload/translate flow,
+            // no wallet charge, no Payment History entry, nothing shared
+            // with the production pipeline except reading the file.
+            window.runSyncfusionTest = async function() {
+                const fileInput = document.getElementById('sfTestFile');
+                const langInput = document.getElementById('sfTestLanguage');
+                const resultBox = document.getElementById('sfTestResult');
+                const file = fileInput && fileInput.files[0];
+                if (!file) { showWarning('Choose a PDF file first.'); return; }
+
+                resultBox.innerHTML = '<p class="ds-card-sub">Running\u2026 this can take a minute.</p>';
+                try {
+                    const pdfBase64 = await new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = () => resolve(reader.result.split(',')[1]);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(file);
+                    });
+                    const fetcher = window.authFetch || window.fetch;
+                    const res = await fetcher('/api/test/syncfusion-translate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            pdfBase64: pdfBase64,
+                            fileName: file.name,
+                            targetLanguage: (langInput && langInput.value.trim()) || 'English'
+                        })
+                    });
+                    const data = await res.json();
+
+                    if (data.notConfigured) {
+                        resultBox.innerHTML = `<p class="ds-card-sub is-bad" style="margin-top:10px;">\u26a0\ufe0f Not configured yet: ${escapeHtml(data.error)}</p>`;
+                        return;
+                    }
+                    if (!data.ok) {
+                        resultBox.innerHTML = `<p class="ds-card-sub is-bad" style="margin-top:10px;">Failed: ${escapeHtml(data.error || 'Unknown error')}</p>`;
+                        return;
+                    }
+
+                    const blob = new Blob([Uint8Array.from(atob(data.outputBase64), c => c.charCodeAt(0))],
+                        { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+                    const url = URL.createObjectURL(blob);
+                    resultBox.innerHTML = `
+                        <div class="ds-card-sub" style="margin-top:10px;">
+                            <p>\u2713 Done in ${data.totalSeconds}s \u2014 extraction: <strong>${escapeHtml(data.extractionSource)}</strong>, translation via: <strong>${escapeHtml(data.translationProvider || 'n/a')}</strong></p>
+                            <p><a href="${url}" download="${escapeHtml(data.outputFileName)}">\u2b07 Download result</a></p>
+                            <pre style="font-size:0.72rem;color:rgba(0,0,0,0.55);white-space:pre-wrap;">${escapeHtml((data.log || []).join('\\n'))}</pre>
+                        </div>`;
+                } catch (err) {
+                    resultBox.innerHTML = `<p class="ds-card-sub is-bad" style="margin-top:10px;">Failed: ${escapeHtml(err.message)}</p>`;
+                }
+            };
+
+            // Item - isolated Aspose-comparison test tool - same pattern
+            // as runSyncfusionTest above, completely separate call/route/
+            // module, no wallet charge, no Payment History entry.
+            window.runAsposeTest = async function() {
+                const fileInput = document.getElementById('asTestFile');
+                const modeSelect = document.getElementById('asTestMode');
+                const langInput = document.getElementById('asTestLanguage');
+                const resultBox = document.getElementById('asTestResult');
+                const file = fileInput && fileInput.files[0];
+                if (!file) { showWarning('Choose a PDF file first.'); return; }
+
+                resultBox.innerHTML = '<p class="ds-card-sub">Running\u2026 this can take a minute.</p>';
+                try {
+                    const pdfBase64 = await new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = () => resolve(reader.result.split(',')[1]);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(file);
+                    });
+                    const fetcher = window.authFetch || window.fetch;
+                    const res = await fetcher('/api/test/aspose-translate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            pdfBase64: pdfBase64,
+                            fileName: file.name,
+                            mode: (modeSelect && modeSelect.value) || 'structure',
+                            targetLanguage: (langInput && langInput.value.trim()) || 'English'
+                        })
+                    });
+                    const data = await res.json();
+
+                    if (data.notConfigured) {
+                        resultBox.innerHTML = `<p class="ds-card-sub is-bad" style="margin-top:10px;">\u26a0\ufe0f Not configured yet: ${escapeHtml(data.error)}</p>`;
+                        return;
+                    }
+                    if (!data.ok) {
+                        resultBox.innerHTML = `<p class="ds-card-sub is-bad" style="margin-top:10px;">Failed: ${escapeHtml(data.error || 'Unknown error')}</p>`;
+                        return;
+                    }
+
+                    const blob = new Blob([Uint8Array.from(atob(data.outputBase64), c => c.charCodeAt(0))],
+                        { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+                    const url = URL.createObjectURL(blob);
+                    resultBox.innerHTML = `
+                        <div class="ds-card-sub" style="margin-top:10px;">
+                            <p>\u2713 Done in ${data.totalSeconds}s \u2014 extraction: <strong>${escapeHtml(data.extractionSource)}</strong>, translation via: <strong>${escapeHtml(data.translationProvider || 'n/a')}</strong></p>
+                            <p><a href="${url}" download="${escapeHtml(data.outputFileName)}">\u2b07 Download result</a></p>
+                            <pre style="font-size:0.72rem;color:rgba(0,0,0,0.55);white-space:pre-wrap;">${escapeHtml((data.log || []).join('\\n'))}</pre>
+                        </div>`;
+                } catch (err) {
+                    resultBox.innerHTML = `<p class="ds-card-sub is-bad" style="margin-top:10px;">Failed: ${escapeHtml(err.message)}</p>`;
+                }
             };
 
             // Item - "Claude" admin tab: a reusable, persistent multi-

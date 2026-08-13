@@ -10,3 +10,8 @@ python-bidi>=0.4
 opencv-python-headless>=4.8
 numpy>=1.24
 psycopg[binary]>=3.1
+# Aspose Cloud test pipeline (py/aspose_test_pipeline.py) - isolated
+# experiment, not used by the real translation pipeline.
+aspose-words-cloud>=25.0
+asposepdfcloud>=25.0
+pycryptodome>=3.20
