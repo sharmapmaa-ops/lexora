@@ -1143,6 +1143,46 @@ def _run_accuracy_check(fields, llm_config):
     }
 
 
+def _fetch_translation_rules_block():
+    """Item 3 (TRANSLATION-RULES-WIRING) - the self-improving Translation
+    Rules table (Admin > PostgreSQL > Translation Rules, resource name
+    "translation-rules" - see db.py's doc_translation_rules) was only
+    ever being read by the BROWSER-side pipeline
+    (js/translation-offline.js's v14FetchTranslationRules(), which builds
+    this exact same block for its own prompt). This test pipeline
+    (py/aspose_test_pipeline.py) calls translate_text() directly, which
+    is a completely separate prompt-building path that never touched
+    that table at all - confirmed by a test run where a saved active
+    rule's wording preference didn't show up in this pipeline's output.
+
+    Mirrors v14FetchTranslationRules() field-for-field (same "active"
+    default-to-Yes-if-missing semantics, same ruleText field, same
+    block-header text) so a rule behaves identically regardless of which
+    pipeline runs it. Uses the same optional-db-module pattern already
+    established in this file (see load_extraction_prompt() above,
+    _db_module.list_documents("ai-prompts")) - never blocks or fails a
+    translation if the DB isn't configured or the fetch fails, just
+    proceeds with no extra rules, exactly like the JS version."""
+    if _db_module is None or not _db_module.is_enabled():
+        return ""
+    try:
+        rows = _db_module.list_documents("translation-rules")
+    except Exception as err:  # noqa: BLE001
+        print(f"[translation-rules] could not fetch active rules, proceeding without them: {err}")
+        return ""
+    active = [
+        (row.get("ruleText") or "").strip()
+        for row in (rows or [])
+        if (row.get("active") or "Yes") != "No" and (row.get("ruleText") or "").strip()
+    ]
+    if not active:
+        return ""
+    return (
+        "\n\nLEARNED CORRECTIONS (from real translation review feedback - apply every one of these):\n"
+        + "\n".join("- " + rule for rule in active)
+    )
+
+
 def translate_text(text, target_language, llm_config=None):
     """Real translation via OpenAI/OpenRouter, with automatic failover to
     whichever of the two is configured if the primary one's call fails
@@ -1171,7 +1211,7 @@ def translate_text(text, target_language, llm_config=None):
         f"list, heading, or emphasis there.\n\n"
         f"Return ONLY the translated, marked-up text - no preamble, no notes, no commentary "
         f"about the translation itself."
-    )
+    ) + _fetch_translation_rules_block()
     content, provider = _call_chat_completion_with_failover(llm_config, system_prompt, text[:100000], max_tokens=8000)
     if content is None:
         return None, None  # no API key configured anywhere - caller falls back
