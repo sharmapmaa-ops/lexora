@@ -36,6 +36,7 @@ an app) -> Client Id / Client Secret. Free tier: 150 API calls/month.
 
 import os
 import io
+import re
 import time
 
 import lease_engine as le
@@ -53,6 +54,13 @@ try:
     _PDF_SDK_AVAILABLE = True
 except ImportError:
     _PDF_SDK_AVAILABLE = False
+
+try:
+    import pdfplumber
+    import pypdfium2 as pdfium
+    _SIGNATURE_EXTRACT_AVAILABLE = True
+except ImportError:
+    _SIGNATURE_EXTRACT_AVAILABLE = False
 
 
 ASPOSE_CLIENT_ID = os.environ.get("ASPOSE_CLIENT_ID", "")
@@ -126,6 +134,123 @@ def extract_text_via_aspose(pdf_path):
     return {"text": le.extract_text(pdf_path), "source": "fallback:pdfplumber (Aspose.PDF Cloud storage upload step not yet wired up)"}
 
 
+_SIGNATURE_PLACEHOLDER_RE = re.compile(r"^_{3,}$")
+
+
+def _extract_signature_images(pdf_path):
+    """Item 2 (SIGNATURE-PRESERVATION) - Aspose's own PDF->DOCX conversion
+    doesn't carry over digital-signature/annotation appearance content,
+    it only leaves the blank underline that was drawn next to the
+    signature widget in the original PDF - confirmed by testing against
+    a real signed PDF (Agreement_-_Original.pdf), where a plain page
+    render (no forms/annotations) produced just the underline, while
+    rendering with pdfium's form environment initialized produced the
+    actual "Firmato digitalmente da: ..." signature stamp.
+
+    This mirrors js/translation-offline.js's extractOfflineImages ->
+    signatureRects detection (Widget/Sig annotations, skip ones with no
+    appearance content i.e. hasAppearance === False / no 'AP' entry) but
+    in Python: pdfplumber gives the annotation rects, pypdfium2 (with
+    init_forms() + draw_annots=True + may_draw_forms=True - all THREE
+    are required, confirmed by testing; render() without them silently
+    renders only the blank underline, no error) does the actual pixel
+    rendering the crop is taken from.
+
+    Returns a list of (page_index, top_pt, png_bytes) tuples, sorted in
+    reading order (page, then top-to-bottom), so callers can match them
+    to placeholder text in that same order."""
+    if not _SIGNATURE_EXTRACT_AVAILABLE:
+        return []
+    from PIL import Image  # noqa: F401 (import kept local; pdfium.to_pil() needs Pillow installed, this just fails loudly and early if it's missing)
+
+    found = []
+    pdf_doc = pdfium.PdfDocument(pdf_path)
+    pdf_doc.init_forms()
+    with pdfplumber.open(pdf_path) as pl_pdf:
+        for page_idx, pl_page in enumerate(pl_pdf.pages):
+            widget_rects = []
+            for a in (pl_page.annots or []):
+                data = a.get("data") or {}
+                # pdfminer resolves these to PSLiteral objects whose
+                # repr is "/'Widget'" (confirmed by testing against the
+                # real annotation dict) - strip both '/' and "'" to get
+                # the plain name.
+                subtype = str(data.get("Subtype", "")).strip("/'")
+                ft = str(data.get("FT", "")).strip("/'")
+                if subtype != "Widget" and ft != "Sig":
+                    continue
+                if "AP" not in data:
+                    continue  # no appearance stream - blank/unsigned field, nothing to crop
+                x0, x1 = a["x0"], a["x1"]
+                top, bottom = a["top"], a["bottom"]
+                if (x1 - x0) < 10 or (bottom - top) < 10:
+                    continue
+                widget_rects.append((min(x0, x1), min(top, bottom), max(x0, x1), max(top, bottom)))
+            if not widget_rects:
+                continue
+
+            fpage = pdf_doc[page_idx]
+            scale = min(3.0, 2000 / max(pl_page.width, pl_page.height))
+            bitmap = fpage.render(scale=scale, draw_annots=True, may_draw_forms=True)
+            pil_img = bitmap.to_pil()
+
+            for (x0, top, x1, bottom) in sorted(widget_rects, key=lambda r: (r[1], r[0])):
+                px0, py0 = int(x0 * scale), int(top * scale)
+                px1, py1 = int(x1 * scale), int(bottom * scale)
+                crop = pil_img.crop((px0, py0, px1, py1))
+                buf = io.BytesIO()
+                crop.save(buf, format="PNG")
+                found.append((page_idx, top, buf.getvalue()))
+    return found
+
+
+def _inject_signature_images(doc, signature_images):
+    """Best-effort in-place placement: Aspose's converted docx leaves a
+    paragraph containing just a run of underscores wherever the source
+    PDF had a signature widget. Walk the document's paragraphs in order
+    and swap each such placeholder for the matching extracted signature
+    image, consuming signature_images in the same page/top-to-bottom
+    order _extract_signature_images returned them in - this is a
+    positional match (Nth placeholder <-> Nth signature found), not a
+    coordinate-verified one, since Aspose's converted docx doesn't carry
+    forward the original PDF coordinates to check against.
+
+    Any signatures left over (more detected than placeholder paragraphs
+    found - e.g. a placeholder Aspose rendered as something other than
+    plain underscores) are appended as a clearly-labeled section at the
+    end rather than silently dropped, same "don't lose real content"
+    principle as the reference-page fallback below.
+
+    Returns (placed_count, leftover_count) for the caller's log."""
+    from docx.shared import Pt
+    from io import BytesIO
+
+    remaining = list(signature_images)
+    placed = 0
+    for para in doc.paragraphs:
+        if not remaining:
+            break
+        if _SIGNATURE_PLACEHOLDER_RE.match((para.text or "").strip()):
+            for run in list(para.runs):
+                run.text = ""
+            _page_idx, _top, img_bytes = remaining.pop(0)
+            para.add_run().add_picture(BytesIO(img_bytes), height=Pt(50))
+            placed += 1
+
+    if remaining:
+        doc.add_page_break()
+        note = doc.add_paragraph()
+        note_run = note.add_run(
+            f"Signature image(s) detected in source PDF but not matched to a "
+            f"placeholder line in Aspose's converted structure ({len(remaining)}):"
+        )
+        note_run.bold = True
+        for _page_idx, _top, img_bytes in remaining:
+            doc.add_paragraph().add_run().add_picture(BytesIO(img_bytes), height=Pt(50))
+
+    return placed, len(remaining)
+
+
 def rebuild_docx_with_translated_text(pdf_path, translated_text, output_path):
     """Converts the source PDF to DOCX via Aspose (preserving its native
     structure/table detection), THEN does a plain find-and-replace-style
@@ -166,8 +291,26 @@ def rebuild_docx_with_translated_text(pdf_path, translated_text, output_path):
     heading_run.bold = True
     heading_run.font.size = Pt(14)
     _append_markdown_lite_to_docx(doc, translated_text)
+
+    # Item 2 (SIGNATURE-PRESERVATION) - runs on the structure part of the
+    # doc (before the translated-reference page appended above), since
+    # that's the part built from Aspose's conversion and is where the
+    # blank-underline placeholders actually are.
+    sig_placed, sig_leftover = 0, 0
+    try:
+        signature_images = _extract_signature_images(pdf_path)
+        if signature_images:
+            sig_placed, sig_leftover = _inject_signature_images(doc, signature_images)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if signature extraction fails
+
     doc.save(output_path)
-    return {"output_path": output_path, "mode": "structure_plus_translated_reference"}
+    return {
+        "output_path": output_path,
+        "mode": "structure_plus_translated_reference",
+        "signatures_placed": sig_placed,
+        "signatures_leftover": sig_leftover,
+    }
 
 
 def _add_bold_marked_runs(paragraph, text):
@@ -234,13 +377,22 @@ def run_full_test(pdf_path, target_language, output_path):
     log.append(f"Translated via {provider} in {time.time()-t1:.1f}s")
 
     t2 = time.time()
-    rebuild_docx_with_translated_text(pdf_path, translated, output_path)
+    rebuild_result = rebuild_docx_with_translated_text(pdf_path, translated, output_path)
     log.append(f"Structure converted + translated reference page added via Aspose in {time.time()-t2:.1f}s")
+    sig_placed = rebuild_result.get("signatures_placed", 0)
+    sig_leftover = rebuild_result.get("signatures_leftover", 0)
+    if sig_placed or sig_leftover:
+        log.append(
+            f"Signatures: {sig_placed} placed in-line at placeholder line(s)"
+            + (f", {sig_leftover} appended as a labeled section (no placeholder match)" if sig_leftover else "")
+        )
 
     return {
         "output_path": output_path,
         "log": log,
         "extraction_source": extraction["source"],
         "translation_provider": provider,
+        "signatures_placed": sig_placed,
+        "signatures_leftover": sig_leftover,
         "total_seconds": round(time.time() - t0, 1),
     }
