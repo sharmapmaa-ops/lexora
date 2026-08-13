@@ -148,10 +148,23 @@ def rebuild_docx_with_translated_text(pdf_path, translated_text, output_path):
         result_bytes = words_api.convert_document(request)
 
     from docx import Document
+    from docx.shared import Pt
     from io import BytesIO
     doc = Document(BytesIO(result_bytes))
     doc.add_page_break()
-    doc.add_heading("Translated text (reference - not yet merged into the structure above)", level=2)
+    # Item - confirmed bug: add_heading(text, level=2) looks up a style
+    # named "Heading 2" in the document's style gallery - this document
+    # is NOT a fresh python-docx template, it's Aspose's OWN PDF->DOCX
+    # conversion output, which apparently doesn't define that built-in
+    # style at all, so the lookup failed ("no style with name 'Heading
+    # 2'"). A plain paragraph with manual bold+size formatting achieves
+    # the same visual result without depending on any assumption about
+    # which named styles happen to exist in whatever document Aspose
+    # hands back.
+    heading_para = doc.add_paragraph()
+    heading_run = heading_para.add_run("Translated text (reference - not yet merged into the structure above)")
+    heading_run.bold = True
+    heading_run.font.size = Pt(14)
     for para in translated_text.split("\n"):
         if para.strip():
             doc.add_paragraph(para)

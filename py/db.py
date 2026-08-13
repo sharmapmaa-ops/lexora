@@ -850,6 +850,16 @@ DOCUMENT_RESOURCES = (
     # automatically. It's a queue for a human (Admin/developer) to look
     # at, decide whether it's really a code bug, and fix it deliberately.
     "translation-code-issues",
+    # App Issues Log - a GENERAL, not-translation-specific error/issue
+    # log. Captures JS runtime errors automatically (window.onerror,
+    # unhandledrejection - see app.js), and anything else in the app can
+    # push an entry too (e.g. a test-pipeline tool's own failure
+    # handler) via window.logAppIssue(source, message, details). The
+    # whole point: instead of the user copy-pasting a browser console-log
+    # or a single error message into chat one at a time, everything
+    # that's gone wrong collects in ONE place (Admin > Issue Log) that
+    # can be reviewed all together.
+    "app-issues-log",
 )
 
 DB_BACKED_RESOURCES = ("payment-history", "notifications") + DOCUMENT_RESOURCES
@@ -1115,6 +1125,23 @@ VIRTUAL_TABLES = {
         "select_options": {"status": ["New", "Reviewed", "Fixed", "Not a Bug"]},
         "readonly_fields": {"description", "evidence", "domain", "docType", "flaggedAt"},
     },
+    "doc_app_issues_log": {
+        "kind": "document",
+        "resource": "app-issues-log",
+        # source: where this came from - "JS Error" (auto-captured
+        # window.onerror/unhandledrejection), or a specific tool name
+        # ("Aspose Test", "Syncfusion Test", etc) for anything logged
+        # manually via window.logAppIssue(). status works the same way
+        # as translation-code-issues above (New/Reviewed/Fixed/Ignored) -
+        # this is a DETECTION/COLLECTION log, nothing here gets acted on
+        # automatically, a human reviews and fixes deliberately.
+        "fields": ["id", "source", "message", "details", "pageUrl", "loggedAt", "status"],
+        "types": {},
+        "jsonb_defaults": {"status": "New"},
+        "field_defaults": {"status": "New"},
+        "select_options": {"status": ["New", "Reviewed", "Fixed", "Ignored"]},
+        "readonly_fields": {"source", "message", "details", "pageUrl", "loggedAt"},
+    },
 }
 
 # Human-readable column headers for the Admin Database table viewer -
@@ -1155,6 +1182,9 @@ VIRTUAL_TABLE_LABELS = {
                                      "evidence": "Evidence (example text from the document)",
                                      "domain": "Domain", "docType": "Document Type",
                                      "flaggedAt": "Flagged At", "status": "Status"},
+    "doc_app_issues_log": {"id": "ID", "source": "Source", "message": "Message",
+                            "details": "Details", "pageUrl": "Page URL",
+                            "loggedAt": "Logged At", "status": "Status"},
 }
 
 

@@ -808,6 +808,11 @@ ALLOWED_RESOURCES = {
     # likely pipeline/structural bug - never auto-fixed, always needs a
     # human to look at it.
     "translation-code-issues",
+    # App Issues Log (see db.py's DOCUMENT_RESOURCES comment) - general
+    # error/issue collection log, not translation-specific. Written to by
+    # window.logAppIssue() (app.js) - both auto-captured JS errors and
+    # manual logging from anywhere in the app (test-pipeline tools, etc).
+    "app-issues-log",
 }
 
 # json files that must never be served as static files (contain secrets).
