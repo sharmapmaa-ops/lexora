@@ -165,11 +165,59 @@ def rebuild_docx_with_translated_text(pdf_path, translated_text, output_path):
     heading_run = heading_para.add_run("Translated text (reference - not yet merged into the structure above)")
     heading_run.bold = True
     heading_run.font.size = Pt(14)
-    for para in translated_text.split("\n"):
-        if para.strip():
-            doc.add_paragraph(para)
+    _append_markdown_lite_to_docx(doc, translated_text)
     doc.save(output_path)
     return {"output_path": output_path, "mode": "structure_plus_translated_reference"}
+
+
+def _add_bold_marked_runs(paragraph, text):
+    """Splits `text` on le._BOLD_MARKUP_RE (the same '**bold**' convention
+    translate_text() asks the LLM to use - see lease_engine.py's system
+    prompt) and adds each segment as its own docx run, bold or not, so
+    inline emphasis survives instead of the raw '**' characters leaking
+    into the output as literal text."""
+    parts = le._BOLD_MARKUP_RE.split(text)  # alternates [plain, bold, plain, bold, ...]
+    for i, part in enumerate(parts):
+        if part == "":
+            continue
+        run = paragraph.add_run(part)
+        run.bold = (i % 2 == 1)
+
+
+def _append_markdown_lite_to_docx(doc, translated_text):
+    """Item 1 (MARKDOWN-FIX) - was previously just doc.add_paragraph(para)
+    for each raw line, so the LLM's markdown-lite markup ('## ' headings,
+    '- '/'1. ' lists, '**bold**') showed up as literal text instead of
+    real docx formatting. Reuses le._parse_translation_blocks() (the same
+    block-typing already used for the PDF translation renderer) so this
+    reference page follows the exact same markup convention, then renders
+    each block as proper docx elements without depending on named styles
+    that may not exist in Aspose's own conversion output (see the
+    Heading-2 bug note above - same root cause class, avoided the same
+    way: manual bold+size formatting instead of style lookups)."""
+    from docx.shared import Pt
+
+    for block_type, content in le._parse_translation_blocks(translated_text):
+        if block_type == "heading":
+            para = doc.add_paragraph()
+            run = para.add_run(content)
+            run.bold = True
+            run.font.size = Pt(13)
+        elif block_type == "bullet":
+            for item in content:
+                para = doc.add_paragraph(style=None)
+                para.paragraph_format.left_indent = Pt(18)
+                para.add_run("\u2022  ")
+                _add_bold_marked_runs(para, item)
+        elif block_type == "numbered":
+            for idx, item in enumerate(content, start=1):
+                para = doc.add_paragraph(style=None)
+                para.paragraph_format.left_indent = Pt(18)
+                para.add_run(f"{idx}.  ")
+                _add_bold_marked_runs(para, item)
+        else:  # "paragraph"
+            para = doc.add_paragraph()
+            _add_bold_marked_runs(para, content)
 
 
 def run_full_test(pdf_path, target_language, output_path):
