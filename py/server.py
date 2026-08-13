@@ -3841,7 +3841,6 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/translation/vision-proxy": self._handle_translation_vision_proxy,
             "/api/translation/inpaint-proxy": self._handle_translation_inpaint_proxy,
             "/api/translation/generate-pdf": self._handle_translation_generate_pdf,
-            "/api/test/syncfusion-translate": self._handle_syncfusion_test_translate,
             "/api/test/aspose-translate": self._handle_aspose_test_translate,
             "/api/admin/mkdir": self._handle_admin_mkdir,
             "/api/admin/upload": self._handle_admin_upload,
@@ -6545,58 +6544,10 @@ class Handler(SimpleHTTPRequestHandler):
 
         return 200, {"ok": True, "results": results}
 
-    def _handle_syncfusion_test_translate(self, body):
-        """ISOLATED TEST ROUTE - see py/syncfusion_test_pipeline.py's own
-        module docstring for the full explanation. This exists purely to
-        let an Admin try Syncfusion's Document Processing API as an
-        alternative to our existing layout-preserving pipeline
-        (translate_pipeline.py/lease_engine.py) and the client-side
-        flowing pipeline (translation-offline.js) - it does not touch,
-        call, or affect either of those in any way. Admin/Developer only,
-        same as the other test-tooling routes in this file."""
-        self._require_role(("Admin", "Developer"))
-        pdf_b64 = body.get("pdfBase64")
-        file_name = body.get("fileName") or "test.pdf"
-        target_language = body.get("targetLanguage") or "English"
-        if not pdf_b64:
-            raise ValueError("No PDF file provided.")
-
-        import syncfusion_test_pipeline as sf_test
-
-        tmp_dir = tempfile.mkdtemp(prefix="sftest_")
-        try:
-            pdf_path = os.path.join(tmp_dir, _safe_filename(file_name))
-            with open(pdf_path, "wb") as f:
-                f.write(base64.b64decode(pdf_b64))
-            output_path = os.path.join(tmp_dir, "output.docx")
-
-            try:
-                result = sf_test.run_syncfusion_test(pdf_path, target_language, output_path)
-            except sf_test.SyncfusionNotConfiguredError as err:
-                return 200, {"ok": False, "notConfigured": True, "error": str(err)}
-
-            with open(result["output_path"], "rb") as f:
-                output_b64 = base64.b64encode(f.read()).decode()
-
-            return 200, {
-                "ok": True,
-                "outputBase64": output_b64,
-                "outputFileName": "syncfusion-test-" + os.path.splitext(file_name)[0] + ".docx",
-                "log": result["log"],
-                "extractionSource": result["extraction_source"],
-                "translationProvider": result["translation_provider"],
-                "totalSeconds": result["total_seconds"],
-            }
-        except Exception as err:
-            return 200, {"ok": False, "notConfigured": False, "error": str(err)}
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-
     def _handle_aspose_test_translate(self, body):
         """ISOLATED TEST ROUTE - see py/aspose_test_pipeline.py's module
-        docstring. Same isolation guarantee as the Syncfusion test route
-        right above - does not touch, call, or affect the real
-        translation pipeline in any way. Admin/Developer only.
+        docstring. Does not touch, call, or affect the real translation
+        pipeline in any way. Admin/Developer only.
         `mode`: "structure" (PDF->DOCX via Aspose's own conversion, no
         translation, zero LLM cost) or "full" (extract+translate+rebuild)."""
         self._require_role(("Admin", "Developer"))
@@ -6621,7 +6572,17 @@ class Handler(SimpleHTTPRequestHandler):
                     result = asp_test.run_full_test(pdf_path, target_language, output_path)
                     log = result["log"]
                     extraction_source = result["extraction_source"]
-                    translation_provider = result["translation_provider"]
+                    # Item - confirmed bug: run_full_test()'s return dict
+                    # changed from a single "translation_provider" string
+                    # to a "translation_providers" LIST (the in-place
+                    # merge can call the LLM multiple times across
+                    # batches, potentially hitting failover, so more
+                    # than one provider can legitimately appear in one
+                    # run) - this route was still reading the old
+                    # singular key, which no longer exists, causing a
+                    # bare KeyError('translation_provider') to surface as
+                    # "Failed: 'translation_provider'" in the Admin UI.
+                    translation_provider = ", ".join(result.get("translation_providers") or []) or "n/a"
                     total_seconds = result["total_seconds"]
                 else:
                     t0 = time.time()

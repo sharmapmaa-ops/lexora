@@ -2,15 +2,14 @@
 Lexora - ASPOSE CLOUD TEST PIPELINE (isolated, experimental)
 ==============================================================
 
-Same isolation guarantee as py/syncfusion_test_pipeline.py - this does
-NOT touch translate_pipeline.py, lease_engine.py's real translation
-flow, or js/translation-offline.js. Only reachable via its own
-admin-only test route.
+This does NOT touch translate_pipeline.py, lease_engine.py's real
+translation flow, or js/translation-offline.js. Only reachable via its
+own admin-only test route.
 
-UNLIKE Syncfusion, Aspose Cloud needs NO self-hosting - Aspose runs the
-actual service, we just call it with a Client Id/Secret. Genuinely just
-`pip install aspose-words-cloud asposepdfcloud pycryptodome` (all three
-now in requirements.txt) and two environment variables.
+Needs NO self-hosting - Aspose runs the actual service, we just call it
+with a Client Id/Secret. Genuinely just `pip install aspose-words-cloud
+asposepdfcloud pycryptodome` (all three now in requirements.txt) and two
+environment variables.
 
 TWO TEST MODES, both useful for different questions:
 

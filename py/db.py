@@ -1130,7 +1130,7 @@ VIRTUAL_TABLES = {
         "resource": "app-issues-log",
         # source: where this came from - "JS Error" (auto-captured
         # window.onerror/unhandledrejection), or a specific tool name
-        # ("Aspose Test", "Syncfusion Test", etc) for anything logged
+        # (e.g. "Aspose Test") for anything logged
         # manually via window.logAppIssue(). status works the same way
         # as translation-code-issues above (New/Reviewed/Fixed/Ignored) -
         # this is a DETECTION/COLLECTION log, nothing here gets acted on
