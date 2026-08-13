@@ -50,7 +50,7 @@ except ImportError:
 
 try:
     from asposepdfcloud import PdfApi
-    from asposepdfcloud.models.requests import GetPdfInStorageToTextRequest
+    from asposepdfcloud.api_client import ApiClient as _PdfApiClient
     _PDF_SDK_AVAILABLE = True
 except ImportError:
     _PDF_SDK_AVAILABLE = False
@@ -118,20 +118,84 @@ def run_structure_only_test(pdf_path, output_path):
     return {"output_path": output_path, "mode": "structure_only"}
 
 
+def _pdf_api():
+    """PdfApi (unlike WordsApi) takes an ApiClient instance, not
+    client_id/client_secret kwargs directly - confirmed by inspecting
+    asposepdfcloud.apis.pdf_api.PdfApi.__init__'s actual signature
+    (self, api_client=None), which is different from WordsApi's. Doesn't
+    reuse _require_configured() since that also checks
+    _WORDS_SDK_AVAILABLE (a different SDK/package) - callers here have
+    already checked _PDF_SDK_AVAILABLE and the credentials themselves."""
+    return PdfApi(_PdfApiClient(client_secret=ASPOSE_CLIENT_SECRET, client_id=ASPOSE_CLIENT_ID))
+
+
 def extract_text_via_aspose(pdf_path):
     """Extracts text via Aspose.PDF Cloud if configured, otherwise falls
     back to Lexora's own pdfplumber-based extractor (le.extract_text) so
     the rest of this pipeline is still testable. The fallback is always
-    clearly labeled in the result, never silently substituted."""
+    clearly labeled in the result, never silently substituted.
+
+    Item (ASPOSE.PDF-CLOUD-WIRING) - two things were actually broken here,
+    confirmed by inspecting the installed asposepdfcloud SDK's real code
+    (currently pinned >=25.0 in requirements.txt, which pip resolves to
+    26.7.0 - a newer SDK generation than whatever version this file's
+    original `from asposepdfcloud.models.requests import
+    GetPdfInStorageToTextRequest` import was written against):
+
+    1. That import itself FAILS on the installed SDK - there is no
+       `asposepdfcloud.models.requests` module at all in 26.7.0 (the
+       newer SDK generation takes plain kwargs instead of request
+       objects). That ImportError was being silently caught by the
+       try/except at the top of this file, setting _PDF_SDK_AVAILABLE =
+       False - which is the actual reason "Aspose.PDF Cloud not
+       configured" kept showing even with both env vars correctly set;
+       the SDK "not being available" had nothing to do with the
+       credentials.
+    2. Real text extraction was never wired up at all - Aspose.PDF
+       Cloud's text-extraction endpoint (get_pdf_in_storage_to_text)
+       only operates on files already sitting in Aspose's own cloud
+       storage, so it needs an upload_file() call first. That upload
+       step is added below.
+
+    Storage note: get_pdf_in_storage_to_text's response is a real file
+    Aspose's SDK saves to a local temp path and returns the PATH to
+    (confirmed by reading ApiClient.__deserialize_file's source) - this
+    is DIFFERENT from asposewordscloud's convert_document(), which hands
+    back raw bytes directly despite an identically-worded "return: file"
+    docstring. Don't assume the two SDKs behave the same just because
+    their docstrings read the same."""
     if not (_PDF_SDK_AVAILABLE and ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET):
         return {"text": le.extract_text(pdf_path), "source": "fallback:pdfplumber (Aspose.PDF Cloud not configured)"}
-    # Aspose.PDF Cloud's text-extraction API works against files already
-    # uploaded to Aspose's own cloud storage, not a direct local-file
-    # convert-and-return like Aspose.Words - that's a genuinely separate
-    # upload step this test pipeline doesn't implement yet (the
-    # structure-only and full-pipeline-with-our-own-extractor modes
-    # above cover the two most useful comparisons without needing it).
-    return {"text": le.extract_text(pdf_path), "source": "fallback:pdfplumber (Aspose.PDF Cloud storage upload step not yet wired up)"}
+
+    pdf_api = _pdf_api()
+    folder = "lexora-aspose-test"
+    filename = os.path.basename(pdf_path)
+    storage_path = f"{folder}/{filename}"
+    result_path = None
+    try:
+        with open(pdf_path, "rb") as f:
+            pdf_api.upload_file(storage_path, f)
+
+        result_path = pdf_api.get_pdf_in_storage_to_text(filename, folder=folder)
+        with open(result_path, "rb") as rf:
+            text = rf.read().decode("utf-8", errors="replace")
+
+        return {"text": text, "source": "aspose_pdf_cloud"}
+    except Exception as err:  # noqa: BLE001
+        return {
+            "text": le.extract_text(pdf_path),
+            "source": f"fallback:pdfplumber (Aspose.PDF Cloud call failed: {err})",
+        }
+    finally:
+        if result_path:
+            try:
+                os.remove(result_path)
+            except OSError:
+                pass  # local temp file cleanup - non-fatal if it's already gone
+        try:
+            pdf_api.delete_file(storage_path)
+        except Exception:
+            pass  # cleanup best-effort - don't fail extraction over a leftover file in Aspose's cloud storage
 
 
 _SIGNATURE_PLACEHOLDER_RE = re.compile(r"^_{3,}$")
@@ -251,51 +315,219 @@ def _inject_signature_images(doc, signature_images):
     return placed, len(remaining)
 
 
-def rebuild_docx_with_translated_text(pdf_path, translated_text, output_path):
+def _iter_paragraphs_in_order(container):
+    """Yields every Paragraph inside `container` (a Document or a table
+    _Cell) in true document order, descending into tables (and any
+    tables nested inside table cells) recursively.
+
+    python-docx's own doc.paragraphs and doc.tables are two SEPARATE flat
+    lists - doc.paragraphs skips everything inside a table cell entirely,
+    and neither list reflects where a table actually sits relative to
+    surrounding paragraphs. That matters a lot here: Aspose's PDF->DOCX
+    conversion of a table-heavy contract (e.g. the REGA-format Arabic
+    lease contracts Lexora also handles, which are almost entirely
+    bordered field/value tables) puts nearly all of its real content
+    inside table cells, so a translation pass that only walked
+    doc.paragraphs would silently skip almost the whole document.
+
+    Standard recipe for this (walking the underlying XML body's direct
+    children, matching each one back to a CT_P paragraph or CT_Tbl
+    table) - verified against a real python-docx-built table (a plain
+    doc.paragraphs/doc.tables walk would have returned the table's cell
+    text in a completely different, disconnected list; this returns
+    everything in one correctly-ordered stream)."""
+    from docx.oxml.table import CT_Tbl
+    from docx.oxml.text.paragraph import CT_P
+    from docx.table import Table, _Cell
+    from docx.text.paragraph import Paragraph
+    from docx.document import Document as _DocxDocument
+
+    if isinstance(container, _DocxDocument):
+        parent_elm = container.element.body
+    elif isinstance(container, _Cell):
+        parent_elm = container._tc
+    else:
+        raise TypeError(f"unsupported container type: {type(container)}")
+
+    for child in parent_elm.iterchildren():
+        if isinstance(child, CT_P):
+            yield Paragraph(child, container)
+        elif isinstance(child, CT_Tbl):
+            table = Table(child, container)
+            for row in table.rows:
+                for cell in row.cells:
+                    yield from _iter_paragraphs_in_order(cell)
+
+
+def _replace_paragraph_text(paragraph, new_text):
+    """Puts `new_text` into a paragraph's FIRST run (keeping that run's
+    own formatting - bold/italic/font/size/color - so a paragraph that
+    was entirely bold, or in a particular font, stays that way) and
+    blanks out any other runs in the paragraph rather than removing them
+    (simpler and safer than XML surgery to delete run elements, and an
+    empty run is harmless/invisible in the saved docx).
+
+    Known, explicitly-accepted trade-off: if the ORIGINAL paragraph had
+    MIXED formatting across multiple runs (e.g. "The rent is **500
+    EUR**" where only "500 EUR" was bold within one paragraph), that
+    finer-grained split is lost - the whole translated paragraph ends up
+    under the first run's formatting only. Preserving per-run formatting
+    across a translation (where word order and phrase boundaries change
+    completely between languages) is a much harder alignment problem;
+    paragraph-level formatting fidelity was judged the right scope for
+    this pass."""
+    runs = paragraph.runs
+    if not runs:
+        paragraph.add_run(new_text)
+        return
+    runs[0].text = new_text
+    for extra in runs[1:]:
+        extra.text = ""
+
+
+_MAX_SEGMENT_CHARS_PER_BATCH = 3500  # conservative - translated output commonly runs longer than the source, plus JSON-wrapping overhead
+
+
+def _translate_docx_segments_in_place(doc, target_language, llm_config):
+    """Item (IN-PLACE-MERGE) - replaces the old approach of translating
+    the PDF's extracted text as one big blob and appending it as a
+    separate reference page (see the removed docstring note that used to
+    be on rebuild_docx_with_translated_text - Aspose's Words Cloud API
+    has no "swap all body text for this translated version, keep
+    structure" call, so a real per-paragraph mapping had to be built by
+    hand).
+
+    Works directly on the ALREADY-Aspose-converted docx's own paragraphs
+    (via _iter_paragraphs_in_order above, so table cells are included) -
+    this sidesteps the harder problem of mapping PDF-extracted text back
+    onto Aspose's converted structure entirely, since we're translating
+    and replacing the very same paragraph objects Aspose already built,
+    not reconciling two independently-extracted versions of the text.
+
+    Batches segments into multiple LLM calls (id-keyed JSON in, JSON
+    out) rather than one call for the whole document, since a long
+    contract's full paragraph list can exceed a single call's practical
+    output-token budget; each batch still gets the same Translation
+    Rules block (le._fetch_translation_rules_block()) that translate_text()
+    uses, so a saved rule applies identically here as it does in the
+    single-call path.
+
+    Returns (translated_count, skipped_count, failed_batch_count) for
+    the caller's log. A batch whose JSON response fails to parse, or is
+    missing some ids, is logged and its paragraphs are simply left in
+    the source language rather than aborting the whole run - a partial
+    translation is far more useful to a reviewer than no output at all."""
+    import json
+
+    segments = []  # list of (id, paragraph, original_text)
+    next_id = 1
+    for para in _iter_paragraphs_in_order(doc):
+        text = (para.text or "").strip()
+        if not text or _SIGNATURE_PLACEHOLDER_RE.match(text):
+            continue  # empty paragraphs and signature-placeholder underline lines aren't translatable content
+        segments.append((next_id, para, text))
+        next_id += 1
+
+    if not segments:
+        return 0, 0, 0, []
+
+    rules_block = le._fetch_translation_rules_block()
+    system_prompt = (
+        f"You are a professional document translator. Translate each text segment below into "
+        f"{target_language}, preserving meaning, tone, and register. Each segment is a single "
+        f"paragraph or table cell from a legal document, already correctly structured - do NOT "
+        f"add markdown, bullets, or numbering, just translate the text of each segment as-is.\n\n"
+        f"Input is a JSON array of {{\"id\": <int>, \"text\": <string>}} objects. Respond with "
+        f"ONLY a JSON array of {{\"id\": <int>, \"text\": <translated string>}} objects, one per "
+        f"input segment, same ids, no other text, no markdown code fences."
+    ) + rules_block
+
+    translated_by_id = {}
+    failed_batches = 0
+    providers_used = set()
+
+    batch, batch_chars = [], 0
+    batches = []
+    for seg in segments:
+        seg_len = len(seg[2])
+        if batch and batch_chars + seg_len > _MAX_SEGMENT_CHARS_PER_BATCH:
+            batches.append(batch)
+            batch, batch_chars = [], 0
+        batch.append(seg)
+        batch_chars += seg_len
+    if batch:
+        batches.append(batch)
+
+    for batch in batches:
+        user_content = json.dumps([{"id": sid, "text": text} for sid, _para, text in batch], ensure_ascii=False)
+        try:
+            content, provider = le._call_chat_completion_with_failover(
+                llm_config, system_prompt, user_content, max_tokens=8000
+            )
+            if content is None:
+                failed_batches += 1
+                continue
+            providers_used.add(provider)
+            cleaned = content.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned.strip())
+            parsed = json.loads(cleaned)
+            for item in parsed:
+                translated_by_id[item["id"]] = item["text"]
+        except Exception as err:  # noqa: BLE001
+            print(f"[in-place-merge] batch translation failed, leaving {len(batch)} segment(s) untranslated: {err}")
+            failed_batches += 1
+
+    translated_count = 0
+    skipped_count = 0
+    for sid, para, _original_text in segments:
+        if sid in translated_by_id:
+            _replace_paragraph_text(para, translated_by_id[sid])
+            translated_count += 1
+        else:
+            skipped_count += 1  # left in source language - batch failed or id missing from response
+
+    return translated_count, skipped_count, failed_batches, sorted(providers_used)
+
+
+def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, llm_config=None):
     """Converts the source PDF to DOCX via Aspose (preserving its native
-    structure/table detection), THEN does a plain find-and-replace-style
-    rebuild isn't attempted here - Aspose's Words Cloud API doesn't have
-    a single "swap all body text for this translated version, keep
-    structure" call, and building one properly (per-paragraph mapping)
-    is real, non-trivial follow-up work once the structure-only test
-    above confirms Aspose's OWN conversion quality is actually worth
-    building that on top of. For now, this mode produces the structure-
-    converted (untranslated) docx WITH the translated text appended as
-    a clearly-labeled reference page, so a reviewer can compare
-    Aspose's table/format handling against the translated content side
-    by side without the (larger) engineering investment of a true
-    in-place text replacement yet."""
+    structure/table detection), then translates and replaces every
+    paragraph's (and table cell's) text IN PLACE via
+    _translate_docx_segments_in_place() above - the translated document
+    keeps Aspose's own structure/formatting, no separate reference page."""
     words_api = _words_api()
     with open(pdf_path, "rb") as f:
         request = ConvertDocumentRequest(document=f, format="docx")
-        # Same confirmed fix as run_structure_only_test above -
-        # convert_document() returns raw bytes, not a file path.
+        # Item - confirmed bug: add_heading(text, level=2) looks up a style
+        # named "Heading 2" in the document's style gallery - this document
+        # is NOT a fresh python-docx template, it's Aspose's OWN PDF->DOCX
+        # conversion output, which apparently doesn't define that built-in
+        # style at all, so the lookup failed ("no style with name 'Heading
+        # 2'"). A plain paragraph with manual bold+size formatting achieves
+        # the same visual result without depending on any assumption about
+        # which named styles happen to exist in whatever document Aspose
+        # hands back. (This note is kept for context even though the
+        # in-place merge below no longer adds a heading of its own - the
+        # same "don't assume named styles exist in Aspose's output" lesson
+        # still applies anywhere this module touches doc styles.)
         result_bytes = words_api.convert_document(request)
 
     from docx import Document
-    from docx.shared import Pt
     from io import BytesIO
     doc = Document(BytesIO(result_bytes))
-    doc.add_page_break()
-    # Item - confirmed bug: add_heading(text, level=2) looks up a style
-    # named "Heading 2" in the document's style gallery - this document
-    # is NOT a fresh python-docx template, it's Aspose's OWN PDF->DOCX
-    # conversion output, which apparently doesn't define that built-in
-    # style at all, so the lookup failed ("no style with name 'Heading
-    # 2'"). A plain paragraph with manual bold+size formatting achieves
-    # the same visual result without depending on any assumption about
-    # which named styles happen to exist in whatever document Aspose
-    # hands back.
-    heading_para = doc.add_paragraph()
-    heading_run = heading_para.add_run("Translated text (reference - not yet merged into the structure above)")
-    heading_run.bold = True
-    heading_run.font.size = Pt(14)
-    _append_markdown_lite_to_docx(doc, translated_text)
 
-    # Item 2 (SIGNATURE-PRESERVATION) - runs on the structure part of the
-    # doc (before the translated-reference page appended above), since
-    # that's the part built from Aspose's conversion and is where the
-    # blank-underline placeholders actually are.
+    llm_config = llm_config if llm_config is not None else le.load_llm_config()
+    translated_count, skipped_count, failed_batches, providers_used = _translate_docx_segments_in_place(
+        doc, target_language, llm_config
+    )
+
+    # Item 2 (SIGNATURE-PRESERVATION) - runs after translation, on the
+    # same doc object, so it's placing signature images into the
+    # now-translated paragraphs (the underscore placeholder text itself
+    # was never sent for translation - see the skip in
+    # _translate_docx_segments_in_place above - so it's still there for
+    # this to match against).
     sig_placed, sig_leftover = 0, 0
     try:
         signature_images = _extract_signature_images(pdf_path)
@@ -307,60 +539,14 @@ def rebuild_docx_with_translated_text(pdf_path, translated_text, output_path):
     doc.save(output_path)
     return {
         "output_path": output_path,
-        "mode": "structure_plus_translated_reference",
+        "mode": "in_place_translation",
+        "segments_translated": translated_count,
+        "segments_skipped": skipped_count,
+        "translation_batches_failed": failed_batches,
+        "translation_providers": providers_used,
         "signatures_placed": sig_placed,
         "signatures_leftover": sig_leftover,
     }
-
-
-def _add_bold_marked_runs(paragraph, text):
-    """Splits `text` on le._BOLD_MARKUP_RE (the same '**bold**' convention
-    translate_text() asks the LLM to use - see lease_engine.py's system
-    prompt) and adds each segment as its own docx run, bold or not, so
-    inline emphasis survives instead of the raw '**' characters leaking
-    into the output as literal text."""
-    parts = le._BOLD_MARKUP_RE.split(text)  # alternates [plain, bold, plain, bold, ...]
-    for i, part in enumerate(parts):
-        if part == "":
-            continue
-        run = paragraph.add_run(part)
-        run.bold = (i % 2 == 1)
-
-
-def _append_markdown_lite_to_docx(doc, translated_text):
-    """Item 1 (MARKDOWN-FIX) - was previously just doc.add_paragraph(para)
-    for each raw line, so the LLM's markdown-lite markup ('## ' headings,
-    '- '/'1. ' lists, '**bold**') showed up as literal text instead of
-    real docx formatting. Reuses le._parse_translation_blocks() (the same
-    block-typing already used for the PDF translation renderer) so this
-    reference page follows the exact same markup convention, then renders
-    each block as proper docx elements without depending on named styles
-    that may not exist in Aspose's own conversion output (see the
-    Heading-2 bug note above - same root cause class, avoided the same
-    way: manual bold+size formatting instead of style lookups)."""
-    from docx.shared import Pt
-
-    for block_type, content in le._parse_translation_blocks(translated_text):
-        if block_type == "heading":
-            para = doc.add_paragraph()
-            run = para.add_run(content)
-            run.bold = True
-            run.font.size = Pt(13)
-        elif block_type == "bullet":
-            for item in content:
-                para = doc.add_paragraph(style=None)
-                para.paragraph_format.left_indent = Pt(18)
-                para.add_run("\u2022  ")
-                _add_bold_marked_runs(para, item)
-        elif block_type == "numbered":
-            for idx, item in enumerate(content, start=1):
-                para = doc.add_paragraph(style=None)
-                para.paragraph_format.left_indent = Pt(18)
-                para.add_run(f"{idx}.  ")
-                _add_bold_marked_runs(para, item)
-        else:  # "paragraph"
-            para = doc.add_paragraph()
-            _add_bold_marked_runs(para, content)
 
 
 def run_full_test(pdf_path, target_language, output_path):
@@ -368,17 +554,35 @@ def run_full_test(pdf_path, target_language, output_path):
     t0 = time.time()
     log.append(f"Configured: {is_configured()}")
 
+    # Item (ASPOSE.PDF-CLOUD-WIRING) - kept as a standalone check here,
+    # NOT used to build the translated output below. The in-place merge
+    # (rebuild_docx_with_translated_text) translates Aspose's own
+    # converted-docx paragraphs directly, which is a more reliable
+    # source of truth than reconciling two independently-extracted
+    # versions of the same text would be (see that function's docstring)
+    # - so this call's only purpose here is to confirm, in the log, that
+    # the Aspose.PDF Cloud wiring itself actually works end to end
+    # (upload + convert-to-text + cleanup), independent of the merge.
     extraction = extract_text_via_aspose(pdf_path)
-    log.append(f"Text extracted via {extraction['source']} ({len(extraction['text'])} chars)")
+    log.append(
+        f"Text extraction check via {extraction['source']} ({len(extraction['text'])} chars) "
+        f"- informational only, not used for the translation below"
+    )
 
     t1 = time.time()
     llm_config = le.load_llm_config()
-    translated, provider = le.translate_text(extraction["text"], target_language, llm_config=llm_config)
-    log.append(f"Translated via {provider} in {time.time()-t1:.1f}s")
+    rebuild_result = rebuild_docx_with_translated_text(pdf_path, target_language, output_path, llm_config=llm_config)
+    providers = ", ".join(rebuild_result["translation_providers"]) or "n/a"
+    log.append(
+        f"Structure converted via Aspose + {rebuild_result['segments_translated']} segment(s) "
+        f"translated in-place via {providers} in {time.time()-t1:.1f}s"
+    )
+    if rebuild_result["segments_skipped"]:
+        log.append(
+            f"{rebuild_result['segments_skipped']} segment(s) left untranslated "
+            f"({rebuild_result['translation_batches_failed']} batch(es) failed)"
+        )
 
-    t2 = time.time()
-    rebuild_result = rebuild_docx_with_translated_text(pdf_path, translated, output_path)
-    log.append(f"Structure converted + translated reference page added via Aspose in {time.time()-t2:.1f}s")
     sig_placed = rebuild_result.get("signatures_placed", 0)
     sig_leftover = rebuild_result.get("signatures_leftover", 0)
     if sig_placed or sig_leftover:
@@ -391,7 +595,9 @@ def run_full_test(pdf_path, target_language, output_path):
         "output_path": output_path,
         "log": log,
         "extraction_source": extraction["source"],
-        "translation_provider": provider,
+        "translation_providers": rebuild_result["translation_providers"],
+        "segments_translated": rebuild_result["segments_translated"],
+        "segments_skipped": rebuild_result["segments_skipped"],
         "signatures_placed": sig_placed,
         "signatures_leftover": sig_leftover,
         "total_seconds": round(time.time() - t0, 1),
