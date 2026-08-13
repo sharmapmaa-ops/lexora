@@ -48,6 +48,27 @@ ClaudeDebug.addTopic('Translation: Image position wrong', [
 - Agar user ne bola hai ki jaldi wale/aasan fixes pehle karo aur zip
   frequently bhejo — to poora response ek hi bade batch me mat karo, chhote
   checkpoints me deliver karo.
+- **Zip me SIRF wahi files/folders honi chahiye jo genuinely update hui
+  hain** — poora project baar-baar zip karke bhejna band. Iske liye project
+  root me ek **git repo already initialized hai** (`git init` already ho
+  chuka hai, baseline-commit bhi ban chuka hai) — isi ko use karo:
+  1. Har response ke START me (koi bhi file-edit karne se pehle) confirm
+     karo ki working-tree clean hai: `git status --porcelain` (khaali hona
+     chahiye - agar khaali nahi hai, pichli baar ka commit-step miss hua
+     tha, pehle commit karo taaki fresh baseline mile).
+  2. Normal tarike se files edit karo (jaisa ab tak karte aaye ho).
+  3. Zip banane se pehle: `git diff --name-only HEAD` (ya naye/untracked
+     files ke liye `git status --porcelain` bhi check karo) se sirf CHANGED
+     files ki list nikaalo.
+  4. Usi list ki files ko (unki original folder-structure preserve karte
+     hue) ek chhoti, temporary directory me copy karke wahi zip karo — poore
+     `lexora-main` folder ko nahi.
+  5. Zip deliver karne ke baad, **turant commit karo**
+     (`git add -A && git commit -m "..."`) taaki agli baar ka diff sirf
+     AGLE changes dikhaye, purane wapas na aayein.
+  - Agar koi NAYI file banayi ho (jaise koi naya `.py`/`.js` module), wo
+    `git status --porcelain` me untracked (`??`) dikhegi — usko bhi zip me
+    shaamil karna hai, sirf modified (`M`) wali nahi.
 
 ## 3. 5 "report-style" tables (Payment History, Today's Transactions,
    Notification, Support, PostgreSQL admin) ke liye
