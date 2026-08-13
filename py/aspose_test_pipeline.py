@@ -95,13 +95,18 @@ def run_structure_only_test(pdf_path, output_path):
     words_api = _words_api()
     with open(pdf_path, "rb") as f:
         request = ConvertDocumentRequest(document=f, format="docx")
-        result = words_api.convert_document(request)
-    # The SDK writes to a local temp file and returns its path when
-    # out_path isn't given a specific target - result is that path.
-    with open(result, "rb") as f:
-        data = f.read()
+        # Item - confirmed bug (verified by reading the SDK's own
+        # deserialize_file() source, not guessed): convert_document()
+        # returns the converted file's RAW BYTES directly, not a path
+        # to a temp file on disk despite what its docstring's "return:
+        # file" phrasing suggests. Treating that return value as if it
+        # were a path and calling open(result, "rb") on it was the
+        # actual root cause of the "'bytes' object has no attribute
+        # 'seek'" error - Python's open() was being handed the docx's
+        # raw content instead of a filename.
+        result_bytes = words_api.convert_document(request)
     with open(output_path, "wb") as out:
-        out.write(data)
+        out.write(result_bytes)
     return {"output_path": output_path, "mode": "structure_only"}
 
 
@@ -138,10 +143,13 @@ def rebuild_docx_with_translated_text(pdf_path, translated_text, output_path):
     words_api = _words_api()
     with open(pdf_path, "rb") as f:
         request = ConvertDocumentRequest(document=f, format="docx")
-        result_path = words_api.convert_document(request)
+        # Same confirmed fix as run_structure_only_test above -
+        # convert_document() returns raw bytes, not a file path.
+        result_bytes = words_api.convert_document(request)
 
     from docx import Document
-    doc = Document(result_path)
+    from io import BytesIO
+    doc = Document(BytesIO(result_bytes))
     doc.add_page_break()
     doc.add_heading("Translated text (reference - not yet merged into the structure above)", level=2)
     for para in translated_text.split("\n"):
