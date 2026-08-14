@@ -308,11 +308,19 @@ def run_structure_only_test(pdf_path, output_path):
         headers_fixed = _fix_incomplete_header_bar_shading(doc)
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
+    split_numeric_findings = []
+    try:
+        split_numeric_findings = _detect_split_numeric_values(doc)
+    except Exception:
+        pass  # non-fatal - a validation pass failing shouldn't block delivering the document
+
     doc.save(output_path)
     return {
         "output_path": output_path,
         "mode": "structure_only",
         "header_bars_fixed": headers_fixed,
+        "split_numeric_findings": split_numeric_findings,
         "aspose_words_calls": 1,
         "aspose_pdf_calls": 0,
         "llm_calls": 0,
@@ -381,9 +389,21 @@ def extract_text_via_aspose(pdf_path):
     api_calls = 0  # counts actual Aspose.PDF Cloud API calls MADE (attempted), even on failure - not assumed
     text, source = None, None
     try:
-        with open(pdf_path, "rb") as f:
-            api_calls += 1
-            pdf_api.upload_file(storage_path, f)
+        # Item - confirmed bug (verified by reading the installed SDK's
+        # own api_client.py __call_api source, not guessed): the `file`
+        # argument to upload_file() is NOT meant to be an already-open
+        # file object - the SDK does `open(n, 'rb')` on whatever gets
+        # passed here ITSELF internally (see api_client.py's `if files:`
+        # block), so it needs a PATH STRING it can open on its own.
+        # Passing an open BufferedReader made the SDK call
+        # open(<BufferedReader instance>, 'rb'), which raised exactly
+        # "expected str, bytes or os.PathLike object, not
+        # BufferedReader" - this was silently swallowed by the
+        # try/except below and fell back to pdfplumber every single
+        # time, meaning Aspose.PDF Cloud extraction never actually ran
+        # even when correctly configured.
+        api_calls += 1
+        pdf_api.upload_file(storage_path, pdf_path)
 
         api_calls += 1
         result_path = pdf_api.get_pdf_in_storage_to_text(filename, folder=folder)
@@ -599,7 +619,16 @@ def _replace_paragraph_text(paragraph, new_text):
         extra.text = ""
 
 
-_MAX_SEGMENT_CHARS_PER_BATCH = 3500  # conservative - translated output commonly runs longer than the source, plus JSON-wrapping overhead
+_MAX_SEGMENT_CHARS_PER_BATCH = 9000  # Item (REDUCE-LLM-CALL-COUNT) - was 3500, chosen without
+# testing against the model's real output-token ceiling. Confirmed the default OpenRouter model
+# (OPENROUTER_MODEL, defaults to "openai/gpt-4o" - see lease_engine.load_llm_config()) supports up
+# to 16384 output tokens, and the old 8000 max_tokens cap on each batch call was only using half of
+# that. Tested against a real 575-segment/24063-char document: this threshold cuts 8 batches down to
+# 3 (each batch's translated-JSON output comes to roughly 3500 output tokens by rough char/4 estimate
+# - comfortably under the 12000 max_tokens now used below, leaving real headroom for target languages
+# that expand more than English does). Batch failures already degrade gracefully (that batch's
+# segments are left untranslated and logged, not a hard failure - see _translate_docx_segments_in_place
+# below), so a wrong per-model assumption here costs some retranslatable segments, not a broken run.
 
 
 _RTL_LANGUAGE_KEYWORDS = ("arabic", "hebrew", "persian", "farsi", "urdu", "pashto", "dhivehi", "divehi", "yiddish", "sindhi")
@@ -608,6 +637,88 @@ _RTL_LANGUAGE_KEYWORDS = ("arabic", "hebrew", "persian", "farsi", "urdu", "pasht
 def _is_rtl_language(target_language):
     tl = (target_language or "").strip().lower()
     return any(kw in tl for kw in _RTL_LANGUAGE_KEYWORDS)
+
+
+_NUMERIC_ID_PREFIX_RE = re.compile(
+    r"^([\d\u0660-\u0669]+(?:[\-.][\d\u0660-\u0669]+){1,4})(\s+)(\S.{10,})", re.DOTALL
+)
+
+
+def _reverse_numeric_id_groups(token):
+    """Reverses the ORDER of hyphen/dot-separated numeric groups in an
+    identifier like '11-1-5' -> '5-1-11' - WITHOUT touching the digits
+    within each group, and without touching which separator character
+    sits where (handles mixed '-'/'.' use, though clause numbers
+    typically use one consistently). Works with both Western (0-9) and
+    Arabic-Indic (\u0660-\u0669) digits, since the source language isn't
+    known/assumed here - see _fix_paragraph_direction's docstring for
+    why this needs to be script-agnostic."""
+    tokens = re.findall(r"[\d\u0660-\u0669]+|[\-.]", token)
+    groups = [t for t in tokens if not re.match(r"[\-.]", t)]
+    seps = [t for t in tokens if re.match(r"[\-.]", t)]
+    if len(groups) < 2:
+        return token
+    rev_groups = groups[::-1]
+    rev_seps = seps[::-1]
+    out = rev_groups[0]
+    for sep, g in zip(rev_seps, rev_groups[1:]):
+        out += sep + g
+    return out
+
+
+def _fix_reversed_clause_number_prefix(paragraph):
+    """Item (CLAUSE-NUMBER-REVERSAL) - confirmed root cause by comparing
+    Aspose's own untranslated RTL conversion against the same paragraph
+    post-translation: Aspose's PDF text extraction stores certain
+    RTL-context numeric IDENTIFIER PREFIXES (clause/article numbers like
+    "5-1-11") in REVERSED group order ("11-1-5") in the underlying XML
+    text, relying on RTL bidi rendering to display them correctly -
+    verified directly: Aspose's raw conversion held '\u0661\u0661-\u0661-\u0665'
+    (logical order 11-1-5) for a clause whose SOURCE PDF plainly showed
+    '\u0665-\u0661-\u0661\u0661' (5-1-11, confirmed against the original
+    PDF's own text). RTL bidi rendering was silently "correcting" the
+    display while bidi=1 was set - our _fix_paragraph_direction's
+    RTL->LTR flip (needed for the now-translated LTR content) removes
+    that compensating rendering, which is what exposes the reversal as
+    literal, visible "11-1-5" text instead of "5-1-11".
+
+    This is NOT a general numeric-integrity bug: Gregorian/Hijri dates
+    and amounts elsewhere in the SAME originally-RTL paragraphs were
+    verified to already be in CORRECT order (e.g. "2024-04-01" stayed
+    "2024-04-01", never "01-04-2024") - only short numeric-group PREFIXES
+    at the very start of a paragraph, followed by substantial prose,
+    show this reversal. That "followed by substantial prose" condition
+    is the safety gate used here: a standalone numeric VALUE that fills
+    an entire cell (a date, an amount, an ID - confirmed several dozen
+    of these also carry bidi=1 in the same document) must NEVER be
+    reversed, since reversing "2025-06-17" would corrupt a real date
+    into "17-06-2025". Requiring real text after the numeric prefix
+    reliably tells clause-number labels ("11-1-5 The Tenant shall...")
+    apart from bare data values ("2025-06-17" and nothing else).
+
+    Only ever called for a paragraph that's about to flip from RTL to
+    LTR (see call site in _fix_paragraph_direction) - a paragraph that
+    stays RTL, or was already LTR, never had this compensating-reversal
+    behavior baked in, so nothing to undo there. Operates on whichever
+    run holds the paragraph's opening text (translation puts the whole
+    translated paragraph into one run - see _replace_paragraph_text -
+    so this is normally the first run with real text).
+
+    Returns True if a reversal was applied."""
+    for run in paragraph.runs:
+        text = run.text or ""
+        if not text.strip():
+            continue
+        m = _NUMERIC_ID_PREFIX_RE.match(text)
+        if not m:
+            return False  # first real-text run doesn't start with a numeric-id-like prefix at all
+        prefix, ws, rest = m.groups()
+        fixed_prefix = _reverse_numeric_id_groups(prefix)
+        if fixed_prefix == prefix:
+            return False
+        run.text = fixed_prefix + ws + rest
+        return True
+    return False
 
 
 def _fix_paragraph_direction(doc, target_language):
@@ -636,16 +747,27 @@ def _fix_paragraph_direction(doc, target_language):
     original bilingual (Arabic+English side-by-side) layout. Tested
     against an already-LTR source/target document too (Italian->English)
     to confirm no regression - it still found 27 stray bidi flags there
-    and clearing them left the rendered output visually identical."""
+    and clearing them left the rendered output visually identical.
+
+    Also fixes reversed clause/article-number prefixes exposed by the
+    RTL->LTR flip - see _fix_reversed_clause_number_prefix()'s docstring
+    for the full root-cause explanation. Returns (paragraphs_fixed,
+    clause_numbers_fixed)."""
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
 
     want_rtl = _is_rtl_language(target_language)
     fixed = 0
+    clause_numbers_fixed = 0
 
     for p in _iter_paragraphs_in_order(doc):
         pPr = p._p.find(qn("w:pPr"))
         changed = False
+
+        was_rtl = pPr is not None and pPr.find(qn("w:bidi")) is not None
+        if was_rtl and not want_rtl:
+            if _fix_reversed_clause_number_prefix(p):
+                clause_numbers_fixed += 1
 
         if want_rtl:
             if pPr is None:
@@ -688,7 +810,7 @@ def _fix_paragraph_direction(doc, target_language):
         if changed:
             fixed += 1
 
-    return fixed
+    return fixed, clause_numbers_fixed
 
 
 def _fix_exact_row_heights(doc):
@@ -790,6 +912,79 @@ def _fix_tiny_font_outliers(doc, min_readable_half_points=10):
     return fixed
 
 
+def _detect_split_numeric_values(doc):
+    """Item (NUMERIC-INTEGRITY VALIDATION - split amounts) - confirmed
+    real, pre-existing defect: Aspose's OWN PDF->DOCX table-structure
+    detection sometimes splits a single financial figure across two
+    ADJACENT table cells (verified: a source PDF value of 3474876.00
+    came out of Aspose's OWN untranslated conversion as two separate
+    cells holding "347" and "4876.00" - confirmed against Aspose's raw
+    structure-only output, so this is not something translation
+    introduced). The actual digits are correct and in the right order
+    when read left-to-right (347 then 4876.00 = 3474876.00), so this
+    isn't a corruption of the VALUE - but per this project's numeric-
+    integrity requirements, a "split amount" like this is exactly the
+    kind of defect that should be surfaced for review rather than
+    silently shipped, since a reader could misread it as two separate
+    numbers.
+
+    Deliberately does NOT attempt to auto-merge the cells: an earlier
+    attempt at a related fix (redistributing column widths) hit real,
+    confirmed regressions from this same document's inconsistent
+    per-cell tcMar (padding) overrides - Aspose's table reconstruction
+    has enough undocumented per-cell quirks that blindly restructuring
+    table cells carries real risk of a worse defect (e.g. merging two
+    cells that are NOT actually a split number, corrupting a legitimate
+    two-column layout). This is a targeted-repair-only situation per the
+    "do not regenerate/restructure broadly" principle - so this function
+    only DETECTS and reports candidates for human review, it does not
+    modify the document.
+
+    Detection heuristic (generic, not tied to any specific document or
+    number): within each table row, flag any adjacent cell pair where
+    the first cell is ALL DIGITS (no separators - i.e. looks like a
+    truncated integer fragment, not a complete formatted number) and the
+    very next non-empty cell STARTS with digits. Genuine standalone
+    numbers in this kind of document are formatted with a decimal point
+    or thousands separators (e.g. "40", "8", "2025-06-17", "445050.00"),
+    so a bare, separator-free digit run sitting immediately next to
+    another digit-led cell is the distinguishing signature of a split
+    fragment rather than two unrelated real values.
+
+    Returns a list of dicts: {"row_text": ..., "fragment_1": ...,
+    "fragment_2": ..., "combined": ...} for logging/review."""
+    from docx.oxml.ns import qn
+
+    findings = []
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        for tr in tbl_el.findall(qn("w:tr")):
+            cells = tr.findall(qn("w:tc"))
+            cell_texts = [
+                "".join((t.text or "") for t in tc.findall(".//" + qn("w:t"))).strip() for tc in cells
+            ]
+            for i in range(len(cell_texts) - 1):
+                frag1 = cell_texts[i]
+                if not re.fullmatch(r"\d+", frag1):
+                    continue
+                # find the next NON-EMPTY cell (skip blank spacer cells, common in this table style)
+                j = i + 1
+                while j < len(cell_texts) and not cell_texts[j]:
+                    j += 1
+                if j >= len(cell_texts):
+                    continue
+                frag2 = cell_texts[j]
+                if not re.match(r"^\d", frag2):
+                    continue
+                findings.append(
+                    {
+                        "fragment_1": frag1,
+                        "fragment_2": frag2,
+                        "combined": frag1 + frag2,
+                    }
+                )
+    return findings
+
+
 def _translate_docx_segments_in_place(doc, target_language, llm_config):
     """Item (IN-PLACE-MERGE) - replaces the old approach of translating
     the PDF's extracted text as one big blob and appending it as a
@@ -878,7 +1073,7 @@ def _translate_docx_segments_in_place(doc, target_language, llm_config):
         user_content = json.dumps([{"id": sid, "text": text} for sid, _para, text in batch], ensure_ascii=False)
         try:
             content, provider = le._call_chat_completion_with_failover(
-                llm_config, system_prompt, user_content, max_tokens=8000
+                llm_config, system_prompt, user_content, max_tokens=12000
             )
             if content is None:
                 failed_batches += 1
@@ -958,13 +1153,22 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
     # the direction fix corresponds to the document's actual final
     # language; the row-height and font-size fixes are independent
     # Aspose-conversion cleanups that are safe to run alongside it.
-    direction_fixed, rows_fixed, fonts_fixed = 0, 0, 0
+    direction_fixed, rows_fixed, fonts_fixed, clause_numbers_fixed = 0, 0, 0, 0
     try:
-        direction_fixed = _fix_paragraph_direction(doc, target_language)
+        direction_fixed, clause_numbers_fixed = _fix_paragraph_direction(doc, target_language)
         rows_fixed = _fix_exact_row_heights(doc)
         fonts_fixed = _fix_tiny_font_outliers(doc)
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if these cosmetic passes fail
+
+    # Item (NUMERIC-INTEGRITY VALIDATION) - detection-only, see
+    # _detect_split_numeric_values()'s docstring for why this doesn't
+    # attempt an automatic merge.
+    split_numeric_findings = []
+    try:
+        split_numeric_findings = _detect_split_numeric_values(doc)
+    except Exception:
+        pass  # non-fatal - a validation pass failing shouldn't block delivering the document
 
     # Item 2 (SIGNATURE-PRESERVATION) - runs after translation, on the
     # same doc object, so it's placing signature images into the
@@ -992,6 +1196,8 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
         "signatures_leftover": sig_leftover,
         "header_bars_fixed": headers_fixed,
         "direction_fixed": direction_fixed,
+        "clause_numbers_fixed": clause_numbers_fixed,
+        "split_numeric_findings": split_numeric_findings,
         "row_heights_fixed": rows_fixed,
         "tiny_fonts_fixed": fonts_fixed,
         "aspose_words_calls": 1,
@@ -1038,10 +1244,21 @@ def run_full_test(pdf_path, target_language, output_path):
         log.append(f"Header-bar background gaps fixed: {rebuild_result['header_bars_fixed']}")
     if rebuild_result.get("direction_fixed"):
         log.append(f"RTL/LTR direction corrected: {rebuild_result['direction_fixed']} paragraph(s)")
+    if rebuild_result.get("clause_numbers_fixed"):
+        log.append(f"Reversed clause/article numbers corrected: {rebuild_result['clause_numbers_fixed']}")
     if rebuild_result.get("row_heights_fixed"):
         log.append(f"Fixed-height rows relaxed (prevents clipping): {rebuild_result['row_heights_fixed']}")
     if rebuild_result.get("tiny_fonts_fixed"):
         log.append(f"Tiny-font outliers normalized: {rebuild_result['tiny_fonts_fixed']}")
+    split_findings = rebuild_result.get("split_numeric_findings") or []
+    if split_findings:
+        examples = ", ".join(f"{f['fragment_1']}|{f['fragment_2']}" for f in split_findings[:5])
+        log.append(
+            f"\u26a0\ufe0f NEEDS REVIEW: {len(split_findings)} possible split numeric value(s) found "
+            f"(Aspose's own table conversion, not introduced by translation) - not auto-merged, "
+            f"review recommended: {examples}"
+            + (f" (+{len(split_findings)-5} more)" if len(split_findings) > 5 else "")
+        )
 
     sig_placed = rebuild_result.get("signatures_placed", 0)
     sig_leftover = rebuild_result.get("signatures_leftover", 0)
