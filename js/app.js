@@ -9261,11 +9261,17 @@
                     const blob = new Blob([Uint8Array.from(atob(data.outputBase64), c => c.charCodeAt(0))],
                         { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
                     const url = URL.createObjectURL(blob);
+                    const providerBreakdown = Object.entries(data.llmCallsByProvider || {})
+                        .map(([p, n]) => `${escapeHtml(p)}: ${n}`).join(', ');
                     resultBox.innerHTML = `
                         <div class="ds-card-sub" style="margin-top:10px;">
                             <p>\u2713 Done in ${data.totalSeconds}s \u2014 extraction: <strong>${escapeHtml(data.extractionSource)}</strong>, translation via: <strong>${escapeHtml(data.translationProvider || 'n/a')}</strong></p>
                             <p><a href="${url}" download="${escapeHtml(data.outputFileName)}">\u2b07 Download result</a></p>
-                            <pre style="font-size:0.72rem;color:rgba(0,0,0,0.55);white-space:pre-wrap;">${escapeHtml((data.log || []).join('\\n'))}</pre>
+                            <table style="margin-top:8px;border-collapse:collapse;font-size:0.8rem;">
+                                <tr><td style="padding:2px 10px 2px 0;color:rgba(0,0,0,0.55);">Aspose API calls</td><td><strong>${data.asposeCallsTotal ?? 0}</strong> (Words Cloud: ${data.asposeWordsCalls ?? 0}, PDF Cloud: ${data.asposePdfCalls ?? 0})</td></tr>
+                                <tr><td style="padding:2px 10px 2px 0;color:rgba(0,0,0,0.55);">LLM API calls</td><td><strong>${data.llmCallsTotal ?? 0}</strong> (OpenRouter: ${data.openrouterCalls ?? 0}${providerBreakdown ? ' \u2014 ' + providerBreakdown : ''})</td></tr>
+                            </table>
+                            <pre style="font-size:0.72rem;color:rgba(0,0,0,0.55);white-space:pre-wrap;margin-top:8px;">${escapeHtml((data.log || []).join('\\n'))}</pre>
                         </div>`;
                 } catch (err) {
                     resultBox.innerHTML = `<p class="ds-card-sub is-bad" style="margin-top:10px;">Failed: ${escapeHtml(err.message)}</p>`;

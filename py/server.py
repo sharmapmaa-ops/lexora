@@ -6584,6 +6584,12 @@ class Handler(SimpleHTTPRequestHandler):
                     # "Failed: 'translation_provider'" in the Admin UI.
                     translation_provider = ", ".join(result.get("translation_providers") or []) or "n/a"
                     total_seconds = result["total_seconds"]
+                    aspose_words_calls = result.get("aspose_words_calls", 0)
+                    aspose_pdf_calls = result.get("aspose_pdf_calls", 0)
+                    aspose_calls_total = result.get("aspose_calls_total", 0)
+                    llm_calls_total = result.get("llm_calls_total", 0)
+                    openrouter_calls = result.get("openrouter_calls", 0)
+                    llm_calls_by_provider = result.get("llm_calls_by_provider", {})
                 else:
                     t0 = time.time()
                     result = asp_test.run_structure_only_test(pdf_path, output_path)
@@ -6591,6 +6597,12 @@ class Handler(SimpleHTTPRequestHandler):
                     extraction_source = "n/a (structure-only mode)"
                     translation_provider = "n/a (structure-only mode)"
                     total_seconds = round(time.time() - t0, 1)
+                    aspose_words_calls = result.get("aspose_words_calls", 0)
+                    aspose_pdf_calls = result.get("aspose_pdf_calls", 0)
+                    aspose_calls_total = aspose_words_calls + aspose_pdf_calls
+                    llm_calls_total = result.get("llm_calls", 0)
+                    openrouter_calls = 0
+                    llm_calls_by_provider = result.get("llm_calls_by_provider", {})
             except asp_test.AsposeNotConfiguredError as err:
                 return 200, {"ok": False, "notConfigured": True, "error": str(err)}
 
@@ -6605,6 +6617,12 @@ class Handler(SimpleHTTPRequestHandler):
                 "extractionSource": extraction_source,
                 "translationProvider": translation_provider,
                 "totalSeconds": total_seconds,
+                "asposeWordsCalls": aspose_words_calls,
+                "asposePdfCalls": aspose_pdf_calls,
+                "asposeCallsTotal": aspose_calls_total,
+                "llmCallsTotal": llm_calls_total,
+                "openrouterCalls": openrouter_calls,
+                "llmCallsByProvider": llm_calls_by_provider,
             }
         except Exception as err:
             return 200, {"ok": False, "notConfigured": False, "error": str(err)}

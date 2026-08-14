@@ -309,7 +309,15 @@ def run_structure_only_test(pdf_path, output_path):
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
     doc.save(output_path)
-    return {"output_path": output_path, "mode": "structure_only", "header_bars_fixed": headers_fixed}
+    return {
+        "output_path": output_path,
+        "mode": "structure_only",
+        "header_bars_fixed": headers_fixed,
+        "aspose_words_calls": 1,
+        "aspose_pdf_calls": 0,
+        "llm_calls": 0,
+        "llm_calls_by_provider": {},
+    }
 
 
 def _pdf_api():
@@ -359,27 +367,32 @@ def extract_text_via_aspose(pdf_path):
     docstring. Don't assume the two SDKs behave the same just because
     their docstrings read the same."""
     if not (_PDF_SDK_AVAILABLE and ASPOSE_CLIENT_ID and ASPOSE_CLIENT_SECRET):
-        return {"text": le.extract_text(pdf_path), "source": "fallback:pdfplumber (Aspose.PDF Cloud not configured)"}
+        return {
+            "text": le.extract_text(pdf_path),
+            "source": "fallback:pdfplumber (Aspose.PDF Cloud not configured)",
+            "aspose_pdf_calls": 0,
+        }
 
     pdf_api = _pdf_api()
     folder = "lexora-aspose-test"
     filename = os.path.basename(pdf_path)
     storage_path = f"{folder}/{filename}"
     result_path = None
+    api_calls = 0  # counts actual Aspose.PDF Cloud API calls MADE (attempted), even on failure - not assumed
+    text, source = None, None
     try:
         with open(pdf_path, "rb") as f:
+            api_calls += 1
             pdf_api.upload_file(storage_path, f)
 
+        api_calls += 1
         result_path = pdf_api.get_pdf_in_storage_to_text(filename, folder=folder)
         with open(result_path, "rb") as rf:
             text = rf.read().decode("utf-8", errors="replace")
-
-        return {"text": text, "source": "aspose_pdf_cloud"}
+        source = "aspose_pdf_cloud"
     except Exception as err:  # noqa: BLE001
-        return {
-            "text": le.extract_text(pdf_path),
-            "source": f"fallback:pdfplumber (Aspose.PDF Cloud call failed: {err})",
-        }
+        text = le.extract_text(pdf_path)
+        source = f"fallback:pdfplumber (Aspose.PDF Cloud call failed: {err})"
     finally:
         if result_path:
             try:
@@ -387,9 +400,16 @@ def extract_text_via_aspose(pdf_path):
             except OSError:
                 pass  # local temp file cleanup - non-fatal if it's already gone
         try:
+            api_calls += 1
             pdf_api.delete_file(storage_path)
         except Exception:
             pass  # cleanup best-effort - don't fail extraction over a leftover file in Aspose's cloud storage
+
+    # Built AFTER the try/finally completes (not returned from inside it)
+    # so api_calls reflects ALL three attempted calls, including
+    # delete_file's - returning from inside try/except would have
+    # captured api_calls before finally's own increment ran.
+    return {"text": text, "source": source, "aspose_pdf_calls": api_calls}
 
 
 _SIGNATURE_PLACEHOLDER_RE = re.compile(r"^_{3,}$")
@@ -582,6 +602,194 @@ def _replace_paragraph_text(paragraph, new_text):
 _MAX_SEGMENT_CHARS_PER_BATCH = 3500  # conservative - translated output commonly runs longer than the source, plus JSON-wrapping overhead
 
 
+_RTL_LANGUAGE_KEYWORDS = ("arabic", "hebrew", "persian", "farsi", "urdu", "pashto", "dhivehi", "divehi", "yiddish", "sindhi")
+
+
+def _is_rtl_language(target_language):
+    tl = (target_language or "").strip().lower()
+    return any(kw in tl for kw in _RTL_LANGUAGE_KEYWORDS)
+
+
+def _fix_paragraph_direction(doc, target_language):
+    """Item (RTL/LTR-NOT-CORRECTED) - after in-place translation
+    replaces a paragraph's text, the paragraph's own w:bidi (RTL
+    paragraph flag) and each run's w:rtl flag were being left untouched
+    - so a paragraph that used to hold right-to-left Arabic still told
+    Word/LibreOffice "this paragraph is RTL" even though it now holds
+    left-to-right English. Confirmed by scanning a real translated
+    output: 328 paragraphs contained clearly-Latin-script (English) text
+    while still carrying <w:bidi/> with no val attribute (which per
+    OOXML defaults to true/on) - this was the direct cause of reported
+    colon-placement, alignment, and unnecessary-wrapping bugs, since the
+    bidi algorithm was still being applied to now-LTR content. Verified
+    by rendering a real affected document before/after this fix: e.g.
+    "Contract Sealing :Location" (broken) became "Contract Sealing
+    Location:" (correct) with no other change.
+
+    Sets every paragraph's w:bidi and every run's w:rtl to match the
+    TARGET language's actual direction (RTL only for Arabic, Hebrew,
+    Persian/Farsi, Urdu, Pashto, Dhivehi, Yiddish, Sindhi - LTR for
+    everything else). Applied document-wide since a full-pipeline
+    translation converts virtually the entire document to one target
+    language, so the whole document should read in one consistent
+    direction, not a per-paragraph mix left over from the source PDF's
+    original bilingual (Arabic+English side-by-side) layout. Tested
+    against an already-LTR source/target document too (Italian->English)
+    to confirm no regression - it still found 27 stray bidi flags there
+    and clearing them left the rendered output visually identical."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    want_rtl = _is_rtl_language(target_language)
+    fixed = 0
+
+    for p in _iter_paragraphs_in_order(doc):
+        pPr = p._p.find(qn("w:pPr"))
+        changed = False
+
+        if want_rtl:
+            if pPr is None:
+                pPr = OxmlElement("w:pPr")
+                p._p.insert(0, pPr)
+            bidi = pPr.find(qn("w:bidi"))
+            if bidi is None:
+                pPr.append(OxmlElement("w:bidi"))
+                changed = True
+            elif bidi.get(qn("w:val")) == "0":
+                del bidi.attrib[qn("w:val")]
+                changed = True
+        else:
+            if pPr is not None:
+                bidi = pPr.find(qn("w:bidi"))
+                if bidi is not None:
+                    pPr.remove(bidi)
+                    changed = True
+
+        for r in p.runs:
+            rpr = r._element.find(qn("w:rPr"))
+            if rpr is None:
+                if not want_rtl:
+                    continue
+                rpr = OxmlElement("w:rPr")
+                r._element.insert(0, rpr)
+            rtl_el = rpr.find(qn("w:rtl"))
+            if want_rtl:
+                if rtl_el is None:
+                    rpr.append(OxmlElement("w:rtl"))
+                    changed = True
+                elif rtl_el.get(qn("w:val")) == "0":
+                    del rtl_el.attrib[qn("w:val")]
+                    changed = True
+            else:
+                if rtl_el is not None:
+                    rpr.remove(rtl_el)
+                    changed = True
+
+        if changed:
+            fixed += 1
+
+    return fixed
+
+
+def _fix_exact_row_heights(doc):
+    """Item (VERTICAL-CLIPPING) - many of Aspose's table rows use
+    <w:trHeight w:hRule="exact"/> - a FIXED height, sized for the
+    original (often more compact) source-language text. Translated text
+    needing more vertical space (longer English phrases, or text that
+    now wraps to 2+ lines) gets visually clipped or overflows outside
+    the fixed-height row instead of the row growing - confirmed on a
+    real translated document showing headers like "Number of Parking
+    Number of / Lots Elevators" overlapping garbled text at exact
+    height. Switching hRule from "exact" to "atLeast" keeps the same
+    MINIMUM height (short content still looks the same) but lets the
+    row grow taller when its content genuinely needs more room. Found
+    104 such rows in a real affected document; fixing this eliminated
+    the clipping/overlap with no visible change to rows that didn't
+    need to grow."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for tr in doc.element.body.iter(qn("w:tr")):
+        trPr = tr.find(qn("w:trPr"))
+        if trPr is None:
+            continue
+        trHeight = trPr.find(qn("w:trHeight"))
+        if trHeight is not None and trHeight.get(qn("w:hRule")) == "exact":
+            trHeight.set(qn("w:hRule"), "atLeast")
+            fixed += 1
+    return fixed
+
+
+def _fix_tiny_font_outliers(doc, min_readable_half_points=10):
+    """Item (FONT-SIZE-OUTLIERS) - a small number of runs in Aspose's OWN
+    conversion output carry an anomalously tiny w:sz (font size in
+    half-points) - confirmed two real instances at w:sz="2" (1pt -
+    practically invisible) on header text ("5 Tenant Representative
+    Data", the Appendix section intro), while every sibling run in the
+    same paragraph and the rest of the document sits at 16-19
+    half-points (8-9.5pt). Pre-existing in Aspose's conversion, not
+    introduced by translation, but inherited unchanged into translated
+    output.
+
+    For any run with visible text and a w:sz below
+    min_readable_half_points, replaces it with the paragraph's own most
+    common OTHER run size (falling back to the most common size seen
+    anywhere in the document if the paragraph has no other sized runs) -
+    normalizing the outlier to match its actual surrounding context
+    instead of guessing a fixed replacement number."""
+    from collections import Counter
+    from docx.oxml.ns import qn
+
+    doc_wide_sizes = Counter()
+    for r in doc.element.body.iter(qn("w:r")):
+        t = r.find(qn("w:t"))
+        if t is None or not (t.text or "").strip():
+            continue
+        rpr = r.find(qn("w:rPr"))
+        if rpr is None:
+            continue
+        sz = rpr.find(qn("w:sz"))
+        if sz is not None:
+            val = sz.get(qn("w:val"))
+            if val and val.isdigit() and int(val) >= min_readable_half_points:
+                doc_wide_sizes[val] += 1
+    fallback_size = doc_wide_sizes.most_common(1)[0][0] if doc_wide_sizes else "20"
+
+    fixed = 0
+    for p_el in doc.element.body.iter(qn("w:p")):
+        para_sizes = Counter()
+        outlier_runs = []
+        for r in p_el.findall(qn("w:r")):
+            t = r.find(qn("w:t"))
+            if t is None or not (t.text or "").strip():
+                continue
+            rpr = r.find(qn("w:rPr"))
+            if rpr is None:
+                continue
+            sz = rpr.find(qn("w:sz"))
+            if sz is None:
+                continue
+            val = sz.get(qn("w:val"))
+            if not val or not val.isdigit():
+                continue
+            if int(val) < min_readable_half_points:
+                outlier_runs.append(r)
+            else:
+                para_sizes[val] += 1
+        if not outlier_runs:
+            continue
+        replacement = para_sizes.most_common(1)[0][0] if para_sizes else fallback_size
+        for r in outlier_runs:
+            rpr = r.find(qn("w:rPr"))
+            for tag in ("w:sz", "w:szCs"):
+                el = rpr.find(qn(tag))
+                if el is not None:
+                    el.set(qn("w:val"), replacement)
+            fixed += 1
+
+    return fixed
+
+
 def _translate_docx_segments_in_place(doc, target_language, llm_config):
     """Item (IN-PLACE-MERGE) - replaces the old approach of translating
     the PDF's extracted text as one big blob and appending it as a
@@ -606,12 +814,14 @@ def _translate_docx_segments_in_place(doc, target_language, llm_config):
     uses, so a saved rule applies identically here as it does in the
     single-call path.
 
-    Returns (translated_count, skipped_count, failed_batch_count) for
-    the caller's log. A batch whose JSON response fails to parse, or is
+    Returns (translated_count, skipped_count, failed_batch_count,
+    llm_calls_total, llm_calls_by_provider) for the caller's log/API-call
+    accounting. A batch whose JSON response fails to parse, or is
     missing some ids, is logged and its paragraphs are simply left in
     the source language rather than aborting the whole run - a partial
     translation is far more useful to a reviewer than no output at all."""
     import json
+    from collections import Counter
 
     segments = []  # list of (id, paragraph, original_text)
     next_id = 1
@@ -623,7 +833,7 @@ def _translate_docx_segments_in_place(doc, target_language, llm_config):
         next_id += 1
 
     if not segments:
-        return 0, 0, 0, []
+        return 0, 0, 0, 0, {}
 
     rules_block = le._fetch_translation_rules_block()
     system_prompt = (
@@ -638,7 +848,7 @@ def _translate_docx_segments_in_place(doc, target_language, llm_config):
 
     translated_by_id = {}
     failed_batches = 0
-    providers_used = set()
+    llm_calls_by_provider = Counter()  # counts by provider that actually SUCCEEDED per batch (see note below)
 
     batch, batch_chars = [], 0
     batches = []
@@ -652,6 +862,18 @@ def _translate_docx_segments_in_place(doc, target_language, llm_config):
     if batch:
         batches.append(batch)
 
+    # Note on call counting: each batch below is ONE logical translation
+    # request from this pipeline's perspective, but
+    # le._call_chat_completion_with_failover() can itself make up to TWO
+    # real HTTP calls internally (primary provider, then a fallback
+    # provider if the primary's call errors) before returning - it
+    # doesn't currently expose that internal count. llm_calls_total
+    # below is therefore the number of batches ATTEMPTED (a solid lower
+    # bound on real network calls, and the number that matters for "how
+    # many times did this pipeline ask an LLM to translate something"),
+    # while llm_calls_by_provider counts only the provider that actually
+    # SUCCEEDED for each batch (a failed batch's provider, if any was
+    # tried internally, isn't visible to us here).
     for batch in batches:
         user_content = json.dumps([{"id": sid, "text": text} for sid, _para, text in batch], ensure_ascii=False)
         try:
@@ -661,7 +883,7 @@ def _translate_docx_segments_in_place(doc, target_language, llm_config):
             if content is None:
                 failed_batches += 1
                 continue
-            providers_used.add(provider)
+            llm_calls_by_provider[provider] += 1
             cleaned = content.strip()
             if cleaned.startswith("```"):
                 cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned.strip())
@@ -681,7 +903,7 @@ def _translate_docx_segments_in_place(doc, target_language, llm_config):
         else:
             skipped_count += 1  # left in source language - batch failed or id missing from response
 
-    return translated_count, skipped_count, failed_batches, sorted(providers_used)
+    return translated_count, skipped_count, failed_batches, len(batches), dict(llm_calls_by_provider)
 
 
 def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, llm_config=None):
@@ -727,9 +949,22 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
     llm_config = llm_config if llm_config is not None else le.load_llm_config()
-    translated_count, skipped_count, failed_batches, providers_used = _translate_docx_segments_in_place(
-        doc, target_language, llm_config
+    translated_count, skipped_count, failed_batches, llm_calls_total, llm_calls_by_provider = (
+        _translate_docx_segments_in_place(doc, target_language, llm_config)
     )
+
+    # Item (RTL/LTR-NOT-CORRECTED, VERTICAL-CLIPPING, FONT-SIZE-OUTLIERS)
+    # - see each function's own docstring above. Run after translation so
+    # the direction fix corresponds to the document's actual final
+    # language; the row-height and font-size fixes are independent
+    # Aspose-conversion cleanups that are safe to run alongside it.
+    direction_fixed, rows_fixed, fonts_fixed = 0, 0, 0
+    try:
+        direction_fixed = _fix_paragraph_direction(doc, target_language)
+        rows_fixed = _fix_exact_row_heights(doc)
+        fonts_fixed = _fix_tiny_font_outliers(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if these cosmetic passes fail
 
     # Item 2 (SIGNATURE-PRESERVATION) - runs after translation, on the
     # same doc object, so it's placing signature images into the
@@ -752,10 +987,17 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
         "segments_translated": translated_count,
         "segments_skipped": skipped_count,
         "translation_batches_failed": failed_batches,
-        "translation_providers": providers_used,
+        "translation_providers": sorted(llm_calls_by_provider.keys()),
         "signatures_placed": sig_placed,
         "signatures_leftover": sig_leftover,
         "header_bars_fixed": headers_fixed,
+        "direction_fixed": direction_fixed,
+        "row_heights_fixed": rows_fixed,
+        "tiny_fonts_fixed": fonts_fixed,
+        "aspose_words_calls": 1,
+        "aspose_pdf_calls": 0,
+        "llm_calls": llm_calls_total,
+        "llm_calls_by_provider": llm_calls_by_provider,
     }
 
 
@@ -794,6 +1036,12 @@ def run_full_test(pdf_path, target_language, output_path):
         )
     if rebuild_result.get("header_bars_fixed"):
         log.append(f"Header-bar background gaps fixed: {rebuild_result['header_bars_fixed']}")
+    if rebuild_result.get("direction_fixed"):
+        log.append(f"RTL/LTR direction corrected: {rebuild_result['direction_fixed']} paragraph(s)")
+    if rebuild_result.get("row_heights_fixed"):
+        log.append(f"Fixed-height rows relaxed (prevents clipping): {rebuild_result['row_heights_fixed']}")
+    if rebuild_result.get("tiny_fonts_fixed"):
+        log.append(f"Tiny-font outliers normalized: {rebuild_result['tiny_fonts_fixed']}")
 
     sig_placed = rebuild_result.get("signatures_placed", 0)
     sig_leftover = rebuild_result.get("signatures_leftover", 0)
@@ -802,6 +1050,23 @@ def run_full_test(pdf_path, target_language, output_path):
             f"Signatures: {sig_placed} placed in-line at placeholder line(s)"
             + (f", {sig_leftover} appended as a labeled section (no placeholder match)" if sig_leftover else "")
         )
+
+    # API-call accounting: combines the informational extraction check
+    # above with the rebuild/translate step below - so this reflects
+    # EVERY Aspose and LLM call this one test run actually made, useful
+    # for tracking usage against Aspose's free-tier call limits and
+    # LLM provider costs.
+    aspose_words_calls = rebuild_result.get("aspose_words_calls", 0)
+    aspose_pdf_calls = extraction.get("aspose_pdf_calls", 0) + rebuild_result.get("aspose_pdf_calls", 0)
+    aspose_calls_total = aspose_words_calls + aspose_pdf_calls
+    llm_calls_by_provider = rebuild_result.get("llm_calls_by_provider", {})
+    openrouter_calls = llm_calls_by_provider.get("openrouter", 0)
+    llm_calls_total = rebuild_result.get("llm_calls", 0)
+    log.append(
+        f"API calls this run \u2014 Aspose: {aspose_calls_total} "
+        f"(Words Cloud: {aspose_words_calls}, PDF Cloud: {aspose_pdf_calls}), "
+        f"LLM: {llm_calls_total} (OpenRouter: {openrouter_calls})"
+    )
 
     return {
         "output_path": output_path,
@@ -813,4 +1078,10 @@ def run_full_test(pdf_path, target_language, output_path):
         "signatures_placed": sig_placed,
         "signatures_leftover": sig_leftover,
         "total_seconds": round(time.time() - t0, 1),
+        "aspose_words_calls": aspose_words_calls,
+        "aspose_pdf_calls": aspose_pdf_calls,
+        "aspose_calls_total": aspose_calls_total,
+        "llm_calls_total": llm_calls_total,
+        "llm_calls_by_provider": llm_calls_by_provider,
+        "openrouter_calls": openrouter_calls,
     }
