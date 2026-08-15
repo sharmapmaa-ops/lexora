@@ -66,6 +66,20 @@ ClaudeDebug.addTopic('Translation: Image position wrong', [
   5. Zip deliver karne ke baad, **turant commit karo**
      (`git add -A && git commit -m "..."`) taaki agli baar ka diff sirf
      AGLE changes dikhaye, purane wapas na aayein.
+  - **CRITICAL**: Step 1 (working-tree clean check) **pehla hi commit se
+     PEHLE** karo, us response ke apne changes karne se pehle - agar us
+     waqt WORKING-TREE PEHLE SE DIRTY hai (matlab pichle response ke changes
+     abhi tak commit nahi hue), to **pehle unhi purane changes ko commit
+     karo** (alag commit se), TAB apne is response ke naye changes shuru
+     karo. Warna purane-aur-naye changes EK HI commit me mix ho jaate hain,
+     aur agar beech me kabhi "sirf ye ek chhota unrelated-kaam karo" jaisa
+     koi response aaya (jaisa ek baar hua - git-tracking-system khud setup
+     karne wale response me), uska baseline-commit GALTI SE pichle
+     GENUINE-FIX ko bhi "already-baseline" bana deta hai - us fix ki files
+     phir kabhi future zips me nahi dikhtin, jabki user ne unhe abhi
+     receive/apply hi nahi kiya tha. Har response ke commit-message me
+     saaf likho ki VO SPECIFIC response kaunsa kaam kar raha tha, taaki
+     `git log` padh ke koi bhi confusion turant resolve ho sake.
   - Agar koi NAYI file banayi ho (jaise koi naya `.py`/`.js` module), wo
     `git status --porcelain` me untracked (`??`) dikhegi — usko bhi zip me
     shaamil karna hai, sirf modified (`M`) wali nahi.
@@ -137,3 +151,22 @@ par decide karega.
   chuki declarations) baar-baar milti rahi hai — jab bhi koi CSS/JS change
   karo jo kisi EXISTING selector se conflict kar sakta hai, pehle check karo
   ki koi aur jagah wahi selector/property already exist to nahi karta.
+- **User jab bole "ye output me galat hai" aur main apne sandbox test se
+  "mujhe sahi dikh raha hai" bol du — to us pal turant ruk jao.** Ek real
+  incident: maine baar-baar apne KHUD generate kiye hue mock/sandbox
+  test-files check karke "width sahi hai" bola, jabki user apni ACTUAL
+  production output (real Aspose + real OpenRouter credentials se, jo
+  maine kabhi dekha hi nahi tha) dekh raha tha — jisme genuinely ek naya,
+  alag bug tha jo mere sandbox-mocks kabhi reproduce nahi kar sakte the
+  (real LLM ka output, real API responses, deployment ka exact code-state
+  — in me se koi bhi mere isolated unit-tests se match nahi karta).
+  **Sabak:** mera apna banaya hua mock/test-fixture "reality" nahi hai —
+  wo sirf ek estimate hai. Jab bhi user REAL output ke baare me kuch bole
+  jo mere test se contradict kare, apna purana test-result **kabhi bhi**
+  authority mat maano. Turant user se wahi EXACT file maango jisse unka
+  observation aaya, aur usी file ki raw XML/data directly khol ke check
+  karo — guess ya "mujhe pehle se pata hai" wala confidence kabhi mat
+  dikhao jab tak fresh, real evidence na dekh liya ho. Agar file nahi mil
+  rahi, to explicitly bolo "mere paas is exact case ka real proof nahi
+  hai" — kabhi bhi apne purane/alag test-run ke result ko unke naye,
+  alag-file wale sawaal ka jawab bana ke pesh mat karo.
