@@ -309,6 +309,18 @@ def run_structure_only_test(pdf_path, output_path):
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
+    tables_repositioned = 0
+    try:
+        tables_repositioned = _fix_table_overflow_indent(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
+    leaked_names_fixed = 0
+    try:
+        leaked_names_fixed = _fix_leaked_internal_field_names(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
     split_numeric_findings = []
     try:
         split_numeric_findings = _detect_split_numeric_values(doc)
@@ -320,6 +332,8 @@ def run_structure_only_test(pdf_path, output_path):
         "output_path": output_path,
         "mode": "structure_only",
         "header_bars_fixed": headers_fixed,
+        "tables_repositioned": tables_repositioned,
+        "leaked_names_fixed": leaked_names_fixed,
         "split_numeric_findings": split_numeric_findings,
         "aspose_words_calls": 1,
         "aspose_pdf_calls": 0,
@@ -842,6 +856,59 @@ def _fix_exact_row_heights(doc):
     return fixed
 
 
+def _fix_table_overflow_indent(doc):
+    """Item (APPENDIX-TABLE-OFF-PAGE, P0-critical) - confirmed real,
+    pre-existing Aspose conversion defect: this document's Appendix
+    tables ("Clause Number | Field | Clarification") carry a
+    w:tblInd (table left-indent) of ~6766-6767 twips, while the table's
+    own column widths sum to ~9422 twips and the page's content width is
+    only ~10860 twips - so indent + width = ~16188 twips, roughly 5300
+    twips (over 3.5 inches) past the page's right edge. Confirmed this
+    exact broken indent already exists in Aspose's OWN untranslated
+    structure-only conversion (unrelated to translation or anything
+    this pipeline does), pushing nearly the entire table off-page -
+    every OTHER table in the same document uses an indent around
+    700-870 twips, so this is clearly anomalous, not an intentional
+    layout choice.
+
+    Fix: for every table in the document, if its indent plus total
+    column width would exceed the page's content width, clamp the
+    indent down to fit ("content_width - table_width", never negative)
+    - a minimal, targeted change that only touches tables which are
+    actually mispositioned, leaving every correctly-placed table
+    (indent ~700-870, safely within bounds) untouched. Verified against
+    the real document: 4 tables fixed, Appendix went from having its
+    Clause Number/Field columns entirely clipped off-page to being
+    fully visible with all three columns readable."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    sec = doc.sections[0]
+    content_width_twips = round((sec.page_width - sec.left_margin - sec.right_margin) / 635)
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        tblPr = tbl_el.find(qn("w:tblPr"))
+        if tblPr is None:
+            continue
+        grid = tbl_el.find(qn("w:tblGrid"))
+        cols = grid.findall(qn("w:gridCol")) if grid is not None else []
+        total_w = sum(int(c.get(qn("w:w"))) for c in cols) if cols else 0
+        if total_w <= 0:
+            continue
+        tblInd = tblPr.find(qn("w:tblInd"))
+        ind_val = int(tblInd.get(qn("w:w"))) if tblInd is not None else 0
+        if ind_val + total_w > content_width_twips:
+            new_ind = max(0, content_width_twips - total_w)
+            if tblInd is None:
+                tblInd = OxmlElement("w:tblInd")
+                tblInd.set(qn("w:type"), "dxa")
+                tblPr.append(tblInd)
+            tblInd.set(qn("w:w"), str(new_ind))
+            fixed += 1
+    return fixed
+
+
 def _fix_tiny_font_outliers(doc, min_readable_half_points=10):
     """Item (FONT-SIZE-OUTLIERS) - a small number of runs in Aspose's OWN
     conversion output carry an anomalously tiny w:sz (font size in
@@ -909,6 +976,48 @@ def _fix_tiny_font_outliers(doc, min_readable_half_points=10):
                     el.set(qn("w:val"), replacement)
             fixed += 1
 
+    return fixed
+
+
+# Item (LEAKED-INTERNAL-FIELD-NAMES) - confirmed these tokens are already
+# present, verbatim, in Aspose's OWN untranslated structure-only conversion of
+# the SOURCE PDF (i.e. baked into the source contract-generation template
+# itself - the Saudi Ejar/REGA system's own output - not something this
+# pipeline's extraction or translation introduced). Still worth cleaning up
+# before delivering a final document to a reader, since a raw
+# programmer-style token like "tin_number" sitting next to real data looks
+# unprofessional regardless of which upstream system produced it. Kept as an
+# explicit, reviewable mapping (not a guess-based heuristic) so it only ever
+# touches known-confirmed tokens - extend this dict if future documents
+# surface other leaked field names, rather than trying to auto-detect
+# arbitrary snake_case-looking substrings (which risks false positives on
+# real content, e.g. genuine hyphenated/underscored reference numbers).
+_KNOWN_LEAKED_FIELD_NAME_MAP = {
+    "tin_number": "TIN",
+}
+
+
+def _fix_leaked_internal_field_names(doc):
+    """Replaces known internal/template field-name tokens (see
+    _KNOWN_LEAKED_FIELD_NAME_MAP above) with their proper display label,
+    wherever they appear verbatim in a run's text. Returns the count of
+    runs changed."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for run in doc.element.body.iter(qn("w:r")):
+        t = run.find(qn("w:t"))
+        if t is None or not t.text:
+            continue
+        new_text = t.text
+        changed = False
+        for bad, good in _KNOWN_LEAKED_FIELD_NAME_MAP.items():
+            if bad in new_text:
+                new_text = new_text.replace(bad, good)
+                changed = True
+        if changed:
+            t.text = new_text
+            fixed += 1
     return fixed
 
 
@@ -1036,6 +1145,16 @@ def _translate_docx_segments_in_place(doc, target_language, llm_config):
         f"{target_language}, preserving meaning, tone, and register. Each segment is a single "
         f"paragraph or table cell from a legal document, already correctly structured - do NOT "
         f"add markdown, bullets, or numbering, just translate the text of each segment as-is.\n\n"
+        f"Pronoun rule: if a segment refers to a contracting party (e.g. 'the Tenant', 'the "
+        f"Lessor') that is a company, institution, establishment, or other organizational entity "
+        f"rather than a named individual person - look for cues like 'Company', 'Corporation', "
+        f"'Establishment', 'Institution', 'Single Person Company', or a commercial registration "
+        f"number attached to that party - use 'its' rather than 'his'/'her' for that party's "
+        f"possessive pronouns in {target_language} (where the target language distinguishes "
+        f"entity vs. personal pronouns). If genuinely uncertain whether a party is an individual "
+        f"or an organization from the segment's own content, prefer the organizational form, "
+        f"since legal contracting parties styled with a company/entity name are far more often "
+        f"organizations than individuals.\n\n"
         f"Input is a JSON array of {{\"id\": <int>, \"text\": <string>}} objects. Respond with "
         f"ONLY a JSON array of {{\"id\": <int>, \"text\": <translated string>}} objects, one per "
         f"input segment, same ids, no other text, no markdown code fences."
@@ -1143,6 +1262,12 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
+    tables_repositioned = 0
+    try:
+        tables_repositioned = _fix_table_overflow_indent(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
     llm_config = llm_config if llm_config is not None else le.load_llm_config()
     translated_count, skipped_count, failed_batches, llm_calls_total, llm_calls_by_provider = (
         _translate_docx_segments_in_place(doc, target_language, llm_config)
@@ -1160,6 +1285,18 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
         fonts_fixed = _fix_tiny_font_outliers(doc)
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if these cosmetic passes fail
+
+    # Item (LEAKED-INTERNAL-FIELD-NAMES) - run AFTER translation so this
+    # catches the token regardless of whether the LLM carried
+    # "tin_number" through untouched or not - see
+    # _fix_leaked_internal_field_names()'s docstring for the confirmed
+    # root cause (this is baked into the SOURCE PDF's own template, not
+    # something this pipeline's extraction introduced).
+    leaked_names_fixed = 0
+    try:
+        leaked_names_fixed = _fix_leaked_internal_field_names(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
     # Item (NUMERIC-INTEGRITY VALIDATION) - detection-only, see
     # _detect_split_numeric_values()'s docstring for why this doesn't
@@ -1195,6 +1332,7 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
         "signatures_placed": sig_placed,
         "signatures_leftover": sig_leftover,
         "header_bars_fixed": headers_fixed,
+        "tables_repositioned": tables_repositioned,
         "direction_fixed": direction_fixed,
         "clause_numbers_fixed": clause_numbers_fixed,
         "split_numeric_findings": split_numeric_findings,
@@ -1242,6 +1380,10 @@ def run_full_test(pdf_path, target_language, output_path):
         )
     if rebuild_result.get("header_bars_fixed"):
         log.append(f"Header-bar background gaps fixed: {rebuild_result['header_bars_fixed']}")
+    if rebuild_result.get("tables_repositioned"):
+        log.append(f"Off-page tables repositioned (were overflowing page boundary): {rebuild_result['tables_repositioned']}")
+    if rebuild_result.get("leaked_names_fixed"):
+        log.append(f"Leaked internal field-name tokens cleaned up: {rebuild_result['leaked_names_fixed']}")
     if rebuild_result.get("direction_fixed"):
         log.append(f"RTL/LTR direction corrected: {rebuild_result['direction_fixed']} paragraph(s)")
     if rebuild_result.get("clause_numbers_fixed"):
