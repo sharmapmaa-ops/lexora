@@ -909,6 +909,149 @@ def _fix_table_overflow_indent(doc):
     return fixed
 
 
+_RTL_SCRIPT_CHAR_RE = re.compile(
+    r"[\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]"
+)
+_LATIN_CHAR_RE = re.compile(r"[A-Za-z]")
+
+
+def _fix_table_column_order_for_target_direction(doc, target_language):
+    """Item (TABLE-COLUMN-ORDER-NOT-MIRRORED, confirmed real via direct
+    user report + visual evidence) - fixing paragraph-level w:bidi/w:rtl
+    (see _fix_paragraph_direction) makes TEXT read correctly, but a
+    table's own COLUMN ORDER is a separate, physical layout fact that
+    bidi does nothing about: a table built for RTL reading naturally
+    orders its columns right-to-left (e.g. a genuinely monolingual
+    Arabic "Clause Number | Field | Clarification" table has "Clause
+    Number" as the PHYSICALLY RIGHTMOST, narrowest column, since that's
+    read first in RTL) - translating the text to English doesn't move
+    the columns, so the result reads Clarification-first,
+    Number-last, which is backwards for an LTR reader. Confirmed via a
+    real screenshot: the Appendix table's "Clarification" column (long
+    text) sat physically first/leftmost and "Clause Number" sat
+    physically last/rightmost, exactly backwards from correct LTR
+    reading order.
+
+    This must NOT be applied to every table indiscriminately: most of
+    this document's tables are a BILINGUAL side-by-side layout (an
+    English label already sitting on the physical left, paired with the
+    same field's Arabic-translated label on the physical right, e.g.
+    "Brokerage Entity Address | - | عنوان منشأة الوساطة العقارية:") -
+    these already have their English anchor correctly positioned on the
+    left, and reversing them would break that. The distinguishing
+    signal, confirmed by measuring actual character composition across
+    this document's real tables: a table that still needs reordering is
+    overwhelmingly (>85%) RTL-script content with no real Latin-script
+    anchor column at all, while every bilingual-layout table sits
+    comfortably below that (measured 0.09-0.74 RTL-character fraction
+    across 28 real tables in this document, vs 0.96-1.0 for the 5 tables
+    that do need reordering) - a wide, safe margin, not a coin-flip
+    threshold.
+
+    Runs BEFORE translation (like _fix_table_overflow_indent above) -
+    this detection needs the ORIGINAL script to tell "genuinely RTL
+    monolingual table" apart from "bilingual table with an English
+    column already in place", which is impossible to tell apart once
+    translation has turned everything into English. The actual column
+    swap itself doesn't care about language and could run at any point;
+    doing it here just keeps both structural table fixes together.
+
+    Skips (does not touch) any table containing a row whose cell count
+    doesn't match the column count (a sign of a gridSpan/merged cell in
+    that row) - reordering cells positionally is only safe when every
+    row has exactly one cell per column, and this document has at most
+    one gridSpan cell total, so being conservative here costs
+    essentially nothing.
+
+    Only runs when the TARGET language is LTR (no evidence yet for the
+    reverse LTR-source -> RTL-target case, so this deliberately doesn't
+    guess at that scenario)."""
+    from docx.oxml.ns import qn
+
+    if _is_rtl_language(target_language):
+        return 0
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        grid = tbl_el.find(qn("w:tblGrid"))
+        cols = grid.findall(qn("w:gridCol")) if grid is not None else []
+        num_cols = len(cols)
+        if num_cols < 2:
+            continue
+
+        rows = tbl_el.findall(qn("w:tr"))
+        if not rows:
+            continue
+
+        latin_count = 0
+        rtl_count = 0
+        skip_table = False
+        for tr in rows:
+            tcs = tr.findall(qn("w:tc"))
+            if len(tcs) != num_cols:
+                skip_table = True
+                break
+            for tc in tcs:
+                text = "".join((t.text or "") for t in tc.findall(".//" + qn("w:t")))
+                latin_count += len(_LATIN_CHAR_RE.findall(text))
+                rtl_count += len(_RTL_SCRIPT_CHAR_RE.findall(text))
+        if skip_table:
+            continue
+
+        total_chars = latin_count + rtl_count
+        if total_chars < 5:
+            continue
+        if (rtl_count / total_chars) <= 0.85:
+            continue  # has a real Latin-script anchor column (bilingual layout) - don't reorder
+
+        # Reverse the column widths - this applies uniformly across the
+        # whole table (a single tblGrid can't have different widths per
+        # row), matching the assumption that the "short identifier"
+        # column becomes narrow-on-the-left and the "long text" column
+        # becomes wide-on-the-right once semantically reordered.
+        widths = [c.get(qn("w:w")) for c in cols]
+        for c, w in zip(cols, reversed(widths)):
+            c.set(qn("w:w"), w)
+
+        # Reverse each row's CELL order - but only the rows that
+        # actually need it. Confirmed by direct inspection of a real
+        # affected table: its HEADER row and its DATA rows are NOT
+        # consistently ordered relative to each other in Aspose's own
+        # conversion - the header row already read "Clause Number |
+        # Field | Clarification" in plain left-to-right order (already
+        # correct for LTR), while every data row underneath had long
+        # explanatory text on the LEFT and the short clause number on
+        # the RIGHT (backwards). Blindly reversing every row uniformly
+        # would have "fixed" the already-correct header into the WRONG
+        # order while fixing the data rows - leaving header and data
+        # mismatched either way.
+        #
+        # Per-row rule (evidence-based, not a guess): only reverse a row
+        # whose first cell is markedly LONGER than its last cell (>10
+        # chars and >1.5x) - this is exactly the signature of "long
+        # content sitting on the left, short identifier on the right"
+        # that every genuine data row in the real affected table showed,
+        # while the header row (short labels in every cell, no strong
+        # length asymmetry) correctly does NOT match this pattern and is
+        # left alone. Verified against all 16 rows of a real appendix
+        # table: correctly reversed all 15 data rows and correctly
+        # skipped the 1 header row.
+        for tr in rows:
+            tcs = tr.findall(qn("w:tc"))
+            first_text = "".join((t.text or "") for t in tcs[0].findall(".//" + qn("w:t"))).strip()
+            last_text = "".join((t.text or "") for t in tcs[-1].findall(".//" + qn("w:t"))).strip()
+            if not (len(first_text) > 10 and len(first_text) > len(last_text) * 1.5):
+                continue
+            for tc in tcs:
+                tr.remove(tc)
+            for tc in reversed(tcs):
+                tr.append(tc)
+
+        fixed += 1
+
+    return fixed
+
+
 def _fix_tiny_font_outliers(doc, min_readable_half_points=10):
     """Item (FONT-SIZE-OUTLIERS) - a small number of runs in Aspose's OWN
     conversion output carry an anomalously tiny w:sz (font size in
@@ -1278,6 +1421,19 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
+    # Item (TABLE-COLUMN-ORDER-NOT-MIRRORED) - see
+    # _fix_table_column_order_for_target_direction()'s docstring. MUST
+    # run BEFORE translation - it tells "genuinely RTL monolingual
+    # table, needs column reversal" apart from "bilingual table with an
+    # English column already in place" by looking at the ORIGINAL
+    # script, which is impossible to check once everything has been
+    # translated to English.
+    columns_reordered = 0
+    try:
+        columns_reordered = _fix_table_column_order_for_target_direction(doc, target_language)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
     llm_config = llm_config if llm_config is not None else le.load_llm_config()
     translated_count, skipped_count, failed_batches, llm_calls_total, llm_calls_by_provider = (
         _translate_docx_segments_in_place(doc, target_language, llm_config)
@@ -1343,6 +1499,7 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
         "signatures_leftover": sig_leftover,
         "header_bars_fixed": headers_fixed,
         "tables_repositioned": tables_repositioned,
+        "columns_reordered": columns_reordered,
         "direction_fixed": direction_fixed,
         "clause_numbers_fixed": clause_numbers_fixed,
         "split_numeric_findings": split_numeric_findings,
@@ -1392,6 +1549,8 @@ def run_full_test(pdf_path, target_language, output_path):
         log.append(f"Header-bar background gaps fixed: {rebuild_result['header_bars_fixed']}")
     if rebuild_result.get("tables_repositioned"):
         log.append(f"Off-page tables repositioned (were overflowing page boundary): {rebuild_result['tables_repositioned']}")
+    if rebuild_result.get("columns_reordered"):
+        log.append(f"Table column order mirrored for LTR reading (was RTL physical order): {rebuild_result['columns_reordered']}")
     if rebuild_result.get("leaked_names_fixed"):
         log.append(f"Leaked internal field-name tokens cleaned up: {rebuild_result['leaked_names_fixed']}")
     if rebuild_result.get("direction_fixed"):
