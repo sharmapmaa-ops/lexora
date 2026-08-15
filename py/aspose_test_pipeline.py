@@ -765,64 +765,112 @@ def _fix_paragraph_direction(doc, target_language):
 
     Also fixes reversed clause/article-number prefixes exposed by the
     RTL->LTR flip - see _fix_reversed_clause_number_prefix()'s docstring
-    for the full root-cause explanation. Returns (paragraphs_fixed,
-    clause_numbers_fixed)."""
+    for the full root-cause explanation.
+
+    Also converts w:jc="both" (full justify) to "left" for paragraphs
+    flipping from RTL to LTR - confirmed real complaint, with evidence:
+    508 of 575 real translated paragraphs in an affected document kept
+    jc="both" (inherited from the original Arabic layout, which
+    routinely uses full justification), which - now holding English
+    text of very different average word/line-length than the Arabic it
+    replaced - produces visibly oversized, uneven gaps between words to
+    stretch each line to full width. In table cells with short content
+    (e.g. a single digit in a narrow "Clause Number" column), that same
+    justify behavior can look like the text is oddly spaced or even
+    reads as if the column wasn't resized at all, even when the
+    column's own width is correct. Only touches paragraphs making the
+    RTL->LTR transition (same evidence-gated condition as the clause-
+    number fix) - "left" is a safe, unambiguous default for translated
+    body text and table cells; jc="center" is left untouched since
+    centering isn't direction-dependent.
+
+    Returns (paragraphs_fixed, clause_numbers_fixed)."""
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
 
     want_rtl = _is_rtl_language(target_language)
     fixed = 0
     clause_numbers_fixed = 0
+    errors_encountered = 0
 
+    # Item (SILENT-CASCADING-FAILURE) - confirmed real bug pattern: in a
+    # real production run, an ENTIRE block of 24 consecutive clause
+    # numbers (all of Article Five's obligations) failed to get
+    # reversed together, while clauses before and after that block were
+    # unaffected - exactly the signature of ONE paragraph raising an
+    # exception partway through this loop, which the caller's
+    # try/except then silently swallows (rebuild_docx_with_translated_
+    # text wraps this whole function in "except Exception: pass"),
+    # leaving every paragraph from that point onward completely
+    # unprocessed - not just its clause number, but its bidi/rtl flags
+    # too. Extensive isolated testing (49/49 real clause numbers
+    # correctly reversed) could not reproduce the specific paragraph
+    # that raised, but the FIX for this class of bug doesn't require
+    # reproducing it: wrapping each paragraph's own processing in its
+    # own try/except means one paragraph's edge case can only skip that
+    # one paragraph, never cascade into silently abandoning every
+    # paragraph after it.
     for p in _iter_paragraphs_in_order(doc):
-        pPr = p._p.find(qn("w:pPr"))
-        changed = False
+        try:
+            pPr = p._p.find(qn("w:pPr"))
+            changed = False
 
-        was_rtl = pPr is not None and pPr.find(qn("w:bidi")) is not None
-        if was_rtl and not want_rtl:
-            if _fix_reversed_clause_number_prefix(p):
-                clause_numbers_fixed += 1
+            was_rtl = pPr is not None and pPr.find(qn("w:bidi")) is not None
+            if was_rtl and not want_rtl:
+                if _fix_reversed_clause_number_prefix(p):
+                    clause_numbers_fixed += 1
+                if pPr is not None:
+                    jc = pPr.find(qn("w:jc"))
+                    if jc is not None and jc.get(qn("w:val")) == "both":
+                        jc.set(qn("w:val"), "left")
+                        changed = True
 
-        if want_rtl:
-            if pPr is None:
-                pPr = OxmlElement("w:pPr")
-                p._p.insert(0, pPr)
-            bidi = pPr.find(qn("w:bidi"))
-            if bidi is None:
-                pPr.append(OxmlElement("w:bidi"))
-                changed = True
-            elif bidi.get(qn("w:val")) == "0":
-                del bidi.attrib[qn("w:val")]
-                changed = True
-        else:
-            if pPr is not None:
-                bidi = pPr.find(qn("w:bidi"))
-                if bidi is not None:
-                    pPr.remove(bidi)
-                    changed = True
-
-        for r in p.runs:
-            rpr = r._element.find(qn("w:rPr"))
-            if rpr is None:
-                if not want_rtl:
-                    continue
-                rpr = OxmlElement("w:rPr")
-                r._element.insert(0, rpr)
-            rtl_el = rpr.find(qn("w:rtl"))
             if want_rtl:
-                if rtl_el is None:
-                    rpr.append(OxmlElement("w:rtl"))
+                if pPr is None:
+                    pPr = OxmlElement("w:pPr")
+                    p._p.insert(0, pPr)
+                bidi = pPr.find(qn("w:bidi"))
+                if bidi is None:
+                    pPr.append(OxmlElement("w:bidi"))
                     changed = True
-                elif rtl_el.get(qn("w:val")) == "0":
-                    del rtl_el.attrib[qn("w:val")]
+                elif bidi.get(qn("w:val")) == "0":
+                    del bidi.attrib[qn("w:val")]
                     changed = True
             else:
-                if rtl_el is not None:
-                    rpr.remove(rtl_el)
-                    changed = True
+                if pPr is not None:
+                    bidi = pPr.find(qn("w:bidi"))
+                    if bidi is not None:
+                        pPr.remove(bidi)
+                        changed = True
 
-        if changed:
-            fixed += 1
+            for r in p.runs:
+                rpr = r._element.find(qn("w:rPr"))
+                if rpr is None:
+                    if not want_rtl:
+                        continue
+                    rpr = OxmlElement("w:rPr")
+                    r._element.insert(0, rpr)
+                rtl_el = rpr.find(qn("w:rtl"))
+                if want_rtl:
+                    if rtl_el is None:
+                        rpr.append(OxmlElement("w:rtl"))
+                        changed = True
+                    elif rtl_el.get(qn("w:val")) == "0":
+                        del rtl_el.attrib[qn("w:val")]
+                        changed = True
+                else:
+                    if rtl_el is not None:
+                        rpr.remove(rtl_el)
+                        changed = True
+
+            if changed:
+                fixed += 1
+        except Exception as err:  # noqa: BLE001
+            errors_encountered += 1
+            print(f"[direction-fix] skipped one paragraph after an error, continuing with the rest: {err}")
+
+    if errors_encountered:
+        print(f"[direction-fix] {errors_encountered} paragraph(s) skipped due to errors - see messages above")
 
     return fixed, clause_numbers_fixed
 
@@ -973,81 +1021,146 @@ def _fix_table_column_order_for_target_direction(doc, target_language):
 
     fixed = 0
     for tbl_el in doc.element.body.iter(qn("w:tbl")):
-        grid = tbl_el.find(qn("w:tblGrid"))
-        cols = grid.findall(qn("w:gridCol")) if grid is not None else []
-        num_cols = len(cols)
-        if num_cols < 2:
-            continue
-
-        rows = tbl_el.findall(qn("w:tr"))
-        if not rows:
-            continue
-
-        latin_count = 0
-        rtl_count = 0
-        skip_table = False
-        for tr in rows:
-            tcs = tr.findall(qn("w:tc"))
-            if len(tcs) != num_cols:
-                skip_table = True
-                break
-            for tc in tcs:
-                text = "".join((t.text or "") for t in tc.findall(".//" + qn("w:t")))
-                latin_count += len(_LATIN_CHAR_RE.findall(text))
-                rtl_count += len(_RTL_SCRIPT_CHAR_RE.findall(text))
-        if skip_table:
-            continue
-
-        total_chars = latin_count + rtl_count
-        if total_chars < 5:
-            continue
-        if (rtl_count / total_chars) <= 0.85:
-            continue  # has a real Latin-script anchor column (bilingual layout) - don't reorder
-
-        # Reverse the column widths - this applies uniformly across the
-        # whole table (a single tblGrid can't have different widths per
-        # row), matching the assumption that the "short identifier"
-        # column becomes narrow-on-the-left and the "long text" column
-        # becomes wide-on-the-right once semantically reordered.
-        widths = [c.get(qn("w:w")) for c in cols]
-        for c, w in zip(cols, reversed(widths)):
-            c.set(qn("w:w"), w)
-
-        # Reverse each row's CELL order - but only the rows that
-        # actually need it. Confirmed by direct inspection of a real
-        # affected table: its HEADER row and its DATA rows are NOT
-        # consistently ordered relative to each other in Aspose's own
-        # conversion - the header row already read "Clause Number |
-        # Field | Clarification" in plain left-to-right order (already
-        # correct for LTR), while every data row underneath had long
-        # explanatory text on the LEFT and the short clause number on
-        # the RIGHT (backwards). Blindly reversing every row uniformly
-        # would have "fixed" the already-correct header into the WRONG
-        # order while fixing the data rows - leaving header and data
-        # mismatched either way.
-        #
-        # Per-row rule (evidence-based, not a guess): only reverse a row
-        # whose first cell is markedly LONGER than its last cell (>10
-        # chars and >1.5x) - this is exactly the signature of "long
-        # content sitting on the left, short identifier on the right"
-        # that every genuine data row in the real affected table showed,
-        # while the header row (short labels in every cell, no strong
-        # length asymmetry) correctly does NOT match this pattern and is
-        # left alone. Verified against all 16 rows of a real appendix
-        # table: correctly reversed all 15 data rows and correctly
-        # skipped the 1 header row.
-        for tr in rows:
-            tcs = tr.findall(qn("w:tc"))
-            first_text = "".join((t.text or "") for t in tcs[0].findall(".//" + qn("w:t"))).strip()
-            last_text = "".join((t.text or "") for t in tcs[-1].findall(".//" + qn("w:t"))).strip()
-            if not (len(first_text) > 10 and len(first_text) > len(last_text) * 1.5):
+        try:
+            grid = tbl_el.find(qn("w:tblGrid"))
+            cols = grid.findall(qn("w:gridCol")) if grid is not None else []
+            num_cols = len(cols)
+            if num_cols < 2:
                 continue
-            for tc in tcs:
-                tr.remove(tc)
-            for tc in reversed(tcs):
-                tr.append(tc)
 
-        fixed += 1
+            rows = tbl_el.findall(qn("w:tr"))
+            if not rows:
+                continue
+
+            latin_count = 0
+            rtl_count = 0
+            skip_table = False
+            for tr in rows:
+                tcs = tr.findall(qn("w:tc"))
+                if len(tcs) != num_cols:
+                    skip_table = True
+                    break
+                for tc in tcs:
+                    text = "".join((t.text or "") for t in tc.findall(".//" + qn("w:t")))
+                    latin_count += len(_LATIN_CHAR_RE.findall(text))
+                    rtl_count += len(_RTL_SCRIPT_CHAR_RE.findall(text))
+            if skip_table:
+                continue
+
+            total_chars = latin_count + rtl_count
+            if total_chars < 5:
+                continue
+            if (rtl_count / total_chars) <= 0.85:
+                continue  # has a real Latin-script anchor column (bilingual layout) - don't reorder
+
+            # Reverse the column widths - this applies uniformly across the
+            # whole table (a single tblGrid can't have different widths per
+            # row), matching the assumption that the "short identifier"
+            # column becomes narrow-on-the-left and the "long text" column
+            # becomes wide-on-the-right once semantically reordered.
+            widths = [c.get(qn("w:w")) for c in cols]
+            for c, w in zip(cols, reversed(widths)):
+                c.set(qn("w:w"), w)
+
+            # Reverse each row's CELL order - but only the rows that
+            # actually need it. Confirmed by direct inspection of a real
+            # affected table: its HEADER row and its DATA rows are NOT
+            # consistently ordered relative to each other in Aspose's own
+            # conversion - the header row already read "Clause Number |
+            # Field | Clarification" in plain left-to-right order (already
+            # correct for LTR), while every data row underneath had long
+            # explanatory text on the LEFT and the short clause number on
+            # the RIGHT (backwards). Blindly reversing every row uniformly
+            # would have "fixed" the already-correct header into the WRONG
+            # order while fixing the data rows - leaving header and data
+            # mismatched either way.
+            #
+            # Per-row rule (evidence-based, not a guess): only reverse a row
+            # whose first cell is markedly LONGER than its last cell (>10
+            # chars and >1.5x) - this is exactly the signature of "long
+            # content sitting on the left, short identifier on the right"
+            # that every genuine data row in the real affected table showed,
+            # while the header row (short labels in every cell, no strong
+            # length asymmetry) correctly does NOT match this pattern and is
+            # left alone. Verified against all 16 rows of a real appendix
+            # table: correctly reversed all 15 data rows and correctly
+            # skipped the 1 header row.
+            for tr in rows:
+                tcs = tr.findall(qn("w:tc"))
+                first_text = "".join((t.text or "") for t in tcs[0].findall(".//" + qn("w:t"))).strip()
+                last_text = "".join((t.text or "") for t in tcs[-1].findall(".//" + qn("w:t"))).strip()
+                if not (len(first_text) > 10 and len(first_text) > len(last_text) * 1.5):
+                    continue
+                for tc in tcs:
+                    tr.remove(tc)
+                for tc in reversed(tcs):
+                    tr.append(tc)
+
+            # Item (INVISIBLE-HEADER-TEXT) - confirmed real bug this exact
+            # fix introduced: reversing the table-wide gridCol widths
+            # applies to EVERY row uniformly, but a row that got SKIPPED
+            # by the per-row cell-reversal above (like the header row,
+            # correctly left in place per the note above) keeps its
+            # OWN per-cell w:tcW and w:tcMar exactly as Aspose originally
+            # set them - which were calibrated for the OLD, PRE-REVERSAL
+            # column width at that position. Confirmed on a real
+            # document: the header row's "Clause Number" cell had its
+            # own tcW="6756" (the WIDE column's original width) and a
+            # tcMar left-margin of 6075 (a positioning hack that made
+            # sense inside a 6756-wide cell) - but after this function
+            # reversed the GRID to make that same position only 654
+            # wide, the cell's own unchanged 6075 margin alone exceeded
+            # its new 654-wide space, leaving zero or negative room for
+            # the text, which the renderer then simply couldn't display
+            # anywhere inside the cell's real boundaries - the "Clause
+            # Number" header vanished, leaving a blank space in that
+            # narrow column with no visible error.
+            #
+            # Fix: after all reordering is settled, walk every cell in
+            # this table and correct its own tcW to match whatever the
+            # (possibly-just-reversed) grid now says for that column
+            # position - this is always safe since tcW is supposed to
+            # track the grid for non-spanning cells. If a cell's tcMar
+            # would still leave less than 100 twips of real content
+            # width against that corrected tcW, shrink the margin(s)
+            # proportionally down to a safe amount rather than leaving a
+            # cell with no room for its own text.
+            current_widths = [int(c.get(qn("w:w"))) for c in cols]
+            for tr in rows:
+                tcs = tr.findall(qn("w:tc"))
+                for i, tc in enumerate(tcs):
+                    if i >= len(current_widths):
+                        break
+                    tcPr = tc.find(qn("w:tcPr"))
+                    if tcPr is None:
+                        continue
+                    tcW = tcPr.find(qn("w:tcW"))
+                    target_w = current_widths[i]
+                    if tcW is not None:
+                        tcW.set(qn("w:w"), str(target_w))
+                    tcMar = tcPr.find(qn("w:tcMar"))
+                    if tcMar is not None:
+                        left = tcMar.find(qn("w:left"))
+                        right = tcMar.find(qn("w:right"))
+                        lv = int(left.get(qn("w:w"))) if left is not None else 0
+                        rv = int(right.get(qn("w:w"))) if right is not None else 0
+                        if lv + rv > target_w - 100:
+                            # shrink both margins proportionally so at least
+                            # 100 twips of real content width remains
+                            scale = max(0, target_w - 100) / max(lv + rv, 1)
+                            if left is not None:
+                                left.set(qn("w:w"), str(int(lv * scale)))
+                            if right is not None:
+                                right.set(qn("w:w"), str(int(rv * scale)))
+
+            fixed += 1
+        except Exception as err:  # noqa: BLE001
+            # Item (SILENT-CASCADING-FAILURE) - one table's own quirk
+            # must never abort processing for every table after it in
+            # document order - see the matching note in
+            # _fix_paragraph_direction for the confirmed real-world
+            # failure pattern this guards against.
+            print(f"[column-order-fix] skipped one table after an error, continuing with the rest: {err}")
 
     return fixed
 
