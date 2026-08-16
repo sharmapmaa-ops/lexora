@@ -33,6 +33,21 @@ Get both from https://dashboard.aspose.cloud -> Applications -> (create
 an app) -> Client Id / Client Secret. Free tier: 150 API calls/month.
 """
 
+# Item (DEPLOYMENT-VERSION-VERIFICATION) - confirmed real incident: a
+# production run's clause-number reversal was 48/49 wrong, while the
+# exact same function, called directly on byte-identical text extracted
+# from that SAME production file, correctly returned the right answer
+# every single time in this sandbox. Paragraph-direction (bidi) WAS
+# being cleared correctly throughout that same file, proving
+# _fix_paragraph_direction was genuinely running - so the only
+# remaining explanation is that the code actually deployed in
+# production differs from what was verified here. This constant exists
+# so that can be checked DIRECTLY from a run's own log output, instead
+# of guessing: bump it with every delivered change, and confirm it
+# appears in the "Configured: ..." log line of a fresh test run before
+# treating that run's results as reflecting current code.
+PIPELINE_CODE_VERSION = "2026-08-16-v25-gridspan-header-split-fix"
+
 import os
 import io
 import re
@@ -137,10 +152,53 @@ def _fix_incomplete_header_bar_shading(doc):
     bails out without guessing if it hits another shaded paragraph
     first (a different header's own bar) or doesn't find a table nearby.
 
+    Item (MERGED-TWO-SIDED-HEADER) - confirmed real, separate bug from
+    the background-gap this function was originally written for: SOME
+    of these standalone header paragraphs (6 out of the document's
+    header-style paragraphs, confirmed by direct inspection) hold BOTH
+    the English-side label AND the (originally Arabic) number+label side
+    as ONE CONTINUOUS paragraph - e.g. "Lessor Representative Data" +
+    "3 Lessor Representative Data" - instead of two separate cells like
+    every OTHER working header in the document (e.g. "Contract Data" |
+    "1 Contract Data", a genuine 2-cell table). Wrapping the whole thing
+    into a single cell (the original fix here) correctly closed the
+    background-color gap but left both halves crammed together on one
+    side with nothing on the right, since there's no cell boundary
+    between them.
+
+    Root cause: Aspose represents the visual gap between the two halves
+    using a single run with an artificially huge w:spacing (letter-
+    spacing) value (~5100, confirmed on multiple real headers) instead
+    of a real table-cell boundary - so this function now detects that
+    specific spacer run (spacing far larger than any normal text
+    kerning would ever use) and, when found, splits the paragraph into
+    TWO paragraphs at that point (discarding the spacer run itself,
+    since a real cell boundary replaces its job) and builds a proper
+    2-column table instead of 1, matching the structure every other
+    working header in the document already uses. Headers with no such
+    spacer run (genuinely single-sided) keep the original 1-cell
+    behavior unchanged.
+
     Returns the count of paragraphs fixed, for the caller's log."""
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
     from docx.text.paragraph import Paragraph
+
+    _SPACER_LETTER_SPACING_THRESHOLD = 500  # twips - normal kerning never gets remotely this large
+
+    def _find_spacer_run_index(paragraph_el):
+        runs = paragraph_el.findall(qn("w:r"))
+        for idx, r in enumerate(runs):
+            rpr = r.find(qn("w:rPr"))
+            if rpr is None:
+                continue
+            spacing_el = rpr.find(qn("w:spacing"))
+            if spacing_el is None:
+                continue
+            val = spacing_el.get(qn("w:val"))
+            if val and val.lstrip("-").isdigit() and abs(int(val)) > _SPACER_LETTER_SPACING_THRESHOLD:
+                return idx
+        return None
 
     body = doc.element.body
     children = list(body.iterchildren())
@@ -216,6 +274,8 @@ def _fix_incomplete_header_bar_shading(doc):
         if not total_width:
             continue
 
+        spacer_idx = _find_spacer_run_index(child)
+
         new_tbl = OxmlElement("w:tbl")
         tblPr_new = OxmlElement("w:tblPr")
         tblW_new = OxmlElement("w:tblW")
@@ -235,35 +295,83 @@ def _fix_incomplete_header_bar_shading(doc):
         tblPr_new.append(tblBorders)
         new_tbl.append(tblPr_new)
 
-        tblGrid_new = OxmlElement("w:tblGrid")
-        gridCol = OxmlElement("w:gridCol")
-        gridCol.set(qn("w:w"), str(total_width))
-        tblGrid_new.append(gridCol)
-        new_tbl.append(tblGrid_new)
-
-        tr = OxmlElement("w:tr")
-        tc = OxmlElement("w:tc")
-        tcPr = OxmlElement("w:tcPr")
-        tcW = OxmlElement("w:tcW")
-        tcW.set(qn("w:w"), str(total_width))
-        tcW.set(qn("w:type"), "dxa")
-        tcPr.append(tcW)
-        shd_el = OxmlElement("w:shd")
-        shd_el.set(qn("w:val"), "clear")
-        shd_el.set(qn("w:color"), "auto")
-        shd_el.set(qn("w:fill"), fill_color)
-        tcPr.append(shd_el)
-        tc.append(tcPr)
-
         body.remove(child)
         pPr_orig = child.find(qn("w:pPr"))
         if pPr_orig is not None:
             ind_orig = pPr_orig.find(qn("w:ind"))
             if ind_orig is not None:
                 pPr_orig.remove(ind_orig)
-        tc.append(child)
-        tr.append(tc)
-        new_tbl.append(tr)
+
+        if spacer_idx is None:
+            # Original single-cell behavior - no two-sided split needed.
+            tblGrid_new = OxmlElement("w:tblGrid")
+            gridCol = OxmlElement("w:gridCol")
+            gridCol.set(qn("w:w"), str(total_width))
+            tblGrid_new.append(gridCol)
+            new_tbl.append(tblGrid_new)
+
+            tr = OxmlElement("w:tr")
+            tc = OxmlElement("w:tc")
+            tcPr = OxmlElement("w:tcPr")
+            tcW = OxmlElement("w:tcW")
+            tcW.set(qn("w:w"), str(total_width))
+            tcW.set(qn("w:type"), "dxa")
+            tcPr.append(tcW)
+            shd_el = OxmlElement("w:shd")
+            shd_el.set(qn("w:val"), "clear")
+            shd_el.set(qn("w:color"), "auto")
+            shd_el.set(qn("w:fill"), fill_color)
+            tcPr.append(shd_el)
+            tc.append(tcPr)
+            tc.append(child)
+            tr.append(tc)
+            new_tbl.append(tr)
+        else:
+            # Split into two cells at the spacer run - it's discarded
+            # (a real cell boundary now does its job).
+            all_runs = child.findall(qn("w:r"))
+            spacer_run = all_runs[spacer_idx]
+            left_width = total_width // 2
+            right_width = total_width - left_width
+
+            tblGrid_new = OxmlElement("w:tblGrid")
+            for w in (left_width, right_width):
+                gridCol = OxmlElement("w:gridCol")
+                gridCol.set(qn("w:w"), str(w))
+                tblGrid_new.append(gridCol)
+            new_tbl.append(tblGrid_new)
+
+            pPr_source = child.find(qn("w:pPr"))
+            left_p = OxmlElement("w:p")
+            right_p = OxmlElement("w:p")
+            if pPr_source is not None:
+                from copy import deepcopy
+                left_p.append(deepcopy(pPr_source))
+                right_p.append(deepcopy(pPr_source))
+
+            spacer_run.getparent().remove(spacer_run)
+            for r in all_runs:
+                if r is spacer_run:
+                    continue
+                (left_p if all_runs.index(r) < spacer_idx else right_p).append(r)
+
+            tr = OxmlElement("w:tr")
+            for w, para_el in ((left_width, left_p), (right_width, right_p)):
+                tc = OxmlElement("w:tc")
+                tcPr = OxmlElement("w:tcPr")
+                tcW = OxmlElement("w:tcW")
+                tcW.set(qn("w:w"), str(w))
+                tcW.set(qn("w:type"), "dxa")
+                tcPr.append(tcW)
+                shd_el = OxmlElement("w:shd")
+                shd_el.set(qn("w:val"), "clear")
+                shd_el.set(qn("w:color"), "auto")
+                shd_el.set(qn("w:fill"), fill_color)
+                tcPr.append(shd_el)
+                tc.append(tcPr)
+                tc.append(para_el)
+                tr.append(tc)
+            new_tbl.append(tr)
 
         # Insert new_tbl at the header paragraph's OWN original position
         # (right before whichever sibling immediately followed it,
@@ -278,6 +386,122 @@ def _fix_incomplete_header_bar_shading(doc):
         insertion_anchor = children[i + 1]
         insertion_anchor.addprevious(new_tbl)
         fixed += 1
+
+    return fixed
+
+
+def _fix_merged_two_sided_table_header(doc):
+    """Item (MERGED-TWO-SIDED-HEADER, gridSpan variant) - same underlying
+    defect as _fix_incomplete_header_bar_shading's two-sided-header fix
+    above, but for a DIFFERENT structural shape: confirmed one real
+    instance ("Tenant rights") where the English label and the (Arabic-
+    origin) number+label are crammed into ONE paragraph inside a SINGLE
+    table cell that already has gridSpan="2" (i.e. it's ALREADY a real,
+    correctly-merged, full-width cell - unlike the standalone-paragraph
+    cases above, so this does NOT need a new table built around it).
+
+    Detected the same way: a run with an artificially large w:spacing
+    (letter-spacing) value inside that gridSpan=2 cell's paragraph -
+    Aspose's same positioning hack seen elsewhere, confirmed present
+    here too (w:spacing val="4097" on a single-space run, immediately
+    before the Arabic content begins).
+
+    Fix: split that cell's paragraph at the spacer run into two
+    paragraphs (discarding the spacer run, same as the other fix),
+    un-merge the gridSpan=2 cell into two real adjacent cells sized
+    50/50 of its own total width, and put the "before spacer" content
+    in the first and "after spacer" content in the second - giving this
+    header the same two-sided visual structure every other working
+    header in the document already has.
+
+    Returns the count of cells fixed, for the caller's log."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from copy import deepcopy
+
+    _SPACER_LETTER_SPACING_THRESHOLD = 500
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        for tr in tbl_el.findall(qn("w:tr")):
+            tcs = tr.findall(qn("w:tc"))
+            if len(tcs) != 1:
+                continue
+            tc = tcs[0]
+            tcPr = tc.find(qn("w:tcPr"))
+            if tcPr is None:
+                continue
+            gridSpan = tcPr.find(qn("w:gridSpan"))
+            if gridSpan is None or gridSpan.get(qn("w:val")) != "2":
+                continue
+            tcW_el = tcPr.find(qn("w:tcW"))
+            if tcW_el is None:
+                continue
+            total_width = int(tcW_el.get(qn("w:w")) or 0)
+            if total_width <= 0:
+                continue
+
+            # Only handle the simple, verified case: exactly one
+            # paragraph in the cell, with a real spacer run in it.
+            paras = tc.findall(qn("w:p"))
+            if len(paras) != 1:
+                continue
+            p_el = paras[0]
+            all_runs = p_el.findall(qn("w:r"))
+            spacer_idx = None
+            for idx, r in enumerate(all_runs):
+                rpr = r.find(qn("w:rPr"))
+                if rpr is None:
+                    continue
+                spacing_el = rpr.find(qn("w:spacing"))
+                if spacing_el is None:
+                    continue
+                val = spacing_el.get(qn("w:val"))
+                if val and val.lstrip("-").isdigit() and abs(int(val)) > _SPACER_LETTER_SPACING_THRESHOLD:
+                    spacer_idx = idx
+                    break
+            if spacer_idx is None:
+                continue
+
+            left_width = total_width // 2
+            right_width = total_width - left_width
+
+            spacer_run = all_runs[spacer_idx]
+            pPr_source = p_el.find(qn("w:pPr"))
+
+            left_p = p_el  # reuse the existing paragraph element for the "before" half
+            right_p = OxmlElement("w:p")
+            if pPr_source is not None:
+                right_p.append(deepcopy(pPr_source))
+
+            spacer_run.getparent().remove(spacer_run)
+            for r in list(all_runs):
+                if r is spacer_run:
+                    continue
+                if all_runs.index(r) > spacer_idx:
+                    left_p.remove(r)
+                    right_p.append(r)
+
+            # Resize the original cell (drop gridSpan, it's now just col0).
+            tcW_el.set(qn("w:w"), str(left_width))
+            tcPr.remove(gridSpan)
+
+            # Build the new sibling cell, copying the shading so it
+            # matches the header bar's own color.
+            shd_source = tcPr.find(qn("w:shd"))
+            new_tc = OxmlElement("w:tc")
+            new_tcPr = OxmlElement("w:tcPr")
+            new_tcW = OxmlElement("w:tcW")
+            new_tcW.set(qn("w:w"), str(right_width))
+            new_tcW.set(qn("w:type"), "dxa")
+            new_tcPr.append(new_tcW)
+            if shd_source is not None:
+                new_tcPr.append(deepcopy(shd_source))
+            new_tc.append(new_tcPr)
+            new_tc.append(right_p)
+
+            tc.addnext(new_tc)
+            fixed += 1
 
     return fixed
 
@@ -306,6 +530,7 @@ def run_structure_only_test(pdf_path, output_path):
     headers_fixed = 0
     try:
         headers_fixed = _fix_incomplete_header_bar_shading(doc)
+        headers_fixed += _fix_merged_two_sided_table_header(doc)
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
@@ -331,6 +556,7 @@ def run_structure_only_test(pdf_path, output_path):
     return {
         "output_path": output_path,
         "mode": "structure_only",
+        "pipeline_code_version": PIPELINE_CODE_VERSION,
         "header_bars_fixed": headers_fixed,
         "tables_repositioned": tables_repositioned,
         "leaked_names_fixed": leaked_names_fixed,
@@ -821,9 +1047,39 @@ def _fix_paragraph_direction(doc, target_language):
                     clause_numbers_fixed += 1
                 if pPr is not None:
                     jc = pPr.find(qn("w:jc"))
-                    if jc is not None and jc.get(qn("w:val")) == "both":
-                        jc.set(qn("w:val"), "left")
-                        changed = True
+                    if jc is not None:
+                        jc_val = jc.get(qn("w:val"))
+                        # Item (CENTER-ALIGNED-CLAUSE-BODY) - confirmed
+                        # real, pixel-measured bug: a user-provided
+                        # screenshot showed a clause paragraph's wrapped
+                        # lines each starting at a WILDLY different x
+                        # position (159 to 278px, a 119px spread) instead
+                        # of a consistent left margin - the exact visual
+                        # signature of CENTER alignment (each line
+                        # centers based on its own width) rather than
+                        # left. Confirmed root cause directly in Aspose's
+                        # own untranslated conversion: this specific
+                        # clause paragraph had jc="center" while every
+                        # sibling clause paragraph around it (same
+                        # Article, same structure) correctly had
+                        # jc="both" - a one-off Aspose inconsistency, not
+                        # something translation introduced. The earlier
+                        # both->left fix deliberately left jc="center"
+                        # alone project-wide (reasoned that centering
+                        # isn't inherently RTL/LTR-dependent) - true in
+                        # general, but wrong for this specific case: a
+                        # numbered clause's BODY TEXT should never be
+                        # centered regardless of source direction. Scoped
+                        # narrowly here (only applies when the
+                        # paragraph's own text starts with a digit, i.e.
+                        # it looks like clause/list body content) so a
+                        # genuinely-intentional centered short title or
+                        # signature line elsewhere isn't touched.
+                        first_run_text = next((r.text for r in p.runs if r.text and r.text.strip()), "")
+                        looks_like_clause_body = bool(re.match(r"^\d", first_run_text.strip()))
+                        if jc_val == "both" or (jc_val == "center" and looks_like_clause_body):
+                            jc.set(qn("w:val"), "left")
+                            changed = True
 
             if want_rtl:
                 if pPr is None:
@@ -1525,6 +1781,7 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
     headers_fixed = 0
     try:
         headers_fixed = _fix_incomplete_header_bar_shading(doc)
+        headers_fixed += _fix_merged_two_sided_table_header(doc)
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
@@ -1628,6 +1885,7 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
 def run_full_test(pdf_path, target_language, output_path):
     log = []
     t0 = time.time()
+    log.append(f"Pipeline code version: {PIPELINE_CODE_VERSION}")
     log.append(f"Configured: {is_configured()}")
 
     # Item (ASPOSE.PDF-CLOUD-WIRING) - kept as a standalone check here,

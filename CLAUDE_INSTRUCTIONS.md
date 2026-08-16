@@ -170,3 +170,13 @@ par decide karega.
   rahi, to explicitly bolo "mere paas is exact case ka real proof nahi
   hai" — kabhi bhi apne purane/alag test-run ke result ko unke naye,
   alag-file wale sawaal ka jawab bana ke pesh mat karo.
+- **Visual/alignment bugs ke liye "content sahi hai" check karna KAAFI NAHI
+  hai — pixel-level measurement zaroori hai.** Ek real incident: user ne 2
+  screenshots bheje, maine "content match kar raha hai" dekh ke keh diya
+  sab sahi hai — jabki asli bug ye tha ki ek image me har line consistently
+  x=10 se start ho rahi thi, dusri me har line x=159 se x=278 ke beech
+  ALAG-ALAG jagah se (119px ka spread) — jo center-alignment ka clear
+  signature hai (left-alignment nahi). Jab bhi koi "alignment/spacing/
+  position galat hai" bole, turant PIL se har text-line ka exact
+  left-start-x-pixel nikaalo aur compare karo — "aankh se dekh ke sahi
+  lagna" kaafi nahi hai, number chahiye.
