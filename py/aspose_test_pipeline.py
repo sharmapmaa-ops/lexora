@@ -46,7 +46,7 @@ an app) -> Client Id / Client Secret. Free tier: 150 API calls/month.
 # of guessing: bump it with every delivered change, and confirm it
 # appears in the "Configured: ..." log line of a fresh test run before
 # treating that run's results as reflecting current code.
-PIPELINE_CODE_VERSION = "2026-08-16-v25-gridspan-header-split-fix"
+PIPELINE_CODE_VERSION = "2026-08-16-v26-content-aware-column-width"
 
 import os
 import io
@@ -1341,11 +1341,32 @@ def _fix_table_column_order_for_target_direction(doc, target_language):
             # left alone. Verified against all 16 rows of a real appendix
             # table: correctly reversed all 15 data rows and correctly
             # skipped the 1 header row.
+            # Item (ASYMMETRIC-EMPTY-CELL-NOT-REVERSED) - confirmed
+            # second real bug in this same per-row rule: a row whose
+            # trailing cell is genuinely EMPTY (not just short) - e.g. a
+            # 2-column "Authority | " header row where the second column
+            # holds nothing at all - never triggered the length-ratio
+            # condition above if the first cell's own text was under 10
+            # chars ("Authority" / "الصلاحية" is only 8), so its content
+            # stayed in the PHYSICAL position that the table-wide width
+            # reversal (which applies uniformly, unconditionally) had
+            # just turned into the NARROW column - stranding real header
+            # text in a column sized for nothing. Confirmed on the real
+            # table: col0 width dropped from 9169 to 258 twips while
+            # "Authority" stayed in col0, forcing character-by-character
+            # wrapping. An empty trailing cell can never be "correctly"
+            # holding content that belongs where it currently sits once
+            # the table's width has been reversed - so this case is
+            # reversed unconditionally, without needing the length-ratio
+            # check (there's nothing in the last cell to compare against).
             for tr in rows:
                 tcs = tr.findall(qn("w:tc"))
                 first_text = "".join((t.text or "") for t in tcs[0].findall(".//" + qn("w:t"))).strip()
                 last_text = "".join((t.text or "") for t in tcs[-1].findall(".//" + qn("w:t"))).strip()
-                if not (len(first_text) > 10 and len(first_text) > len(last_text) * 1.5):
+                needs_reversal = (len(first_text) > 10 and len(first_text) > len(last_text) * 1.5) or (
+                    first_text and not last_text
+                )
+                if not needs_reversal:
                     continue
                 for tc in tcs:
                     tr.remove(tc)
@@ -1417,6 +1438,348 @@ def _fix_table_column_order_for_target_direction(doc, target_language):
             # _fix_paragraph_direction for the confirmed real-world
             # failure pattern this guards against.
             print(f"[column-order-fix] skipped one table after an error, continuing with the rest: {err}")
+
+    return fixed
+
+
+_FONT_PATH_CACHE = {}
+
+
+def _resolve_font_path(font_name, bold=False):
+    """Maps a document's declared font name to an installed TrueType file
+    for measurement purposes, using the same substitution LibreOffice
+    itself uses (Times New Roman -> Liberation Serif, Arial -> Liberation
+    Sans, etc - confirmed via `fc-match`, so measurements line up with
+    how the document actually renders in this project's own PDF-preview
+    pipeline). Falls back to Liberation Serif (the most common body font
+    in these documents) for anything unrecognized. Cached since this is
+    called per-run across potentially thousands of runs."""
+    key = ((font_name or "").lower(), bold)
+    if key in _FONT_PATH_CACHE:
+        return _FONT_PATH_CACHE[key]
+    name = (font_name or "").lower()
+    base_dir = "/usr/share/fonts/truetype/liberation/"
+    if "arial" in name or "helvetica" in name or "sans" in name:
+        path = base_dir + ("LiberationSans-Bold.ttf" if bold else "LiberationSans-Regular.ttf")
+    else:
+        path = base_dir + ("LiberationSerif-Bold.ttf" if bold else "LiberationSerif-Regular.ttf")
+    _FONT_PATH_CACHE[key] = path
+    return path
+
+
+def _measure_longest_word_twips(cell_el):
+    """Item (CONTENT-AWARE-COLUMN-WIDTH) - measures the actual pixel
+    width (converted to twips) of the WIDEST SINGLE WORD across every
+    run in this cell, using each run's own declared font and size via
+    real font metrics (PIL), not a guess or a fixed constant. A word is
+    the real unit that matters here: normal word-wrap can always break
+    a LINE at a space, but it can never break a single WORD shorter than
+    the column - that's exactly the mechanism that forces character-by-
+    character wrapping when a column is narrower than its longest word.
+    Returns 0 for an empty/whitespace-only cell (nothing to measure)."""
+    from docx.oxml.ns import qn
+    from PIL import ImageFont
+
+    max_width_twips = 0
+    for r in cell_el.findall(".//" + qn("w:r")):
+        t = r.find(qn("w:t"))
+        if t is None or not t.text or not t.text.strip():
+            continue
+        rpr = r.find(qn("w:rPr"))
+        size_half_points = 20  # default 10pt if not specified
+        bold = False
+        font_name = None
+        if rpr is not None:
+            sz = rpr.find(qn("w:sz"))
+            if sz is not None and sz.get(qn("w:val")):
+                try:
+                    size_half_points = int(sz.get(qn("w:val")))
+                except ValueError:
+                    pass
+            b = rpr.find(qn("w:b"))
+            bold = b is not None and b.get(qn("w:val")) != "0"
+            rFonts = rpr.find(qn("w:rFonts"))
+            if rFonts is not None:
+                font_name = rFonts.get(qn("w:ascii")) or rFonts.get(qn("w:hAnsi"))
+        size_pt = max(size_half_points / 2, 6)  # never measure below 6pt - avoids near-zero degenerate widths
+        font_path = _resolve_font_path(font_name, bold)
+        try:
+            font = ImageFont.truetype(font_path, int(round(size_pt)))
+        except Exception:
+            continue
+        for word in t.text.split():
+            try:
+                bbox = font.getbbox(word)
+                width_pt = bbox[2] - bbox[0]
+            except Exception:
+                continue
+            width_twips = width_pt * 20
+            if width_twips > max_width_twips:
+                max_width_twips = width_twips
+    return max_width_twips
+
+
+_MAX_SANE_PADDING_TWIPS = 400  # combined left+right cell padding beyond this is always Aspose's own
+# positioning-hack margin (confirmed multiple real instances up to 8561 twips), never a genuine
+# reading-comfort requirement - shared between the width-measurement and the width-application steps
+# below so both always agree on what "real" padding looks like.
+
+
+def _cell_actual_padding_twips(cell_el, table_default_padding_twips):
+    """Reads the REAL combined left+right padding for this specific
+    cell - its own w:tcMar if set, otherwise the table's own
+    w:tblCellMar default, otherwise a conservative fallback. Confirmed
+    real bug this replaces: a fixed 200-twip padding assumption
+    under-measured a real cell whose actual tcMar was 553 twips
+    (left=540, right=13 - Aspose's own positioning-hack cells often
+    carry unusually large asymmetric margins, as found repeatedly
+    elsewhere in this file), causing a column to be sized ~350 twips
+    too narrow and still wrap "Clause"/"Number" mid-word. Always read
+    the real value instead of assuming one.
+
+    Capped at _MAX_SANE_PADDING_TWIPS: confirmed a SEPARATE real bug
+    this cap prevents - some cells carry tcMar as large as 8561 twips,
+    which is Aspose's OWN positioning hack (the same "push content to a
+    specific spot inside an oversized cell" trick documented elsewhere
+    in this file), not a genuine minimum-padding requirement. Treating
+    that number as real caused a table's needed-width sum to balloon
+    past its total available width, tripping this function's own "not
+    enough room even in principle" bailout and leaving the ENTIRE table
+    (including a genuinely-narrow "Tenant Rights" column right next to
+    it) completely unfixed. A real reading-comfort padding is never
+    remotely this large, so anything past the cap is clamped down to
+    it - the cell's own content still gets full credit via
+    _measure_longest_word_twips, only the inherited-but-obsolete hack
+    padding is bounded."""
+    from docx.oxml.ns import qn
+
+    tcPr = cell_el.find(qn("w:tcPr"))
+    if tcPr is not None:
+        tcMar = tcPr.find(qn("w:tcMar"))
+        if tcMar is not None:
+            left = tcMar.find(qn("w:left"))
+            right = tcMar.find(qn("w:right"))
+            lv = int(left.get(qn("w:w"))) if left is not None and left.get(qn("w:w")) else 0
+            rv = int(right.get(qn("w:w"))) if right is not None and right.get(qn("w:w")) else 0
+            if lv or rv:
+                return min(lv + rv, _MAX_SANE_PADDING_TWIPS)
+    return table_default_padding_twips
+
+
+def _table_default_cell_padding_twips(tbl_el):
+    """Reads a table's own w:tblCellMar (default cell padding applied
+    to any cell that doesn't override it) - falls back to a
+    conservative 200-twip estimate only if the table has no default set
+    at all."""
+    from docx.oxml.ns import qn
+
+    tblPr = tbl_el.find(qn("w:tblPr"))
+    if tblPr is not None:
+        tblCellMar = tblPr.find(qn("w:tblCellMar"))
+        if tblCellMar is not None:
+            left = tblCellMar.find(qn("w:left"))
+            right = tblCellMar.find(qn("w:right"))
+            lv = int(left.get(qn("w:w"))) if left is not None and left.get(qn("w:w")) else 0
+            rv = int(right.get(qn("w:w"))) if right is not None and right.get(qn("w:w")) else 0
+            if lv or rv:
+                return lv + rv
+    return 200
+
+
+def _fix_narrow_column_word_wrap(doc, min_readable_twips=350):
+    """Item (CONTENT-AWARE-COLUMN-WIDTH, the actual root cause behind
+    "Tenant Rights"/"Clause Number"/"Authority" rendering character-by-
+    character) - confirmed real, reported multiple times: earlier fixes
+    (_fix_table_column_order_for_target_direction) only REPOSITIONED a
+    table's existing column widths (reversing which physical column got
+    which value) to match LTR reading order - they never recalculated
+    those widths for what the TRANSLATED content actually needs. A
+    source Arabic label like "الحقل" is short enough to fit in a narrow
+    column; its English translation "Clause Number" or "Authority" is
+    physically wider and doesn't fit that same narrow width, so Word/
+    LibreOffice's line-breaking algorithm - which can only break at
+    space characters - has no valid break point and falls back to
+    breaking the word itself, character by character.
+
+    This function measures the REAL width every column's content needs
+    (via _measure_longest_word_twips, real font metrics, not a guess),
+    and redistributes width FROM columns that have slack (current width
+    well beyond what their own longest word needs) TO columns that don't
+    (current width below their longest word's actual size) - entirely
+    generically, driven by measured content, with no hardcoded column
+    names, table names, or document names anywhere in this function.
+    Works identically for any language pair since it measures whatever
+    text is actually in the cells at the time it runs (call it AFTER
+    translation).
+
+    Safety (learned the hard way from an earlier regression): before
+    shrinking any column, this checks every cell in that column for a
+    w:tcMar (cell padding) that would eat more than the new width minus
+    a minimum content allowance - and proportionally shrinks that
+    padding first, exactly like the tcW/tcMar consistency fix elsewhere
+    in this file. A column is only ever shrunk down to
+    max(its own longest-word requirement, min_readable_twips) - never
+    below what its own content needs, so this can't recreate the
+    invisible-text regression from before.
+
+    Only redistributes within a table whose columns all have a matching
+    cell count per row (skips tables with any gridSpan/merged-cell
+    irregularity, consistent with the other structural fixes in this
+    file - safer to leave a rare edge case untouched than guess at it).
+
+    Returns the count of tables adjusted, for the caller's log."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        try:
+            grid = tbl_el.find(qn("w:tblGrid"))
+            cols = grid.findall(qn("w:gridCol")) if grid is not None else []
+            num_cols = len(cols)
+            if num_cols < 2:
+                continue
+            rows = tbl_el.findall(qn("w:tr"))
+            if not rows:
+                continue
+
+            skip_table = False
+            for tr in rows:
+                if len(tr.findall(qn("w:tc"))) != num_cols:
+                    skip_table = True
+                    break
+            if skip_table:
+                continue
+
+            current_widths = [int(c.get(qn("w:w")) or 0) for c in cols]
+            if not all(current_widths):
+                continue
+            total_width = sum(current_widths)
+
+            table_default_padding = _table_default_cell_padding_twips(tbl_el)
+
+            # Measure the real per-column requirement: the widest single
+            # word found in ANY cell of that column, across every row,
+            # plus that SPECIFIC cell's own real padding (not a guess).
+            needed = [0] * num_cols
+            for tr in rows:
+                tcs = tr.findall(qn("w:tc"))
+                for i, tc in enumerate(tcs):
+                    padding = _cell_actual_padding_twips(tc, table_default_padding)
+                    w = _measure_longest_word_twips(tc) + padding
+                    if w > needed[i]:
+                        needed[i] = w
+            needed = [max(n, min_readable_twips) for n in needed]
+
+            if sum(needed) > total_width:
+                # Not enough room even in principle to satisfy every
+                # column's own longest word (e.g. a genuinely dense,
+                # many-column data table) - don't guess at a partial
+                # solution, leave this table's widths untouched rather
+                # than risk making an unrelated column worse.
+                continue
+
+            deficits = {i: needed[i] - current_widths[i] for i in range(num_cols) if needed[i] > current_widths[i]}
+            if not deficits:
+                continue  # every column already has at least what its own content needs
+
+            surplus_total = sum(
+                max(0, current_widths[i] - needed[i]) for i in range(num_cols) if i not in deficits
+            )
+            total_deficit = sum(deficits.values())
+            if surplus_total < total_deficit:
+                continue  # not enough slack elsewhere in this table to safely cover it - skip rather than guess
+
+            new_widths = list(current_widths)
+            for i, deficit in deficits.items():
+                new_widths[i] = needed[i]
+            # Take the needed amount from surplus columns, proportional
+            # to how much slack each one has.
+            for i in range(num_cols):
+                if i in deficits:
+                    continue
+                own_surplus = max(0, current_widths[i] - needed[i])
+                if surplus_total <= 0:
+                    continue
+                share = own_surplus / surplus_total
+                new_widths[i] = current_widths[i] - round(total_deficit * share)
+
+            # Rounding can drift the total by a twip or two - correct it
+            # on the single largest column rather than leave the table
+            # wider or narrower than the page allows.
+            drift = total_width - sum(new_widths)
+            if drift:
+                largest_idx = max(range(num_cols), key=lambda i: new_widths[i])
+                new_widths[largest_idx] += drift
+
+            if any(w <= 0 for w in new_widths):
+                continue  # a safety net that should never trigger given the checks above - skip rather than corrupt
+
+            for c, w in zip(cols, new_widths):
+                c.set(qn("w:w"), str(w))
+
+            # Item (GROWING-COLUMN-STILL-INVISIBLE-TEXT) - confirmed
+            # real bug: this used to only recheck tcW/tcMar for columns
+            # that SHRANK, reasoning that a column given MORE width
+            # could only ever have MORE room than before. That's true
+            # relative to the column's OLD width, but not necessarily
+            # true in absolute terms - confirmed on a real cell (the
+            # "Authority" cell in a "Tenant Rights" table): its column
+            # grew to 8670 twips, comfortably wide by any normal
+            # measure, yet the cell's own inherited tcMar was
+            # left=4214/right=4347 (8561 twips combined - the same
+            # Aspose positioning-hack padding pattern found repeatedly
+            # elsewhere in this file), leaving only ~109 twips of real
+            # content room - nowhere near enough for "Authority",
+            # which kept wrapping character-by-character despite
+            # sitting in a "wide" column. A pre-existing oversized
+            # tcMar doesn't care whether its column grew or shrank, so
+            # every column touched by this function now gets its tcMar
+            # rechecked against its NEW width, not just the ones that
+            # got narrower.
+            for tr in rows:
+                for i, tc in enumerate(tr.findall(qn("w:tc"))):
+                    tcPr = tc.find(qn("w:tcPr"))
+                    if tcPr is None:
+                        continue
+                    tcW = tcPr.find(qn("w:tcW"))
+                    if tcW is not None:
+                        tcW.set(qn("w:w"), str(new_widths[i]))
+                    tcMar = tcPr.find(qn("w:tcMar"))
+                    if tcMar is not None:
+                        left = tcMar.find(qn("w:left"))
+                        right = tcMar.find(qn("w:right"))
+                        lv = int(left.get(qn("w:w"))) if left is not None else 0
+                        rv = int(right.get(qn("w:w"))) if right is not None else 0
+                        # Item (LOOSE-THRESHOLD-STILL-INVISIBLE) -
+                        # confirmed real bug in this exact safety check:
+                        # comparing against "new_widths[i] - 100" let a
+                        # genuinely oversized padding (8561 twips)
+                        # through untouched because it was JUST under
+                        # that threshold (8561 < 8670-100=8570) even
+                        # though 100 twips (0.07") is nowhere near
+                        # enough room for real text - "Authority" kept
+                        # wrapping character-by-character despite
+                        # "passing" this check. A combined padding this
+                        # large is never a legitimate design choice (see
+                        # _cell_actual_padding_twips's docstring - this
+                        # is always Aspose's own positioning hack) so it
+                        # gets unconditionally capped at the same sane
+                        # maximum used when MEASURING content needs
+                        # (_MAX_SANE_PADDING_TWIPS), rather than only
+                        # being reduced just enough to clear a small
+                        # fixed buffer.
+                        capped = min(lv + rv, _MAX_SANE_PADDING_TWIPS)
+                        target_padding = min(capped, max(0, new_widths[i] - 100))
+                        if lv + rv > 0 and target_padding != lv + rv:
+                            scale = target_padding / (lv + rv)
+                            if left is not None:
+                                left.set(qn("w:w"), str(int(lv * scale)))
+                            if right is not None:
+                                right.set(qn("w:w"), str(int(rv * scale)))
+
+            fixed += 1
+        except Exception as err:  # noqa: BLE001
+            print(f"[narrow-column-width-fix] skipped one table after an error, continuing with the rest: {err}")
 
     return fixed
 
@@ -1822,6 +2185,19 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if these cosmetic passes fail
 
+    # Item (CONTENT-AWARE-COLUMN-WIDTH) - MUST run AFTER translation (and
+    # after direction-fix/row-height normalization) since it measures the
+    # actual TRANSLATED text's real word widths, not the source
+    # language's - see _fix_narrow_column_word_wrap()'s docstring for the
+    # full root-cause explanation (this is what actually fixes
+    # "Tenant Rights"/"Clause Number"/"Authority" rendering character-by-
+    # character instead of as readable words).
+    narrow_columns_fixed = 0
+    try:
+        narrow_columns_fixed = _fix_narrow_column_word_wrap(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
     # Item (LEAKED-INTERNAL-FIELD-NAMES) - run AFTER translation so this
     # catches the token regardless of whether the LLM carried
     # "tin_number" through untouched or not - see
@@ -1870,6 +2246,7 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
         "header_bars_fixed": headers_fixed,
         "tables_repositioned": tables_repositioned,
         "columns_reordered": columns_reordered,
+        "narrow_columns_fixed": narrow_columns_fixed,
         "direction_fixed": direction_fixed,
         "clause_numbers_fixed": clause_numbers_fixed,
         "split_numeric_findings": split_numeric_findings,
@@ -1922,6 +2299,8 @@ def run_full_test(pdf_path, target_language, output_path):
         log.append(f"Off-page tables repositioned (were overflowing page boundary): {rebuild_result['tables_repositioned']}")
     if rebuild_result.get("columns_reordered"):
         log.append(f"Table column order mirrored for LTR reading (was RTL physical order): {rebuild_result['columns_reordered']}")
+    if rebuild_result.get("narrow_columns_fixed"):
+        log.append(f"Narrow columns widened to fit translated content (prevents character-by-character wrap): {rebuild_result['narrow_columns_fixed']}")
     if rebuild_result.get("leaked_names_fixed"):
         log.append(f"Leaked internal field-name tokens cleaned up: {rebuild_result['leaked_names_fixed']}")
     if rebuild_result.get("direction_fixed"):
