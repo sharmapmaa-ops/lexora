@@ -46,7 +46,7 @@ an app) -> Client Id / Client Secret. Free tier: 150 API calls/month.
 # of guessing: bump it with every delivered change, and confirm it
 # appears in the "Configured: ..." log line of a fresh test run before
 # treating that run's results as reflecting current code.
-PIPELINE_CODE_VERSION = "2026-08-16-v26-content-aware-column-width"
+PIPELINE_CODE_VERSION = "2026-08-17-v27-clause-margin-normalization"
 
 import os
 import io
@@ -1046,40 +1046,85 @@ def _fix_paragraph_direction(doc, target_language):
                 if _fix_reversed_clause_number_prefix(p):
                     clause_numbers_fixed += 1
                 if pPr is not None:
+                    # Item (CENTER-ALIGNED-CLAUSE-BODY) - confirmed
+                    # real, pixel-measured bug: a user-provided
+                    # screenshot showed a clause paragraph's wrapped
+                    # lines each starting at a WILDLY different x
+                    # position (159 to 278px, a 119px spread) instead
+                    # of a consistent left margin - the exact visual
+                    # signature of CENTER alignment (each line
+                    # centers based on its own width) rather than
+                    # left. Confirmed root cause directly in Aspose's
+                    # own untranslated conversion: this specific
+                    # clause paragraph had jc="center" while every
+                    # sibling clause paragraph around it (same
+                    # Article, same structure) correctly had
+                    # jc="both" - a one-off Aspose inconsistency, not
+                    # something translation introduced. The earlier
+                    # both->left fix deliberately left jc="center"
+                    # alone project-wide (reasoned that centering
+                    # isn't inherently RTL/LTR-dependent) - true in
+                    # general, but wrong for this specific case: a
+                    # numbered clause's BODY TEXT should never be
+                    # centered regardless of source direction. Scoped
+                    # narrowly here (only applies when the
+                    # paragraph's own text starts with a digit, i.e.
+                    # it looks like clause/list body content) so a
+                    # genuinely-intentional centered short title or
+                    # signature line elsewhere isn't touched.
+                    first_run_text = next((r.text for r in p.runs if r.text and r.text.strip()), "")
+                    looks_like_clause_body = bool(re.match(r"^\d", first_run_text.strip()))
+
                     jc = pPr.find(qn("w:jc"))
                     if jc is not None:
                         jc_val = jc.get(qn("w:val"))
-                        # Item (CENTER-ALIGNED-CLAUSE-BODY) - confirmed
-                        # real, pixel-measured bug: a user-provided
-                        # screenshot showed a clause paragraph's wrapped
-                        # lines each starting at a WILDLY different x
-                        # position (159 to 278px, a 119px spread) instead
-                        # of a consistent left margin - the exact visual
-                        # signature of CENTER alignment (each line
-                        # centers based on its own width) rather than
-                        # left. Confirmed root cause directly in Aspose's
-                        # own untranslated conversion: this specific
-                        # clause paragraph had jc="center" while every
-                        # sibling clause paragraph around it (same
-                        # Article, same structure) correctly had
-                        # jc="both" - a one-off Aspose inconsistency, not
-                        # something translation introduced. The earlier
-                        # both->left fix deliberately left jc="center"
-                        # alone project-wide (reasoned that centering
-                        # isn't inherently RTL/LTR-dependent) - true in
-                        # general, but wrong for this specific case: a
-                        # numbered clause's BODY TEXT should never be
-                        # centered regardless of source direction. Scoped
-                        # narrowly here (only applies when the
-                        # paragraph's own text starts with a digit, i.e.
-                        # it looks like clause/list body content) so a
-                        # genuinely-intentional centered short title or
-                        # signature line elsewhere isn't touched.
-                        first_run_text = next((r.text for r in p.runs if r.text and r.text.strip()), "")
-                        looks_like_clause_body = bool(re.match(r"^\d", first_run_text.strip()))
                         if jc_val == "both" or (jc_val == "center" and looks_like_clause_body):
                             jc.set(qn("w:val"), "left")
                             changed = True
+
+                    # Item (RAGGED-LEFT-MARGIN-FROM-SOURCE-POSITIONING) -
+                    # confirmed real, user-reported bug with a clear root
+                    # cause: measured a real document's clause paragraphs
+                    # and found w:ind (left/right indent) values that
+                    # vary essentially randomly between SIBLING clauses
+                    # at the identical hierarchy depth - e.g. clauses
+                    # 1-1-5 through 15-1-5 (all direct children of the
+                    # same Article Five / Section One, so semantically
+                    # equivalent) carry left-indent values ranging from
+                    # 809 to 1661 twips and right-indent from -200 to
+                    # 2439 twips, with no correlation to clause number,
+                    # depth, or any other structural property. These
+                    # aren't meaningful hierarchy markers - they're
+                    # leftover artifacts from Aspose trying to reproduce
+                    # the ORIGINAL ARABIC PDF's exact per-line visual
+                    # positioning (which was tuned for Arabic word
+                    # lengths and RTL layout), carried over unchanged
+                    # onto English text with completely different word
+                    # lengths - producing the jagged, inconsistent left
+                    # margin a user screenshot showed across Article Ten
+                    # and Eleven's clauses. Normalized to one small,
+                    # consistent indent (matching a standard numbered-
+                    # clause hanging-indent look) for every paragraph
+                    # that looks like clause body content, so every
+                    # clause in the document lines up on the same left
+                    # margin instead of each carrying its own leftover
+                    # source-positioning value. Only touches paragraphs
+                    # already identified as clause body content (leading
+                    # digit prefix) - headings, table cells, and other
+                    # paragraph types are untouched.
+                    if looks_like_clause_body:
+                        ind = pPr.find(qn("w:ind"))
+                        if ind is None:
+                            ind = OxmlElement("w:ind")
+                            pPr.append(ind)
+                        _CLAUSE_LEFT_INDENT_TWIPS = "446"
+                        if ind.get(qn("w:left")) != _CLAUSE_LEFT_INDENT_TWIPS:
+                            ind.set(qn("w:left"), _CLAUSE_LEFT_INDENT_TWIPS)
+                            changed = True
+                        for attr in ("w:right", "w:firstLine", "w:hanging"):
+                            if ind.get(qn(attr)) is not None:
+                                del ind.attrib[qn(attr)]
+                                changed = True
 
             if want_rtl:
                 if pPr is None:
