@@ -46,7 +46,7 @@ an app) -> Client Id / Client Secret. Free tier: 150 API calls/month.
 # of guessing: bump it with every delivered change, and confirm it
 # appears in the "Configured: ..." log line of a fresh test run before
 # treating that run's results as reflecting current code.
-PIPELINE_CODE_VERSION = "2026-08-17-v30-global-margin-normalization"
+PIPELINE_CODE_VERSION = "2026-08-18-v31-adjacent-table-align-heading-indent-dedup-fontsize"
 
 import os
 import io
@@ -1211,6 +1211,7 @@ def _fix_paragraph_direction(doc, target_language):
     fixed = 0
     clause_numbers_fixed = 0
     errors_encountered = 0
+    body = doc.element.body
 
     # Item (WRONG-HEADING-SIGNAL, confirmed real bug) - the margin-
     # normalization fix below needs to tell a genuine Article heading
@@ -1250,6 +1251,51 @@ def _fix_paragraph_direction(doc, target_language):
             break
         if _heading_shd_fill:
             break
+
+    # Item (STANDALONE-DATA-PARAGRAPH-BREAKS-OUT-OF-TABLE-BOX) -
+    # confirmed real bug: a standalone paragraph (e.g. "Name: Al-Anoud
+    # Sulaiman Ali Al-Masoud", or an "Email: ..." line) sitting directly
+    # between two table sections - the same "Aspose left this ONE data
+    # row standalone instead of inside the table" pattern documented in
+    # _fix_incomplete_header_bar_shading's docstring - got normalized to
+    # the flat clause-body indent (446 twips) same as ordinary Article
+    # body text. But THIS kind of paragraph is meant to visually align
+    # with the table sitting right next to it, not with unrelated
+    # clause text elsewhere in the document - and the adjacent tables'
+    # own left indent (867 / 691 twips in a real confirmed case) is
+    # LARGER than 446, so the paragraph ends up sitting further left
+    # than the table above and below it, visibly breaking out of the
+    # table's left edge instead of lining up with it.
+    #
+    # Builds a lookup, once, from each top-level body paragraph's
+    # element id to the indent of the NEAREST adjacent table (checking
+    # a small window of siblings both before and after, since Aspose
+    # sometimes leaves more than one such paragraph in a row) - used
+    # below instead of the flat clause default whenever a match is
+    # found, so these paragraphs align with their neighboring table
+    # instead of an unrelated generic value.
+    _adjacent_table_indent = {}
+    _body_children = list(body.iterchildren())
+    for _idx, _child in enumerate(_body_children):
+        if _child.tag != qn("w:p"):
+            continue
+        _found_indent = None
+        for _offset in (1, -1, 2, -2):
+            _j = _idx + _offset
+            if _j < 0 or _j >= len(_body_children):
+                continue
+            _sib = _body_children[_j]
+            if _sib.tag == qn("w:tbl"):
+                _sib_tblPr = _sib.find(qn("w:tblPr"))
+                _sib_tblInd = _sib_tblPr.find(qn("w:tblInd")) if _sib_tblPr is not None else None
+                if _sib_tblInd is not None and _sib_tblInd.get(qn("w:w")):
+                    _found_indent = _sib_tblInd.get(qn("w:w"))
+                break
+            if _sib.tag == qn("w:p"):
+                continue  # keep looking past other plain paragraphs in the same run
+            break
+        if _found_indent:
+            _adjacent_table_indent[id(_child)] = _found_indent
 
     # Item (SILENT-CASCADING-FAILURE) - confirmed real bug pattern: in a
     # real production run, an ENTIRE block of 24 consecutive clause
@@ -1307,10 +1353,40 @@ def _fix_paragraph_direction(doc, target_language):
                     first_run_text = next((r.text for r in p.runs if r.text and r.text.strip()), "")
                     looks_like_clause_body = bool(re.match(r"^\d", first_run_text.strip()))
 
+                    # Item (CENTER-FIX-ALSO-TOO-NARROW, confirmed real,
+                    # same gap as the margin-normalization fix below) -
+                    # the original center->left fix only covered digit-
+                    # prefixed clause paragraphs, so a real, non-
+                    # numbered body paragraph ("All addresses,
+                    # correspondence, notices...", Article Fifteen's
+                    # body) kept jc="center" - invisible across most of
+                    # a long paragraph's full-width lines, but visibly
+                    # wrong on its short last line ("recognized legal
+                    # means."), which centered instead of sitting at the
+                    # left margin, looking like clipped/misplaced text.
+                    # Computed once here (moved up from where it used to
+                    # live, further below) so both the jc fix and the
+                    # margin fix share the same real scope: any body-
+                    # flow paragraph that is NOT inside a table cell and
+                    # NOT a heading (by the document's own reference-
+                    # heading shading color, found above).
+                    is_table_cell_paragraph = p._p.getparent() is not None and p._p.getparent().tag == qn("w:tc")
+                    _first_run_rpr_for_heading_check = None
+                    for r in p.runs:
+                        if r.text and r.text.strip():
+                            _first_run_rpr_for_heading_check = r._element.find(qn("w:rPr"))
+                            break
+                    is_heading_styled = False
+                    if _first_run_rpr_for_heading_check is not None and _heading_shd_fill is not None:
+                        shd = _first_run_rpr_for_heading_check.find(qn("w:shd"))
+                        if shd is not None and (shd.get(qn("w:fill")) or "").lower() == _heading_shd_fill:
+                            is_heading_styled = True
+                    is_normal_body_paragraph = not is_table_cell_paragraph and not is_heading_styled
+
                     jc = pPr.find(qn("w:jc"))
                     if jc is not None:
                         jc_val = jc.get(qn("w:val"))
-                        if jc_val == "both" or (jc_val == "center" and looks_like_clause_body):
+                        if jc_val == "both" or (jc_val == "center" and is_normal_body_paragraph):
                             jc.set(qn("w:val"), "left")
                             changed = True
 
@@ -1363,28 +1439,51 @@ def _fix_paragraph_direction(doc, target_language):
                     # above - see that note for why an exact-color match
                     # is used instead of "any non-white shading") - a
                     # heading's indent is part of its intentional
-                    # heading style and must stay as-is.
-                    is_table_cell_paragraph = p._p.getparent() is not None and p._p.getparent().tag == qn("w:tc")
-                    first_run_rpr = None
-                    for r in p.runs:
-                        if r.text and r.text.strip():
-                            first_run_rpr = r._element.find(qn("w:rPr"))
-                            break
-                    is_heading_styled = False
-                    if first_run_rpr is not None and _heading_shd_fill is not None:
-                        shd = first_run_rpr.find(qn("w:shd"))
-                        if shd is not None and (shd.get(qn("w:fill")) or "").lower() == _heading_shd_fill:
-                            is_heading_styled = True
-                    should_normalize_margin = not is_table_cell_paragraph and not is_heading_styled
+                    # heading style and must stay as-is. is_table_cell_
+                    # paragraph/is_heading_styled were already computed
+                    # above (shared with the jc fix) - reused as-is here.
+                    should_normalize_margin = is_normal_body_paragraph
 
                     if should_normalize_margin:
                         ind = pPr.find(qn("w:ind"))
                         if ind is None:
                             ind = OxmlElement("w:ind")
                             pPr.append(ind)
-                        _CLAUSE_LEFT_INDENT_TWIPS = "446"
-                        if ind.get(qn("w:left")) != _CLAUSE_LEFT_INDENT_TWIPS:
-                            ind.set(qn("w:left"), _CLAUSE_LEFT_INDENT_TWIPS)
+                        # Prefer the adjacent table's own indent (see
+                        # the lookup built above) so a standalone
+                        # data-row paragraph aligns with the table box
+                        # it visually belongs next to, instead of a
+                        # generic clause-body value.
+                        target_indent = _adjacent_table_indent.get(id(p._p), "446")
+                        if ind.get(qn("w:left")) != target_indent:
+                            ind.set(qn("w:left"), target_indent)
+                            changed = True
+                        for attr in ("w:right", "w:firstLine", "w:hanging"):
+                            if ind.get(qn(attr)) is not None:
+                                del ind.attrib[qn(attr)]
+                                changed = True
+                    elif is_heading_styled and not is_table_cell_paragraph:
+                        # Item (HEADING-ALSO-HAS-RANDOM-INDENT) -
+                        # confirmed real: excluding headings from the
+                        # margin fix above (correct, so their intended
+                        # heading STYLE isn't disturbed) accidentally
+                        # left their random Aspose-inherited INDENT
+                        # untouched too - a real document showed Article
+                        # One/Two/Three/Four headings with left-indent
+                        # values of 1119/1040/1176/1002 twips, the exact
+                        # same per-paragraph-random pattern as the
+                        # clause-body bug, not an intentional design
+                        # choice. Headings should sit at the page's left
+                        # margin (left=0) - normalized separately here,
+                        # distinct from the 446-twip clause-body value,
+                        # since a heading is a different visual element
+                        # or the numbered clauses.
+                        ind = pPr.find(qn("w:ind"))
+                        if ind is None:
+                            ind = OxmlElement("w:ind")
+                            pPr.append(ind)
+                        if ind.get(qn("w:left")) != "0":
+                            ind.set(qn("w:left"), "0")
                             changed = True
                         for attr in ("w:right", "w:firstLine", "w:hanging"):
                             if ind.get(qn(attr)) is not None:
@@ -1896,6 +1995,89 @@ def _table_default_cell_padding_twips(tbl_el):
     return 200
 
 
+def _fix_duplicate_translated_runs(doc):
+    """Item (DUPLICATE-HEADER-AFTER-TRANSLATION) - confirmed real,
+    root-caused bug: some table headers in Aspose's OWN original
+    conversion ALREADY carry two labels with the same meaning in two
+    languages within one cell - e.g. a real header cell had paragraph 1
+    = "تاريخ الاستحقاق (هـ)" (Arabic, "Due Date (AH)") and paragraph 2
+    already in English, "Due Date(AH)" - a pre-existing bilingual
+    dual-label design, same idea as the "Contract Data" / "١ بيانات
+    العقد" two-sided headers seen elsewhere in this document, just
+    packed into ONE cell instead of two.
+
+    That's fine for a genuinely bilingual document. But when translating
+    the WHOLE document INTO English, the Arabic paragraph ALSO gets
+    translated to English - and since both mean the same thing, the LLM
+    naturally produces near-identical text for both, so the cell ends
+    up visibly showing the same label twice ("Due Date (AH)"
+    immediately followed by "Due Date(AH)").
+
+    Must run AFTER translation - this can't be detected beforehand,
+    since the duplication only exists once the previously-different-
+    language content on both sides becomes the same target language.
+
+    Confirmed the duplication can show up at TWO different structural
+    levels depending on how Aspose originally built the cell, so both
+    are checked: (a) two separate RUNS within the same paragraph, and
+    (b) two separate PARAGRAPHS within the same table cell (the actual
+    pattern found in the real "Due Date (AH)" case - Aspose had put the
+    Arabic and the already-English label in their own paragraphs, not
+    runs, inside one cell). Compares text with whitespace collapsed and
+    case ignored, and only considers matches over 2 characters to avoid
+    false positives on short shared tokens like "-" or ":".
+
+    Returns the count of duplicates removed, for the caller's log."""
+    from docx.oxml.ns import qn
+
+    def _normalize(s):
+        return re.sub(r"\s+", "", s).lower()
+
+    removed = 0
+
+    # (a) duplicate runs within the same paragraph.
+    for p in _iter_paragraphs_in_order(doc):
+        seen = []
+        runs_to_remove = []
+        for r in p.runs:
+            text = r.text or ""
+            if len(text.strip()) <= 2:
+                continue
+            key = _normalize(text)
+            if key in seen:
+                runs_to_remove.append(r)
+            else:
+                seen.append(key)
+        for r in runs_to_remove:
+            try:
+                r._element.getparent().remove(r._element)
+                removed += 1
+            except Exception:
+                pass
+
+    # (b) duplicate paragraphs within the same table cell.
+    for tc in doc.element.body.iter(qn("w:tc")):
+        seen = []
+        paras_to_remove = []
+        for p_el in tc.findall(qn("w:p")):
+            text = "".join((t.text or "") for t in p_el.findall(".//" + qn("w:t")))
+            if len(text.strip()) <= 2:
+                continue
+            key = _normalize(text)
+            if key in seen:
+                paras_to_remove.append(p_el)
+            else:
+                seen.append(key)
+        for p_el in paras_to_remove:
+            try:
+                p_el.getparent().remove(p_el)
+                removed += 1
+            except Exception:
+                pass
+
+    return removed
+
+
 def _fix_narrow_column_word_wrap(doc, min_readable_twips=350):
     """Item (CONTENT-AWARE-COLUMN-WIDTH, the actual root cause behind
     "Tenant Rights"/"Clause Number"/"Authority" rendering character-by-
@@ -2090,6 +2272,71 @@ def _fix_narrow_column_word_wrap(doc, min_readable_twips=350):
             fixed += 1
         except Exception as err:  # noqa: BLE001
             print(f"[narrow-column-width-fix] skipped one table after an error, continuing with the rest: {err}")
+
+    return fixed
+
+
+def _fix_missing_font_size_in_table_row(doc):
+    """Item (MISSING-SIZE-LOOKS-BIGGER, a different bug from
+    FONT-SIZE-OUTLIERS above) - confirmed real on a payment-schedule
+    table's data row: most cells had an explicit w:sz="16" (8pt), one
+    had w:sz="13" (6.5pt), but THREE cells (Total Value, Fixed Amounts,
+    VAT) had NO w:sz AT ALL - meaning they fall back to the document's
+    default paragraph-style size, which is noticeably LARGER than the
+    rest of the row, so those three numbers visually look like a
+    different, bigger font sitting in the same row as everything else.
+    The other fix in this file only catches sizes that ARE present but
+    anomalously tiny - a run with no size element at all is a distinct
+    case that needs its own detection.
+
+    For each table row, finds the most common EXPLICIT w:sz among its
+    own cells (ignoring cells with no size set), then applies that same
+    size to any cell in the SAME row that has visible text but no
+    explicit w:sz - matching the row's own established size rather
+    than a fixed guess, so this adapts to whatever size each table
+    actually uses.
+
+    Returns the count of runs given an explicit size, for the caller's
+    log."""
+    from collections import Counter
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        for tr in tbl_el.findall(qn("w:tr")):
+            row_sizes = Counter()
+            for r in tr.iter(qn("w:r")):
+                t = r.find(qn("w:t"))
+                if t is None or not (t.text or "").strip():
+                    continue
+                rpr = r.find(qn("w:rPr"))
+                sz = rpr.find(qn("w:sz")) if rpr is not None else None
+                if sz is not None and sz.get(qn("w:val")):
+                    row_sizes[sz.get(qn("w:val"))] += 1
+            if not row_sizes:
+                continue
+            common_size = row_sizes.most_common(1)[0][0]
+
+            for r in tr.iter(qn("w:r")):
+                t = r.find(qn("w:t"))
+                if t is None or not (t.text or "").strip():
+                    continue
+                rpr = r.find(qn("w:rPr"))
+                if rpr is None:
+                    rpr = OxmlElement("w:rPr")
+                    r.insert(0, rpr)
+                sz = rpr.find(qn("w:sz"))
+                if sz is None:
+                    sz = OxmlElement("w:sz")
+                    rpr.append(sz)
+                    sz.set(qn("w:val"), common_size)
+                    fixed += 1
+                szCs = rpr.find(qn("w:szCs"))
+                if szCs is None:
+                    szCs = OxmlElement("w:szCs")
+                    rpr.append(szCs)
+                    szCs.set(qn("w:val"), common_size)
 
     return fixed
 
@@ -2498,8 +2745,15 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
         direction_fixed, clause_numbers_fixed = _fix_paragraph_direction(doc, target_language)
         rows_fixed = _fix_exact_row_heights(doc)
         fonts_fixed = _fix_tiny_font_outliers(doc)
+        fonts_fixed += _fix_missing_font_size_in_table_row(doc)
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if these cosmetic passes fail
+
+    duplicate_runs_removed = 0
+    try:
+        duplicate_runs_removed = _fix_duplicate_translated_runs(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
     # Item (CONTENT-AWARE-COLUMN-WIDTH) - MUST run AFTER translation (and
     # after direction-fix/row-height normalization) since it measures the
@@ -2569,6 +2823,7 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
         "split_numeric_findings": split_numeric_findings,
         "row_heights_fixed": rows_fixed,
         "tiny_fonts_fixed": fonts_fixed,
+        "duplicate_runs_removed": duplicate_runs_removed,
         "aspose_words_calls": 1,
         "aspose_pdf_calls": 0,
         "llm_calls": llm_calls_total,
@@ -2612,6 +2867,8 @@ def run_full_test(pdf_path, target_language, output_path):
         )
     if rebuild_result.get("header_bars_fixed"):
         log.append(f"Header-bar background gaps fixed: {rebuild_result['header_bars_fixed']}")
+    if rebuild_result.get("duplicate_runs_removed"):
+        log.append(f"Duplicate translated labels removed: {rebuild_result['duplicate_runs_removed']}")
     if rebuild_result.get("headings_split"):
         log.append(f"Article headings split out from a merged previous clause: {rebuild_result['headings_split']}")
     if rebuild_result.get("tables_repositioned"):
