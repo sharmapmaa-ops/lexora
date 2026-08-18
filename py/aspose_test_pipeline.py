@@ -46,7 +46,7 @@ an app) -> Client Id / Client Secret. Free tier: 150 API calls/month.
 # of guessing: bump it with every delivered change, and confirm it
 # appears in the "Configured: ..." log line of a fresh test run before
 # treating that run's results as reflecting current code.
-PIPELINE_CODE_VERSION = "2026-08-18-v31-adjacent-table-align-heading-indent-dedup-fontsize"
+PIPELINE_CODE_VERSION = "2026-08-18-v32-standalone-cell-padding-cap"
 
 import os
 import io
@@ -2078,6 +2078,76 @@ def _fix_duplicate_translated_runs(doc):
     return removed
 
 
+def _fix_oversized_cell_padding(doc):
+    """Item (PADDING-STARVES-CELL-REGARDLESS-OF-COLUMN-WIDTH) -
+    confirmed real, DIFFERENT gap from the tcMar-capping already done
+    inside _fix_narrow_column_word_wrap: that fix only rechecks a
+    cell's tcMar when its COLUMN's raw width gets changed as part of a
+    deficit/surplus redistribution. A real "First year / Second year /
+    Third year" table had a column that was ALREADY comfortably wide on
+    paper (2730 twips - far more than "Third year" could ever need),
+    so it was never flagged as deficient and never went through that
+    redistribution path at all - yet the cell's own inherited tcMar
+    was left=1216/right=1413 (2629 twips combined), leaving only ~101
+    twips of real content room inside its own 2730-twip cell, and
+    "Third year" still wrapped character-by-character despite the
+    column width looking perfectly adequate.
+
+    This is therefore a standalone, general check: for EVERY table
+    cell, regardless of whether its column's width changes at all,
+    verify the cell's own combined tcMar doesn't exceed a sane fraction
+    of its own tcW - capping it down to _MAX_SANE_PADDING_TWIPS (the
+    same constant used elsewhere in this file for the identical
+    Aspose-positioning-hack pattern) whenever it does. Independent of
+    and complementary to the column-width-redistribution fix - this
+    one exists specifically for cells whose width was never touched at
+    all.
+
+    Returns the count of cells corrected, for the caller's log."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for tc in doc.element.body.iter(qn("w:tc")):
+        tcPr = tc.find(qn("w:tcPr"))
+        if tcPr is None:
+            continue
+        tcW = tcPr.find(qn("w:tcW"))
+        if tcW is None or not tcW.get(qn("w:w")):
+            continue
+        try:
+            cell_width = int(tcW.get(qn("w:w")))
+        except ValueError:
+            continue
+        if cell_width <= 0:
+            continue
+        tcMar = tcPr.find(qn("w:tcMar"))
+        if tcMar is None:
+            continue
+        left = tcMar.find(qn("w:left"))
+        right = tcMar.find(qn("w:right"))
+        lv = int(left.get(qn("w:w"))) if left is not None and left.get(qn("w:w")) else 0
+        rv = int(right.get(qn("w:w"))) if right is not None and right.get(qn("w:w")) else 0
+        if lv + rv <= 0:
+            continue
+        capped = min(lv + rv, _MAX_SANE_PADDING_TWIPS)
+        target_padding = min(capped, max(0, cell_width - 100))
+        if target_padding == lv + rv:
+            continue
+        # Only ever shrinks - never enlarges a cell's own margin beyond
+        # what Aspose already had, so this can't introduce new spacing
+        # that wasn't there before.
+        if target_padding >= lv + rv:
+            continue
+        scale = target_padding / (lv + rv)
+        if left is not None:
+            left.set(qn("w:w"), str(int(lv * scale)))
+        if right is not None:
+            right.set(qn("w:w"), str(int(rv * scale)))
+        fixed += 1
+
+    return fixed
+
+
 def _fix_narrow_column_word_wrap(doc, min_readable_twips=350):
     """Item (CONTENT-AWARE-COLUMN-WIDTH, the actual root cause behind
     "Tenant Rights"/"Clause Number"/"Authority" rendering character-by-
@@ -2765,6 +2835,7 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
     narrow_columns_fixed = 0
     try:
         narrow_columns_fixed = _fix_narrow_column_word_wrap(doc)
+        narrow_columns_fixed += _fix_oversized_cell_padding(doc)
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
