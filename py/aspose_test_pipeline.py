@@ -46,7 +46,7 @@ an app) -> Client Id / Client Secret. Free tier: 150 API calls/month.
 # of guessing: bump it with every delivered change, and confirm it
 # appears in the "Configured: ..." log line of a fresh test run before
 # treating that run's results as reflecting current code.
-PIPELINE_CODE_VERSION = "2026-08-17-v27-clause-margin-normalization"
+PIPELINE_CODE_VERSION = "2026-08-17-v29-article-heading-split"
 
 import os
 import io
@@ -506,6 +506,161 @@ def _fix_merged_two_sided_table_header(doc):
     return fixed
 
 
+def _fix_heading_merged_into_previous_clause(doc):
+    """Item (ARTICLE-HEADING-MERGED-INTO-BODY) - confirmed real,
+    pre-existing Aspose defect (present in Aspose's own untranslated
+    conversion, not introduced by translation): one clause paragraph's
+    ending text and the NEXT Article's heading text were concatenated
+    into a single paragraph with no break between them (only a ". "
+    separator) - e.g. "...بمراعاة تلك الإلتزامات أو الشروط. المادة
+    الثانية عشرة: الإخلاء لعدم التجاوب" holds BOTH the end of clause
+    5-1-11 AND the start of "Article Twelve: Eviction for Non-Response"
+    as one paragraph, in two separate w:r runs. Every OTHER Article
+    heading in the same document is its own correctly-separated
+    paragraph with distinctive run-level gray shading (w:shd
+    fill=DDDDDD) - this one pair just never got split apart by Aspose's
+    conversion, so the heading rendered as an unstyled tail fragment of
+    the previous clause's paragraph instead of its own highlighted
+    heading bar.
+
+    Detects a language-agnostic "Article <word>:" / "المادة <word>:"
+    pattern appearing partway through a paragraph's text (not at the
+    start - a paragraph starting with this pattern is already a normal,
+    correctly-separated heading and is left alone). Splits the
+    paragraph into two at that boundary and copies the run-level
+    formatting (shading, color, outline level) from a REAL, already-
+    correctly-separated heading paragraph elsewhere in the same
+    document, so the newly split-out heading visually matches every
+    other one instead of needing a hardcoded style guess.
+
+    Must run BEFORE translation, same reasoning as the other structural
+    split fixes in this file - the split itself is language-agnostic
+    (based on where the sentence boundary falls), but doing it before
+    translation means the LLM sees two clean, independent segments
+    instead of one run-on paragraph mixing an end-of-clause and a
+    heading.
+
+    Returns the count of paragraphs split, for the caller's log."""
+    import unicodedata
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    body = doc.element.body
+    children = list(body.iterchildren())
+
+    # Find a reference heading's formatting (a paragraph whose FULL text
+    # is just an "Article X: ..." heading, own outlineLvl, own run
+    # shading) to copy onto the newly split-out heading below - avoids
+    # hardcoding a specific fill color or font here.
+    #
+    # NFKC-normalizes text before pattern matching throughout this
+    # function - confirmed necessary, not optional: Aspose stores this
+    # document's Arabic text using PRESENTATION FORM codepoints (e.g.
+    # "اﻟﻤﺎدة" using contextual glyph-form characters) rather than
+    # standard Arabic letters, so a plain literal match against
+    # "المادة" silently finds nothing even though the text reads
+    # identically to a human. NFKC normalization maps presentation
+    # forms back to their standard base characters, so matching works
+    # regardless of which form Aspose happened to use - a more general,
+    # reusable fix than the document-specific presentation-form
+    # searches used earlier in this project's development.
+    reference_rpr = None
+    reference_pPr_extras = {}
+    for child in children:
+        if child.tag != qn("w:p"):
+            continue
+        text = unicodedata.normalize(
+            "NFKC", "".join((t.text or "") for t in child.findall(".//" + qn("w:t"))).strip()
+        )
+        if not re.match(r"^(Article|المادة)\s+\S+(?:\s+\S+)?\s*:", text):
+            continue
+        if len(text) > 80:
+            continue  # a real heading is short - a long match here is probably body text that happens to start similarly
+        runs = child.findall(qn("w:r"))
+        real_runs = [r for r in runs if (r.find(qn("w:t")) is not None and (r.find(qn("w:t")).text or "").strip())]
+        if not real_runs:
+            continue
+        rpr = real_runs[0].find(qn("w:rPr"))
+        if rpr is None:
+            continue
+        reference_rpr = rpr
+        pPr = child.find(qn("w:pPr"))
+        if pPr is not None:
+            outlineLvl = pPr.find(qn("w:outlineLvl"))
+            if outlineLvl is not None:
+                reference_pPr_extras["outlineLvl"] = outlineLvl
+        break
+    if reference_rpr is None:
+        return 0  # no reference heading style found in this document - don't guess at formatting
+
+    fixed = 0
+    for child in children:
+        if child.tag != qn("w:p"):
+            continue
+        all_runs = child.findall(qn("w:r"))
+        if len(all_runs) < 2:
+            continue
+        # Find a RUN BOUNDARY where the heading actually starts.
+        # Confirmed on the real document: this is NOT a mid-run split -
+        # Aspose stored the clause-ending text and the Article-heading
+        # text as two ENTIRELY SEPARATE w:r runs within one paragraph
+        # (run 0 ends "...الشروط. ", run 1 begins fresh with "المادة
+        # الثانية عشرة: ..." - no single run's own text contains both
+        # the ". " and the heading start together). So this looks for
+        # the first run (after the first) whose OWN normalized text
+        # starts with the heading pattern, and splits the paragraph
+        # right there - no character-position math needed, which also
+        # sidesteps the presentation-form-normalization length-mismatch
+        # edge case entirely.
+        split_run_idx = None
+        for idx, r in enumerate(all_runs):
+            if idx == 0:
+                continue  # a heading pattern in run 0 means this paragraph is ALREADY a normal, correctly-separated heading
+            t = r.find(qn("w:t"))
+            if t is None or not t.text or not t.text.strip():
+                continue
+            normalized = unicodedata.normalize("NFKC", t.text.strip())
+            if re.match(r"^(Article|المادة)\s+\S+(?:\s+\S+)?\s*:", normalized):
+                split_run_idx = idx
+                break
+        if split_run_idx is None:
+            continue
+
+        try:
+            from copy import deepcopy
+
+            pPr_source = child.find(qn("w:pPr"))
+            new_p = OxmlElement("w:p")
+            if pPr_source is not None:
+                new_pPr = deepcopy(pPr_source)
+                existing_outline = new_pPr.find(qn("w:outlineLvl"))
+                if existing_outline is not None:
+                    new_pPr.remove(existing_outline)
+                if "outlineLvl" in reference_pPr_extras:
+                    new_pPr.append(deepcopy(reference_pPr_extras["outlineLvl"]))
+                new_p.append(new_pPr)
+
+            # Every run from the split point onward moves to the new
+            # heading paragraph, restyled to match the reference
+            # heading's formatting (shading/color/etc.) instead of
+            # inheriting whatever plain-body-text formatting it had as
+            # part of the previous clause's run-on paragraph.
+            for r in all_runs[split_run_idx:]:
+                child.remove(r)
+                r_rpr = r.find(qn("w:rPr"))
+                if r_rpr is not None:
+                    r.remove(r_rpr)
+                r.insert(0, deepcopy(reference_rpr))
+                new_p.append(r)
+
+            child.addnext(new_p)
+            fixed += 1
+        except Exception as err:  # noqa: BLE001
+            print(f"[heading-merge-fix] skipped one paragraph after an error, continuing with the rest: {err}")
+
+    return fixed
+
+
 def run_structure_only_test(pdf_path, output_path):
     """PDF -> DOCX via Aspose.Words Cloud's own native conversion,
     source-language text (no translation). Answers "does Aspose's own
@@ -534,6 +689,12 @@ def run_structure_only_test(pdf_path, output_path):
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
+    headings_split = 0
+    try:
+        headings_split = _fix_heading_merged_into_previous_clause(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
     tables_repositioned = 0
     try:
         tables_repositioned = _fix_table_overflow_indent(doc)
@@ -558,6 +719,7 @@ def run_structure_only_test(pdf_path, output_path):
         "mode": "structure_only",
         "pipeline_code_version": PIPELINE_CODE_VERSION,
         "header_bars_fixed": headers_fixed,
+        "headings_split": headings_split,
         "tables_repositioned": tables_repositioned,
         "leaked_names_fixed": leaked_names_fixed,
         "split_numeric_findings": split_numeric_findings,
@@ -951,6 +1113,36 @@ def _fix_reversed_clause_number_prefix(paragraph):
             continue
         m = _NUMERIC_ID_PREFIX_RE.match(text)
         if not m:
+            # Item (DIAGNOSTIC-LOGGING-FOR-SPORADIC-FAILURES) - confirmed
+            # real, unexplained pattern in a production run: clauses
+            # 1-1-5 through 4-1-5 failed to reverse, 5-1-5 was a
+            # neutral palindrome case, 6-1-5/8-1-5/9-1-5/10-1-5
+            # succeeded, then 7-1-5 and 11-1-5 failed again - a
+            # SCATTERED pattern, not a clean cascade (which the
+            # fault-isolation fix already guards against), and every
+            # isolated sandbox test of this exact function against
+            # byte-identical text succeeds. This can't be reproduced
+            # without the real LLM's actual output for those specific
+            # segments, which isn't available here - so instead of
+            # guessing further, log any near-miss so the NEXT real
+            # production log shows exactly what the real text looked
+            # like for these specific failures, turning this from a
+            # guess into evidence.
+            #
+            # Scoped narrowly to avoid flooding the log: a real
+            # near-miss needs BOTH multiple hyphen/dot-separated numeric
+            # groups (like a genuine clause number would have) AND
+            # substantial length (so a bare date or ID, which correctly
+            # and intentionally never matches - see this function's
+            # main docstring on why standalone values must not be
+            # touched - doesn't get logged as if it were a failure).
+            # Confirmed necessary: an unscoped version of this logged
+            # over 100 lines for a single real document, mostly dates,
+            # IDs, and short list items ("2. Renewed") that were never
+            # supposed to match in the first place.
+            looks_multi_group = bool(re.match(r"^[\d\u0660-\u0669]+[-.][\d\u0660-\u0669]+", text))
+            if looks_multi_group and len(text) > 15:
+                print(f"[clause-number-fix] near-miss - multi-group numeric prefix but didn't match the expected pattern: {text[:80]!r}")
             return False  # first real-text run doesn't start with a numeric-id-like prefix at all
         prefix, ws, rest = m.groups()
         fixed_prefix = _reverse_numeric_id_groups(prefix)
@@ -2193,6 +2385,12 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
+    headings_split = 0
+    try:
+        headings_split = _fix_heading_merged_into_previous_clause(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
     tables_repositioned = 0
     try:
         tables_repositioned = _fix_table_overflow_indent(doc)
@@ -2289,6 +2487,7 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
         "signatures_placed": sig_placed,
         "signatures_leftover": sig_leftover,
         "header_bars_fixed": headers_fixed,
+        "headings_split": headings_split,
         "tables_repositioned": tables_repositioned,
         "columns_reordered": columns_reordered,
         "narrow_columns_fixed": narrow_columns_fixed,
@@ -2340,6 +2539,8 @@ def run_full_test(pdf_path, target_language, output_path):
         )
     if rebuild_result.get("header_bars_fixed"):
         log.append(f"Header-bar background gaps fixed: {rebuild_result['header_bars_fixed']}")
+    if rebuild_result.get("headings_split"):
+        log.append(f"Article headings split out from a merged previous clause: {rebuild_result['headings_split']}")
     if rebuild_result.get("tables_repositioned"):
         log.append(f"Off-page tables repositioned (were overflowing page boundary): {rebuild_result['tables_repositioned']}")
     if rebuild_result.get("columns_reordered"):
