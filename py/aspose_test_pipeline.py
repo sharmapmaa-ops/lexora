@@ -46,7 +46,7 @@ an app) -> Client Id / Client Secret. Free tier: 150 API calls/month.
 # of guessing: bump it with every delivered change, and confirm it
 # appears in the "Configured: ..." log line of a fresh test run before
 # treating that run's results as reflecting current code.
-PIPELINE_CODE_VERSION = "2026-08-17-v29-article-heading-split"
+PIPELINE_CODE_VERSION = "2026-08-17-v30-global-margin-normalization"
 
 import os
 import io
@@ -1203,6 +1203,7 @@ def _fix_paragraph_direction(doc, target_language):
     centering isn't direction-dependent.
 
     Returns (paragraphs_fixed, clause_numbers_fixed)."""
+    import unicodedata
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
 
@@ -1210,6 +1211,45 @@ def _fix_paragraph_direction(doc, target_language):
     fixed = 0
     clause_numbers_fixed = 0
     errors_encountered = 0
+
+    # Item (WRONG-HEADING-SIGNAL, confirmed real bug) - the margin-
+    # normalization fix below needs to tell a genuine Article heading
+    # apart from ordinary content, to leave the heading's own indent
+    # alone. The first attempt at this checked for "any non-white run
+    # shading" - too broad: this same document ALSO uses a lighter gray
+    # (EEEEEE) for plain alternating-row background striping on regular
+    # data paragraphs (e.g. "Email aalmasoud@osoolre.com..."), which
+    # got mistaken for a heading and left with its own leftover random
+    # indent untouched. w:outlineLvl doesn't distinguish them either -
+    # confirmed both a real heading AND a striped data row carry
+    # outlineLvl=9 in this document's Aspose conversion. Rather than
+    # hardcoding a specific color (which could easily be wrong for a
+    # different document/color scheme - the same "don't hardcode this
+    # document" principle used throughout this file), this instead
+    # finds a REFERENCE heading by its TEXT pattern ("Article X:" /
+    # "المادة X:" at the very start of a short paragraph - the one
+    # reliable, language-agnostic signal available) and reads back
+    # WHATEVER shading color that reference heading actually uses,
+    # then matches against that exact value for the rest of this
+    # function - correct for any document's own actual heading style,
+    # not just this one's DDDDDD.
+    _heading_shd_fill = None
+    for p_ref in _iter_paragraphs_in_order(doc):
+        ref_text = unicodedata.normalize("NFKC", (p_ref.text or "").strip())
+        if not re.match(r"^(Article|المادة)\s+\S+(?:\s+\S+)?\s*:", ref_text) or len(ref_text) > 80:
+            continue
+        for r_ref in p_ref.runs:
+            if not (r_ref.text and r_ref.text.strip()):
+                continue
+            rpr_ref = r_ref._element.find(qn("w:rPr"))
+            shd_ref = rpr_ref.find(qn("w:shd")) if rpr_ref is not None else None
+            if shd_ref is not None:
+                fill = (shd_ref.get(qn("w:fill")) or "").lower()
+                if fill not in ("", "auto", "ffffff"):
+                    _heading_shd_fill = fill
+            break
+        if _heading_shd_fill:
+            break
 
     # Item (SILENT-CASCADING-FAILURE) - confirmed real bug pattern: in a
     # real production run, an ENTIRE block of 24 consecutive clause
@@ -1293,18 +1333,51 @@ def _fix_paragraph_direction(doc, target_language):
                     # lengths and RTL layout), carried over unchanged
                     # onto English text with completely different word
                     # lengths - producing the jagged, inconsistent left
-                    # margin a user screenshot showed across Article Ten
-                    # and Eleven's clauses. Normalized to one small,
-                    # consistent indent (matching a standard numbered-
-                    # clause hanging-indent look) for every paragraph
-                    # that looks like clause body content, so every
-                    # clause in the document lines up on the same left
-                    # margin instead of each carrying its own leftover
-                    # source-positioning value. Only touches paragraphs
-                    # already identified as clause body content (leading
-                    # digit prefix) - headings, table cells, and other
-                    # paragraph types are untouched.
-                    if looks_like_clause_body:
+                    # margin.
+                    #
+                    # Item (NOT-ACTUALLY-GLOBAL, confirmed by direct
+                    # user report with evidence) - the FIRST version of
+                    # this fix only normalized paragraphs matching
+                    # looks_like_clause_body (a leading digit) - but the
+                    # SAME random-indent defect is not limited to
+                    # numbered clauses. A real screenshot showed the
+                    # plain prose paragraph directly under "Article
+                    # Twelve" ("The parties agree to designate a third
+                    # party...", no leading number at all) with the
+                    # exact same symptom - ind left=1439/right=475/
+                    # firstLine=534, a leftover Aspose value, while its
+                    # numbered sibling clauses were already correctly
+                    # normalized - producing a visibly inconsistent,
+                    # oddly-indented paragraph sitting right next to
+                    # properly-margined ones. Since the root cause
+                    # (arbitrary per-paragraph source-positioning
+                    # artifacts) applies to ANY body-flow paragraph, not
+                    # just numbered ones, this now normalizes every
+                    # paragraph in the normal document flow - EXCLUDING
+                    # only: (a) paragraphs inside a table cell (handled
+                    # separately, by the table-width/column fixes, which
+                    # need cell-relative not body-relative margins), and
+                    # (b) Article headings themselves, identified by
+                    # matching the document's OWN reference heading
+                    # shading color (_heading_shd_fill, found once
+                    # above - see that note for why an exact-color match
+                    # is used instead of "any non-white shading") - a
+                    # heading's indent is part of its intentional
+                    # heading style and must stay as-is.
+                    is_table_cell_paragraph = p._p.getparent() is not None and p._p.getparent().tag == qn("w:tc")
+                    first_run_rpr = None
+                    for r in p.runs:
+                        if r.text and r.text.strip():
+                            first_run_rpr = r._element.find(qn("w:rPr"))
+                            break
+                    is_heading_styled = False
+                    if first_run_rpr is not None and _heading_shd_fill is not None:
+                        shd = first_run_rpr.find(qn("w:shd"))
+                        if shd is not None and (shd.get(qn("w:fill")) or "").lower() == _heading_shd_fill:
+                            is_heading_styled = True
+                    should_normalize_margin = not is_table_cell_paragraph and not is_heading_styled
+
+                    if should_normalize_margin:
                         ind = pPr.find(qn("w:ind"))
                         if ind is None:
                             ind = OxmlElement("w:ind")
