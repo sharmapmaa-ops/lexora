@@ -56,6 +56,63 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
   }
 
+  // ── OCR router integration (table/background-color -> Aspose,
+  // otherwise a free local pdfplumber extraction) ─────────────────────
+  // See py/ocr_router.py for the full decision logic - this only calls
+  // the new /api/ocr/process-router endpoint and unwraps its response.
+  // NOTE: this is NEW wiring, not yet exercised in a real browser/server
+  // run - the routing logic itself (py/ocr_router.py) was independently
+  // tested against real PDFs (py/ocr_router_test.py); this fetch/base64
+  // plumbing should be smoke-tested against a live server before relying
+  // on it in production.
+  function _fileToBase64(file) {
+    return new Promise(function (resolve, reject) {
+      const reader = new FileReader();
+      reader.onload = function () { resolve(String(reader.result).split(',')[1]); };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function _base64ToBlob(b64, mimeType) {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mimeType });
+  }
+
+  async function runOcrRouter(file, logFn) {
+    const pdfBase64 = await _fileToBase64(file);
+    const resp = await fetch('/api/ocr/process-router', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + (window.__lexoraAuthToken || '')
+      },
+      body: JSON.stringify({ fileName: file.name, pdfBase64: pdfBase64 })
+    });
+    const data = await resp.json();
+    if (!data || !data.ok) {
+      throw new Error((data && data.error) || 'OCR processing failed.');
+    }
+    if (data.asposeFallbackReason && logFn) {
+      logFn(data.asposeFallbackReason, 'warn');
+    }
+    if (data.asposeError && logFn) {
+      logFn('Aspose error: ' + data.asposeError, 'warn');
+    }
+    const mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    return {
+      blob: _base64ToBlob(data.outputBase64, mime),
+      strategyUsed: data.strategyUsed,
+      requestedStrategy: data.requestedStrategy,
+      analysis: data.analysis,
+      pagesExtracted: data.pagesExtracted,
+      linesExtracted: data.linesExtracted,
+      outputFileName: data.outputFileName
+    };
+  }
+
   // ── processing ─────────────────────────────────────────────────────
   async function start() {
     if (STATE.running) return;
@@ -64,13 +121,6 @@
 
     const billing = window.LexoraBilling;
     if (!billing) return setStatus('Billing is unavailable - please reload the page.', 'error');
-    if (!window.buildHybridDocxBlob || !window.buildOfflineDocxBlob) {
-      return setStatus('The document engine failed to load - please reload the page.', 'error');
-    }
-
-    // OCR service is always vision-based OCR now - no toggle, no
-    // text-layer fallback (that's what Translation/Data Extraction are for).
-    const useOcr = true;
 
     const rate = billing.perPageRate('ocr');
     const perDocument = billing.isPerDocument('ocr');
@@ -85,9 +135,7 @@
     STATE.running = true;
     STATE.stopped = false;
     setStatus('');
-    if (window.setVisionAuthToken) window.setVisionAuthToken(window.__lexoraAuthToken || '');
-    if (window.setVisionStopCheck) window.setVisionStopCheck(function () { return STATE.stopped; });
-    log(`System > ${useOcr ? 'With OCR' : 'Without OCR'} + Without Translation`, 'Success');
+    log('System > OCR routed: tables/background color -> Aspose, otherwise local extraction', 'Success');
     rerender();
 
     const runCtx = window.createStandaloneRunCtx ? await window.createStandaloneRunCtx('ocr') : null;
@@ -95,81 +143,40 @@
     for (let i = 0; i < selected.length; i++) {
       const entry = selected[i];
       const label = `File(${i + 1}/${selected.length})`;
-      entry.status = useOcr ? 'Scanning' : 'Processing';
+      entry.status = 'Processing';
       entry.scanProgress = 0;
-      entry.progress = useOcr ? 0 : 5;
+      entry.progress = 5;
       log(`${label} > File Processing > ${entry.file.name}`, 'Info');
       rerender();
 
-      let charged = 0, pagesDone = 0, jsonCalls = 0, imageCalls = 0;
-      let liveEntry = null;
+      let charged = 0, pagesDone = 0;
       try {
-        // Per-page rows come from the pipeline's structured events, same
-        // as Translation - but billing is now FULL-FILE: pages only
-        // accrue toward the total, nothing is charged to the wallet
-        // until the whole file finishes successfully below. Per-document
-        // plans charge the flat rate once (set after the loop, not
-        // accumulated here); per-page plans add rate for every page.
-        if (window.setPipelineEventHandler) {
-          window.setPipelineEventHandler(function (ev) {
-            if (!ev) return;
-            if (ev.type === 'scan') {
-              // Item 1 - Scan Result reaches 100% BEFORE Progress starts
-              // moving at all, not simultaneously.
-              entry.scanProgress = Math.round((ev.page / (ev.totalPages || 1)) * 100);
-              if (entry.scanProgress >= 100) {
-                log(`${label} > Scanning > 100%`, 'Success');
-                entry.status = 'Processing';
-              }
-              rerender();
-              return;
-            }
-            if (ev.type === 'page_start') {
-              // Live row: shows "In Progress" for as long as the actual
-              // vision API call is in flight, then gets overwritten by
-              // the real result below - not a separate permanent entry.
-              liveEntry = log(`${label} > Page(${ev.page}/${ev.totalPages}) > Extracting text...`, 'Processing');
-              rerender();
-              return;
-            }
-            if (ev.type !== 'page') return;
-            jsonCalls += ev.jsonCalls;
-            imageCalls += ev.imageCalls;
-            const lbl = `Page(${ev.page}/${ev.totalPages})`;
-            if (liveEntry) {
-              liveEntry.activity = `${label} > ${lbl} > API Call(s) > JSON=${ev.jsonCalls}, IMAGE=${ev.imageCalls}`;
-              liveEntry.status = 'Success';
-              liveEntry = null;
-            } else {
-              log(`${label} > ${lbl} > API Call(s) > JSON=${ev.jsonCalls}, IMAGE=${ev.imageCalls}`, 'Success');
-            }
-            if (ev.ok) {
-              pagesDone++;
-              if (!perDocument) charged += rate;
-            }
-            log(`${label} > ${lbl} > Text Data = ${ev.textData}`, 'Info');
-            entry.pageCount = ev.totalPages;
-            entry.progress = Math.round((ev.page / (ev.totalPages || 1)) * 85);
-            rerender();
-          });
-        }
-        if (window.resetPipelineApiCounters) window.resetPipelineApiCounters();
+        // ROUTED: table/background-color -> Aspose.Words Cloud,
+        // otherwise a free local pdfplumber extraction. Replaces the
+        // vision-LLM call for this service (that path remains available
+        // via buildHybridDocxBlob/buildOfflineDocxBlob for scanned pages
+        // with no text layer at all, which this router does not handle -
+        // see py/ocr_router.py's module docstring for that boundary).
+        // NOTE: the router is a single blocking server call, not a
+        // page-by-page stream, so there are no per-page progress events
+        // here the way the old vision pipeline had - progress just jumps
+        // to done once the server responds.
+        const ocrResult = await runOcrRouter(entry.file, function (m, level) {
+          log(`${label} > ${m}`, level === 'warn' ? 'Info' : 'Failed');
+          rerender();
+        });
+        const blob = ocrResult.blob;
+        pagesDone = ocrResult.pagesExtracted || 0;
+        entry.pageCount = pagesDone;
+        entry.progress = 90;
+        log(`${label} > Strategy > ${ocrResult.strategyUsed}` +
+            (ocrResult.analysis ? ` (${ocrResult.analysis.reason})` : ''), 'Info');
+        rerender();
 
-        // targetLang 'original' is what makes this OCR rather than
-        // Translation - the pipeline then skips the whole-document
-        // translate call entirely.
-        const opts = { withImage: true, targetLang: 'original' };
-        const blob = useOcr
-          ? await window.buildHybridDocxBlob(entry.file, opts, function (m, level) {
-              if (level === 'warn' || level === 'error') { log(`${label} > ${m}`, 'Failed'); rerender(); }
-            })
-          : await window.buildOfflineDocxBlob(entry.file, opts, function (m, level) {
-              if (level === 'warn' || level === 'error') { log(`${label} > ${m}`, 'Failed'); rerender(); }
-            });
-
-        // With OCR the pipeline emits an MHT-based Word file, which Word
-        // rejects if it carries a .docx extension.
-        const ext = useOcr ? '.doc' : '.docx';
+        // Real .docx output either way now (Aspose native conversion or
+        // the pdfplumber-based fallback both produce real OOXML .docx,
+        // unlike the old MHT-based .doc from the vision pipeline).
+        const ext = '.docx';
         const name = entry.file.name.replace(/\.[^.]+$/, '') + ' OCR' + ext;
         STATE.blobs[entry.uid] = { blob: blob, name: name };
         if (runCtx) await runCtx.download(blob, name);
@@ -177,13 +184,12 @@
         entry.status = 'Success';
         entry.progress = 100;
 
-        // Per-document plans: one flat charge for the whole file now
-        // that it's done, regardless of page count.
-        if (perDocument && pagesDone > 0) charged = rate;
+        // Per-document plans: one flat charge for the whole file.
+        // Per-page plans: rate x pages actually extracted.
+        charged = perDocument ? (pagesDone > 0 ? rate : 0) : (rate * pagesDone);
 
         // Charge once, only now that the file has fully succeeded.
         const txnId = billing.charge(billing.chargeDescription('ocr', 'OCR', pagesDone), charged);
-        log(`${label} > Page(All) > API Call(s) > JSON=${jsonCalls}, IMAGE=${imageCalls}`, 'Info');
         log(`${label} > Page(All) > Amount Deducted from Wallet=${CURRENCY_SYMBOL}${charged.toFixed(2)}` +
             (perDocument ? ' (flat per-document rate)' : ` (${pagesDone} page(s) @ ${CURRENCY_SYMBOL}${rate}/page)`), 'Info');
         log(`${label} > Generate Output > ${name}`, 'Success');

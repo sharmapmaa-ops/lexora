@@ -15,3 +15,11 @@ psycopg[binary]>=3.1
 aspose-words-cloud>=25.0
 asposepdfcloud>=25.0
 pycryptodome>=3.20
+# Source-layout-driven reconstruction (py/source_reconstruction.py) -
+# real embedded image byte extraction from the source PDF, including
+# soft-mask/transparency compositing (pdfplumber alone doesn't expose
+# usable raw image bytes for this).
+pymupdf>=1.24
+# OCR service router (py/ocr_router.py) - reuses pdfplumber (already
+# above) and aspose-words-cloud (already above); no new dependency of
+# its own.

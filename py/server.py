@@ -3842,6 +3842,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/translation/inpaint-proxy": self._handle_translation_inpaint_proxy,
             "/api/translation/generate-pdf": self._handle_translation_generate_pdf,
             "/api/test/aspose-translate": self._handle_aspose_test_translate,
+            "/api/ocr/process-router": self._handle_ocr_process_router,
             "/api/admin/mkdir": self._handle_admin_mkdir,
             "/api/admin/upload": self._handle_admin_upload,
             "/api/admin/delete": self._handle_admin_delete,
@@ -6543,6 +6544,68 @@ class Handler(SimpleHTTPRequestHandler):
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
         return 200, {"ok": True, "results": results}
+
+    def _handle_ocr_process_router(self, body):
+        """REAL OCR service entry point implementing the requested routing
+        rule: PDFs with tables or background colors get Aspose.Words
+        Cloud's structure-aware conversion (preserves table/shading);
+        everything else gets a free local pdfplumber extraction. See
+        py/ocr_router.py for the full decision logic and both execution
+        paths - independently tested there against a real table+color
+        PDF and a plain-text PDF (py/ocr_router_test.py) before being
+        wired in here.
+
+        This does NOT replace or touch the existing vision-LLM OCR path
+        (js/translation-offline.js's buildHybridDocxBlob) used for
+        scanned/photographed pages that have no text layer at all - that
+        pipeline needs a vision model to even read the page and is
+        untouched by this route. This route is for PDFs that already
+        HAVE a text layer, where the only open question is whether
+        Aspose's paid table-aware reconstruction is actually needed for
+        this particular file, or whether a much cheaper plain extraction
+        is enough - decided per-file, never hardcoded.
+
+        Never fails outright just because Aspose credentials aren't
+        configured yet - ocr_router.run_ocr() falls back to the
+        lightweight extractor and reports exactly why in
+        asposeFallbackReason, so the caller can still deliver SOMETHING
+        usable and show the user what happened."""
+        user_id = _safe_id(self._resolve_user_id(body))
+        file_name = _safe_filename(body.get("fileName"), "document.pdf")
+        pdf_b64 = body.get("pdfBase64")
+        if not pdf_b64:
+            raise ValueError("pdfBase64 is required")
+
+        import ocr_router
+
+        tmp_dir = tempfile.mkdtemp(prefix="ocr_router_")
+        try:
+            pdf_path = os.path.join(tmp_dir, _safe_filename(file_name))
+            with open(pdf_path, "wb") as f:
+                f.write(base64.b64decode(pdf_b64))
+            output_path = os.path.join(tmp_dir, "output.docx")
+
+            result = ocr_router.run_ocr(pdf_path, output_path)
+
+            with open(result["output_path"], "rb") as f:
+                output_b64 = base64.b64encode(f.read()).decode()
+
+            return 200, {
+                "ok": True,
+                "outputBase64": output_b64,
+                "outputFileName": "ocr-" + os.path.splitext(file_name)[0] + ".docx",
+                "strategyUsed": result.get("strategy_used"),
+                "requestedStrategy": result.get("requested_strategy"),
+                "analysis": result.get("analysis"),
+                "asposeFallbackReason": result.get("aspose_fallback_reason"),
+                "asposeError": result.get("aspose_error"),
+                "pagesExtracted": result.get("pages_extracted"),
+                "linesExtracted": result.get("lines_extracted"),
+            }
+        except Exception as err:
+            return 200, {"ok": False, "error": str(err)}
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def _handle_aspose_test_translate(self, body):
         """ISOLATED TEST ROUTE - see py/aspose_test_pipeline.py's module
