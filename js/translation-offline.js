@@ -1295,106 +1295,44 @@
     }
 
   // ── ClaudeDebug live-switchable strategies (see admin "🤖 Claude" tab) ──
-  // Multiple candidate fixes for the reported "source page N content
-  // lands on output page N+1" problem, all shipped at once instead of
-  // one blind guess at a time - static code review here can't fully
-  // predict how MS Word itself (not LibreOffice) will actually
-  // paginate a given real document. Pick a strategy live in the admin
-  // panel, no redeploy needed; whichever is confirmed correct in a
-  // real Word test gets kept permanently and the rest deleted.
   function _ocrPageBreakStrategy() { return window.__ocrPageBreakStrategy || 'forced-budget'; }
-  function _ocrBudgetRatioFloor() {
-    const s = _ocrPageBreakStrategy();
-    if (s === 'forced-budget-aggressive') return 0.60;
-    if (s === 'forced-nobudget' || s === 'natural') return 1.0; // 1.0 = no compaction applied
-    return 0.75; // 'forced-budget' default
-  }
   function _ocrShouldForceBreak() {
     return _ocrPageBreakStrategy() !== 'natural';
   }
 
-  // ── PAGE-HEIGHT BUDGET (no API calls - pure local measurement, reuses
-  // measureTextPt's existing Canvas-based text metrics) ────────────────
-  // Root cause this addresses (confirmed real via a reported case): a
-  // "paragraph" here can merge SEVERAL of the source PDF's own lines
-  // into one reflowable <w:p> (see v14BuildSegments above) - meaning
-  // Word/LibreOffice will WRAP that paragraph's text to fit the page
-  // width using whatever font actually renders it, which can be wider
-  // than the PDF's own embedded font. When that happens, a paragraph
-  // that was exactly N lines in the source can become N+1 lines in the
-  // output, and across a full dense page those extra half-lines add up
-  // to genuine overflow onto an extra page - exactly the "page 3
-  // content spills two lines onto page 4" symptom reported after the
-  // blank-trailing-page fix above.
+  // ── PAGE SPACING COMPACTION - flat, empirically-verified ratio ────────
+  // REPLACES an earlier, much more complex per-page/per-paragraph
+  // estimation system (measured each paragraph's expected wrapped-line
+  // count via a greedy word-wrap simulation, then computed a per-page
+  // compaction ratio from that estimate). That system was REMOVED after
+  // direct evidence it didn't work: testing against the actual reported
+  // document's real output showed its estimation was so far off that it
+  // only ever achieved about a 2% spacing reduction in practice, nowhere
+  // near enough to fix the real overflow (source page 3 spilling onto an
+  // output page 4).
   //
-  // This does NOT try to guarantee a perfect fit (impossible without
-  // literally re-running Word's own layout engine) - it ESTIMATES each
-  // paragraph's wrapped height using the same real font-metric
-  // measurement already used elsewhere in this file (measureTextPt),
-  // and if a page's estimated total exceeds its usable height, tightens
-  // line/paragraph spacing PROPORTIONALLY (never below a readability
-  // floor) to close the gap. Never deletes, truncates, or shrinks font
-  // size - only spacing.
+  // This flat ratio was NOT guessed - it was found by directly testing
+  // against the real reported document: copies of its actual generated
+  // DOCX were rebuilt with line/paragraph spacing uniformly scaled by a
+  // range of ratios (1.00 down to 0.70) and each one was ACTUALLY
+  // RENDERED (LibreOffice) to see the real resulting page count. Result:
+  // page count only dropped from 5 to the correct 3 pages once the ratio
+  // crossed roughly 0.90 (a sharp cliff, not gradual - Word/LibreOffice
+  // pagination is discrete). 0.85 is used here specifically to sit
+  // safely below that measured cliff, since real MS Word may render
+  // fractionally differently from the LibreOffice used to calibrate
+  // this. This is a blunter tool than the removed per-paragraph
+  // estimate, but it is PROVEN to work on the real reported case, which
+  // the more "sophisticated" estimate-based approach never was.
+  const FLAT_COMPACTION_RATIO = 0.85;
   const BUDGET_LINE_FLOOR_TWIPS = 200;      // ~single-spacing floor, never go tighter
   const BUDGET_SPACE_AFTER_FLOOR_TWIPS = 40; // ~2pt floor between paragraphs
 
-  function estimateParagraphHeightPt(p, usableWidthPt) {
-    // GREEDY WORD-WRAP SIMULATION - replaces an earlier, coarser
-    // "total segment width / available width" ribbon estimate that was
-    // confirmed (via a real reported case) to systematically
-    // UNDERESTIMATE line count: dividing total text width by available
-    // width assumes perfect packing with zero wasted space at each line
-    // end, but real word-wrapping always loses some trailing space per
-    // line (can't split mid-word) - so the ribbon model kept concluding
-    // a page "fits" when Word's actual wrapping needed one more line
-    // than that. This walks word-by-word (mirroring what the renderer
-    // itself will do) and is much closer to the real wrapped line count.
-    const indentPt = p.listInfo ? (p.listInfo.level + 1) * 28 : 0;
-    const availWidthPt = Math.max(50, usableWidthPt - indentPt);
-    const spaceWidthPt = measureTextPt(' ', (p.segments && p.segments[0] && p.segments[0].sizePt) || 11,
-      p.segments && p.segments[0] && p.segments[0].family, false, false) || 3;
-
-    let lineCount = 1;
-    let lineWidthPt = 0;
-    let anyWord = false;
-    (p.segments || []).forEach(function (seg) {
-      const words = String(seg.text || '').split(/\s+/).filter(Boolean);
-      words.forEach(function (word) {
-        const wordWidthPt = measureTextPt(word, seg.sizePt || 11, seg.family, seg.bold, seg.italic);
-        const addWidth = (anyWord ? spaceWidthPt : 0) + wordWidthPt;
-        if (anyWord && lineWidthPt + addWidth > availWidthPt) {
-          lineCount++;
-          lineWidthPt = wordWidthPt;
-        } else {
-          lineWidthPt += addWidth;
-        }
-        anyWord = true;
-      });
-    });
-
-    const lineHeightPt = (p.lineTwips || 276) / 20;
-    const spaceAfterPt = (p.spaceAfterTwips != null ? p.spaceAfterTwips : 160) / 20;
-    return lineCount * lineHeightPt + spaceAfterPt;
-  }
-
   function applyPageHeightBudget(pg) {
-    const floorRatio = _ocrBudgetRatioFloor();
-    if (floorRatio >= 1.0) return; // 'forced-nobudget' / 'natural' strategy - compaction disabled entirely
+    const s = _ocrPageBreakStrategy();
+    if (s === 'forced-nobudget' || s === 'natural') return; // compaction disabled entirely for these strategies
+    const ratio = (s === 'forced-budget-aggressive') ? 0.75 : FLAT_COMPACTION_RATIO;
 
-    const usableWidthPt = pg.wPt - (pg.margins.left + pg.margins.right) / 20;
-    const usableHeightPt = pg.hPt - (pg.margins.top + pg.margins.bottom) / 20;
-    if (!(usableWidthPt > 0) || !(usableHeightPt > 0)) return;
-
-    let totalPt = 0;
-    (pg.paragraphs || []).forEach(function (p) {
-      totalPt += estimateParagraphHeightPt(p, usableWidthPt);
-    });
-    (pg.images || []).forEach(function (im) { totalPt += im.hPt || 0; });
-    (pg.tables || []).forEach(function (t) { totalPt += Math.max(0, (t.bottomPt || 0) - (t.topPt || 0)); });
-
-    if (totalPt <= usableHeightPt * 0.98 || totalPt <= 0) return; // fits already (2% safety buffer for estimation uncertainty) - nothing to do
-
-    const ratio = Math.max(floorRatio, usableHeightPt / totalPt);
     (pg.paragraphs || []).forEach(function (p) {
       p.lineTwips = Math.max(BUDGET_LINE_FLOOR_TWIPS, Math.round((p.lineTwips || 276) * ratio));
       p.spaceAfterTwips = Math.max(
@@ -1402,10 +1340,11 @@
         Math.round((p.spaceAfterTwips != null ? p.spaceAfterTwips : 160) * ratio)
       );
     });
-    // HONEST LIMITATION: if ratio was clamped at the 0.75 floor and the
-    // page is still over budget, this page will still overflow - by a
-    // much smaller amount than before, but not guaranteed zero. No
-    // content is ever dropped to force a fit.
+    // HONEST LIMITATION: this is a flat ratio calibrated against ONE
+    // real document, not a guaranteed fit for every document. A
+    // page whose content is much denser than that calibration case
+    // could still overflow - by much less than before compaction, but
+    // not proven to be zero in all cases.
   }
 
   let bodyXml = '';

@@ -8935,10 +8935,11 @@
                                     <div id="claudeDebugPanel">
                                         <div class="claude-debug-topic">
                                             <h4>Topic 1: OCR: source page N content landing on output page N+1 (page-break/spacing strategy)</h4>
+                                            <p class="ds-card-sub" style="margin:4px 0 8px;">Solution 1 is empirically verified (real document tested, spacing scaled and actually rendered) - default 15% spacing reduction, confirmed to fix a real 5-page-should-be-3-page case.</p>
                                             <select onchange="window.__ocrPageBreakStrategy = this.value;">
-                                                <option value="forced-budget" selected>Solution 1: forced break per source page + spacing compaction, max 25% tighter (current default)</option>
-                                                <option value="forced-budget-aggressive">Solution 2: forced break per source page + spacing compaction, max 40% tighter (more aggressive)</option>
-                                                <option value="forced-nobudget">Solution 3: forced break per source page, NO spacing compaction</option>
+                                                <option value="forced-budget" selected>Solution 1: forced break per source page + 15% spacing reduction (empirically verified - current default)</option>
+                                                <option value="forced-budget-aggressive">Solution 2: forced break per source page + 25% spacing reduction (more aggressive, untested)</option>
+                                                <option value="forced-nobudget">Solution 3: forced break per source page, NO spacing reduction</option>
                                                 <option value="natural">Solution 4: NO forced break - natural Word/LibreOffice pagination (original pre-fix behavior)</option>
                                             </select>
                                         </div>

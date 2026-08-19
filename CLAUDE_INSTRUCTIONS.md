@@ -180,3 +180,70 @@ par decide karega.
   position galat hai" bole, turant PIL se har text-line ka exact
   left-start-x-pixel nikaalo aur compare karo — "aankh se dekh ke sahi
   lagna" kaafi nahi hai, number chahiye.
+
+- **KABHI BHI overengineer mat karo — 1 character tak bhi nahi — bina
+  explicitly puche.** Real incident: Admin panel ke "Claude" tab me ek
+  dropdown add karna tha. Iske liye already ek async `ClaudeDebug` widget
+  system (JS-driven, `addTopic()`/`_render()`) maujood tha, to maine SEEDHA
+  simplest solution (dropdown ko static HTML me directly likh dena — zero
+  timing-dependency, turant kaam karta) skip kar diya aur uski jagah us
+  poore async system ko use karna shuru kiya. Wo async approach ek DOM-
+  timing bug me phas gaya (container DOM me insert hone se pehle hi
+  register ho raha tha), aur maine usi complexity ko aur badhate hue 2 baar
+  "fix" try kiya (setTimeout wrap, phir retry-loop) — dono baar bina live
+  browser access ke sirf guess kar raha tha, jabki shuru se hi ek MUCH
+  simpler, guaranteed-working static-HTML solution available tha. User ne
+  khud identify kiya ki maine unnecessary complexity banayi.
+  **Sabak (ab se hamesha follow karna hai):**
+  1. Har naye kaam/requirement se PEHLE, sabse SIMPLE/DIRECT tarika socho
+     jo kaam kar sake — agar wahi simplest tarika requirement poori karta
+     hai, USI ko implement karo. Existing complex/reusable systems
+     (jaise ClaudeDebug) ko sirf TABHI use karo jab unka EXPLICIT,
+     genuine use-case ho (jaise "user ne khud kaha ki multiple solutions
+     live-switch karne hain") — sirf isliye mat use karo ki wo system
+     "available" hai ya "reusable lagta hai".
+  2. Agar lagta hai ki kisi task ke liye extra abstraction/infrastructure/
+     complexity chahiye HOGI (chahe wo ek naya helper function ho, ek naya
+     retry-mechanism ho, ek naya config-layer ho — kuch bhi jo direct,
+     obvious solution se zyada hai), to pehle USER SE POOCHO ki ye
+     zaroori hai ya nahi — khud decide karke implement mat kar do.
+  3. Ye rule sirf UI/JS tak simit nahi hai — kisi bhi process
+     (backend architecture, naye files, naye abstraction layers, naye
+     "smart"/generic systems) pe equally apply hota hai.
+
+- **Har naye process/requirement ko shuru karne se PEHLE, is poori file
+  (CLAUDE_INSTRUCTIONS.md) ke rules explicitly (apne andar) check karo aur
+  apply karo — sirf naye session/chat ke start pe ek baar nahi, balki
+  SAME conversation ke andar har naye requirement/task se pehle bhi.**
+  Matlab: task shuru karne se turant pehle khud se pucho "in accumulated
+  lessons me se koi is task pe apply hoti hai kya" (jaise: kya main yahan
+  overengineer kar raha hoon, kya main guess kar raha hoon bina evidence
+  ke, kya main koi purane mock/test-result ko reality maan raha hoon) —
+  uske baad hi actual implementation shuru karo.
+
+- **Estimation/simulation-based JS fixes ko "kaam karta hoga" maan ke
+  ship mat karo — agar sandbox me real render/measure karne ka tarika hai
+  (jaise LibreOffice), to WAHI use karke empirically verify karo, guess
+  mat karo.** Real incident: OCR page-overflow (3-page PDF, 5-page
+  output) fix karne ke liye maine ek complex JS-side estimation system
+  banaya (greedy word-wrap simulation, per-paragraph height estimate,
+  per-page compaction floor) — teen alag iterations me, har baar
+  "theoretically sahi lagta hai" bol ke deliver kiya, bina kabhi real
+  output pe test kiye (kyunki mere paas live browser access nahi hai).
+  User ne saari 4 candidate solutions try ki, ek bhi kaam nahi kiya.
+  Jab maine actual reported .docx ki real XML nikaal ke, LibreOffice se
+  (jo is sandbox me available hai) alag-alag spacing-ratios pe genuinely
+  RENDER karke real page-count dekha, tab pata chala: mera poora
+  estimation system sirf ~2% spacing-reduction achieve kar raha tha,
+  jabki asli zaroorat ~10-15% thi. Real empirical test se turant sahi
+  ratio (0.85) mil gaya aur poori complex estimation-machinery hata ke
+  ek simple flat-ratio se replace kar diya — jo genuinely verified hai.
+  **Sabak:** jab bhi "kitna badlav chahiye" jaisa quantitative sawaal ho
+  (spacing kitni kam karni hai, font size kitna, margin kitna), aur
+  sandbox me koi REAL rendering/testing tool available hai (LibreOffice,
+  browser, etc.) — usko use karke actual number nikaalo, apna khud ka
+  estimation-model mat banao jise verify karne ka koi tarika hi na ho.
+  Estimation sirf tabhi acceptable hai jab genuinely koi real-render
+  option available na ho, aur tab bhi explicitly bolna hai "ye estimate
+  hai, verified nahi" — kabhi bhi estimate ko verified jaisa present mat
+  karo.
