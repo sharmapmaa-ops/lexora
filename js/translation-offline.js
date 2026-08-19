@@ -321,6 +321,101 @@
       '</pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>';
   }
 
+  function paragraphBoxXml(p, containerRightPt) {
+    // Solution 9's SECOND iteration - real root cause found via a
+    // reported case: the original per-LINE, wrap="none", fixed-width
+    // boxes (textBoxXml) had a structural overflow risk - the box width
+    // came from pdf.js's measurement of the SOURCE PDF's own font, but
+    // Word renders with its own font/metrics, which can measure the
+    // SAME text as wider. wrap="none" then means Word does not wrap to
+    // compensate - it just draws past the box's right edge. This
+    // doesn't happen occasionally, it's a structural property of
+    // "fixed width + no wrap": ANY font-metric mismatch shows as
+    // overflow, not just large ones.
+    //
+    // FIX: render per-PARAGRAPH (not per-line) absolute boxes that DO
+    // wrap normally (real Word/LibreOffice line-wrapping handles
+    // whatever width the text actually needs, the same way a normal
+    // Word document never overflows its margins) and auto-grow their
+    // height to fit (a:spAutoFit, native OOXML mechanism - not a
+    // height estimate of our own, learned from earlier estimation
+    // failures this project). Page-boundary fidelity (the original
+    // reason for Solution 9 existing) is preserved because each
+    // paragraph is still absolutely positioned at its own real source
+    // page/coordinates - only the WITHIN-paragraph rendering changed
+    // from "rigid line-by-line" to "positioned column that wraps
+    // normally like text". Justify (jc="both") now works correctly too,
+    // for the same reason it already worked in the OTHER strategies'
+    // flowing-paragraph pipeline: a real multi-line WRAPPED paragraph
+    // does not have the single-line-exemption problem a one-line-per-
+    // box architecture had.
+    drawId++;
+    const x = Math.max(0, Math.round(p.leftPt * EMU));
+    const y = Math.max(0, Math.round(p.topPt * EMU));
+    const rightBoundary = (containerRightPt != null && containerRightPt > p.leftPt) ? containerRightPt : p.rightPt;
+    const cx = Math.max(1, Math.round((rightBoundary - p.leftPt) * EMU));
+    const cy = Math.max(1, Math.round(Math.max(p.bottomPt - p.topPt, (p.lineTwips || 276) / 20) * EMU));
+
+    const jcMap = { left: 'left', center: 'center', right: 'right', justify: 'both' };
+    const jc = jcMap[p.align] || 'left';
+
+    const segs = p.segments || [];
+    const runsXml = segs.map(function (seg, i) {
+      if (!seg.text) return seg.lineBreakBefore ? '<w:r><w:br/></w:r>' : '';
+      let text = seg.text;
+      if (i > 0 && !seg.lineBreakBefore) {
+        const prev = segs[i - 1];
+        if (prev && prev.text) {
+          const prevEndsSpace = /\s$/.test(prev.text);
+          const nextStartsSpace = /^\s/.test(text);
+          const prevOpensNoSpace = /[(\[{'"\u2018\u201c]$/.test(prev.text);
+          const nextClosesNoSpace = /^[)\]},.;:!?'"\u2019\u201d]/.test(text);
+          if (!prevEndsSpace && !nextStartsSpace && !prevOpensNoSpace && !nextClosesNoSpace) text = ' ' + text;
+        }
+      }
+      const sz = Math.max(2, Math.round((seg.sizePt || 11) * 2));
+      const col = /^[0-9A-F]{6}$/i.test(seg.color || '') ? seg.color.toUpperCase() : '000000';
+      const fam = esc(seg.family || 'Arial');
+      const br = seg.lineBreakBefore ? '<w:br/>' : '';
+      return '<w:r><w:rPr>' +
+        '<w:rFonts w:ascii="' + fam + '" w:hAnsi="' + fam + '" w:cs="' + fam + '"/>' +
+        (seg.bold ? '<w:b/><w:bCs/>' : '') +
+        (seg.italic ? '<w:i/><w:iCs/>' : '') +
+        '<w:color w:val="' + col + '"/>' +
+        '<w:sz w:val="' + sz + '"/><w:szCs w:val="' + sz + '"/>' +
+        (p.rtl ? '<w:rtl/>' : '') +
+        '</w:rPr>' + br + '<w:t xml:space="preserve">' + esc(text) + '</w:t></w:r>';
+    }).join('');
+
+    const lineTw = p.lineTwips || 276;
+
+    return '<w:r><w:drawing>' +
+      '<wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="' + drawId +
+      '" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">' +
+      '<wp:simplePos x="0" y="0"/>' +
+      '<wp:positionH relativeFrom="page"><wp:posOffset>' + x + '</wp:posOffset></wp:positionH>' +
+      '<wp:positionV relativeFrom="paragraph"><wp:posOffset>' + y + '</wp:posOffset></wp:positionV>' +
+      '<wp:extent cx="' + cx + '" cy="' + cy + '"/>' +
+      '<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>' +
+      '<wp:docPr id="' + drawId + '" name="P' + drawId + '"/><wp:cNvGraphicFramePr/>' +
+      '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
+      '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">' +
+      '<wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr>' +
+      '<a:xfrm><a:off x="0" y="0"/><a:ext cx="' + cx + '" cy="' + cy + '"/></a:xfrm>' +
+      '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln>' +
+      '</wps:spPr><wps:txbx><w:txbxContent>' +
+      '<w:p><w:pPr>' +
+      '<w:spacing w:before="0" w:after="0" w:line="' + lineTw + '" w:lineRule="auto"/>' +
+      (p.rtl ? '<w:bidi/>' : '') +
+      '<w:jc w:val="' + jc + '"/></w:pPr>' + runsXml + '</w:p>' +
+      '</w:txbxContent></wps:txbx>' +
+      // wrap="square" (real wrapping, NOT "none") + spAutoFit (native
+      // OOXML auto-grow, not our own height guess) - this pair is what
+      // structurally removes the overflow risk textBoxXml had.
+      '<wps:bodyPr rot="0" vert="horz" wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t"><a:spAutoFit/></wps:bodyPr>' +
+      '</wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>';
+  }
+
   function bgImageXml(relId, wPt, hPt){
     drawId++;
     const cx = Math.round(wPt * EMU), cy = Math.round(hPt * EMU);
@@ -1015,8 +1110,10 @@
     const s = _ocrPageBreakStrategy();
 
     // These strategies don't touch spacing/font/margin at all - handled
-    // by entirely separate code paths (buildDocx for absolute-position,
-    // the feedback loop wrapper for feedback-loop).
+    // by entirely separate code paths ('absolute-position' renders via
+    // buildDocx's own per-line boxes, bypassing this whole flowing-
+    // paragraph pipeline entirely - see the Solution 9 branch further
+    // down; 'feedback-loop' has its own wrapper).
     if (s === 'forced-nobudget' || s === 'natural' || s === 'absolute-position' || s === 'feedback-loop') return;
 
     let spacingRatio = 1.0, fontRatio = 1.0, marginRatio = 1.0;
@@ -1691,55 +1788,75 @@ trailingSectPr + '</w:body></w:document>';
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
   }
 
-  // Per-page justified-line detection for Solution 9 (buildDocx). Real
-  // per-line alignment info doesn't exist yet at this point (Solution 9
-  // deliberately uses RAW pg.lines, skipping the paragraph-building/
-  // alignment-detection stage other strategies use) - this is a
-  // lightweight, line-only heuristic scoped just to what buildDocx needs:
-  // find each page's dominant "right text boundary" among substantial,
-  // multi-word lines (the shared column edge a justified paragraph's
-  // lines stretch to reach), then mark any line whose own right edge
-  // sits at that boundary as justified. A line that's short, single-
-  // word, or doesn't reach the shared boundary is left as normal
-  // left-aligned - this only flags lines with real evidence of having
-  // been stretched in the source, never guesses broadly.
+  // Per-line justified-detection for Solution 9 (buildDocx), redesigned
+  // per explicit user direction: STANDALONE per line - no comparison to
+  // any OTHER line on the page (the earlier version compared each
+  // line's right edge against a page-wide "shared boundary" computed
+  // across many lines - user explicitly rejected that as a "bounding
+  // box" approach and asked for pure line-by-line detection instead).
+  //
+  // Signal used: a justified line's REAL captured width (L.wPt, from
+  // actual glyph positions in the source PDF - already reflects
+  // whatever inter-word spacing the source actually used) compared
+  // against the NATURAL width the same words would need at NORMAL
+  // (single-space) spacing, using the same real font-metric measurement
+  // (measureTextPt) already used elsewhere in this file. If the real
+  // width is meaningfully wider than natural, the source must have used
+  // wider-than-normal word gaps to reach that width - i.e. justified -
+  // determined entirely from THIS line's own text and THIS line's own
+  // captured width, nothing else.
   function _markJustifiedLines(pg) {
-    const MIN_WIDTH_PT = 100;      // ignore short lines (headers, labels) - not enough signal
-    const BOUNDARY_TOLERANCE_PT = 4; // how close a line's right edge must be to count as "at the boundary"
-    const BUCKET_PT = 3;           // bucket size for finding the dominant boundary value
-
-    function wordCount(L) {
-      return L.runs.map(function (r) { return r.text || ''; }).join(' ').trim().split(/\s+/).filter(Boolean).length;
-    }
-
-    const substantial = pg.lines.filter(function (L) { return L.wPt > MIN_WIDTH_PT && wordCount(L) > 1; });
-    if (substantial.length < 3) return; // not enough data on this page for a reliable boundary
-
-    const counts = {};
-    substantial.forEach(function (L) {
-      const rightEdge = L.xPt + L.wPt;
-      const bucket = Math.round(rightEdge / BUCKET_PT) * BUCKET_PT;
-      counts[bucket] = (counts[bucket] || 0) + 1;
-    });
-    let boundary = null, bestCount = 0;
-    Object.keys(counts).forEach(function (k) {
-      if (counts[k] > bestCount) { bestCount = counts[k]; boundary = parseFloat(k); }
-    });
-    // Require the boundary to actually be shared by several lines -
-    // otherwise this page likely has ragged-right (non-justified) text
-    // and any single line reaching close to the page edge is coincidence,
-    // not evidence of justification.
-    if (boundary == null || bestCount < 3) return;
+    const MIN_WORDS = 8;                    // see real-evidence note below
+    const STRETCH_RATIO_THRESHOLD = 1.06;   // real width must be >=6% wider than natural to count
+    // HONEST LIMITATIONS (both found via a real end-to-end test, not
+    // guessed - see js/justify_detection_test.js and the investigation
+    // that produced these numbers):
+    // 1. MIN_WORDS was raised from 2 to 8 after a REAL false positive:
+    //    a 6-word centered TITLE ("ACCORDO MODIFICATIVO DEL CONTRATTO
+    //    DI LOCAZIONE") got incorrectly flagged justified when tested
+    //    end-to-end (an earlier attempt at MIN_WORDS=5 did NOT fix
+    //    this specific case, since the title has 6 words - checked the
+    //    real word counts of this document's own lines directly: the
+    //    title has 6, the "Tra"/"e" connector lines have 1, while every
+    //    genuine justified body line checked has 10-21 - so 8 sits
+    //    cleanly between the false-positive case and the real cases).
+    // 2. STRETCH_RATIO_THRESHOLD (1.06) is a reasoned starting point,
+    //    NOT calibrated against real browser font measurement the way
+    //    the flat spacing ratio elsewhere in this file was
+    //    (py/calibrate_compaction_ratio.py). measureTextPt needs a real
+    //    browser Canvas, which this project's sandbox cannot run - an
+    //    approximate Node-side stand-in was used to test the MECHANISM
+    //    (and caught the MIN_WORDS issue above), but it could NOT
+    //    reliably confirm real justified body lines actually cross this
+    //    threshold using real font metrics, only that they don't
+    //    falsely NOT cross it in an obviously broken way. This needs
+    //    real-browser testing to fully verify; if real testing shows
+    //    genuine justified paragraphs aren't being detected, or any
+    //    remaining false positives, this one constant is what to adjust.
 
     pg.lines.forEach(function (L) {
-      const rightEdge = L.xPt + L.wPt;
-      if (L.wPt > MIN_WIDTH_PT && wordCount(L) > 1 && Math.abs(rightEdge - boundary) <= BOUNDARY_TOLERANCE_PT) {
+      const words = (L.runs || []).map(function (r) { return r.text || ''; }).join(' ').trim().split(/\s+/).filter(Boolean);
+      if (words.length < MIN_WORDS) return; // nothing to stretch between
+
+      const seg0 = (L.runs && L.runs[0]) || {};
+      const sizePt = seg0.sizePt || 11;
+      const family = seg0.family;
+      const spaceWidthPt = measureTextPt(' ', sizePt, family, false, false) || 3;
+
+      let naturalWidthPt = 0;
+      words.forEach(function (w, i) {
+        naturalWidthPt += measureTextPt(w, sizePt, family, seg0.bold, seg0.italic);
+        if (i > 0) naturalWidthPt += spaceWidthPt;
+      });
+      if (!(naturalWidthPt > 0)) return;
+
+      if (L.wPt / naturalWidthPt > STRETCH_RATIO_THRESHOLD) {
         L.justify = true;
       }
     });
   }
 
-  function buildDocx(pages, includeBg){
+  function buildDocx(pages, includeBg, renderPageExtra){
     const zip = new JSZip();
     const wPt = pages[0].wPt, hPt = pages[0].hPt;
     const pgW = Math.round(wPt * 20), pgH = Math.round(hPt * 20);
@@ -1763,9 +1880,23 @@ trailingSectPr + '</w:body></w:document>';
         rels.push({ id: relId, file: 'media/page' + (i + 1) + '.jpg', data: pg.jpegBase64 });
         runs += bgImageXml(relId, pg.wPt, pg.hPt);
       }
-      pg.lines.forEach(function(L){
-        if (L.runs.some(r => r.text && r.text.trim())) runs += textBoxXml(L);
-      });
+      // renderPageExtra, when given, REPLACES the default per-line
+      // rendering below - used by the paragraph-box mode (real Word
+      // wrapping, no overflow risk - see paragraphBoxXml's own comment)
+      // instead of the original fixed-width non-wrapping per-line boxes.
+      // Kept as an OPTIONAL parameter: existing 2-arg callers (e.g. the
+      // vision-OCR hybrid pipeline) are completely unaffected - this
+      // only changes behavior when a caller explicitly opts in - rather
+      // than duplicating this function's zip/rels/sectPr scaffolding
+      // into a second near-identical function that could silently drift
+      // out of sync with this one over time.
+      if (renderPageExtra) {
+        runs += renderPageExtra(pg, i);
+      } else {
+        pg.lines.forEach(function(L){
+          if (L.runs.some(r => r.text && r.text.trim())) runs += textBoxXml(L);
+        });
+      }
       // Real embedded pictures/signatures (pg.images, extracted earlier
       // in buildOfflineDocxBlob - {xPt,yPt,wPt,hPt,base64} JPEGs) -
       // previously NOT carried into this rendering path at all (a known,
@@ -2363,30 +2494,6 @@ trailingSectPr + '</w:body></w:document>';
     if (totalLines === 0)
       throw new Error('No selectable text found in this PDF — offline mode only processes text-based PDFs');
 
-    // Solution 9: ABSOLUTE-POSITIONED TEXT BOXES - genuinely different
-    // architecture from every other strategy above (which all still
-    // flow paragraphs through normal Word pagination). Reuses buildDocx
-    // (already built and working for the vision-OCR pipeline) with each
-    // page's RAW extracted lines (pg.lines, before any paragraph-
-    // merging below) placed as individually positioned floating text
-    // boxes at their exact source coordinates - Word's own automatic
-    // pagination/line-wrapping never runs at all, so it structurally
-    // cannot produce "page 3 content landing on page 4": each source
-    // page's own boxes are anchored to that page's own physical space.
-    // Real embedded pictures/signatures (pg.images) ARE now carried
-    // over too (floatingImageXml, added after this was reported missing)
-    // - each placed at its own exact source position, independent of
-    // Word's pagination for the same reason the text boxes are.
-    // REMAINING LIMITATION: pg.pageBg (a full-page background design -
-    // colored bars/letterhead graphics) is still not wired into this
-    // path - not requested yet, and this document class (plain text
-    // agreements) generally has no such background per the earlier
-    // "skip embedding entirely if plain white" optimization anyway.
-    if (_ocrPageBreakStrategy() === 'absolute-position') {
-      log('OCR strategy: Solution 9 (absolute-positioned text boxes + embedded images) - skipping paragraph flow entirely', 'info');
-      return buildDocx(pages, false);
-    }
-
     // ---- PARAGRAPH BUILDING (before translation) ----
     // Lines are grouped into paragraphs HERE, once, up front - not
     // re-derived later from gaps between whatever lines happen to
@@ -2461,6 +2568,12 @@ trailingSectPr + '</w:body></w:document>';
 
       const contentLeftPt = usableLines.length ? Math.min.apply(null, usableLines.map(l => l.xPt)) : 0;
       const contentRightPt = usableLines.length ? Math.max.apply(null, usableLines.map(l => l.xPt + l.wPt)) : pg.wPt;
+      // Persisted onto pg (not just this loop-scoped const) so Solution
+      // 9's paragraph-box mode can use the SAME real content-column
+      // boundary already computed here for alignment detection, instead
+      // of recomputing a second, potentially-inconsistent estimate.
+      pg.contentLeftPt = contentLeftPt;
+      pg.contentRightPt = contentRightPt;
       const groups = v14GroupLinesIntoParagraphs(usableLines);
 
       const paragraphs = groups.map(function (paraLines) {
@@ -2585,6 +2698,26 @@ trailingSectPr + '</w:body></w:document>';
 
       pg.paragraphs = paragraphs;
     });
+
+    // Solution 9: back to absolute-positioned, per-LINE boxes
+    // (textBoxXml + floatingImageXml, via buildDocx's DEFAULT rendering
+    // when no renderPageExtra is given) - per explicit, final user
+    // direction: keep the box+image state exactly as it was when
+    // confirmed working well, and layer the justify fix on TOP of that
+    // via _markJustifiedLines' new standalone per-line detection (see
+    // that function's own comment) instead of restructuring into
+    // paragraphs. Two earlier iterations (paragraph-box wrapping, then
+    // a full alias to the boxless flowing pipeline) are NOT used here -
+    // reverted per the user's own explicit "no box... but also don't
+    // rebuild the whole box architecture, just fix justify on what
+    // already worked" direction. paragraphBoxXml is kept, unused, as
+    // available tested infrastructure in case absolute positioning
+    // with real wrapping is wanted again later.
+    if (_ocrPageBreakStrategy() === 'absolute-position') {
+      log('OCR strategy: Solution 9 (absolute-positioned per-line boxes + embedded images + standalone per-line justify)', 'info');
+      return buildDocx(pages, false);
+    }
+
 
     // TRANSLATION: the other exception to "no API call" in text-based
     // mode. Each PARAGRAPH (not each raw line) is translated as one

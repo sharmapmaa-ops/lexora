@@ -51,7 +51,7 @@ function findLineIndex(needle) {
 }
 
 const buildFlowingDocxLine = findLineIndex('function buildFlowingDocx(pages)');
-const buildDocxLine = findLineIndex('function buildDocx(pages, includeBg)');
+const buildDocxLine = findLineIndex('function buildDocx(pages, includeBg, renderPageExtra)');
 const buildOfflineDocxBlobLine = findLineIndex('async function buildOfflineDocxBlob(file, opts, logFn)');
 const ocrStrategyLine = findLineIndex('function _ocrPageBreakStrategy()');
 const applyBudgetLine = findLineIndex('function applyPageHeightBudget(pg)');

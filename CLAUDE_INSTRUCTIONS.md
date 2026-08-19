@@ -332,3 +332,30 @@ par decide karega.
   property sahi hoti hai but us SPECIFIC STRUCTURAL CONTEXT (yahan:
   single-line paragraph) me convention-level exemption hoti hai. Pehle
   minimal isolated test se root cause confirm karo, phir fix likho.
+
+- **Ek fix ko genuinely "solve" karne ke liye kabhi-kabhi wapas jaake
+  approach hi galat tha ye maan'na padta hai — patch pe patch lagana
+  nahi.** Real incident: Solution 9 ka per-LINE fixed-width, non-wrapping
+  box design (wrap="none") ek STRUCTURAL overflow risk tha — box ki
+  width pdf.js ke font-measurement se aati thi, lekin Word apne khud ke
+  font metrics se render karta hai, jo WIDER ho sakte hain — aur
+  wrap="none" hone ki wajah se text ko kahi jaane ki jagah nahi milti,
+  bas box se bahar chala jata hai. User ne khud sahi point kiya: unhone
+  kabhi "box" nahi manga tha, sirf paragraph length + justify-alignment
+  identify karna kaafi tha. Maine wapas jaake Solution 9 ko REBUILD kiya
+  — per-LINE boxes ki jagah per-PARAGRAPH boxes jo REAL wrap karte hain
+  (wrap="square" + a:spAutoFit, native OOXML auto-grow — apna height-
+  guess nahi banaya, pichli estimation-failure se seekha). Isse overflow
+  bhi structurally khatam hua aur justify (jc="both") bhi correctly kaam
+  karne laga (kyunki ab genuine multi-line wrapped paragraphs hain, jo
+  single-line-exemption wale purane problem se bache hain).
+  Beech me ek REAL mistake bhi hui: `str_replace` do baar same pattern
+  se collide hua aur file corrupt ho gayi — turant pakड़a, LAST KNOWN-GOOD
+  ZIP se restore kiya, phir chhote-chhote verified steps me dobara kiya
+  (har step ke baad `node --check` + relevant grep se confirm).
+  **Sabak:** jab ek "fix" baar-baar patch karne ke baad bhi real problem
+  solve nahi kar raha, to ruk ke socho — kya MAIN APPROACH hi galat hai?
+  Aur jab bhi ek badi risky edit karni ho (jaise ek function ko naya
+  jagah move karna, signature badalna), chhote verified steps me karo,
+  har step ke baad syntax+structure check karo — na ki ek hi bade edit
+  me sab kuch daal do jahan galti pakadna mushkil ho.
