@@ -1403,59 +1403,42 @@
         .concat((pg.tables || []).map(function (t) { return { kind: 'table', topPt: t.topPt, data: t }; }));
       flow.sort(function (a, b) { return a.topPt - b.topPt; });
 
-      // Item - inserts this PDF page's captured background (see
-      // pageBg capture, extraction loop above) as a full-page,
-      // behind-the-text floating image, right at the START of this
-      // page's own content. Anchored to the FIRST paragraph in this
-      // page's flow (not an absolute page-position) is the deliberate
-      // choice here: translated text is very often a different length
-      // than the source, so the OUTPUT document's actual page breaks
-      // routinely land in different places than the source PDF's did -
-      // an absolute "page N" position would end up behind the wrong
-      // content once that drift happens. Anchoring to "wherever this
-      // page's own content actually starts flowing" keeps the
-      // background paired with ITS OWN content correctly even after
-      // reflow, at the cost of not being pixel-identical to the source
-      // if the translated page runs shorter/longer than the original -
-      // an inherent tradeoff of preserving per-page backgrounds through
-      // a translation that can change document length, not a bug.
-      // Item - genuine root cause of backgrounds landing on the wrong
-      // page (or overlapping the previous page's tail content): this is
-      // a continuously-FLOWING document - there was no explicit page
-      // break between one PDF source page's content and the next one at
-      // all, ever, for ANY page (only the very LAST page gets its own
-      // sectPr). Word's own automatic pagination decides where page
-      // breaks actually fall based on how much content fits, which
-      // routinely does NOT line up with where one source page's content
-      // ended and the next one's began - so "page 2's background,
-      // anchored to page 2's own first paragraph" could still end up
-      // sharing an actual Word page with the tail end of page 1's
-      // content, if Word's pagination hadn't broken there anyway.
+      // ROOT CAUSE FOUND (confirmed against a real reported document,
+      // not assumed): the page-break condition below used to ALSO
+      // require pg.pageBg to be truthy. For a document with no
+      // letterhead/colored-band design - i.e. a genuinely plain white
+      // page, which is the OVERWHELMING MAJORITY of real-world text
+      // documents including the one this was debugged against -
+      // pg.pageBg is DELIBERATELY null (see the "skip embedding
+      // entirely if this page's cleaned background is just plain
+      // white" optimization in the extraction loop above). That meant
+      // the page-break condition NEVER fired for any plain document,
+      // for ANY page, ever - the entire multi-page source PDF flowed
+      // as one single unbroken stream, with ZERO enforcement of source
+      // page boundaries. Word/LibreOffice then paginated it however
+      // content happened to fit, completely disconnected from where
+      // the source PDF's own pages actually ended - which is exactly
+      // why page 3's content was landing on an output page 4 with no
+      // relationship to the real page 3 boundary at all.
       //
-      // Only forced when THIS page actually has a background to
-      // preserve (pg.pageBg) - deliberately NOT unconditional for every
-      // page, since the overwhelming majority of documents have no
-      // per-page background at all and forcing a break there would just
-      // waste space (a short translated page leaving a big blank gap
-      // before the next one) for a document that never needed page-
-      // aligned backgrounds in the first place. This only changes
-      // behavior for the new feature's own documents.
-      //
-      // ALSO requires flow.length (this page actually has real content
-      // to show) - genuine root cause of a stray, entirely blank
-      // trailing page: forcing a page-break onto a fresh page and then
-      // having NOTHING follow it (an empty flow - e.g. this page's only
-      // "content" was the background/image itself, with nothing left
-      // over as an extractable paragraph) left that forced break with
-      // nothing on the page it created, which is exactly what an extra
-      // blank page at the end of the document looks like. If there's no
-      // real content to pair the background with, the break (and the
-      // background image itself, which would be pointless floating
-      // behind nothing) is simply skipped.
-      if (pIdx > 0 && pg.pageBg && flow.length > 0) {
+      // FIX: the page break is now driven ONLY by "does this source
+      // page have real content" (flow.length > 0), completely
+      // decoupled from whether there's also a background image worth
+      // preserving. Source-page correspondence is a harder requirement
+      // than "don't waste space for plain documents" - preserving it
+      // for EVERY document (plain or designed) matters more than the
+      // old space-saving optimization, which is now handled instead by
+      // the page-height-budget compaction above (applyPageHeightBudget)
+      // minimizing how much any given page needs to spill over, rather
+      // than skipping the boundary that spillage should have respected
+      // in the first place.
+      if (pIdx > 0 && flow.length > 0) {
         bodyXml += '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
       }
 
+      // Background image rendering stays conditional on pg.pageBg -
+      // this part genuinely only applies when there's a real design to
+      // preserve, independent of the page-break decision above.
       if (pg.pageBg && flow.length > 0) {
         bodyXml += pageBackgroundXml(pg.pageBg, pg.wPt, pg.hPt);
       }

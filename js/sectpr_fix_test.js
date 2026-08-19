@@ -14,7 +14,12 @@ function buildBodyXml(pages) {
     const isLastPage = pIdx === pages.length - 1;
     const flow = pg.flow; // pre-built for this test: array of {kind, isLast}
 
-    if (pIdx > 0 && pg.pageBg && flow.length > 0) {
+    // FIXED: page break now driven ONLY by flow.length > 0, decoupled
+    // from pg.pageBg - matches the real fix in translation-offline.js
+    // (the pageBg-gated version never broke pages for plain-white
+    // documents at all, which was the actual root cause of a whole
+    // source PDF flowing as one unbroken stream).
+    if (pIdx > 0 && flow.length > 0) {
       bodyXml += '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
     }
 
@@ -57,7 +62,7 @@ function assertEqual(actual, expected, label) {
     console.log('FAIL: ' + label + ' - expected ' + expected + ', got ' + actual);
     process.exitCode = 1;
   } else {
-    console.log('PASS: ' + label + ' (sectPr count = ' + actual + ')');
+    console.log('PASS: ' + label + ' (value = ' + actual + ')');
   }
 }
 
@@ -98,5 +103,21 @@ const case5 = [
   { pageBg: false, flow: [{ kind: 'para' }] },
 ];
 assertEqual(countSectPr(buildBodyXml(case5)), 1, 'Case 5: single-page document');
+
+// Case 6: THE ACTUAL REPORTED SCENARIO - a plain-white document with NO
+// background image on any page (pageBg: null everywhere, exactly what
+// happens for a genuinely plain document like a legal contract with no
+// letterhead). Confirms page breaks still fire (previously they did
+// NOT, since the break was wrongly gated on pageBg - the real root
+// cause of a 3-page source PDF flowing as one unbroken stream).
+const case6 = [
+  { pageBg: null, flow: [{ kind: 'para' }] },
+  { pageBg: null, flow: [{ kind: 'para' }] },
+  { pageBg: null, flow: [{ kind: 'para' }, { kind: 'image' }, { kind: 'para' }] },
+];
+const xml6 = buildBodyXml(case6);
+const breakCount6 = (xml6.match(/w:br w:type="page"/g) || []).length;
+assertEqual(breakCount6, 2, 'Case 6: plain document (no pageBg anywhere) still gets 2 page breaks for 3 pages');
+assertEqual(countSectPr(xml6), 1, 'Case 6b: still exactly one sectPr');
 
 console.log(process.exitCode ? '\nSOME TESTS FAILED' : '\nALL TESTS PASSED');
