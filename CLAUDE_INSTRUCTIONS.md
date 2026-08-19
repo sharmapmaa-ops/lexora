@@ -312,3 +312,23 @@ par decide karega.
   genuinely sahi position pe aa rahi hai. Ye teeno level ki verification
   (unit-level XML check, real file generation, visual render) is exact
   session ke earlier established pattern ka hi extension hai.
+
+- **Jab "X property already set hai but effect nahi dikh raha" jaisa
+  bug ho, to assume mat karo ke property khud galat hai — pehle check
+  karo ke us CONTEXT me wo property genuinely kaam karti bhi hai ya
+  nahi.** Real incident: Solution 9 me `jc="both"` (justify) already
+  set tha har line pe, phir bhi visually justify nahi dikh raha tha.
+  Maine turant XML-level guess nahi kiya — pehle ek minimal isolated
+  test-docx banaya (`jc="both"` vs `jc="distribute"` vs `jc="left"`,
+  single-line wrap="none" textbox me) aur LibreOffice se render karke
+  DEKHA. Pata chala: `jc="both"` ka OOXML/Word convention hi aisa hai
+  ke wo paragraph ki AAKHRI/AKELI line ko justify NAHI karta — aur
+  Solution 9 me har line apna khud ka ek-line paragraph hai, isliye har
+  line "aakhri line" count hoti hai, justify kabhi trigger hi nahi hota
+  tha. `jc="distribute"` me ye exemption nahi hai, real test se confirm
+  hua ke wo genuinely kaam karta hai. Iske baad hi fix likha.
+  **Sabak:** "property already set hai but kaam nahi kar rahi" — is
+  symptom ka matlab hamesha "property galat hai" nahi hota; kabhi
+  property sahi hoti hai but us SPECIFIC STRUCTURAL CONTEXT (yahan:
+  single-line paragraph) me convention-level exemption hoti hai. Pehle
+  minimal isolated test se root cause confirm karo, phir fix likho.

@@ -265,7 +265,23 @@
       '<w:p><w:pPr>' +
       '<w:spacing w:before="0" w:after="0" w:line="' + lineTw + '" w:lineRule="exact"/>' +
       (line.rtl ? '<w:bidi/>' : '') +
-      '<w:jc w:val="both"/></w:pPr>' + runsXml + '</w:p>' +
+      // EMPIRICALLY VERIFIED (not assumed): jc="both" does NOT visually
+      // justify a single-line, wrap="none" textbox like this one - built
+      // and rendered a minimal isolated test case via LibreOffice to
+      // confirm. Word-processor convention exempts a paragraph's only/
+      // last line from "both"-style justify (real justify only kicks in
+      // when a line wraps) - and every line here IS its own one-line
+      // paragraph, so "both" was silently doing nothing (root cause of
+      // the reported "justified text in source not showing as justified
+      // here" - jc="both" was already present, just structurally
+      // ineffective for this per-line-box architecture). jc="distribute"
+      // does not have that single-line exemption and was confirmed, in
+      // the same real render test, to actually spread words across the
+      // box width. Only applied when line.justify was set (see
+      // _markJustifiedLines) - a line that wasn't justified in the
+      // source stays "left" so unrelated tight-width lines aren't
+      // artificially stretched.
+      '<w:jc w:val="' + (line.justify ? 'distribute' : 'left') + '"/></w:pPr>' + runsXml + '</w:p>' +
       '</w:txbxContent></wps:txbx>' +
       // wrap="none": text apni width se wrap NAHI hoga, box size exact rahega
       '<wps:bodyPr rot="0" vert="horz" wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t"><a:noAutofit/></wps:bodyPr>' +
@@ -1675,10 +1691,59 @@ trailingSectPr + '</w:body></w:document>';
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
   }
 
+  // Per-page justified-line detection for Solution 9 (buildDocx). Real
+  // per-line alignment info doesn't exist yet at this point (Solution 9
+  // deliberately uses RAW pg.lines, skipping the paragraph-building/
+  // alignment-detection stage other strategies use) - this is a
+  // lightweight, line-only heuristic scoped just to what buildDocx needs:
+  // find each page's dominant "right text boundary" among substantial,
+  // multi-word lines (the shared column edge a justified paragraph's
+  // lines stretch to reach), then mark any line whose own right edge
+  // sits at that boundary as justified. A line that's short, single-
+  // word, or doesn't reach the shared boundary is left as normal
+  // left-aligned - this only flags lines with real evidence of having
+  // been stretched in the source, never guesses broadly.
+  function _markJustifiedLines(pg) {
+    const MIN_WIDTH_PT = 100;      // ignore short lines (headers, labels) - not enough signal
+    const BOUNDARY_TOLERANCE_PT = 4; // how close a line's right edge must be to count as "at the boundary"
+    const BUCKET_PT = 3;           // bucket size for finding the dominant boundary value
+
+    function wordCount(L) {
+      return L.runs.map(function (r) { return r.text || ''; }).join(' ').trim().split(/\s+/).filter(Boolean).length;
+    }
+
+    const substantial = pg.lines.filter(function (L) { return L.wPt > MIN_WIDTH_PT && wordCount(L) > 1; });
+    if (substantial.length < 3) return; // not enough data on this page for a reliable boundary
+
+    const counts = {};
+    substantial.forEach(function (L) {
+      const rightEdge = L.xPt + L.wPt;
+      const bucket = Math.round(rightEdge / BUCKET_PT) * BUCKET_PT;
+      counts[bucket] = (counts[bucket] || 0) + 1;
+    });
+    let boundary = null, bestCount = 0;
+    Object.keys(counts).forEach(function (k) {
+      if (counts[k] > bestCount) { bestCount = counts[k]; boundary = parseFloat(k); }
+    });
+    // Require the boundary to actually be shared by several lines -
+    // otherwise this page likely has ragged-right (non-justified) text
+    // and any single line reaching close to the page edge is coincidence,
+    // not evidence of justification.
+    if (boundary == null || bestCount < 3) return;
+
+    pg.lines.forEach(function (L) {
+      const rightEdge = L.xPt + L.wPt;
+      if (L.wPt > MIN_WIDTH_PT && wordCount(L) > 1 && Math.abs(rightEdge - boundary) <= BOUNDARY_TOLERANCE_PT) {
+        L.justify = true;
+      }
+    });
+  }
+
   function buildDocx(pages, includeBg){
     const zip = new JSZip();
     const wPt = pages[0].wPt, hPt = pages[0].hPt;
     const pgW = Math.round(wPt * 20), pgH = Math.round(hPt * 20);
+    pages.forEach(_markJustifiedLines);
 
     let bodyXml = '';
     const rels = [];
