@@ -1294,6 +1294,25 @@
         '<w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>' + gridCols + '</w:tblGrid>' + rowsXml + '</w:tbl>';
     }
 
+  // ── ClaudeDebug live-switchable strategies (see admin "🤖 Claude" tab) ──
+  // Multiple candidate fixes for the reported "source page N content
+  // lands on output page N+1" problem, all shipped at once instead of
+  // one blind guess at a time - static code review here can't fully
+  // predict how MS Word itself (not LibreOffice) will actually
+  // paginate a given real document. Pick a strategy live in the admin
+  // panel, no redeploy needed; whichever is confirmed correct in a
+  // real Word test gets kept permanently and the rest deleted.
+  function _ocrPageBreakStrategy() { return window.__ocrPageBreakStrategy || 'forced-budget'; }
+  function _ocrBudgetRatioFloor() {
+    const s = _ocrPageBreakStrategy();
+    if (s === 'forced-budget-aggressive') return 0.60;
+    if (s === 'forced-nobudget' || s === 'natural') return 1.0; // 1.0 = no compaction applied
+    return 0.75; // 'forced-budget' default
+  }
+  function _ocrShouldForceBreak() {
+    return _ocrPageBreakStrategy() !== 'natural';
+  }
+
   // ── PAGE-HEIGHT BUDGET (no API calls - pure local measurement, reuses
   // measureTextPt's existing Canvas-based text metrics) ────────────────
   // Root cause this addresses (confirmed real via a reported case): a
@@ -1316,7 +1335,6 @@
   // line/paragraph spacing PROPORTIONALLY (never below a readability
   // floor) to close the gap. Never deletes, truncates, or shrinks font
   // size - only spacing.
-  const BUDGET_MIN_COMPACTION_RATIO = 0.75; // never compress spacing by more than 25%
   const BUDGET_LINE_FLOOR_TWIPS = 200;      // ~single-spacing floor, never go tighter
   const BUDGET_SPACE_AFTER_FLOOR_TWIPS = 40; // ~2pt floor between paragraphs
 
@@ -1360,6 +1378,9 @@
   }
 
   function applyPageHeightBudget(pg) {
+    const floorRatio = _ocrBudgetRatioFloor();
+    if (floorRatio >= 1.0) return; // 'forced-nobudget' / 'natural' strategy - compaction disabled entirely
+
     const usableWidthPt = pg.wPt - (pg.margins.left + pg.margins.right) / 20;
     const usableHeightPt = pg.hPt - (pg.margins.top + pg.margins.bottom) / 20;
     if (!(usableWidthPt > 0) || !(usableHeightPt > 0)) return;
@@ -1373,7 +1394,7 @@
 
     if (totalPt <= usableHeightPt * 0.98 || totalPt <= 0) return; // fits already (2% safety buffer for estimation uncertainty) - nothing to do
 
-    const ratio = Math.max(BUDGET_MIN_COMPACTION_RATIO, usableHeightPt / totalPt);
+    const ratio = Math.max(floorRatio, usableHeightPt / totalPt);
     (pg.paragraphs || []).forEach(function (p) {
       p.lineTwips = Math.max(BUDGET_LINE_FLOOR_TWIPS, Math.round((p.lineTwips || 276) * ratio));
       p.spaceAfterTwips = Math.max(
@@ -1432,7 +1453,7 @@
       // minimizing how much any given page needs to spill over, rather
       // than skipping the boundary that spillage should have respected
       // in the first place.
-      if (pIdx > 0 && flow.length > 0) {
+      if (pIdx > 0 && flow.length > 0 && _ocrShouldForceBreak()) {
         bodyXml += '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
       }
 

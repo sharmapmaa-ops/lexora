@@ -9349,15 +9349,15 @@
             // topic currently being worked matters, not old ones).
             ClaudeDebug.clear();
             ClaudeDebug.addTopic(
-                'Support/PostgreSQL: view breaks after add/delete, only page-refresh fixes it',
+                'OCR: source page N content landing on output page N+1 (page-break/spacing strategy)',
                 [
-                    { name: 'Solution 1: reset grid state before every re-measure (default, high-confidence fix)', value: 'reset-before-measure' },
-                    { name: 'Solution 2: same reset + forced reflow before measuring', value: 'reflow-forced' },
-                    { name: 'Solution 3: clone header row fresh (like a real refresh) before measuring', value: 'rebuild-clone' },
+                    { name: 'Solution 1: forced break per source page + spacing compaction, max 25% tighter (current default)', value: 'forced-budget' },
+                    { name: 'Solution 2: forced break per source page + spacing compaction, max 40% tighter (more aggressive)', value: 'forced-budget-aggressive' },
+                    { name: 'Solution 3: forced break per source page, NO spacing compaction', value: 'forced-nobudget' },
+                    { name: 'Solution 4: NO forced break - natural Word/LibreOffice pagination (original pre-fix behavior)', value: 'natural' },
                 ],
                 function (chosen) {
-                    window.__autofitFixMode = chosen;
-                    if (document.getElementById('supportTableBody')) renderSupportTable();
+                    window.__ocrPageBreakStrategy = chosen;
                 }
             );
 
