@@ -1295,56 +1295,155 @@
     }
 
   // ── ClaudeDebug live-switchable strategies (see admin "🤖 Claude" tab) ──
-  function _ocrPageBreakStrategy() { return window.__ocrPageBreakStrategy || 'forced-budget'; }
+  // Persisted via localStorage - a selection made once should stay
+  // selected across page reloads / new sessions, not just live in
+  // memory for the current tab.
+  function _ocrPageBreakStrategy() {
+    if (window.__ocrPageBreakStrategy) return window.__ocrPageBreakStrategy;
+    try {
+      const saved = localStorage.getItem('lexora_ocrPageBreakStrategy');
+      if (saved) { window.__ocrPageBreakStrategy = saved; return saved; }
+    } catch (e) { /* localStorage unavailable (private mode etc.) - fall through to default */ }
+    return 'forced-budget';
+  }
   function _ocrShouldForceBreak() {
-    return _ocrPageBreakStrategy() !== 'natural';
+    const s = _ocrPageBreakStrategy();
+    return s !== 'natural' && s !== 'absolute-position';
   }
 
-  // ── PAGE SPACING COMPACTION - flat, empirically-verified ratio ────────
-  // REPLACES an earlier, much more complex per-page/per-paragraph
-  // estimation system (measured each paragraph's expected wrapped-line
-  // count via a greedy word-wrap simulation, then computed a per-page
-  // compaction ratio from that estimate). That system was REMOVED after
-  // direct evidence it didn't work: testing against the actual reported
-  // document's real output showed its estimation was so far off that it
-  // only ever achieved about a 2% spacing reduction in practice, nowhere
-  // near enough to fix the real overflow (source page 3 spilling onto an
-  // output page 4).
+  // ── PAGE SPACING/FONT/MARGIN COMPACTION ────────────────────────────────
+  // Multiple genuinely DIFFERENT approaches (not just parameter variants
+  // of one approach) to the reported "source page N content lands on
+  // output page N+1" problem - all selectable live from the admin
+  // "Claude" tab, per explicit instruction to list every possible
+  // solution rather than pre-selecting a favorite.
   //
-  // This flat ratio was NOT guessed - it was found by directly testing
-  // against the real reported document: copies of its actual generated
-  // DOCX were rebuilt with line/paragraph spacing uniformly scaled by a
-  // range of ratios (1.00 down to 0.70) and each one was ACTUALLY
-  // RENDERED (LibreOffice) to see the real resulting page count. Result:
-  // page count only dropped from 5 to the correct 3 pages once the ratio
-  // crossed roughly 0.90 (a sharp cliff, not gradual - Word/LibreOffice
-  // pagination is discrete). 0.85 is used here specifically to sit
-  // safely below that measured cliff, since real MS Word may render
-  // fractionally differently from the LibreOffice used to calibrate
-  // this. This is a blunter tool than the removed per-paragraph
-  // estimate, but it is PROVEN to work on the real reported case, which
-  // the more "sophisticated" estimate-based approach never was.
+  // Solutions 1-2 (spacing-only) were empirically calibrated against a
+  // real reported document: its actual generated DOCX was rebuilt with
+  // spacing uniformly scaled across a range of ratios and each one was
+  // ACTUALLY RENDERED (LibreOffice) to find the real page count - see
+  // py/calibrate_compaction_ratio.py. 0.85 was the value found to work
+  // with a safety margin (the real cliff was ~0.90).
   const FLAT_COMPACTION_RATIO = 0.85;
-  const BUDGET_LINE_FLOOR_TWIPS = 200;      // ~single-spacing floor, never go tighter
+  const BUDGET_LINE_FLOOR_TWIPS = 200;       // ~single-spacing floor, never go tighter
   const BUDGET_SPACE_AFTER_FLOOR_TWIPS = 40; // ~2pt floor between paragraphs
+  const FONT_FLOOR_PT = 7;                   // never shrink body text below this
 
   function applyPageHeightBudget(pg) {
     const s = _ocrPageBreakStrategy();
-    if (s === 'forced-nobudget' || s === 'natural') return; // compaction disabled entirely for these strategies
-    const ratio = (s === 'forced-budget-aggressive') ? 0.75 : FLAT_COMPACTION_RATIO;
 
-    (pg.paragraphs || []).forEach(function (p) {
-      p.lineTwips = Math.max(BUDGET_LINE_FLOOR_TWIPS, Math.round((p.lineTwips || 276) * ratio));
-      p.spaceAfterTwips = Math.max(
-        BUDGET_SPACE_AFTER_FLOOR_TWIPS,
-        Math.round((p.spaceAfterTwips != null ? p.spaceAfterTwips : 160) * ratio)
-      );
-    });
-    // HONEST LIMITATION: this is a flat ratio calibrated against ONE
-    // real document, not a guaranteed fit for every document. A
-    // page whose content is much denser than that calibration case
-    // could still overflow - by much less than before compaction, but
-    // not proven to be zero in all cases.
+    // These strategies don't touch spacing/font/margin at all - handled
+    // by entirely separate code paths (buildDocx for absolute-position,
+    // the feedback loop wrapper for feedback-loop).
+    if (s === 'forced-nobudget' || s === 'natural' || s === 'absolute-position' || s === 'feedback-loop') return;
+
+    let spacingRatio = 1.0, fontRatio = 1.0, marginRatio = 1.0;
+    if (s === 'forced-budget') {
+      spacingRatio = FLAT_COMPACTION_RATIO; // Solution 1
+    } else if (s === 'forced-budget-aggressive') {
+      spacingRatio = 0.75; // Solution 2
+    } else if (s === 'font-reduce') {
+      fontRatio = 0.90; // Solution 5 - shrink font instead of spacing
+    } else if (s === 'margin-tighten') {
+      marginRatio = 0.65; // Solution 6 - tighten margins instead of spacing/font
+    } else if (s === 'combined-mild') {
+      spacingRatio = 0.92; fontRatio = 0.95; marginRatio = 0.85; // Solution 7 - a little of each, gentler per-lever
+    }
+
+    if (spacingRatio < 1.0) {
+      (pg.paragraphs || []).forEach(function (p) {
+        p.lineTwips = Math.max(BUDGET_LINE_FLOOR_TWIPS, Math.round((p.lineTwips || 276) * spacingRatio));
+        p.spaceAfterTwips = Math.max(
+          BUDGET_SPACE_AFTER_FLOOR_TWIPS,
+          Math.round((p.spaceAfterTwips != null ? p.spaceAfterTwips : 160) * spacingRatio)
+        );
+      });
+    }
+    if (fontRatio < 1.0) {
+      (pg.paragraphs || []).forEach(function (p) {
+        (p.segments || []).forEach(function (seg) {
+          seg.sizePt = Math.max(FONT_FLOOR_PT, (seg.sizePt || 11) * fontRatio);
+        });
+      });
+    }
+    if (marginRatio < 1.0 && pg.margins) {
+      // NOTE: only the LAST page's margins end up in the final DOCX (one
+      // shared <w:sectPr> for the whole document - see the sectPr
+      // dedup fix elsewhere in this file), but this is applied to every
+      // page's margins uniformly so whichever page ends up last already
+      // has the reduced value.
+      pg.margins.top = Math.round(pg.margins.top * marginRatio);
+      pg.margins.bottom = Math.round(pg.margins.bottom * marginRatio);
+      pg.margins.left = Math.round(pg.margins.left * marginRatio);
+      pg.margins.right = Math.round(pg.margins.right * marginRatio);
+    }
+    // HONEST LIMITATION: these are flat ratios calibrated (for
+    // Solutions 1-2) or reasoned (for 5-7, NOT yet empirically verified
+    // against a real render) against ONE real document. A page whose
+    // content is much denser than that calibration case could still
+    // overflow. Solution 8 (feedback loop) is the only one of these
+    // that verifies against real rendering for the SPECIFIC document
+    // being processed, not a fixed pre-calibrated assumption.
+  }
+
+  // ── Solution 8: REAL server-verified feedback loop ─────────────────────
+  // Genuinely different architecture from 1/2/5/6/7 above: instead of
+  // trusting any fixed ratio (calibrated or reasoned), this generates the
+  // document, asks the SERVER to actually render it with LibreOffice and
+  // report the real page count (py: _handle_ocr_check_page_count), and
+  // increases compaction and regenerates if it's still too many pages -
+  // repeating against real ground truth each time, bounded to a handful
+  // of attempts so it can't loop forever on a pathological document.
+  async function buildWithFeedbackLoop(pages, sourcePageCount, logFn) {
+    const MAX_ATTEMPTS = 6;
+    let ratio = 1.0;
+    let lastBlob = null;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      // Re-apply the CURRENT attempt's ratio fresh each time (paragraphs
+      // were already possibly scaled by a previous attempt - always
+      // scale from the page's original captured values, not
+      // compounding shrinkage attempt over attempt).
+      pages.forEach(function (pg) {
+        (pg.paragraphs || []).forEach(function (p) {
+          if (p._origLineTwips == null) p._origLineTwips = p.lineTwips;
+          if (p._origSpaceAfterTwips == null) p._origSpaceAfterTwips = p.spaceAfterTwips;
+          p.lineTwips = Math.max(BUDGET_LINE_FLOOR_TWIPS, Math.round(p._origLineTwips * ratio));
+          p.spaceAfterTwips = Math.max(BUDGET_SPACE_AFTER_FLOOR_TWIPS, Math.round(p._origSpaceAfterTwips * ratio));
+        });
+      });
+      const blob = await buildFlowingDocx(pages); // applyPageHeightBudget no-ops for 'feedback-loop' strategy - compaction is applied above instead
+      lastBlob = blob;
+
+      let pageCount = null;
+      try {
+        const b64 = await new Promise(function (resolve, reject) {
+          const reader = new FileReader();
+          reader.onload = function () { resolve(String(reader.result).split(',')[1]); };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        const resp = await fetch('/api/ocr/check-page-count', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (window.__lexoraAuthToken || '') },
+          body: JSON.stringify({ docxBase64: b64 })
+        });
+        const data = await resp.json();
+        if (data && data.ok) pageCount = data.pageCount;
+        else if (logFn) logFn('Feedback loop: page-count check failed (' + ((data && data.error) || 'unknown') + ') - using this attempt as-is', 'warn');
+      } catch (e) {
+        if (logFn) logFn('Feedback loop: page-count check request failed - using this attempt as-is', 'warn');
+      }
+
+      if (logFn) logFn('Feedback loop attempt ' + attempt + ': ratio=' + ratio.toFixed(2) + ' -> ' + (pageCount == null ? 'unknown' : pageCount) + ' page(s) (source has ' + sourcePageCount + ')', 'info');
+
+      if (pageCount == null || pageCount <= sourcePageCount) {
+        return blob; // real ground truth confirms this fits (or the check itself failed - don't loop forever on that)
+      }
+      ratio -= 0.05; // real evidence says still too many pages - tighten and try again
+      if (ratio < 0.5) break; // don't compress into illegibility chasing a pathological document
+    }
+    if (logFn) logFn('Feedback loop: reached ' + MAX_ATTEMPTS + ' attempts without matching source page count exactly - using the tightest attempt', 'warn');
+    return lastBlob;
   }
 
   let bodyXml = '';
@@ -2151,6 +2250,24 @@ trailingSectPr + '</w:body></w:document>';
     if (totalLines === 0)
       throw new Error('No selectable text found in this PDF — offline mode only processes text-based PDFs');
 
+    // Solution 9: ABSOLUTE-POSITIONED TEXT BOXES - genuinely different
+    // architecture from every other strategy above (which all still
+    // flow paragraphs through normal Word pagination). Reuses buildDocx
+    // (already built and working for the vision-OCR pipeline) with each
+    // page's RAW extracted lines (pg.lines, before any paragraph-
+    // merging below) placed as individually positioned floating text
+    // boxes at their exact source coordinates - Word's own automatic
+    // pagination/line-wrapping never runs at all, so it structurally
+    // cannot produce "page 3 content landing on page 4": each source
+    // page's own boxes are anchored to that page's own physical space.
+    // HONEST LIMITATION: buildDocx does not carry over pg.images
+    // (extracted embedded pictures/signatures) or pg.pageBg - this path
+    // trades those off for guaranteed page-boundary fidelity.
+    if (_ocrPageBreakStrategy() === 'absolute-position') {
+      log('OCR strategy: Solution 9 (absolute-positioned text boxes) - skipping paragraph flow entirely', 'info');
+      return buildDocx(pages, false);
+    }
+
     // ---- PARAGRAPH BUILDING (before translation) ----
     // Lines are grouped into paragraphs HERE, once, up front - not
     // re-derived later from gaps between whatever lines happen to
@@ -2481,6 +2598,14 @@ trailingSectPr + '</w:body></w:document>';
         });
         (pg.tables || []).forEach(function (t) { t.rtl = outputRtl; });
       });
+    }
+
+    // Solution 8: REAL server-verified feedback loop - see
+    // buildWithFeedbackLoop's own comment for why this is architecturally
+    // different from the fixed-ratio strategies (1/2/5/6/7).
+    if (_ocrPageBreakStrategy() === 'feedback-loop') {
+      log('OCR strategy: Solution 8 (real server-verified feedback loop)', 'info');
+      return buildWithFeedbackLoop(pages, pdf.numPages, function (m, level) { log(m, level); });
     }
 
     return buildFlowingDocx(pages);

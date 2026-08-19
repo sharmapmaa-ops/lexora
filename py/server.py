@@ -39,6 +39,7 @@ import hashlib
 import hmac
 import secrets
 import shutil
+import subprocess
 import tempfile
 import smtplib
 import ssl
@@ -3844,6 +3845,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/test/aspose-translate": self._handle_aspose_test_translate,
             "/api/ocr/process-router": self._handle_ocr_process_router,
             "/api/ocr/analyze-strategy": self._handle_ocr_analyze_strategy,
+            "/api/ocr/check-page-count": self._handle_ocr_check_page_count,
             "/api/admin/mkdir": self._handle_admin_mkdir,
             "/api/admin/upload": self._handle_admin_upload,
             "/api/admin/delete": self._handle_admin_delete,
@@ -6545,6 +6547,44 @@ class Handler(SimpleHTTPRequestHandler):
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
         return 200, {"ok": True, "results": results}
+
+    def _handle_ocr_check_page_count(self, body):
+        """REAL RENDER-AND-VERIFY endpoint for the OCR admin panel's
+        "Solution 8: real feedback loop" strategy. Accepts a generated
+        DOCX, converts it with LibreOffice (the same real renderer used
+        throughout this project's own empirical calibration - see
+        py/calibrate_compaction_ratio.py), and returns the ACTUAL
+        resulting page count - not an estimate. The client-side feedback
+        loop calls this after each generation attempt and adjusts its
+        compaction ratio based on the real number returned here, instead
+        of trusting any JS-side prediction."""
+        docx_b64 = body.get("docxBase64")
+        if not docx_b64:
+            raise ValueError("docxBase64 is required")
+
+        tmp_dir = tempfile.mkdtemp(prefix="ocr_pagecount_")
+        try:
+            docx_path = os.path.join(tmp_dir, "check.docx")
+            with open(docx_path, "wb") as f:
+                f.write(base64.b64decode(docx_b64))
+
+            result = subprocess.run(
+                ["libreoffice", "--headless", "--convert-to", "pdf", docx_path, "--outdir", tmp_dir],
+                capture_output=True, timeout=120,
+            )
+            pdf_path = os.path.join(tmp_dir, "check.pdf")
+            if not os.path.isfile(pdf_path):
+                return 200, {"ok": False, "error": f"LibreOffice conversion failed: {result.stderr.decode(errors='replace')[:500]}"}
+
+            import pdfplumber
+            with pdfplumber.open(pdf_path) as pdf:
+                page_count = len(pdf.pages)
+
+            return 200, {"ok": True, "pageCount": page_count}
+        except Exception as err:
+            return 200, {"ok": False, "error": str(err)}
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def _handle_ocr_analyze_strategy(self, body):
         """FAST, conversion-free check: does this PDF need Aspose (has

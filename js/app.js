@@ -8935,14 +8935,20 @@
                                     <div id="claudeDebugPanel">
                                         <div class="claude-debug-topic">
                                             <h4>Topic 1: OCR: source page N content landing on output page N+1 (page-break/spacing strategy)</h4>
-                                            <p class="ds-card-sub" style="margin:4px 0 8px;">Solution 1 is empirically verified (real document tested, spacing scaled and actually rendered) - default 15% spacing reduction, confirmed to fix a real 5-page-should-be-3-page case.</p>
-                                            <select onchange="window.__ocrPageBreakStrategy = this.value;">
-                                                <option value="forced-budget" selected>Solution 1: forced break per source page + 15% spacing reduction (empirically verified - current default)</option>
-                                                <option value="forced-budget-aggressive">Solution 2: forced break per source page + 25% spacing reduction (more aggressive, untested)</option>
-                                                <option value="forced-nobudget">Solution 3: forced break per source page, NO spacing reduction</option>
+                                            <p class="ds-card-sub" style="margin:4px 0 8px;">Poora solution-space - alag-alag ARCHITECTURES, sirf ek approach ke parameters nahi. Selection localStorage me save hoti hai, page-reload ke baad bhi wahi active rehti hai.</p>
+                                            <select onchange="window.__ocrPageBreakStrategy = this.value; try { localStorage.setItem('lexora_ocrPageBreakStrategy', this.value); } catch(e) {}">
+                                                <option value="forced-budget" selected>Solution 1: forced break + 15% spacing reduction (empirically verified against a real document - current default)</option>
+                                                <option value="forced-budget-aggressive">Solution 2: forced break + 25% spacing reduction (more aggressive, same lever as #1)</option>
+                                                <option value="forced-nobudget">Solution 3: forced break per source page, NO compaction at all</option>
                                                 <option value="natural">Solution 4: NO forced break - natural Word/LibreOffice pagination (original pre-fix behavior)</option>
+                                                <option value="font-reduce">Solution 5: shrink font size ~10% instead of spacing (different lever, not empirically verified yet)</option>
+                                                <option value="margin-tighten">Solution 6: tighten page margins ~35% instead of spacing/font (different lever, not empirically verified yet)</option>
+                                                <option value="combined-mild">Solution 7: combine mild spacing + font + margin reduction together (gentler per-lever, not empirically verified yet)</option>
+                                                <option value="feedback-loop">Solution 8: REAL server-verified feedback loop - generates, actually renders via LibreOffice on the server, checks real page count, tightens and retries until it matches (most robust, slowest - genuinely different architecture)</option>
+                                                <option value="absolute-position">Solution 9: absolute-positioned text boxes per source line (bypasses Word's own pagination entirely - genuinely different architecture; trade-off: does not carry over embedded images/signatures)</option>
                                             </select>
                                         </div>
+                                        <img src="x" onerror="this.remove(); try { var _s = localStorage.getItem('lexora_ocrPageBreakStrategy'); if (_s) { var _el = document.querySelector('#claudeDebugPanel select'); if (_el) { _el.value = _s; window.__ocrPageBreakStrategy = _s; } } } catch(e) {}" style="display:none;" alt="">
                                     </div>
                                 </div>
                             </div>

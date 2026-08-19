@@ -247,3 +247,28 @@ par decide karega.
   option available na ho, aur tab bhi explicitly bolna hai "ye estimate
   hai, verified nahi" — kabhi bhi estimate ko verified jaisa present mat
   karo.
+
+- **"Saare possible solutions do" ka matlab hai FULL solution-space
+  brainstorm karo — sirf ek approach ke parameters/settings mat badlo
+  aur unhe "alag solutions" bol ke pesh mat karo.** Real incident: OCR
+  page-overflow ke liye maine ClaudeDebug me 4 "solutions" diye the —
+  lekin chaaron actually EK HI architecture (forced-break x
+  compaction-aggressiveness) ke sirf parameter-variations the. Genuinely
+  DIFFERENT approaches (jaise real render-verify feedback loop, font-size
+  lever, margin lever, absolute-positioning) maine kabhi socha hi nahi,
+  is wajah se kabhi list bhi nahi kiye. User ne pucha "aur solutions kyu
+  nahi bheje agar sochte the ki ho sakte hain" — sahi sawaal tha.
+  **Sabak:** jab bhi "sab solutions do" bola jaye, pehle explicitly khud
+  se pucho: "kya maine genuinely alag-alag APPROACHES socha hai, ya sirf
+  ek approach ke andar ke settings badal raha hoon?" — agar sirf settings
+  hain, to wapas jaake actual alternative architectures/approaches
+  brainstorm karo, phir sab list karo.
+  **STATUS: RESOLVED** — is OCR topic ke liye ab 9 genuinely different
+  solutions Claude tab ke dropdown me hain (2 empirically-verified
+  spacing variants, no-compaction, natural-pagination, font-lever,
+  margin-lever, combined-mild, real server-verified feedback loop, aur
+  absolute-positioned text boxes) — koi bhi approach jo brainstorm me
+  socha gaya, dropdown se bahar nahi chhoda gaya. Selection localStorage
+  me persist hoti hai, is baar koi async DOM-timing risk nahi liya (static
+  HTML + safe img-onerror trick se sync, jaisa pehle wale render-bug ke
+  baad established kiya tha).
