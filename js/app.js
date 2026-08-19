@@ -8945,7 +8945,7 @@
                                                 <option value="margin-tighten">Solution 6: tighten page margins ~35% instead of spacing/font (different lever, not empirically verified yet)</option>
                                                 <option value="combined-mild">Solution 7: combine mild spacing + font + margin reduction together (gentler per-lever, not empirically verified yet)</option>
                                                 <option value="feedback-loop">Solution 8: REAL server-verified feedback loop - generates, actually renders via LibreOffice on the server, checks real page count, tightens and retries until it matches (most robust, slowest - genuinely different architecture)</option>
-                                                <option value="absolute-position">Solution 9: absolute-positioned text boxes per source line (bypasses Word's own pagination entirely - genuinely different architecture; trade-off: does not carry over embedded images/signatures)</option>
+                                                <option value="absolute-position">Solution 9: absolute-positioned text boxes per source line, including embedded images/signatures (bypasses Word's own pagination entirely - genuinely different architecture; user-confirmed working well)</option>
                                             </select>
                                         </div>
                                         <img src="x" onerror="this.remove(); try { var _s = localStorage.getItem('lexora_ocrPageBreakStrategy'); if (_s) { var _el = document.querySelector('#claudeDebugPanel select'); if (_el) { _el.value = _s; window.__ocrPageBreakStrategy = _s; } } } catch(e) {}" style="display:none;" alt="">

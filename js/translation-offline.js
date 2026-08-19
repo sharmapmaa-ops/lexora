@@ -272,6 +272,39 @@
       '</wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>';
   }
 
+  function floatingImageXml(relId, xPt, yPt, wPt, hPt, name) {
+    // Same positioning convention as textBoxXml above (positionH
+    // relativeFrom="page", positionV relativeFrom="paragraph") - REQUIRED
+    // for correct multi-page placement in buildDocx's architecture (each
+    // page = its own paragraph + page-sized section; page-relative
+    // vertical positioning would place every page's images using the
+    // SAME y-origin, causing them to overlap/shift onto the wrong
+    // physical page - see buildDocx's own "MULTI-PAGE FIX" comment for
+    // the identical issue already solved for text boxes).
+    drawId++;
+    const x = Math.max(0, Math.round(xPt * EMU));
+    const y = Math.max(0, Math.round(yPt * EMU));
+    const cx = Math.max(1, Math.round(wPt * EMU));
+    const cy = Math.max(1, Math.round(hPt * EMU));
+    return '<w:r><w:drawing>' +
+      '<wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="' + drawId +
+      '" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">' +
+      '<wp:simplePos x="0" y="0"/>' +
+      '<wp:positionH relativeFrom="page"><wp:posOffset>' + x + '</wp:posOffset></wp:positionH>' +
+      '<wp:positionV relativeFrom="paragraph"><wp:posOffset>' + y + '</wp:posOffset></wp:positionV>' +
+      '<wp:extent cx="' + cx + '" cy="' + cy + '"/>' +
+      '<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>' +
+      '<wp:docPr id="' + drawId + '" name="' + esc(name || 'IMG') + drawId + '"/><wp:cNvGraphicFramePr/>' +
+      '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
+      '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+      '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+      '<pic:nvPicPr><pic:cNvPr id="' + drawId + '" name="img' + drawId + '.jpg"/><pic:cNvPicPr/></pic:nvPicPr>' +
+      '<pic:blipFill><a:blip r:embed="' + relId + '"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
+      '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + cx + '" cy="' + cy + '"/></a:xfrm>' +
+      '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>' +
+      '</pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>';
+  }
+
   function bgImageXml(relId, wPt, hPt){
     drawId++;
     const cx = Math.round(wPt * EMU), cy = Math.round(hPt * EMU);
@@ -1668,6 +1701,20 @@ trailingSectPr + '</w:body></w:document>';
       pg.lines.forEach(function(L){
         if (L.runs.some(r => r.text && r.text.trim())) runs += textBoxXml(L);
       });
+      // Real embedded pictures/signatures (pg.images, extracted earlier
+      // in buildOfflineDocxBlob - {xPt,yPt,wPt,hPt,base64} JPEGs) -
+      // previously NOT carried into this rendering path at all (a known,
+      // explicitly documented limitation when Solution 9 was first
+      // built). Added now that Solution 9 is the user's preferred
+      // strategy and the missing signature was reported as the one real
+      // gap. Independent of includeBg - a signature is its own picture,
+      // not part of the page background.
+      (pg.images || []).forEach(function (im, imIdx) {
+        if (!im.base64) return;
+        const relId = 'rIdPageImg' + (i + 1) + '_' + (imIdx + 1);
+        rels.push({ id: relId, file: 'media/pageimg' + (i + 1) + '_' + (imIdx + 1) + '.jpg', data: im.base64 });
+        runs += floatingImageXml(relId, im.xPt, im.yPt, im.wPt, im.hPt, 'SIG');
+      });
       if (i < pages.length - 1){
         bodyXml += '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="' +
           Math.round(pg.hPt * 20) + '" w:lineRule="exact"/>' +
@@ -2261,11 +2308,17 @@ trailingSectPr + '</w:body></w:document>';
     // pagination/line-wrapping never runs at all, so it structurally
     // cannot produce "page 3 content landing on page 4": each source
     // page's own boxes are anchored to that page's own physical space.
-    // HONEST LIMITATION: buildDocx does not carry over pg.images
-    // (extracted embedded pictures/signatures) or pg.pageBg - this path
-    // trades those off for guaranteed page-boundary fidelity.
+    // Real embedded pictures/signatures (pg.images) ARE now carried
+    // over too (floatingImageXml, added after this was reported missing)
+    // - each placed at its own exact source position, independent of
+    // Word's pagination for the same reason the text boxes are.
+    // REMAINING LIMITATION: pg.pageBg (a full-page background design -
+    // colored bars/letterhead graphics) is still not wired into this
+    // path - not requested yet, and this document class (plain text
+    // agreements) generally has no such background per the earlier
+    // "skip embedding entirely if plain white" optimization anyway.
     if (_ocrPageBreakStrategy() === 'absolute-position') {
-      log('OCR strategy: Solution 9 (absolute-positioned text boxes) - skipping paragraph flow entirely', 'info');
+      log('OCR strategy: Solution 9 (absolute-positioned text boxes + embedded images) - skipping paragraph flow entirely', 'info');
       return buildDocx(pages, false);
     }
 

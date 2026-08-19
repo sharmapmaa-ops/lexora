@@ -297,3 +297,18 @@ par decide karega.
   incident ke baad ek structural test bhi bana diya
   (`js/ocr_strategy_scoping_test.js`) jo brace-depth check karke exactly
   ye class of bug future me pakadta hai.
+
+- **Jab user "solution X sahi hai, bas ek gap hai" bole, to us specific
+  gap ko theek waisa fix karo — aur agar sandbox me real end-to-end
+  verify karne ka tarika hai (asli function chala ke, asli file bana ke,
+  render karke dekhna), to sirf XML-string-matching se mat ruk jao.**
+  Real incident: Solution 9 (absolute positioning) me signature image
+  missing thi — pehle se hi documented limitation thi
+  (`buildDocx` `pg.images` carry nahi karta tha). Fix karte waqt maine
+  na sirf naya `floatingImageXml()` function likha, balki: (1) real
+  file se function ka EXACT source nikaal ke Node me chalaya (reimplement
+  nahi kiya, taaki test kabhi drift na kare), (2) real JSZip se ek
+  asli .docx banaya, (3) LibreOffice se render karke DEKHA ke image
+  genuinely sahi position pe aa rahi hai. Ye teeno level ki verification
+  (unit-level XML check, real file generation, visual render) is exact
+  session ke earlier established pattern ka hi extension hai.
