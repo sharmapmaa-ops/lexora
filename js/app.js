@@ -9324,7 +9324,24 @@
                 },
                 _render: function () {
                     const container = document.getElementById('claudeDebugPanel');
-                    if (!container) return;
+                    if (!container) {
+                        // DEFENSE IN DEPTH (see the setTimeout wrapper at
+                        // this file's registration call site for the full
+                        // root-cause writeup): the container can
+                        // legitimately not exist yet if _render() runs
+                        // before the panel's HTML has been inserted into
+                        // the DOM. Retry a few times on a short delay
+                        // rather than silently giving up forever - this
+                        // protects any FUTURE topic registration that
+                        // might hit the same timing issue, not just the
+                        // current one.
+                        this._renderRetryCount = (this._renderRetryCount || 0) + 1;
+                        if (this._renderRetryCount <= 20) {
+                            setTimeout(this._render.bind(this), 50);
+                        }
+                        return;
+                    }
+                    this._renderRetryCount = 0;
                     if (!this._topics.length) {
                         container.innerHTML = '<p class="ds-card-sub">Abhi koi active topic nahi hai.</p>';
                         return;
@@ -9347,19 +9364,42 @@
             // "put multiple solutions in the Claude tab" workflow. Clears
             // whatever was there before (per that same rule: only the
             // topic currently being worked matters, not old ones).
-            ClaudeDebug.clear();
-            ClaudeDebug.addTopic(
-                'OCR: source page N content landing on output page N+1 (page-break/spacing strategy)',
-                [
-                    { name: 'Solution 1: forced break per source page + spacing compaction, max 25% tighter (current default)', value: 'forced-budget' },
-                    { name: 'Solution 2: forced break per source page + spacing compaction, max 40% tighter (more aggressive)', value: 'forced-budget-aggressive' },
-                    { name: 'Solution 3: forced break per source page, NO spacing compaction', value: 'forced-nobudget' },
-                    { name: 'Solution 4: NO forced break - natural Word/LibreOffice pagination (original pre-fix behavior)', value: 'natural' },
-                ],
-                function (chosen) {
-                    window.__ocrPageBreakStrategy = chosen;
-                }
-            );
+            //
+            // BUG FOUND & FIXED (confirmed via a real screenshot showing
+            // the panel stuck on its static "Abhi koi active topic nahi
+            // hai" placeholder despite a topic being registered): this
+            // whole block runs INSIDE buildAdminFilesBody(), which only
+            // RETURNS an HTML string (see the static placeholder text
+            // for #claudeDebugPanel a few lines above, in that same
+            // returned template) - it doesn't insert anything into the
+            // DOM itself. addTopic() below calls _render() synchronously,
+            // which does document.getElementById('claudeDebugPanel') -
+            // at that exact moment the returned string hasn't been
+            // assigned into the DOM yet by whatever caller does
+            // `someElement.innerHTML = buildAdminFilesBody()`, so the
+            // container doesn't exist, _render() silently no-ops, and
+            // the topic sits in ClaudeDebug._topics with nothing ever
+            // painting it - permanently stuck on the static placeholder
+            // since nothing re-renders after the real DOM insertion
+            // happens moments later. Deferred via setTimeout(...,0) so
+            // this runs on the NEXT tick, after the calling code's
+            // innerHTML assignment has already completed and the real
+            // container exists.
+            setTimeout(function () {
+                ClaudeDebug.clear();
+                ClaudeDebug.addTopic(
+                    'OCR: source page N content landing on output page N+1 (page-break/spacing strategy)',
+                    [
+                        { name: 'Solution 1: forced break per source page + spacing compaction, max 25% tighter (current default)', value: 'forced-budget' },
+                        { name: 'Solution 2: forced break per source page + spacing compaction, max 40% tighter (more aggressive)', value: 'forced-budget-aggressive' },
+                        { name: 'Solution 3: forced break per source page, NO spacing compaction', value: 'forced-nobudget' },
+                        { name: 'Solution 4: NO forced break - natural Word/LibreOffice pagination (original pre-fix behavior)', value: 'natural' },
+                    ],
+                    function (chosen) {
+                        window.__ocrPageBreakStrategy = chosen;
+                    }
+                );
+            }, 0);
 
             // Gathers every currently-registered service (both free tools
             // and the fixed set of paid ones) and asks the backend to add
