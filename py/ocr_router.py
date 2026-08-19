@@ -2,32 +2,45 @@
 Lexora - OCR SERVICE ROUTER
 ================================================================
 Decides, per PDF, whether the OCR service needs Aspose.Words Cloud's
-paid conversion or whether a free, local pdfplumber-based extraction
-is enough - per the explicit rule this was built against:
+paid conversion or the browser's own pdf.js text-layer extraction -
+per the explicit rule this was built against:
 
     "table aur background color hone par aspose ka use karna he"
     (use Aspose only when the source has tables or background colors)
 
-This module does NOT replace the existing vision-LLM OCR pipeline
-(js/translation-offline.js's buildHybridDocxBlob, which is what the
-OCR service currently always uses for scanned/photographed pages that
-have no text layer at all). This router is for a DIFFERENT case: a
-PDF that already HAS a text layer (so no vision model is needed to
-read it), where the only question is whether it also needs Aspose's
-table/formatting-aware reconstruction, or whether a much cheaper plain
-text extraction is enough.
+ARCHITECTURE (corrected after a real regression report - the original
+version of this module also shipped a Python "lightweight" DOCX
+builder that the browser called directly; that produced a flat text
+dump with no position, no styling, and no signature image, because it
+threw away exactly what the browser's EXISTING pdf.js pipeline
+(buildOfflineDocxBlob, js/translation-offline.js) already does
+correctly: exact per-line text position straight from the PDF's own
+text layer, plus real embedded images AND signature annotations
+captured via pdfjsLib.AnnotationMode.ENABLE_FORMS):
 
-DECISION RULE (evidence-based, tested against a real 10-page lease
-PDF in project history - see ocr_router_test.py):
-    - Any page with >=1 pdfplumber-detected table -> Aspose
-    - Any page with filled-rectangle (background color) coverage over
-      BACKGROUND_COLOR_AREA_THRESHOLD of the page area -> Aspose
-    - Otherwise -> lightweight (pdfplumber text extraction only)
+    analyze_pdf_for_ocr_strategy()  <- THIS is what the browser now
+                                        calls first (via
+                                        /api/ocr/analyze-strategy) to
+                                        decide the route
+        |
+        +-- "aspose"      -> browser calls /api/ocr/process-router,
+        |                     which runs run_aspose_ocr() here
+        |
+        +-- "lightweight" -> browser calls buildOfflineDocxBlob()
+                              DIRECTLY (client-side, no server round
+                              trip) - NOT this module's
+                              run_lightweight_ocr()
 
-Nothing about this is document-specific: no hardcoded page counts,
-coordinates, or text. The thresholds below are the only tunable
-constants, and they operate on whatever geometry pdfplumber reports
-for ANY input PDF.
+run_lightweight_ocr() still exists in this module, but only as a
+narrow SERVER-SIDE fallback for the case where Aspose was the chosen
+strategy but isn't configured in this environment (see run_ocr()'s
+docstring) - it is intentionally never the primary path for a real
+user-facing "no tables/colors" PDF anymore.
+
+Nothing about the strategy decision is document-specific: no hardcoded
+page counts, coordinates, or text. The thresholds below are the only
+tunable constants, and they operate on whatever geometry pdfplumber
+reports for ANY input PDF.
 """
 
 import os
@@ -128,13 +141,17 @@ def analyze_pdf_for_ocr_strategy(pdf_path):
 # ---------------------------------------------------------------------------
 
 def run_lightweight_ocr(pdf_path, output_path):
-    """Plain text-layer extraction for PDFs with no tables and no
-    meaningful background color - i.e. nothing Aspose's paid
-    conversion would meaningfully add over just reading the text.
-    Builds a simple DOCX: one paragraph per source line, a page break
-    between source pages, page dimensions matched to the source (same
-    approach already used and tested in source_reconstruction.py,
-    reused here rather than reinvented).
+    """SERVER-SIDE FALLBACK ONLY - see this module's docstring for why
+    this is deliberately NOT the primary path for a real "no tables/
+    colors" PDF anymore (a confirmed regression: it drops text
+    position, styling, and signature images that the browser's own
+    pdf.js pipeline, buildOfflineDocxBlob, already preserves). This
+    function now only runs when Aspose was the CHOSEN strategy (tables
+    or background colors genuinely present) but Aspose credentials
+    aren't configured in this environment - i.e. as a last resort so
+    the request still produces something rather than failing outright,
+    with the limitation clearly reported (see run_ocr()'s
+    aspose_fallback_reason).
 
     RTL: reuses source_reconstruction._fix_visual_order_to_logical
     (already tested against real Arabic PDF text in this project's own

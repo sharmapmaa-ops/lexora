@@ -1,11 +1,11 @@
 /* ocr-service.js — Lexora "OCR" service (PAID).
  *
- * Turns a PDF into an editable Word document with its LAYOUT PRESERVED -
- * text is rebuilt as positioned textboxes over the original page image.
- * This is exactly what Translation does minus the translating step, so it
- * calls the SAME pipeline (buildHybridDocxBlob / buildOfflineDocxBlob) with
- * the target language locked to "original". Nothing about the conversion is
- * reimplemented here - only the page around it.
+ * Turns a PDF into an editable Word document with its LAYOUT PRESERVED.
+ * Three-way routed by py/ocr_router.py's analysis (tables/background
+ * color -> Aspose.Words Cloud; real text layer, no tables/colors ->
+ * client-side pdf.js text-layer extraction, buildOfflineDocxBlob;
+ * genuinely scanned/no text layer -> vision-LLM OCR, buildHybridDocxBlob).
+ * See runOcrRouter() below for the full decision and fallback chain.
  *
  * Why it's a separate service rather than an option inside Translation:
  * asking for OCR by choosing "Translation -> No Translation" is not
@@ -56,15 +56,30 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
   }
 
-  // ── OCR router integration (table/background-color -> Aspose,
-  // otherwise a free local pdfplumber extraction) ─────────────────────
-  // See py/ocr_router.py for the full decision logic - this only calls
-  // the new /api/ocr/process-router endpoint and unwraps its response.
-  // NOTE: this is NEW wiring, not yet exercised in a real browser/server
-  // run - the routing logic itself (py/ocr_router.py) was independently
-  // tested against real PDFs (py/ocr_router_test.py); this fetch/base64
-  // plumbing should be smoke-tested against a live server before relying
-  // on it in production.
+  // ── OCR router integration ────────────────────────────────────────
+  // Three-way decision, corrected after a real regression report:
+  //   1. Tables or background colors present -> Aspose.Words Cloud
+  //      (server, /api/ocr/process-router) - table/shading-aware.
+  //   2. No tables/colors, real text layer -> the EXISTING client-side
+  //      buildOfflineDocxBlob (js/translation-offline.js, pdf.js-based).
+  //      NOT a server-side plain text dump - that was tried first and
+  //      confirmed BROKEN (position/styling lost, signature image
+  //      dropped entirely) because a plain text extraction throws away
+  //      exactly what buildOfflineDocxBlob already does right: exact
+  //      per-line position from the PDF's own text layer, plus real
+  //      embedded images AND signature annotations (captured via
+  //      pdfjsLib.AnnotationMode.ENABLE_FORMS, which a simple image
+  //      pass can't see - a pen-drawn signature often lives only in an
+  //      annotation's appearance stream).
+  //   3. No usable text layer at all (genuinely scanned/photographed) ->
+  //      buildOfflineDocxBlob itself throws a clear "looks scanned"
+  //      error, which is the signal to fall back to buildHybridDocxBlob
+  //      (vision-LLM OCR) - the ORIGINAL always-on engine, still fully
+  //      intact and untouched.
+  // py/ocr_router.py's own run_lightweight_ocr() (plain pdfplumber text
+  // dump) is NOT used by this browser flow anymore - kept only as a
+  // narrower server-side fallback for when Aspose is the chosen
+  // strategy but isn't configured (see _handle_ocr_process_router).
   function _fileToBase64(file) {
     return new Promise(function (resolve, reject) {
       const reader = new FileReader();
@@ -81,9 +96,9 @@
     return new Blob([bytes], { type: mimeType });
   }
 
-  async function runOcrRouter(file, logFn) {
+  async function analyzeOcrStrategy(file) {
     const pdfBase64 = await _fileToBase64(file);
-    const resp = await fetch('/api/ocr/process-router', {
+    const resp = await fetch('/api/ocr/analyze-strategy', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -93,24 +108,81 @@
     });
     const data = await resp.json();
     if (!data || !data.ok) {
+      // Analysis failing (e.g. server hiccup) shouldn't block OCR
+      // entirely - default to the client-side text-layer path, which
+      // itself falls back to vision OCR if the PDF turns out scanned.
+      return { strategy: 'lightweight', analysis: null, error: (data && data.error) || 'analyze failed' };
+    }
+    return { strategy: data.strategy, analysis: data.analysis };
+  }
+
+  async function runAsposeConversion(file, logFn) {
+    const pdfBase64 = await _fileToBase64(file);
+    const resp = await fetch('/api/ocr/process-router', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + (window.__lexoraAuthToken || '')
+      },
+      body: JSON.stringify({ fileName: file.name, pdfBase64: pdfBase64, forceStrategy: 'aspose' })
+    });
+    const data = await resp.json();
+    if (!data || !data.ok) {
       throw new Error((data && data.error) || 'OCR processing failed.');
     }
-    if (data.asposeFallbackReason && logFn) {
-      logFn(data.asposeFallbackReason, 'warn');
-    }
-    if (data.asposeError && logFn) {
-      logFn('Aspose error: ' + data.asposeError, 'warn');
-    }
+    if (data.asposeFallbackReason && logFn) logFn(data.asposeFallbackReason, 'warn');
+    if (data.asposeError && logFn) logFn('Aspose error: ' + data.asposeError, 'warn');
     const mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     return {
       blob: _base64ToBlob(data.outputBase64, mime),
       strategyUsed: data.strategyUsed,
-      requestedStrategy: data.requestedStrategy,
-      analysis: data.analysis,
-      pagesExtracted: data.pagesExtracted,
-      linesExtracted: data.linesExtracted,
-      outputFileName: data.outputFileName
+      pagesExtracted: data.pagesExtracted
     };
+  }
+
+  // Runs the full 3-way decision for one file and returns
+  // { blob, strategyUsed, pagesExtracted, analysis }.
+  async function runOcrRouter(file, logFn) {
+    const decision = await analyzeOcrStrategy(file);
+    if (decision.error && logFn) logFn('Strategy check: ' + decision.error, 'warn');
+
+    if (decision.strategy === 'aspose') {
+      const result = await runAsposeConversion(file, logFn);
+      result.analysis = decision.analysis;
+      return result;
+    }
+
+    // Lightweight: use the EXISTING pdf.js-based, position- and
+    // image/signature-preserving client pipeline directly, no server
+    // round trip needed.
+    let pageCount = null;
+    try {
+      if (typeof pdfjsLib !== 'undefined') {
+        const buf = await file.arrayBuffer();
+        const pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
+        pageCount = pdfDoc.numPages;
+      }
+    } catch (e) { /* page count is only for billing display - non-fatal if it fails */ }
+    try {
+      const opts = { withImage: true, targetLang: 'original' };
+      const blob = await window.buildOfflineDocxBlob(file, opts, function (m, level) {
+        if (level === 'warn' || level === 'error') { logFn(m, level); }
+      });
+      return { blob: blob, strategyUsed: 'client_text_layer', pagesExtracted: pageCount, analysis: decision.analysis };
+    } catch (err) {
+      // buildOfflineDocxBlob throws a clear, specific error when the
+      // PDF has no usable text layer (genuinely scanned/photographed) -
+      // that's the correct signal to fall back to vision-based OCR,
+      // not a failure to surface to the user.
+      const looksLikeScanSignal = /scanned|image-based/i.test(err.message || '');
+      if (!looksLikeScanSignal || !window.buildHybridDocxBlob) throw err;
+      if (logFn) logFn('Text layer not usable - falling back to vision-based OCR.', 'warn');
+      const opts = { withImage: true, targetLang: 'original' };
+      const blob = await window.buildHybridDocxBlob(file, opts, function (m, level) {
+        if (level === 'warn' || level === 'error') { logFn(m, level); }
+      });
+      return { blob: blob, strategyUsed: 'vision_ocr_fallback', pagesExtracted: pageCount, analysis: decision.analysis };
+    }
   }
 
   // ── processing ─────────────────────────────────────────────────────
@@ -121,6 +193,9 @@
 
     const billing = window.LexoraBilling;
     if (!billing) return setStatus('Billing is unavailable - please reload the page.', 'error');
+    if (!window.buildOfflineDocxBlob) {
+      return setStatus('The document engine failed to load - please reload the page.', 'error');
+    }
 
     const rate = billing.perPageRate('ocr');
     const perDocument = billing.isPerDocument('ocr');
@@ -151,16 +226,11 @@
 
       let charged = 0, pagesDone = 0;
       try {
-        // ROUTED: table/background-color -> Aspose.Words Cloud,
-        // otherwise a free local pdfplumber extraction. Replaces the
-        // vision-LLM call for this service (that path remains available
-        // via buildHybridDocxBlob/buildOfflineDocxBlob for scanned pages
-        // with no text layer at all, which this router does not handle -
-        // see py/ocr_router.py's module docstring for that boundary).
-        // NOTE: the router is a single blocking server call, not a
-        // page-by-page stream, so there are no per-page progress events
-        // here the way the old vision pipeline had - progress just jumps
-        // to done once the server responds.
+        // ROUTED: tables/background-color -> Aspose.Words Cloud
+        // (server); otherwise the client-side pdf.js text-layer engine
+        // (position- and signature-preserving); genuinely scanned PDFs
+        // fall back further to vision-LLM OCR. See runOcrRouter above
+        // for the full 3-way decision.
         const ocrResult = await runOcrRouter(entry.file, function (m, level) {
           log(`${label} > ${m}`, level === 'warn' ? 'Info' : 'Failed');
           rerender();
@@ -173,10 +243,10 @@
             (ocrResult.analysis ? ` (${ocrResult.analysis.reason})` : ''), 'Info');
         rerender();
 
-        // Real .docx output either way now (Aspose native conversion or
-        // the pdfplumber-based fallback both produce real OOXML .docx,
-        // unlike the old MHT-based .doc from the vision pipeline).
-        const ext = '.docx';
+        // Aspose and the client text-layer path both produce real OOXML
+        // .docx; the vision-OCR fallback (buildHybridDocxBlob) emits an
+        // MHT-based file that Word rejects if given a .docx extension.
+        const ext = ocrResult.strategyUsed === 'vision_ocr_fallback' ? '.doc' : '.docx';
         const name = entry.file.name.replace(/\.[^.]+$/, '') + ' OCR' + ext;
         STATE.blobs[entry.uid] = { blob: blob, name: name };
         if (runCtx) await runCtx.download(blob, name);
