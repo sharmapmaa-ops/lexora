@@ -265,23 +265,7 @@
       '<w:p><w:pPr>' +
       '<w:spacing w:before="0" w:after="0" w:line="' + lineTw + '" w:lineRule="exact"/>' +
       (line.rtl ? '<w:bidi/>' : '') +
-      // EMPIRICALLY VERIFIED (not assumed): jc="both" does NOT visually
-      // justify a single-line, wrap="none" textbox like this one - built
-      // and rendered a minimal isolated test case via LibreOffice to
-      // confirm. Word-processor convention exempts a paragraph's only/
-      // last line from "both"-style justify (real justify only kicks in
-      // when a line wraps) - and every line here IS its own one-line
-      // paragraph, so "both" was silently doing nothing (root cause of
-      // the reported "justified text in source not showing as justified
-      // here" - jc="both" was already present, just structurally
-      // ineffective for this per-line-box architecture). jc="distribute"
-      // does not have that single-line exemption and was confirmed, in
-      // the same real render test, to actually spread words across the
-      // box width. Only applied when line.justify was set (see
-      // _markJustifiedLines) - a line that wasn't justified in the
-      // source stays "left" so unrelated tight-width lines aren't
-      // artificially stretched.
-      '<w:jc w:val="' + (line.justify ? 'distribute' : 'left') + '"/></w:pPr>' + runsXml + '</w:p>' +
+      '<w:jc w:val="both"/></w:pPr>' + runsXml + '</w:p>' +
       '</w:txbxContent></wps:txbx>' +
       // wrap="none": text apni width se wrap NAHI hoga, box size exact rahega
       '<wps:bodyPr rot="0" vert="horz" wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t"><a:noAutofit/></wps:bodyPr>' +
@@ -1788,79 +1772,10 @@ trailingSectPr + '</w:body></w:document>';
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
   }
 
-  // Per-line justified-detection for Solution 9 (buildDocx), redesigned
-  // per explicit user direction: STANDALONE per line - no comparison to
-  // any OTHER line on the page (the earlier version compared each
-  // line's right edge against a page-wide "shared boundary" computed
-  // across many lines - user explicitly rejected that as a "bounding
-  // box" approach and asked for pure line-by-line detection instead).
-  //
-  // Signal used: a justified line's REAL captured width (L.wPt, from
-  // actual glyph positions in the source PDF - already reflects
-  // whatever inter-word spacing the source actually used) compared
-  // against the NATURAL width the same words would need at NORMAL
-  // (single-space) spacing, using the same real font-metric measurement
-  // (measureTextPt) already used elsewhere in this file. If the real
-  // width is meaningfully wider than natural, the source must have used
-  // wider-than-normal word gaps to reach that width - i.e. justified -
-  // determined entirely from THIS line's own text and THIS line's own
-  // captured width, nothing else.
-  function _markJustifiedLines(pg) {
-    const MIN_WORDS = 8;                    // see real-evidence note below
-    const STRETCH_RATIO_THRESHOLD = 1.06;   // real width must be >=6% wider than natural to count
-    // HONEST LIMITATIONS (both found via a real end-to-end test, not
-    // guessed - see js/justify_detection_test.js and the investigation
-    // that produced these numbers):
-    // 1. MIN_WORDS was raised from 2 to 8 after a REAL false positive:
-    //    a 6-word centered TITLE ("ACCORDO MODIFICATIVO DEL CONTRATTO
-    //    DI LOCAZIONE") got incorrectly flagged justified when tested
-    //    end-to-end (an earlier attempt at MIN_WORDS=5 did NOT fix
-    //    this specific case, since the title has 6 words - checked the
-    //    real word counts of this document's own lines directly: the
-    //    title has 6, the "Tra"/"e" connector lines have 1, while every
-    //    genuine justified body line checked has 10-21 - so 8 sits
-    //    cleanly between the false-positive case and the real cases).
-    // 2. STRETCH_RATIO_THRESHOLD (1.06) is a reasoned starting point,
-    //    NOT calibrated against real browser font measurement the way
-    //    the flat spacing ratio elsewhere in this file was
-    //    (py/calibrate_compaction_ratio.py). measureTextPt needs a real
-    //    browser Canvas, which this project's sandbox cannot run - an
-    //    approximate Node-side stand-in was used to test the MECHANISM
-    //    (and caught the MIN_WORDS issue above), but it could NOT
-    //    reliably confirm real justified body lines actually cross this
-    //    threshold using real font metrics, only that they don't
-    //    falsely NOT cross it in an obviously broken way. This needs
-    //    real-browser testing to fully verify; if real testing shows
-    //    genuine justified paragraphs aren't being detected, or any
-    //    remaining false positives, this one constant is what to adjust.
-
-    pg.lines.forEach(function (L) {
-      const words = (L.runs || []).map(function (r) { return r.text || ''; }).join(' ').trim().split(/\s+/).filter(Boolean);
-      if (words.length < MIN_WORDS) return; // nothing to stretch between
-
-      const seg0 = (L.runs && L.runs[0]) || {};
-      const sizePt = seg0.sizePt || 11;
-      const family = seg0.family;
-      const spaceWidthPt = measureTextPt(' ', sizePt, family, false, false) || 3;
-
-      let naturalWidthPt = 0;
-      words.forEach(function (w, i) {
-        naturalWidthPt += measureTextPt(w, sizePt, family, seg0.bold, seg0.italic);
-        if (i > 0) naturalWidthPt += spaceWidthPt;
-      });
-      if (!(naturalWidthPt > 0)) return;
-
-      if (L.wPt / naturalWidthPt > STRETCH_RATIO_THRESHOLD) {
-        L.justify = true;
-      }
-    });
-  }
-
   function buildDocx(pages, includeBg, renderPageExtra){
     const zip = new JSZip();
     const wPt = pages[0].wPt, hPt = pages[0].hPt;
     const pgW = Math.round(wPt * 20), pgH = Math.round(hPt * 20);
-    pages.forEach(_markJustifiedLines);
 
     let bodyXml = '';
     const rels = [];
@@ -2699,22 +2614,21 @@ trailingSectPr + '</w:body></w:document>';
       pg.paragraphs = paragraphs;
     });
 
-    // Solution 9: back to absolute-positioned, per-LINE boxes
-    // (textBoxXml + floatingImageXml, via buildDocx's DEFAULT rendering
-    // when no renderPageExtra is given) - per explicit, final user
-    // direction: keep the box+image state exactly as it was when
-    // confirmed working well, and layer the justify fix on TOP of that
-    // via _markJustifiedLines' new standalone per-line detection (see
-    // that function's own comment) instead of restructuring into
-    // paragraphs. Two earlier iterations (paragraph-box wrapping, then
-    // a full alias to the boxless flowing pipeline) are NOT used here -
-    // reverted per the user's own explicit "no box... but also don't
-    // rebuild the whole box architecture, just fix justify on what
-    // already worked" direction. paragraphBoxXml is kept, unused, as
-    // available tested infrastructure in case absolute positioning
-    // with real wrapping is wanted again later.
+    // Solution 9: absolute-positioned, per-LINE boxes (textBoxXml +
+    // floatingImageXml, via buildDocx's DEFAULT rendering when no
+    // renderPageExtra is given). This is the EXACT checkpoint state
+    // from right after the missing-signature-image bug was fixed
+    // (floatingImageXml added) - explicitly restored to here per user
+    // request, with the standalone per-line justify-detection work that
+    // came after this point REMOVED again (jc="both" is back to being
+    // hardcoded in textBoxXml, unconditional, no line.justify checks
+    // anywhere) - not because that later work was proven wrong, but
+    // because the user wanted this exact known-good state back as the
+    // current baseline. paragraphBoxXml is kept, unused, as available
+    // tested infrastructure in case real wrapping + absolute
+    // positioning is wanted again later.
     if (_ocrPageBreakStrategy() === 'absolute-position') {
-      log('OCR strategy: Solution 9 (absolute-positioned per-line boxes + embedded images + standalone per-line justify)', 'info');
+      log('OCR strategy: Solution 9 (absolute-positioned per-line boxes + embedded images - image-fix checkpoint, justify not yet applied)', 'info');
       return buildDocx(pages, false);
     }
 

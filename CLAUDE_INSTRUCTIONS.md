@@ -359,3 +359,26 @@ par decide karega.
   jagah move karna, signature badalna), chhote verified steps me karo,
   har step ke baad syntax+structure check karo — na ki ek hi bade edit
   me sab kuch daal do jahan galti pakadna mushkil ho.
+
+- **User ka requirement sirf RESULT ke baare me tha, TECHNIQUE ke baare
+  me nahi — maine khud ek technical mechanism (bounding box) choose kar
+  liya bina pooche, jo bilkul us "bina puche overengineer mat karo"
+  wale standing rule ke against tha.** Real incident: user ne kabhi
+  nahi kaha "bounding box banao" — unhone sirf ye kaha tha ke Solution
+  9 ka RESULT (correct page count, correct content placement) achha
+  tha. "Page N = Page N" guarantee achieve karne ke liye maine khud
+  decide kiya ki absolute-positioned floating text-box (OOXML ka ek
+  specific mechanism) use karna hai — ye ek REAL architectural
+  trade-off tha (box ki apni complications hain: wrap="none" ka
+  overflow-risk, justify ka single-line-exemption issue, etc.) jo
+  maine kabhi user ke saamne rakha hi nahi tha decide karne se pehle.
+  User ne khud pucha "maine kya tumhe bounding box banane ko kaha tha?"
+  — aur jawab tha: nahi.
+  **Sabak:** jab bhi kisi requirement ko achieve karne ke MULTIPLE
+  technical tarike ho sakte hain (especially agar har tarike ke apne
+  ALAG trade-offs hon — jaise yahan: box=strong page-guarantee lekin
+  complexity/overflow-risk, boxless=simple lekin weaker guarantee), to
+  IMPLEMENT karne se PEHLE user ko explicitly batao "isko achieve karne
+  ke liye X approach use karunga, jiske ye trade-offs hain — theek hai
+  kya?" — sirf tab implement karo jab user confirm kare, apni taraf se
+  "best" approach decide karke seedha implement mat karo.
