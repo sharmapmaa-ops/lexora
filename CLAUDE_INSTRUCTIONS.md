@@ -272,3 +272,28 @@ par decide karega.
   me persist hoti hai, is baar koi async DOM-timing risk nahi liya (static
   HTML + safe img-onerror trick se sync, jaisa pehle wale render-bug ke
   baad established kiya tha).
+
+- **Naya helper function add karte waqt, uske CALLERS ki scope bhi check
+  karo — sirf jahan pehle likh rahe ho wahan se kaam kar raha hai, itna
+  kaafi nahi hai.** Real incident: 9-solutions wala kaam karte waqt maine
+  `_ocrPageBreakStrategy`, `applyPageHeightBudget`, `buildWithFeedbackLoop`
+  functions likhe — lekin galti se `buildFlowingDocx()` ke andar NESTED
+  likh diye (uske function body ke andar), jabki `buildOfflineDocxBlob()`
+  (ek ALAG, sibling function) ko bhi Solution 8/9 ke liye inhe call karna
+  tha. JS me nested function sirf apne PARENT ki scope dekh sakta hai,
+  SIBLING functions ki nahi — is wajah se real production me "$X is not
+  defined" error aaya, jo maine syntax-check se pakड़ा hi nahi (syntax
+  valid tha, ye SCOPING bug tha, syntax bug nahi). User ne khud test
+  karke real error report kiya.
+  **Sabak:** jab bhi koi naya function likho jo MULTIPLE existing
+  functions se call hoga, likhne se PEHLE confirm karo ke wo TOP-LEVEL
+  scope me hai (sab callers ke commonly-accessible jagah pe), na ki kisi
+  EK caller ke andar nested. Sirf `node --check` (syntax) kaafi nahi hai —
+  scoping bugs syntax-valid hote hain, sirf runtime pe fail hote hain.
+  Ab se: naya cross-function helper likhne ke baad, explicitly check karo
+  "kya isko har jagah se access ho sakta hai jahan maine ise call kiya
+  hai" — grep se dono jagah (definition + saare call-sites) ki relative
+  nesting/indentation compare karke confirm karo, guess mat karo. Isi
+  incident ke baad ek structural test bhi bana diya
+  (`js/ocr_strategy_scoping_test.js`) jo brace-depth check karke exactly
+  ye class of bug future me pakadta hai.

@@ -927,6 +927,159 @@
     };
   }
 
+  // ── ClaudeDebug live-switchable strategies (see admin "🤖 Claude" tab) ──
+  // Persisted via localStorage - a selection made once should stay
+  // selected across page reloads / new sessions, not just live in
+  // memory for the current tab.
+  function _ocrPageBreakStrategy() {
+    if (window.__ocrPageBreakStrategy) return window.__ocrPageBreakStrategy;
+    try {
+      const saved = localStorage.getItem('lexora_ocrPageBreakStrategy');
+      if (saved) { window.__ocrPageBreakStrategy = saved; return saved; }
+    } catch (e) { /* localStorage unavailable (private mode etc.) - fall through to default */ }
+    return 'forced-budget';
+  }
+  function _ocrShouldForceBreak() {
+    const s = _ocrPageBreakStrategy();
+    return s !== 'natural' && s !== 'absolute-position';
+  }
+
+  // ── PAGE SPACING/FONT/MARGIN COMPACTION ────────────────────────────────
+  // Multiple genuinely DIFFERENT approaches (not just parameter variants
+  // of one approach) to the reported "source page N content lands on
+  // output page N+1" problem - all selectable live from the admin
+  // "Claude" tab, per explicit instruction to list every possible
+  // solution rather than pre-selecting a favorite.
+  //
+  // Solutions 1-2 (spacing-only) were empirically calibrated against a
+  // real reported document: its actual generated DOCX was rebuilt with
+  // spacing uniformly scaled across a range of ratios and each one was
+  // ACTUALLY RENDERED (LibreOffice) to find the real page count - see
+  // py/calibrate_compaction_ratio.py. 0.85 was the value found to work
+  // with a safety margin (the real cliff was ~0.90).
+  const FLAT_COMPACTION_RATIO = 0.85;
+  const BUDGET_LINE_FLOOR_TWIPS = 200;       // ~single-spacing floor, never go tighter
+  const BUDGET_SPACE_AFTER_FLOOR_TWIPS = 40; // ~2pt floor between paragraphs
+  const FONT_FLOOR_PT = 7;                   // never shrink body text below this
+
+  function applyPageHeightBudget(pg) {
+    const s = _ocrPageBreakStrategy();
+
+    // These strategies don't touch spacing/font/margin at all - handled
+    // by entirely separate code paths (buildDocx for absolute-position,
+    // the feedback loop wrapper for feedback-loop).
+    if (s === 'forced-nobudget' || s === 'natural' || s === 'absolute-position' || s === 'feedback-loop') return;
+
+    let spacingRatio = 1.0, fontRatio = 1.0, marginRatio = 1.0;
+    if (s === 'forced-budget') {
+      spacingRatio = FLAT_COMPACTION_RATIO; // Solution 1
+    } else if (s === 'forced-budget-aggressive') {
+      spacingRatio = 0.75; // Solution 2
+    } else if (s === 'font-reduce') {
+      fontRatio = 0.90; // Solution 5 - shrink font instead of spacing
+    } else if (s === 'margin-tighten') {
+      marginRatio = 0.65; // Solution 6 - tighten margins instead of spacing/font
+    } else if (s === 'combined-mild') {
+      spacingRatio = 0.92; fontRatio = 0.95; marginRatio = 0.85; // Solution 7 - a little of each, gentler per-lever
+    }
+
+    if (spacingRatio < 1.0) {
+      (pg.paragraphs || []).forEach(function (p) {
+        p.lineTwips = Math.max(BUDGET_LINE_FLOOR_TWIPS, Math.round((p.lineTwips || 276) * spacingRatio));
+        p.spaceAfterTwips = Math.max(
+          BUDGET_SPACE_AFTER_FLOOR_TWIPS,
+          Math.round((p.spaceAfterTwips != null ? p.spaceAfterTwips : 160) * spacingRatio)
+        );
+      });
+    }
+    if (fontRatio < 1.0) {
+      (pg.paragraphs || []).forEach(function (p) {
+        (p.segments || []).forEach(function (seg) {
+          seg.sizePt = Math.max(FONT_FLOOR_PT, (seg.sizePt || 11) * fontRatio);
+        });
+      });
+    }
+    if (marginRatio < 1.0 && pg.margins) {
+      // NOTE: only the LAST page's margins end up in the final DOCX (one
+      // shared <w:sectPr> for the whole document - see the sectPr
+      // dedup fix elsewhere in this file), but this is applied to every
+      // page's margins uniformly so whichever page ends up last already
+      // has the reduced value.
+      pg.margins.top = Math.round(pg.margins.top * marginRatio);
+      pg.margins.bottom = Math.round(pg.margins.bottom * marginRatio);
+      pg.margins.left = Math.round(pg.margins.left * marginRatio);
+      pg.margins.right = Math.round(pg.margins.right * marginRatio);
+    }
+    // HONEST LIMITATION: these are flat ratios calibrated (for
+    // Solutions 1-2) or reasoned (for 5-7, NOT yet empirically verified
+    // against a real render) against ONE real document. A page whose
+    // content is much denser than that calibration case could still
+    // overflow. Solution 8 (feedback loop) is the only one of these
+    // that verifies against real rendering for the SPECIFIC document
+    // being processed, not a fixed pre-calibrated assumption.
+  }
+
+  // ── Solution 8: REAL server-verified feedback loop ─────────────────────
+  // Genuinely different architecture from 1/2/5/6/7 above: instead of
+  // trusting any fixed ratio (calibrated or reasoned), this generates the
+  // document, asks the SERVER to actually render it with LibreOffice and
+  // report the real page count (py: _handle_ocr_check_page_count), and
+  // increases compaction and regenerates if it's still too many pages -
+  // repeating against real ground truth each time, bounded to a handful
+  // of attempts so it can't loop forever on a pathological document.
+  async function buildWithFeedbackLoop(pages, sourcePageCount, logFn) {
+    const MAX_ATTEMPTS = 6;
+    let ratio = 1.0;
+    let lastBlob = null;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      // Re-apply the CURRENT attempt's ratio fresh each time (paragraphs
+      // were already possibly scaled by a previous attempt - always
+      // scale from the page's original captured values, not
+      // compounding shrinkage attempt over attempt).
+      pages.forEach(function (pg) {
+        (pg.paragraphs || []).forEach(function (p) {
+          if (p._origLineTwips == null) p._origLineTwips = p.lineTwips;
+          if (p._origSpaceAfterTwips == null) p._origSpaceAfterTwips = p.spaceAfterTwips;
+          p.lineTwips = Math.max(BUDGET_LINE_FLOOR_TWIPS, Math.round(p._origLineTwips * ratio));
+          p.spaceAfterTwips = Math.max(BUDGET_SPACE_AFTER_FLOOR_TWIPS, Math.round(p._origSpaceAfterTwips * ratio));
+        });
+      });
+      const blob = await buildFlowingDocx(pages); // applyPageHeightBudget no-ops for 'feedback-loop' strategy - compaction is applied above instead
+      lastBlob = blob;
+
+      let pageCount = null;
+      try {
+        const b64 = await new Promise(function (resolve, reject) {
+          const reader = new FileReader();
+          reader.onload = function () { resolve(String(reader.result).split(',')[1]); };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        const resp = await fetch('/api/ocr/check-page-count', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (window.__lexoraAuthToken || '') },
+          body: JSON.stringify({ docxBase64: b64 })
+        });
+        const data = await resp.json();
+        if (data && data.ok) pageCount = data.pageCount;
+        else if (logFn) logFn('Feedback loop: page-count check failed (' + ((data && data.error) || 'unknown') + ') - using this attempt as-is', 'warn');
+      } catch (e) {
+        if (logFn) logFn('Feedback loop: page-count check request failed - using this attempt as-is', 'warn');
+      }
+
+      if (logFn) logFn('Feedback loop attempt ' + attempt + ': ratio=' + ratio.toFixed(2) + ' -> ' + (pageCount == null ? 'unknown' : pageCount) + ' page(s) (source has ' + sourcePageCount + ')', 'info');
+
+      if (pageCount == null || pageCount <= sourcePageCount) {
+        return blob; // real ground truth confirms this fits (or the check itself failed - don't loop forever on that)
+      }
+      ratio -= 0.05; // real evidence says still too many pages - tighten and try again
+      if (ratio < 0.5) break; // don't compress into illegibility chasing a pathological document
+    }
+    if (logFn) logFn('Feedback loop: reached ' + MAX_ATTEMPTS + ' attempts without matching source page count exactly - using the tightest attempt', 'warn');
+    return lastBlob;
+  }
+
+
   function buildFlowingDocx(pages) {
     const zip = new JSZip();
     const jcMap = { left: 'left', center: 'center', right: 'right', justify: 'both' };
@@ -1293,158 +1446,6 @@
         '<w:tblInd w:w="' + Math.round(tblIndentPt * 20) + '" w:type="dxa"/>' + borderXml +
         '<w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>' + gridCols + '</w:tblGrid>' + rowsXml + '</w:tbl>';
     }
-
-  // ── ClaudeDebug live-switchable strategies (see admin "🤖 Claude" tab) ──
-  // Persisted via localStorage - a selection made once should stay
-  // selected across page reloads / new sessions, not just live in
-  // memory for the current tab.
-  function _ocrPageBreakStrategy() {
-    if (window.__ocrPageBreakStrategy) return window.__ocrPageBreakStrategy;
-    try {
-      const saved = localStorage.getItem('lexora_ocrPageBreakStrategy');
-      if (saved) { window.__ocrPageBreakStrategy = saved; return saved; }
-    } catch (e) { /* localStorage unavailable (private mode etc.) - fall through to default */ }
-    return 'forced-budget';
-  }
-  function _ocrShouldForceBreak() {
-    const s = _ocrPageBreakStrategy();
-    return s !== 'natural' && s !== 'absolute-position';
-  }
-
-  // ── PAGE SPACING/FONT/MARGIN COMPACTION ────────────────────────────────
-  // Multiple genuinely DIFFERENT approaches (not just parameter variants
-  // of one approach) to the reported "source page N content lands on
-  // output page N+1" problem - all selectable live from the admin
-  // "Claude" tab, per explicit instruction to list every possible
-  // solution rather than pre-selecting a favorite.
-  //
-  // Solutions 1-2 (spacing-only) were empirically calibrated against a
-  // real reported document: its actual generated DOCX was rebuilt with
-  // spacing uniformly scaled across a range of ratios and each one was
-  // ACTUALLY RENDERED (LibreOffice) to find the real page count - see
-  // py/calibrate_compaction_ratio.py. 0.85 was the value found to work
-  // with a safety margin (the real cliff was ~0.90).
-  const FLAT_COMPACTION_RATIO = 0.85;
-  const BUDGET_LINE_FLOOR_TWIPS = 200;       // ~single-spacing floor, never go tighter
-  const BUDGET_SPACE_AFTER_FLOOR_TWIPS = 40; // ~2pt floor between paragraphs
-  const FONT_FLOOR_PT = 7;                   // never shrink body text below this
-
-  function applyPageHeightBudget(pg) {
-    const s = _ocrPageBreakStrategy();
-
-    // These strategies don't touch spacing/font/margin at all - handled
-    // by entirely separate code paths (buildDocx for absolute-position,
-    // the feedback loop wrapper for feedback-loop).
-    if (s === 'forced-nobudget' || s === 'natural' || s === 'absolute-position' || s === 'feedback-loop') return;
-
-    let spacingRatio = 1.0, fontRatio = 1.0, marginRatio = 1.0;
-    if (s === 'forced-budget') {
-      spacingRatio = FLAT_COMPACTION_RATIO; // Solution 1
-    } else if (s === 'forced-budget-aggressive') {
-      spacingRatio = 0.75; // Solution 2
-    } else if (s === 'font-reduce') {
-      fontRatio = 0.90; // Solution 5 - shrink font instead of spacing
-    } else if (s === 'margin-tighten') {
-      marginRatio = 0.65; // Solution 6 - tighten margins instead of spacing/font
-    } else if (s === 'combined-mild') {
-      spacingRatio = 0.92; fontRatio = 0.95; marginRatio = 0.85; // Solution 7 - a little of each, gentler per-lever
-    }
-
-    if (spacingRatio < 1.0) {
-      (pg.paragraphs || []).forEach(function (p) {
-        p.lineTwips = Math.max(BUDGET_LINE_FLOOR_TWIPS, Math.round((p.lineTwips || 276) * spacingRatio));
-        p.spaceAfterTwips = Math.max(
-          BUDGET_SPACE_AFTER_FLOOR_TWIPS,
-          Math.round((p.spaceAfterTwips != null ? p.spaceAfterTwips : 160) * spacingRatio)
-        );
-      });
-    }
-    if (fontRatio < 1.0) {
-      (pg.paragraphs || []).forEach(function (p) {
-        (p.segments || []).forEach(function (seg) {
-          seg.sizePt = Math.max(FONT_FLOOR_PT, (seg.sizePt || 11) * fontRatio);
-        });
-      });
-    }
-    if (marginRatio < 1.0 && pg.margins) {
-      // NOTE: only the LAST page's margins end up in the final DOCX (one
-      // shared <w:sectPr> for the whole document - see the sectPr
-      // dedup fix elsewhere in this file), but this is applied to every
-      // page's margins uniformly so whichever page ends up last already
-      // has the reduced value.
-      pg.margins.top = Math.round(pg.margins.top * marginRatio);
-      pg.margins.bottom = Math.round(pg.margins.bottom * marginRatio);
-      pg.margins.left = Math.round(pg.margins.left * marginRatio);
-      pg.margins.right = Math.round(pg.margins.right * marginRatio);
-    }
-    // HONEST LIMITATION: these are flat ratios calibrated (for
-    // Solutions 1-2) or reasoned (for 5-7, NOT yet empirically verified
-    // against a real render) against ONE real document. A page whose
-    // content is much denser than that calibration case could still
-    // overflow. Solution 8 (feedback loop) is the only one of these
-    // that verifies against real rendering for the SPECIFIC document
-    // being processed, not a fixed pre-calibrated assumption.
-  }
-
-  // ── Solution 8: REAL server-verified feedback loop ─────────────────────
-  // Genuinely different architecture from 1/2/5/6/7 above: instead of
-  // trusting any fixed ratio (calibrated or reasoned), this generates the
-  // document, asks the SERVER to actually render it with LibreOffice and
-  // report the real page count (py: _handle_ocr_check_page_count), and
-  // increases compaction and regenerates if it's still too many pages -
-  // repeating against real ground truth each time, bounded to a handful
-  // of attempts so it can't loop forever on a pathological document.
-  async function buildWithFeedbackLoop(pages, sourcePageCount, logFn) {
-    const MAX_ATTEMPTS = 6;
-    let ratio = 1.0;
-    let lastBlob = null;
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      // Re-apply the CURRENT attempt's ratio fresh each time (paragraphs
-      // were already possibly scaled by a previous attempt - always
-      // scale from the page's original captured values, not
-      // compounding shrinkage attempt over attempt).
-      pages.forEach(function (pg) {
-        (pg.paragraphs || []).forEach(function (p) {
-          if (p._origLineTwips == null) p._origLineTwips = p.lineTwips;
-          if (p._origSpaceAfterTwips == null) p._origSpaceAfterTwips = p.spaceAfterTwips;
-          p.lineTwips = Math.max(BUDGET_LINE_FLOOR_TWIPS, Math.round(p._origLineTwips * ratio));
-          p.spaceAfterTwips = Math.max(BUDGET_SPACE_AFTER_FLOOR_TWIPS, Math.round(p._origSpaceAfterTwips * ratio));
-        });
-      });
-      const blob = await buildFlowingDocx(pages); // applyPageHeightBudget no-ops for 'feedback-loop' strategy - compaction is applied above instead
-      lastBlob = blob;
-
-      let pageCount = null;
-      try {
-        const b64 = await new Promise(function (resolve, reject) {
-          const reader = new FileReader();
-          reader.onload = function () { resolve(String(reader.result).split(',')[1]); };
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-        const resp = await fetch('/api/ocr/check-page-count', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (window.__lexoraAuthToken || '') },
-          body: JSON.stringify({ docxBase64: b64 })
-        });
-        const data = await resp.json();
-        if (data && data.ok) pageCount = data.pageCount;
-        else if (logFn) logFn('Feedback loop: page-count check failed (' + ((data && data.error) || 'unknown') + ') - using this attempt as-is', 'warn');
-      } catch (e) {
-        if (logFn) logFn('Feedback loop: page-count check request failed - using this attempt as-is', 'warn');
-      }
-
-      if (logFn) logFn('Feedback loop attempt ' + attempt + ': ratio=' + ratio.toFixed(2) + ' -> ' + (pageCount == null ? 'unknown' : pageCount) + ' page(s) (source has ' + sourcePageCount + ')', 'info');
-
-      if (pageCount == null || pageCount <= sourcePageCount) {
-        return blob; // real ground truth confirms this fits (or the check itself failed - don't loop forever on that)
-      }
-      ratio -= 0.05; // real evidence says still too many pages - tighten and try again
-      if (ratio < 0.5) break; // don't compress into illegibility chasing a pathological document
-    }
-    if (logFn) logFn('Feedback loop: reached ' + MAX_ATTEMPTS + ' attempts without matching source page count exactly - using the tightest attempt', 'warn');
-    return lastBlob;
-  }
 
   let bodyXml = '';
   let lastPageSectPrWritten = false;
