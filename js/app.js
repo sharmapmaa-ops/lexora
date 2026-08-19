@@ -8932,7 +8932,17 @@
                                         solution sahi kaam kare, bata dena - wahi permanent kar diya jayega aur baaki
                                         options yahan se hata diye jayenge.
                                     </p>
-                                    <div id="claudeDebugPanel"><p class="ds-card-sub">Abhi koi active topic nahi hai.</p></div>
+                                    <div id="claudeDebugPanel">
+                                        <div class="claude-debug-topic">
+                                            <h4>Topic 1: OCR: source page N content landing on output page N+1 (page-break/spacing strategy)</h4>
+                                            <select onchange="window.__ocrPageBreakStrategy = this.value;">
+                                                <option value="forced-budget" selected>Solution 1: forced break per source page + spacing compaction, max 25% tighter (current default)</option>
+                                                <option value="forced-budget-aggressive">Solution 2: forced break per source page + spacing compaction, max 40% tighter (more aggressive)</option>
+                                                <option value="forced-nobudget">Solution 3: forced break per source page, NO spacing compaction</option>
+                                                <option value="natural">Solution 4: NO forced break - natural Word/LibreOffice pagination (original pre-fix behavior)</option>
+                                            </select>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             <div class="svc-pane">
@@ -9360,46 +9370,25 @@
                 },
             };
 
-            // Item - registers the current active debug topic per the
-            // "put multiple solutions in the Claude tab" workflow. Clears
-            // whatever was there before (per that same rule: only the
-            // topic currently being worked matters, not old ones).
-            //
-            // BUG FOUND & FIXED (confirmed via a real screenshot showing
-            // the panel stuck on its static "Abhi koi active topic nahi
-            // hai" placeholder despite a topic being registered): this
-            // whole block runs INSIDE buildAdminFilesBody(), which only
-            // RETURNS an HTML string (see the static placeholder text
-            // for #claudeDebugPanel a few lines above, in that same
-            // returned template) - it doesn't insert anything into the
-            // DOM itself. addTopic() below calls _render() synchronously,
-            // which does document.getElementById('claudeDebugPanel') -
-            // at that exact moment the returned string hasn't been
-            // assigned into the DOM yet by whatever caller does
-            // `someElement.innerHTML = buildAdminFilesBody()`, so the
-            // container doesn't exist, _render() silently no-ops, and
-            // the topic sits in ClaudeDebug._topics with nothing ever
-            // painting it - permanently stuck on the static placeholder
-            // since nothing re-renders after the real DOM insertion
-            // happens moments later. Deferred via setTimeout(...,0) so
-            // this runs on the NEXT tick, after the calling code's
-            // innerHTML assignment has already completed and the real
-            // container exists.
-            setTimeout(function () {
-                ClaudeDebug.clear();
-                ClaudeDebug.addTopic(
-                    'OCR: source page N content landing on output page N+1 (page-break/spacing strategy)',
-                    [
-                        { name: 'Solution 1: forced break per source page + spacing compaction, max 25% tighter (current default)', value: 'forced-budget' },
-                        { name: 'Solution 2: forced break per source page + spacing compaction, max 40% tighter (more aggressive)', value: 'forced-budget-aggressive' },
-                        { name: 'Solution 3: forced break per source page, NO spacing compaction', value: 'forced-nobudget' },
-                        { name: 'Solution 4: NO forced break - natural Word/LibreOffice pagination (original pre-fix behavior)', value: 'natural' },
-                    ],
-                    function (chosen) {
-                        window.__ocrPageBreakStrategy = chosen;
-                    }
-                );
-            }, 0);
+            // NOTE: the "OCR: source page N content..." topic is now
+            // rendered directly as STATIC HTML inside the
+            // #claudeDebugPanel template above (buildAdminFilesBody's
+            // returned string, ~30 lines up) instead of being registered
+            // here via ClaudeDebug.addTopic(). Reason (confirmed via a
+            // real screenshot of the panel stuck empty): addTopic() here
+            // runs INSIDE buildAdminFilesBody(), which only RETURNS an
+            // HTML string - it doesn't insert anything into the DOM
+            // itself, so _render()'s document.getElementById() call
+            // always found nothing at that point, no matter how the
+            // timing was deferred (setTimeout, retries, etc. - all still
+            // depend on guessing the right moment, which isn't reliably
+            // verifiable without a live browser). Baking the <select>
+            // directly into the static template removes the timing
+            // dependency entirely - it exists the moment the HTML does,
+            // same as every other static element on this page.
+            // window.ClaudeDebug itself is left intact for any future
+            // topic that genuinely needs live no-redeploy switching from
+            // JS-driven contexts (not simple static markup like this one).
 
             // Gathers every currently-registered service (both free tools
             // and the fixed set of paid ones) and asks the backend to add
