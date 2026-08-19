@@ -1321,16 +1321,42 @@
   const BUDGET_SPACE_AFTER_FLOOR_TWIPS = 40; // ~2pt floor between paragraphs
 
   function estimateParagraphHeightPt(p, usableWidthPt) {
+    // GREEDY WORD-WRAP SIMULATION - replaces an earlier, coarser
+    // "total segment width / available width" ribbon estimate that was
+    // confirmed (via a real reported case) to systematically
+    // UNDERESTIMATE line count: dividing total text width by available
+    // width assumes perfect packing with zero wasted space at each line
+    // end, but real word-wrapping always loses some trailing space per
+    // line (can't split mid-word) - so the ribbon model kept concluding
+    // a page "fits" when Word's actual wrapping needed one more line
+    // than that. This walks word-by-word (mirroring what the renderer
+    // itself will do) and is much closer to the real wrapped line count.
     const indentPt = p.listInfo ? (p.listInfo.level + 1) * 28 : 0;
     const availWidthPt = Math.max(50, usableWidthPt - indentPt);
-    let totalTextWidthPt = 0;
+    const spaceWidthPt = measureTextPt(' ', (p.segments && p.segments[0] && p.segments[0].sizePt) || 11,
+      p.segments && p.segments[0] && p.segments[0].family, false, false) || 3;
+
+    let lineCount = 1;
+    let lineWidthPt = 0;
+    let anyWord = false;
     (p.segments || []).forEach(function (seg) {
-      totalTextWidthPt += measureTextPt(seg.text || '', seg.sizePt || 11, seg.family, seg.bold, seg.italic);
+      const words = String(seg.text || '').split(/\s+/).filter(Boolean);
+      words.forEach(function (word) {
+        const wordWidthPt = measureTextPt(word, seg.sizePt || 11, seg.family, seg.bold, seg.italic);
+        const addWidth = (anyWord ? spaceWidthPt : 0) + wordWidthPt;
+        if (anyWord && lineWidthPt + addWidth > availWidthPt) {
+          lineCount++;
+          lineWidthPt = wordWidthPt;
+        } else {
+          lineWidthPt += addWidth;
+        }
+        anyWord = true;
+      });
     });
-    const estimatedLines = totalTextWidthPt > 0 ? Math.max(1, Math.ceil(totalTextWidthPt / availWidthPt)) : 1;
+
     const lineHeightPt = (p.lineTwips || 276) / 20;
     const spaceAfterPt = (p.spaceAfterTwips != null ? p.spaceAfterTwips : 160) / 20;
-    return estimatedLines * lineHeightPt + spaceAfterPt;
+    return lineCount * lineHeightPt + spaceAfterPt;
   }
 
   function applyPageHeightBudget(pg) {
@@ -1345,7 +1371,7 @@
     (pg.images || []).forEach(function (im) { totalPt += im.hPt || 0; });
     (pg.tables || []).forEach(function (t) { totalPt += Math.max(0, (t.bottomPt || 0) - (t.topPt || 0)); });
 
-    if (totalPt <= usableHeightPt || totalPt <= 0) return; // fits already - nothing to do
+    if (totalPt <= usableHeightPt * 0.98 || totalPt <= 0) return; // fits already (2% safety buffer for estimation uncertainty) - nothing to do
 
     const ratio = Math.max(BUDGET_MIN_COMPACTION_RATIO, usableHeightPt / totalPt);
     (pg.paragraphs || []).forEach(function (p) {

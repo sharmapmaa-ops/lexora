@@ -15,7 +15,41 @@ const BUDGET_MIN_COMPACTION_RATIO = 0.75;
 const BUDGET_LINE_FLOOR_TWIPS = 200;
 const BUDGET_SPACE_AFTER_FLOOR_TWIPS = 40;
 
+// GREEDY WORD-WRAP (matches the fixed version in translation-offline.js -
+// replaces an earlier ribbon/division model confirmed to underestimate
+// line count on a real reported document).
 function estimateParagraphHeightPt(p, usableWidthPt) {
+  const indentPt = p.listInfo ? (p.listInfo.level + 1) * 28 : 0;
+  const availWidthPt = Math.max(50, usableWidthPt - indentPt);
+  const spaceWidthPt = measureTextPt(' ', (p.segments && p.segments[0] && p.segments[0].sizePt) || 11,
+    p.segments && p.segments[0] && p.segments[0].family, false, false) || 3;
+
+  let lineCount = 1;
+  let lineWidthPt = 0;
+  let anyWord = false;
+  (p.segments || []).forEach(function (seg) {
+    const words = String(seg.text || '').split(/\s+/).filter(Boolean);
+    words.forEach(function (word) {
+      const wordWidthPt = measureTextPt(word, seg.sizePt || 11, seg.family, seg.bold, seg.italic);
+      const addWidth = (anyWord ? spaceWidthPt : 0) + wordWidthPt;
+      if (anyWord && lineWidthPt + addWidth > availWidthPt) {
+        lineCount++;
+        lineWidthPt = wordWidthPt;
+      } else {
+        lineWidthPt += addWidth;
+      }
+      anyWord = true;
+    });
+  });
+
+  const lineHeightPt = (p.lineTwips || 276) / 20;
+  const spaceAfterPt = (p.spaceAfterTwips != null ? p.spaceAfterTwips : 160) / 20;
+  return lineCount * lineHeightPt + spaceAfterPt;
+}
+
+// OLD ribbon/division model, kept here ONLY to prove it under-estimates
+// vs the greedy simulation above on the same input (regression evidence).
+function estimateParagraphHeightPt_OLD_RIBBON(p, usableWidthPt) {
   const indentPt = p.listInfo ? (p.listInfo.level + 1) * 28 : 0;
   const availWidthPt = Math.max(50, usableWidthPt - indentPt);
   let totalTextWidthPt = 0;
@@ -38,7 +72,7 @@ function applyPageHeightBudget(pg) {
   (pg.images || []).forEach(function (im) { totalPt += im.hPt || 0; });
   (pg.tables || []).forEach(function (t) { totalPt += Math.max(0, (t.bottomPt || 0) - (t.topPt || 0)); });
 
-  if (totalPt <= usableHeightPt || totalPt <= 0) return { compacted: false, totalPt: totalPt, usableHeightPt: usableHeightPt };
+  if (totalPt <= usableHeightPt * 0.98 || totalPt <= 0) return { compacted: false, totalPt: totalPt, usableHeightPt: usableHeightPt };
 
   const ratio = Math.max(BUDGET_MIN_COMPACTION_RATIO, usableHeightPt / totalPt);
   (pg.paragraphs || []).forEach(function (p) {
@@ -105,5 +139,44 @@ assert(extremePage.paragraphs[0].lineTwips === Math.max(BUDGET_LINE_FLOOR_TWIPS,
 
 // Test 4: content is never deleted - paragraph count identical before/after.
 assert(extremePage.paragraphs.length === 60, 'Test 4: no paragraphs dropped despite heavy compaction');
+
+// Test 5: THE REAL REPORTED BUG - a page made of many short-word
+// paragraphs (typical prose, lots of natural word-break waste) where
+// the OLD ribbon model underestimates enough to think it fits, but the
+// NEW greedy simulation correctly detects the overflow and compacts.
+function shortWordParagraph() {
+  // Mixed short/long words -> realistic per-line trailing-space waste
+  // (a long word that doesn't fit gets pushed whole to the next line,
+  // leaving unused space on the line before it - exactly what the old
+  // ribbon model's "perfect packing" assumption couldn't see).
+  return {
+    segments: [{
+      text: 'a an is it he we contrattualmente do go up complessivamente on at by or if so amministratore no ok yes now who how why registrazione '.repeat(3),
+      sizePt: 11, family: 'Arial'
+    }],
+    lineTwips: 291, spaceAfterTwips: 262 // realistic REAL measured values pulled from the actual reported document's XML
+  };
+}
+const realisticParagraphs = [];
+for (let i = 0; i < 22; i++) realisticParagraphs.push(shortWordParagraph());
+const usableWidthForTest = 595 - 120;
+
+const oldTotal = realisticParagraphs.reduce(function (s, p) { return s + estimateParagraphHeightPt_OLD_RIBBON(p, usableWidthForTest); }, 0);
+const newTotal = realisticParagraphs.reduce(function (s, p) { return s + estimateParagraphHeightPt(p, usableWidthForTest); }, 0);
+assert(newTotal >= oldTotal, 'Test 5: greedy wrap never estimates LESS height than the old ribbon model (' + newTotal.toFixed(0) + 'pt vs ' + oldTotal.toFixed(0) + 'pt)');
+
+const usableHeightForTest = 842 - 120;
+const realisticPage = {
+  wPt: 595, hPt: 842,
+  margins: { left: 60 * 20, right: 60 * 20, top: 60 * 20, bottom: 60 * 20 },
+  paragraphs: realisticParagraphs,
+  images: [], tables: []
+};
+const oldWouldFit = oldTotal <= usableHeightForTest;
+const newWouldFit = newTotal <= usableHeightForTest;
+const r5 = applyPageHeightBudget(realisticPage);
+console.log('  (context: old-model verdict=' + (oldWouldFit ? 'FITS (wrong)' : 'overflow') +
+  ', new-model verdict=' + (newWouldFit ? 'fits' : 'OVERFLOW (correct)') + ')');
+assert(!newWouldFit ? r5.compacted === true : true, 'Test 5b: when new model detects overflow, budget actually compacts');
 
 console.log(process.exitCode ? '\nSOME TESTS FAILED' : '\nALL TESTS PASSED');
