@@ -1294,10 +1294,79 @@
         '<w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>' + gridCols + '</w:tblGrid>' + rowsXml + '</w:tbl>';
     }
 
-    let bodyXml = '';
-    pages.forEach(function (pg, pIdx) {
-      pg.margins = computePageMargins(pg);
-      const isLastPage = pIdx === pages.length - 1;
+  // ── PAGE-HEIGHT BUDGET (no API calls - pure local measurement, reuses
+  // measureTextPt's existing Canvas-based text metrics) ────────────────
+  // Root cause this addresses (confirmed real via a reported case): a
+  // "paragraph" here can merge SEVERAL of the source PDF's own lines
+  // into one reflowable <w:p> (see v14BuildSegments above) - meaning
+  // Word/LibreOffice will WRAP that paragraph's text to fit the page
+  // width using whatever font actually renders it, which can be wider
+  // than the PDF's own embedded font. When that happens, a paragraph
+  // that was exactly N lines in the source can become N+1 lines in the
+  // output, and across a full dense page those extra half-lines add up
+  // to genuine overflow onto an extra page - exactly the "page 3
+  // content spills two lines onto page 4" symptom reported after the
+  // blank-trailing-page fix above.
+  //
+  // This does NOT try to guarantee a perfect fit (impossible without
+  // literally re-running Word's own layout engine) - it ESTIMATES each
+  // paragraph's wrapped height using the same real font-metric
+  // measurement already used elsewhere in this file (measureTextPt),
+  // and if a page's estimated total exceeds its usable height, tightens
+  // line/paragraph spacing PROPORTIONALLY (never below a readability
+  // floor) to close the gap. Never deletes, truncates, or shrinks font
+  // size - only spacing.
+  const BUDGET_MIN_COMPACTION_RATIO = 0.75; // never compress spacing by more than 25%
+  const BUDGET_LINE_FLOOR_TWIPS = 200;      // ~single-spacing floor, never go tighter
+  const BUDGET_SPACE_AFTER_FLOOR_TWIPS = 40; // ~2pt floor between paragraphs
+
+  function estimateParagraphHeightPt(p, usableWidthPt) {
+    const indentPt = p.listInfo ? (p.listInfo.level + 1) * 28 : 0;
+    const availWidthPt = Math.max(50, usableWidthPt - indentPt);
+    let totalTextWidthPt = 0;
+    (p.segments || []).forEach(function (seg) {
+      totalTextWidthPt += measureTextPt(seg.text || '', seg.sizePt || 11, seg.family, seg.bold, seg.italic);
+    });
+    const estimatedLines = totalTextWidthPt > 0 ? Math.max(1, Math.ceil(totalTextWidthPt / availWidthPt)) : 1;
+    const lineHeightPt = (p.lineTwips || 276) / 20;
+    const spaceAfterPt = (p.spaceAfterTwips != null ? p.spaceAfterTwips : 160) / 20;
+    return estimatedLines * lineHeightPt + spaceAfterPt;
+  }
+
+  function applyPageHeightBudget(pg) {
+    const usableWidthPt = pg.wPt - (pg.margins.left + pg.margins.right) / 20;
+    const usableHeightPt = pg.hPt - (pg.margins.top + pg.margins.bottom) / 20;
+    if (!(usableWidthPt > 0) || !(usableHeightPt > 0)) return;
+
+    let totalPt = 0;
+    (pg.paragraphs || []).forEach(function (p) {
+      totalPt += estimateParagraphHeightPt(p, usableWidthPt);
+    });
+    (pg.images || []).forEach(function (im) { totalPt += im.hPt || 0; });
+    (pg.tables || []).forEach(function (t) { totalPt += Math.max(0, (t.bottomPt || 0) - (t.topPt || 0)); });
+
+    if (totalPt <= usableHeightPt || totalPt <= 0) return; // fits already - nothing to do
+
+    const ratio = Math.max(BUDGET_MIN_COMPACTION_RATIO, usableHeightPt / totalPt);
+    (pg.paragraphs || []).forEach(function (p) {
+      p.lineTwips = Math.max(BUDGET_LINE_FLOOR_TWIPS, Math.round((p.lineTwips || 276) * ratio));
+      p.spaceAfterTwips = Math.max(
+        BUDGET_SPACE_AFTER_FLOOR_TWIPS,
+        Math.round((p.spaceAfterTwips != null ? p.spaceAfterTwips : 160) * ratio)
+      );
+    });
+    // HONEST LIMITATION: if ratio was clamped at the 0.75 floor and the
+    // page is still over budget, this page will still overflow - by a
+    // much smaller amount than before, but not guaranteed zero. No
+    // content is ever dropped to force a fit.
+  }
+
+  let bodyXml = '';
+  let lastPageSectPrWritten = false;
+  pages.forEach(function (pg, pIdx) {
+    pg.margins = computePageMargins(pg);
+    applyPageHeightBudget(pg);
+    const isLastPage = pIdx === pages.length - 1;
 
       // Interleave paragraphs, images and tables in original vertical
       // reading order, so an image or table that sat between two
@@ -1371,6 +1440,7 @@
           bodyXml += imageXml(item.data, pg);
           if (isLastPage && isLastFlowItem) {
             bodyXml += '<w:p><w:pPr><w:sectPr>' + sectPrXml(pg) + '</w:sectPr></w:pPr></w:p>';
+            lastPageSectPrWritten = true;
           }
           return;
         }
@@ -1382,6 +1452,7 @@
           // when the table is the page's last item, carries the actual
           // section-break properties.
           bodyXml += '<w:p>' + (isLastPage && isLastFlowItem ? '<w:pPr><w:sectPr>' + sectPrXml(pg) + '</w:sectPr></w:pPr>' : '') + '</w:p>';
+          if (isLastPage && isLastFlowItem) lastPageSectPrWritten = true;
           return;
         }
         const p = item.data;
@@ -1395,6 +1466,7 @@
           (isLastParagraph ? '<w:sectPr>' + sectPrXml(pg) + '</w:sectPr>' : '') +
           '</w:pPr>';
         bodyXml += '<w:p>' + pPr + runsXml + '</w:p>';
+        if (isLastParagraph) lastPageSectPrWritten = true;
       });
 
       // Item - genuine root cause of a stray, entirely blank trailing
@@ -1413,6 +1485,25 @@
       }
     });
 
+    // SECOND, independent cause of the SAME "3-page source PDF -> 5
+    // output pages, blank last page" symptom (confirmed via real
+    // OOXML inspection, not assumed): the block above already writes
+    // a closing <w:sectPr> INSIDE the last real paragraph/image/table's
+    // own <w:pPr> for the last page (see lastPageSectPrWritten). The
+    // trailing body-level <w:sectPr> below is REQUIRED when that never
+    // happened (e.g. the very last page's flow was genuinely empty),
+    // but was previously being written UNCONDITIONALLY regardless -
+    // producing a paragraph with its own embedded closing sectPr
+    // immediately followed by a second, completely empty section (a
+    // <w:sectPr> as a bare <w:body> child with no paragraph before the
+    // next one), which Word/LibreOffice render as one extra blank page
+    // to satisfy "every section needs at least an empty page". Only
+    // emit it now if the loop above never already closed the last
+    // section.
+    const trailingSectPr = lastPageSectPrWritten
+      ? ''
+      : '<w:sectPr>' + sectPrXml(pages[pages.length - 1]) + '</w:sectPr>';
+
     const documentXml =
 '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
 '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
@@ -1421,7 +1512,7 @@
 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
 'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
 '<w:body>' + bodyXml +
-'<w:sectPr>' + sectPrXml(pages[pages.length - 1]) + '</w:sectPr></w:body></w:document>';
+trailingSectPr + '</w:body></w:document>';
 
     const contentTypes =
 '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
