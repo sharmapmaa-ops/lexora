@@ -296,6 +296,18 @@
       '<wps:bodyPr rot="0" vert="horz" wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t"><a:noAutofit/></wps:bodyPr>' +
       '</wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>';
   }
+  // DIAGNOSTIC ONLY, no functional effect - exposes this exact
+  // function's OWN real source code for the admin "Claude" tab to
+  // display directly, added after a real reported case where a
+  // separate top-of-file version marker showed the correct NEW value
+  // while the actual OCR output still showed OLD behavior, from the
+  // SAME script file - a marker string can drift out of sync with the
+  // real function it's meant to represent (e.g. if only PART of a
+  // deploy updates, or some other environment-specific issue this
+  // sandbox can't reproduce or diagnose further). Showing the function's
+  // OWN literal source removes that ambiguity entirely - what's
+  // displayed IS what's executing, not a separate claim about it.
+  window.__ocrTextBoxXmlSource = textBoxXml.toString();
 
   function floatingImageXml(relId, xPt, yPt, wPt, hPt, name) {
     // Same positioning convention as textBoxXml above (positionH

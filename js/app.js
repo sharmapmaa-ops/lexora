@@ -8954,6 +8954,13 @@
                                             <span id="ocrEngineVersionWarn" style="display:none; color:#b00;"> — is browser me PURANI file chal rahi hai (redeploy ke baad bhi cache/CDN se old JS load ho raha ho sakta hai) - naya version load karne ke liye Ctrl+Shift+R (ya deployment/cache settings check karo)</span>
                                         </div>
                                         <img src="x" onerror="this.remove(); try { var _v = window.__ocrEngineBuildTag; var _el2 = document.getElementById('ocrEngineVersionDisplay'); var _warn = document.getElementById('ocrEngineVersionWarn'); var _expected = 'ocr-singleword-leftalign-fix-2026-08-20'; if (_el2) { _el2.textContent = _v || 'NOT FOUND (bahut purana JS load ho raha hai)'; if (_warn) { _warn.style.display = (_v === _expected) ? 'none' : 'inline'; } } } catch(e) {}" style="display:none;" alt="">
+                                        <div class="ds-card-sub" style="margin-top:10px;">
+                                            textBoxXml me "wordCount &gt;= 2" fix hai: <b id="ocrTextBoxXmlFixCheck">checking...</b>
+                                            <details style="margin-top:6px;"><summary style="cursor:pointer;">Real function source dekhein (click karo)</summary>
+                                                <pre id="ocrTextBoxXmlSourceDisplay" style="white-space:pre-wrap; font-size:11px; max-height:300px; overflow:auto; background:#f7f7f7; padding:8px; border-radius:4px;">loading...</pre>
+                                            </details>
+                                        </div>
+                                        <img src="x" onerror="this.remove(); try { var _src = window.__ocrTextBoxXmlSource; var _chk = document.getElementById('ocrTextBoxXmlFixCheck'); var _disp = document.getElementById('ocrTextBoxXmlSourceDisplay'); var _hasFix = !!(_src && _src.indexOf('wordCount >= 2') !== -1); if (_chk) { _chk.textContent = _src ? (_hasFix ? 'HAAN, fix maujood hai' : 'NAHI - fix maujood NAHI hai is real function me') : 'textBoxXml khud NOT FOUND (bahut purana JS)'; _chk.style.color = _hasFix ? '#080' : '#b00'; } if (_disp) { _disp.textContent = _src || 'not available'; } } catch(e) {}" style="display:none;" alt="">
                                     </div>
                                 </div>
                             </div>
