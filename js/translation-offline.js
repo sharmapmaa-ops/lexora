@@ -2,6 +2,16 @@
  * (pdf.js + JSZip, browser). window.buildOfflineDocxBlob(file, logFn) -> Blob */
 (function () {
   'use strict';
+  // BUILD VERSION MARKER - purely diagnostic, no functional effect. Set
+  // on window so the admin "Claude" tab can display it directly, giving
+  // an immediate, no-DevTools-needed way to confirm whether the file
+  // actually running in the browser is the latest deployed one (added
+  // after a real reported case where a redeploy + hard-refresh still
+  // showed old behavior - this makes that mismatch visible at a glance
+  // instead of needing to inspect the file manually). Bump the string
+  // whenever a real functional change is made to this file, so the
+  // marker is only useful if kept honest.
+  window.__ocrEngineBuildTag = 'ocr-distribute-justify-2026-08-20';
   const EMU = 12700;
   const MIN_FONT_PT = 6;
   const FONT_FLOOR_RATIO = 0.55;
