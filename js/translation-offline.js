@@ -265,7 +265,7 @@
       '<w:p><w:pPr>' +
       '<w:spacing w:before="0" w:after="0" w:line="' + lineTw + '" w:lineRule="exact"/>' +
       (line.rtl ? '<w:bidi/>' : '') +
-      '<w:jc w:val="both"/></w:pPr>' + runsXml + '</w:p>' +
+      '<w:jc w:val="distribute"/></w:pPr>' + runsXml + '</w:p>' +
       '</w:txbxContent></wps:txbx>' +
       // wrap="none": text apni width se wrap NAHI hoga, box size exact rahega
       '<wps:bodyPr rot="0" vert="horz" wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t"><a:noAutofit/></wps:bodyPr>' +

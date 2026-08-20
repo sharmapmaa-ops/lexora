@@ -382,3 +382,31 @@ par decide karega.
   ke liye X approach use karunga, jiske ye trade-offs hain — theek hai
   kya?" — sirf tab implement karo jab user confirm kare, apni taraf se
   "best" approach decide karke seedha implement mat karo.
+
+- **REPEATED VIOLATION FLAG (severity: high) — "rule register karna"
+  aur "rule apply karna" do alag cheezein hain, sirf pehli karke doosri
+  maan lena galat hai.** User ne explicitly pakड़ा: overengineering-na-
+  karo wala rule maine kai baar likha CLAUDE_INSTRUCTIONS.md me, lekin
+  uske BAAD bhi Solution 9 ko multiple baar rewrite kiya (paragraph-box,
+  phir alias, phir wapas box), aur ek uncertain justify-heuristic banaya
+  jisme threshold 3 baar badalna pada (2→5→8) — sab kuch bina pehle
+  confirm kiye ke itni uncertainty/complexity acceptable hai ya nahi.
+  **Sabak (ab se STOP-AND-ASK, sirf self-check nahi):** koi bhi
+  architecture-level decision, ya koi bhi fix jiske pehli try me kaam
+  karne ka pura confidence na ho, USKO IMPLEMENT KARNE SE PEHLE plan
+  explicitly likhna hai aur user ka confirmation lena hai — pehle code
+  likh ke baad explain karna nahi chalega. Jaise hi lage "ye ek non-
+  trivial choice hai jo maine bina pooche li," turant rukna hai, aage
+  nahi badhna.
+
+- **HIGHEST PRIORITY, ABSOLUTE — User ki di hui EXACT direction ke
+  ANDAR hi kaam karna hai, bahar ek word/action bhi nahi.** User ne
+  explicitly kaha: "koi bhi ek word bhi meri direction ke bahar ka nahi
+  hona chahiye." Ye Claude ke normal default ko OVERRIDE karta hai
+  (jisme ambiguous request pe "reasonable interpretation choose karke
+  aage badho" hota hai) — is user ke liye, ambiguity ka matlab hai RUKO
+  aur POOCHO, khud se assume ya gap fill mat karo. Koi proactive fix
+  nahi, koi proactive refactor nahi, koi scope-addition nahi, koi
+  unilateral architecture-decision nahi, koi "while I'm at it" wala
+  extra kaam nahi — sirf jo explicitly bola gaya hai wahi, jab tak agli
+  direction na mile.
