@@ -11,7 +11,7 @@
   // instead of needing to inspect the file manually). Bump the string
   // whenever a real functional change is made to this file, so the
   // marker is only useful if kept honest.
-  window.__ocrEngineBuildTag = 'ocr-distribute-justify-2026-08-20';
+  window.__ocrEngineBuildTag = 'ocr-singleword-leftalign-fix-2026-08-20';
   const EMU = 12700;
   const MIN_FONT_PT = 6;
   const FONT_FLOOR_RATIO = 0.55;
@@ -242,6 +242,21 @@
     const cy = Math.max(1, Math.round(line.hPt * EMU));
     const lineTw = Math.max(20, Math.round(line.hPt * 20)); // exact line height (twips)
 
+    // CONFIRMED REAL BUG (via actual MS Word screenshot, not
+    // LibreOffice - LibreOffice does NOT reproduce this): jc=
+    // "distribute" on a line with only ONE word gives Word no inter-
+    // WORD gap to distribute, so real Word falls back to spreading
+    // individual CHARACTERS across the box width instead - e.g. "MARR"
+    // rendered as "M A R R", "Tra" as "T" ... "r" stretched across the
+    // whole line. LibreOffice leaves single-word "distribute" lines
+    // alone, which is why this wasn't caught by LibreOffice-based
+    // testing. Fix: only apply "distribute" when the line has 2+
+    // words (a real inter-word gap to distribute); a single word gets
+    // plain "left" - there is nothing meaningful to "justify" in a
+    // one-word line regardless of box width.
+    const wordCount = (line.runs || []).map(function (r) { return r.text || ''; }).join(' ').trim().split(/\s+/).filter(Boolean).length;
+    const jc = wordCount >= 2 ? 'distribute' : 'left';
+
     const order = line.rtl ? line.runs.slice().reverse() : line.runs;
     const runsXml = order.map(function(r){
       const sz  = Math.max(2, Math.round((r.sizePt || 11) * 2)); // half-points, fractional preserved
@@ -275,7 +290,7 @@
       '<w:p><w:pPr>' +
       '<w:spacing w:before="0" w:after="0" w:line="' + lineTw + '" w:lineRule="exact"/>' +
       (line.rtl ? '<w:bidi/>' : '') +
-      '<w:jc w:val="distribute"/></w:pPr>' + runsXml + '</w:p>' +
+      '<w:jc w:val="' + jc + '"/></w:pPr>' + runsXml + '</w:p>' +
       '</w:txbxContent></wps:txbx>' +
       // wrap="none": text apni width se wrap NAHI hoga, box size exact rahega
       '<wps:bodyPr rot="0" vert="horz" wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t"><a:noAutofit/></wps:bodyPr>' +

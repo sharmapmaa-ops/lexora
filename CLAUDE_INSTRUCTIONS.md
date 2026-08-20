@@ -410,3 +410,23 @@ par decide karega.
   unilateral architecture-decision nahi, koi "while I'm at it" wala
   extra kaam nahi — sirf jo explicitly bola gaya hai wahi, jab tak agli
   direction na mile.
+
+- **LibreOffice-based verification ka ek REAL, confirmed gap hai —
+  `jc="distribute"` single-word paragraphs pe LibreOffice aur real MS
+  Word ALAG render karte hain.** Real incident: maine LibreOffice se
+  render karke "distribute" fix ko verify kiya, "sab theek hai" bola —
+  lekin jab user ne REAL MS Word ka screenshot bheja, single-word lines
+  ("Tra", "e", "MARR", "seguito,", "Parte", "Premesso") **character-by-
+  character spread** ho rahi thi (jaise "M A R R"), jo LibreOffice ke
+  render me bilkul nahi dikha tha. Reason: jab line me sirf EK word ho
+  aur box wide ho, real Word ke paas distribute karne ke liye koi WORD-
+  gap nahi hota, to wo INDIVIDUAL CHARACTERS ke beech spread karna shuru
+  kar deta hai — LibreOffice ye nahi karta, single word ko normal chhod
+  deta hai. **Sabak:** OOXML/Word-specific formatting properties (jaise
+  jc/justify variants, character-spacing, kuch specific box/textbox
+  behaviors) ke liye LibreOffice render "verified" ka matlab NAHI hai
+  ke real Word me bhi wahi dikhega — ye sirf PAGE COUNT/LAYOUT jaisi
+  cheezon ke liye reliable hai. Jab bhi aisi property test karo jo
+  LibreOffice aur Word alag handle kar sakte hain, explicitly bolo "ye
+  sirf LibreOffice se verify hua hai, real Word me alag ho sakta hai" —
+  full-confidence "verified" mat bolo.
