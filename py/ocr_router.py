@@ -13,7 +13,7 @@ version of this module also shipped a Python "lightweight" DOCX
 builder that the browser called directly; that produced a flat text
 dump with no position, no styling, and no signature image, because it
 threw away exactly what the browser's EXISTING pdf.js pipeline
-(buildOfflineDocxBlob, js/translation-offline.js) already does
+(buildOfflineDocxBlob, js/engine-ocr.js) already does
 correctly: exact per-line text position straight from the PDF's own
 text layer, plus real embedded images AND signature annotations
 captured via pdfjsLib.AnnotationMode.ENABLE_FORMS):

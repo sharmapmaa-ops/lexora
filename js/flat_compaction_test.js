@@ -1,5 +1,5 @@
 // Test for the full multi-solution strategy dispatcher in
-// translation-offline.js (applyPageHeightBudget + related functions).
+// js/engine-ocr.js (applyPageHeightBudget + related functions).
 // REPLACES an earlier, much more complex per-paragraph estimation
 // system that was removed after direct evidence (real document, real
 // LibreOffice rendering) showed it wasn't actually reducing spacing

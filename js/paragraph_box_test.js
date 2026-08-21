@@ -26,7 +26,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const src = fs.readFileSync(path.join(__dirname, 'translation-offline.js'), 'utf8');
+const src = fs.readFileSync(path.join(__dirname, 'engine-ocr.js'), 'utf8');
 function extractFn(name) {
   const marker = 'function ' + name + '(';
   const start = src.indexOf(marker);

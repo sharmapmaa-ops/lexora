@@ -1,5 +1,5 @@
 // Isolated reproduction of the sectPr-emission logic from
-// buildFlowingDocx() in js/translation-offline.js, extracted to verify
+// buildFlowingDocx() in js/engine-ocr.js, extracted to verify
 // the fix (exactly one closing <w:sectPr> for the whole document,
 // regardless of what the last page's last flow item is) without
 // needing the full browser/pdf.js/JSZip stack.
@@ -15,7 +15,7 @@ function buildBodyXml(pages) {
     const flow = pg.flow; // pre-built for this test: array of {kind, isLast}
 
     // FIXED: page break now driven ONLY by flow.length > 0, decoupled
-    // from pg.pageBg - matches the real fix in translation-offline.js
+    // from pg.pageBg - matches the real fix in engine-ocr.js
     // (the pageBg-gated version never broke pages for plain-white
     // documents at all, which was the actual root cause of a whole
     // source PDF flowing as one unbroken stream).

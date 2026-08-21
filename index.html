@@ -98,8 +98,9 @@
         </div>
     </div>
 
-    <!-- Offline (Hybrid-off) translation: browser-side pdf.js + JSZip +
-         Test.html ka exact offline logic (translation-offline.js). -->
+    <!-- Offline (Hybrid-off) translation/OCR/etc: browser-side pdf.js +
+         JSZip. Each service below now loads its OWN fully-separate engine
+         copy (js/engine-*.js) instead of one shared translation-offline.js. -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <!-- pdf-lib: client-side PDF writing (split/merge/image-to-PDF). pdf.js
@@ -119,7 +120,18 @@
       }
     </script>
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-    <script src="js/translation-offline.js?v=20260809d"></script>
+    <!-- FULLY SEPARATE per-service engine copies (not one shared
+         translation-offline.js anymore) - each service has its own
+         independent file per explicit requirement, so a fix, a cache
+         issue, or a deploy problem in one service's copy can never be
+         confused with another's. Each has its OWN version query string -
+         bump ONLY the one(s) actually changed, not all five, so it stays
+         possible to tell exactly which service's engine was last updated. -->
+    <script src="js/engine-translation.js?v=engine-translation-2026-08-20a"></script>
+    <script src="js/engine-ocr.js?v=engine-ocr-2026-08-20a"></script>
+    <script src="js/engine-dataextraction.js?v=engine-dataextraction-2026-08-20a"></script>
+    <script src="js/engine-bai2.js?v=engine-bai2-2026-08-20a"></script>
+    <script src="js/engine-calculators.js?v=engine-calculators-2026-08-20a"></script>
     <script src="js/service-runner.js?v=20260809d"></script>
     <script src="js/tools.js?v=20260809d"></script>
     <script src="js/tools-files.js?v=20260809d"></script>

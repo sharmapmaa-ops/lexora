@@ -3,8 +3,8 @@ Lexora - ASPOSE CLOUD TEST PIPELINE (isolated, experimental)
 ==============================================================
 
 This does NOT touch translate_pipeline.py, lease_engine.py's real
-translation flow, or js/translation-offline.js. Only reachable via its
-own admin-only test route.
+translation flow, or any of the js/engine-*.js browser-side files. Only
+reachable via its own admin-only test route.
 
 Needs NO self-hosting - Aspose runs the actual service, we just call it
 with a Client Id/Secret. Genuinely just `pip install aspose-words-cloud
@@ -847,9 +847,10 @@ def _extract_signature_images(pdf_path):
     rendering with pdfium's form environment initialized produced the
     actual "Firmato digitalmente da: ..." signature stamp.
 
-    This mirrors js/translation-offline.js's extractOfflineImages ->
-    signatureRects detection (Widget/Sig annotations, skip ones with no
-    appearance content i.e. hasAppearance === False / no 'AP' entry) but
+    This mirrors the shared engine logic (extractOfflineImages ->
+    signatureRects detection, identical in every js/engine-*.js copy -
+    Widget/Sig annotations, skip ones with no appearance content i.e.
+    hasAppearance === False / no 'AP' entry) but
     in Python: pdfplumber gives the annotation rects, pypdfium2 (with
     init_forms() + draw_annots=True + may_draw_forms=True - all THREE
     are required, confirmed by testing; render() without them silently

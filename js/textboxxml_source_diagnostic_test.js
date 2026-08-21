@@ -12,12 +12,12 @@
 const fs = require('fs');
 const path = require('path');
 
-const offlineSrc = fs.readFileSync(path.join(__dirname, 'translation-offline.js'), 'utf8');
+const offlineSrc = fs.readFileSync(path.join(__dirname, 'engine-ocr.js'), 'utf8');
 const appSrc = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
 
 function assert(cond, label) { if (!cond) { console.log('FAIL:', label); process.exitCode = 1; } else console.log('PASS:', label); }
 
-assert(offlineSrc.includes('window.__ocrTextBoxXmlSource = textBoxXml.toString();'), 'translation-offline.js exports the REAL textBoxXml function\'s own source (not a separate hand-written marker)');
+assert(offlineSrc.includes('window.__ocrTextBoxXmlSource = textBoxXml.toString();'), 'engine-ocr.js exports the REAL textBoxXml function\'s own source (not a separate hand-written marker)');
 
 // Confirm the export happens AFTER textBoxXml is fully defined (so
 // .toString() captures the complete, real function body, not a

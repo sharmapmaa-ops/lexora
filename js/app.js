@@ -2860,17 +2860,20 @@
                                     addActivity('translation', `${fl}${m}`, isProblem ? 'Failed' : 'Info');
                                     refreshServicePage('translation');
                                 };
-                                if (window.setVisionAuthToken) window.setVisionAuthToken(AUTH_TOKEN || '');
-                                if (window.setVisionStopCheck) window.setVisionStopCheck(function () { return processState.stopped; });
-                                if (window.setPipelineEventHandler) window.setPipelineEventHandler(onEvent);
-                                if (window.resetPipelineApiCounters) window.resetPipelineApiCounters();
+                                // Uses the Translation service's OWN, fully-separate engine
+                                // copy (window.__translationEngine) - not a shared global
+                                // with other services, per explicit separation requirement.
+                                if (window.__translationEngine && window.__translationEngine.setVisionAuthToken) window.__translationEngine.setVisionAuthToken(AUTH_TOKEN || '');
+                                if (window.__translationEngine && window.__translationEngine.setVisionStopCheck) window.__translationEngine.setVisionStopCheck(function () { return processState.stopped; });
+                                if (window.__translationEngine && window.__translationEngine.setPipelineEventHandler) window.__translationEngine.setPipelineEventHandler(onEvent);
+                                if (window.__translationEngine && window.__translationEngine.resetPipelineApiCounters) window.__translationEngine.resetPipelineApiCounters();
                                 if (hybridMode) {
-                                    offlineBlob = await window.buildHybridDocxBlob(blob, {
+                                    offlineBlob = await window.__translationEngine.buildHybridDocxBlob(blob, {
                                         withImage: withImageOpt,
                                         targetLang: targetLanguage
                                     }, onLog);
                                 } else {
-                                    offlineBlob = await window.buildOfflineDocxBlob(blob, {
+                                    offlineBlob = await window.__translationEngine.buildOfflineDocxBlob(blob, {
                                         withImage: withImageOpt,
                                         targetLang: targetLanguage
                                     }, onLog);

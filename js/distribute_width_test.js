@@ -9,7 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const src = fs.readFileSync(path.join(__dirname, 'translation-offline.js'), 'utf8');
+const src = fs.readFileSync(path.join(__dirname, 'engine-ocr.js'), 'utf8');
 
 function assert(cond, label) { if (!cond) { console.log('FAIL:', label); process.exitCode = 1; } else console.log('PASS:', label); }
 

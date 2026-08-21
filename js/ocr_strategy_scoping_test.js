@@ -1,4 +1,4 @@
-// Structural scoping test for js/translation-offline.js.
+// Structural scoping test for js/engine-ocr.js.
 //
 // REAL BUG THIS CATCHES: _ocrPageBreakStrategy, applyPageHeightBudget,
 // and buildWithFeedbackLoop were accidentally defined NESTED INSIDE
@@ -20,7 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const filePath = path.join(__dirname, 'translation-offline.js');
+const filePath = path.join(__dirname, 'engine-ocr.js');
 const src = fs.readFileSync(filePath, 'utf8');
 const lines = src.split('\n');
 

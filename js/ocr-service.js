@@ -61,7 +61,7 @@
   //   1. Tables or background colors present -> Aspose.Words Cloud
   //      (server, /api/ocr/process-router) - table/shading-aware.
   //   2. No tables/colors, real text layer -> the EXISTING client-side
-  //      buildOfflineDocxBlob (js/translation-offline.js, pdf.js-based).
+  //      buildOfflineDocxBlob (js/engine-ocr.js, pdf.js-based).
   //      NOT a server-side plain text dump - that was tried first and
   //      confirmed BROKEN (position/styling lost, signature image
   //      dropped entirely) because a plain text extraction throws away
@@ -165,7 +165,10 @@
     } catch (e) { /* page count is only for billing display - non-fatal if it fails */ }
     try {
       const opts = { withImage: true, targetLang: 'original' };
-      const blob = await window.buildOfflineDocxBlob(file, opts, function (m, level) {
+      // Uses OCR's OWN, fully-separate engine copy (window.__ocrEngine) -
+      // not a shared global with other services, per explicit separation
+      // requirement.
+      const blob = await window.__ocrEngine.buildOfflineDocxBlob(file, opts, function (m, level) {
         if (level === 'warn' || level === 'error') { logFn(m, level); }
       });
       return { blob: blob, strategyUsed: 'client_text_layer', pagesExtracted: pageCount, analysis: decision.analysis };
@@ -175,10 +178,10 @@
       // that's the correct signal to fall back to vision-based OCR,
       // not a failure to surface to the user.
       const looksLikeScanSignal = /scanned|image-based/i.test(err.message || '');
-      if (!looksLikeScanSignal || !window.buildHybridDocxBlob) throw err;
+      if (!looksLikeScanSignal || !window.__ocrEngine || !window.__ocrEngine.buildHybridDocxBlob) throw err;
       if (logFn) logFn('Text layer not usable - falling back to vision-based OCR.', 'warn');
       const opts = { withImage: true, targetLang: 'original' };
-      const blob = await window.buildHybridDocxBlob(file, opts, function (m, level) {
+      const blob = await window.__ocrEngine.buildHybridDocxBlob(file, opts, function (m, level) {
         if (level === 'warn' || level === 'error') { logFn(m, level); }
       });
       return { blob: blob, strategyUsed: 'vision_ocr_fallback', pagesExtracted: pageCount, analysis: decision.analysis };
@@ -193,7 +196,7 @@
 
     const billing = window.LexoraBilling;
     if (!billing) return setStatus('Billing is unavailable - please reload the page.', 'error');
-    if (!window.buildOfflineDocxBlob) {
+    if (!window.__ocrEngine || !window.__ocrEngine.buildOfflineDocxBlob) {
       return setStatus('The document engine failed to load - please reload the page.', 'error');
     }
 
@@ -275,7 +278,7 @@
       rerender();
     }
 
-    if (window.setPipelineEventHandler) window.setPipelineEventHandler(null);
+    if (window.__ocrEngine && window.__ocrEngine.setPipelineEventHandler) window.__ocrEngine.setPipelineEventHandler(null);
     if (runCtx) await runCtx.finalize();
     STATE.running = false;
     rerender();

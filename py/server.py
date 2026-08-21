@@ -1163,8 +1163,9 @@ AI_PROMPT_SEED = [
     # has its OWN separate prompts (1 = extraction, 2 = image cleaning)
     # instead of silently reusing Translation's - editing one no longer
     # affects the other, even though both still run through the same
-    # underlying pipeline code (buildHybridDocxBlob/buildOfflineDocxBlob
-    # in js/translation-offline.js).
+    # underlying pipeline code (buildHybridDocxBlob/buildOfflineDocxBlob),
+    # each in its OWN separate js/engine-ocr.js / js/engine-translation.js
+    # copy since these are now fully-separate per-service engine files.
     ("Translation", 1, "AI Prompts/translation-1.txt",
      "(Reserved for a future line-by-line OCR extraction mode - not currently wired to any live code path.)"),
     ("Translation", 2, "AI Prompts/translation-2.txt",
@@ -6594,7 +6595,7 @@ class Handler(SimpleHTTPRequestHandler):
           - "aspose"      -> call /api/ocr/process-router (server-side,
                              Aspose.Words Cloud, preserves tables/shading)
           - "lightweight" -> call the EXISTING client-side
-                             buildOfflineDocxBlob (js/translation-offline.js,
+                             buildOfflineDocxBlob (js/engine-ocr.js,
                              pdf.js-based) directly, no server round trip -
                              it already extracts exact per-line text
                              position from the PDF's own text layer AND
@@ -6638,7 +6639,7 @@ class Handler(SimpleHTTPRequestHandler):
         wired in here.
 
         This does NOT replace or touch the existing vision-LLM OCR path
-        (js/translation-offline.js's buildHybridDocxBlob) used for
+        (js/engine-ocr.js's buildHybridDocxBlob) used for
         scanned/photographed pages that have no text layer at all - that
         pipeline needs a vision model to even read the page and is
         untouched by this route. This route is for PDFs that already

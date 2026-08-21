@@ -75,7 +75,7 @@
     const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
     const pages = [];
     if (useOcr) {
-      const images = await window.lexoraPdfToImages(pdf);
+      const images = await window.__bai2Engine.lexoraPdfToImages(pdf);
       for (let i = 0; i < images.length; i++) {
         pages.push(await transcribe(images[i].dataUrl));
         if (onPage) onPage(i + 1, images.length, 1);
@@ -93,7 +93,7 @@
   async function transcribe(dataUrl) {
     const prompt = window.getAiPrompt ? window.getAiPrompt('BAI2', 2) : null;
     if (!prompt) throw new Error('AI Prompt for BAI2 (prompt #2) is not configured - add it in Admin > AI Prompts, or run migration first.');
-    const data = await window.lexoraProxyJson({
+    const data = await window.__bai2Engine.lexoraProxyJson({
       model: MODEL(),
       messages: [{
         role: 'user',
@@ -115,7 +115,7 @@
   }
 
   async function extract(text) {
-    const data = await window.lexoraProxyJson({
+    const data = await window.__bai2Engine.lexoraProxyJson({
       model: MODEL(),
       response_format: { type: 'json_object' },
       messages: [{ role: 'user', content: extractionPrompt() + '\n\nSTATEMENT TEXT:\n' + text }]
@@ -304,7 +304,7 @@
     STATE.running = true;
     STATE.results = [];
     setStatus('');
-    if (window.setVisionAuthToken) window.setVisionAuthToken(window.__lexoraAuthToken || '');
+    if (window.__bai2Engine && window.__bai2Engine.setVisionAuthToken) window.__bai2Engine.setVisionAuthToken(window.__lexoraAuthToken || '');
     log(`System > ${useOcr ? 'With OCR' : 'Without OCR'}`, 'Success');
     rerender();
 
@@ -322,8 +322,8 @@
 
       let charged = 0, pagesDone = 0, jsonCalls = 0;
       try {
-        if (window.setPipelineEventHandler) {
-          window.setPipelineEventHandler(function (ev) {
+        if (window.__bai2Engine && window.__bai2Engine.setPipelineEventHandler) {
+          window.__bai2Engine.setPipelineEventHandler(function (ev) {
             if (!ev || ev.type !== 'scan') return;
             entry.scanProgress = Math.round((ev.page / (ev.totalPages || 1)) * 100);
             if (entry.scanProgress >= 100) {

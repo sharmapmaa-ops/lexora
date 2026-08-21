@@ -109,7 +109,7 @@ approach se replace mat karo bina explicitly confirm kiye.**
 
 ## 4. "Translation Health" (self-improving translation pipeline)
 
-`translation-offline.js` me ab teen self-improving DB-tables hain (Admin panel
+`js/engine-translation.js` me ab teen self-improving DB-tables hain (Admin panel
 me automatically dikhti hain, generic PostgreSQL viewer ke through):
 
 - **Translation Rules** (`translation-rules`) — har translation ke prompt me
@@ -430,3 +430,15 @@ par decide karega.
   LibreOffice aur Word alag handle kar sakte hain, explicitly bolo "ye
   sirf LibreOffice se verify hua hai, real Word me alag ho sakta hai" —
   full-confidence "verified" mat bolo.
+
+- **MANDATORY PRE-DELIVERY PROCESS (koi bhi naya version/zip bhejne se
+  PEHLE, hamesha):** Pehle explicitly maan lo ke current version me
+  KAHI NA KAHI galti HAI (default assumption "kuch galat hai," "sab
+  theek hoga" nahi) — phir poore project ki HAR file ka HAR word check
+  karo, sirf wo files nahi jo maine khud touch ki lagti hain. Koi bhi
+  file "maine ise touch nahi kiya, isliye theek hi hogi" bol ke skip
+  mat karo. Ye rule isliye bana kyunki baar-baar aisa hua ke maine sirf
+  apna specific change verify kiya aur "fix ho gaya" bol diya, jabki
+  ek unexplained mismatch (claimed-fixed code vs actual delivered
+  behavior) baar-baar repeat hota raha — jiska poora root cause abhi
+  tak clear nahi hai.

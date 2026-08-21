@@ -346,8 +346,10 @@
   // ══════════════════════════════════════════════════════════════════
   // CONTENT WRITING TOOL
   // ══════════════════════════════════════════════════════════════════
-  // Reuses window.lexoraProxyJson (js/translation-offline.js) - the same
-  // secure OpenRouter proxy Translation/OCR/Data Extraction already use.
+  // Reuses window.__calculatorsEngine.lexoraProxyJson (js/engine-calculators.js,
+  // this service's own fully-separate engine copy) - the same underlying
+  // secure OpenRouter proxy mechanism Translation/OCR/Data Extraction each
+  // have their own separate copy of.
   // The endpoint is generic ({model, messages} -> OpenRouter chat
   // completion), so a plain-text prompt works the same as a vision one.
   const CONTENT_MODEL = 'openai/gpt-4o-mini';
@@ -412,7 +414,7 @@
       if (!template) { outEl.value = ''; say2('tCwStatus', 'AI Prompt for Content Writing Tool is not configured - add it in Admin > AI Prompts, or run migration first.', 'error'); return false; }
       const prompt = template.replace('{tone}', tone).replace('{type}', type).replace('{length}', length).replace('{topic}', topic);
 
-      const data = await window.lexoraProxyJson({
+      const data = await window.__calculatorsEngine.lexoraProxyJson({
         model: CONTENT_MODEL,
         messages: [{ role: 'user', content: prompt }]
       });
@@ -466,7 +468,7 @@
       if (!template) { outEl.value = ''; say2('tHzStatus', 'AI Prompt for Humanize Document Tool is not configured - add it in Admin > AI Prompts, or run migration first.', 'error'); return false; }
       const prompt = template.replace('{input}', input);
 
-      const data = await window.lexoraProxyJson({
+      const data = await window.__calculatorsEngine.lexoraProxyJson({
         model: CONTENT_MODEL,
         messages: [{ role: 'user', content: prompt }]
       });

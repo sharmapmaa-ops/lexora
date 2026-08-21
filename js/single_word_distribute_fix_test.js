@@ -15,13 +15,13 @@
 // word regardless of box width).
 //
 // This test exercises the REAL textBoxXml function (extracted verbatim
-// from translation-offline.js) directly against the EXACT words from
+// from engine-ocr.js) directly against the EXACT words from
 // the reported screenshot.
 
 const fs = require('fs');
 const path = require('path');
 
-const src = fs.readFileSync(path.join(__dirname, 'translation-offline.js'), 'utf8');
+const src = fs.readFileSync(path.join(__dirname, 'engine-ocr.js'), 'utf8');
 function extractFn(name) {
   const marker = 'function ' + name + '(';
   const start = src.indexOf(marker);

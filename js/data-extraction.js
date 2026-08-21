@@ -191,11 +191,11 @@
 
   async function readPdfTextOcr(file, model, onPage) {
     const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
-    const images = await window.lexoraPdfToImages(pdf);
+    const images = await window.__dataExtractionEngine.lexoraPdfToImages(pdf);
     const pages = [];
     let apiCalls = 0;
     for (let i = 0; i < images.length; i++) {
-      const data = await window.lexoraProxyJson({
+      const data = await window.__dataExtractionEngine.lexoraProxyJson({
         model: model,
         messages: [{
           role: 'user',
@@ -240,7 +240,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
   }
 
   async function extractFields(text, fields, model) {
-    const data = await window.lexoraProxyJson({
+    const data = await window.__dataExtractionEngine.lexoraProxyJson({
       model: model,
       response_format: { type: 'json_object' },
       messages: [
@@ -389,7 +389,7 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
     STATE.running = true;
     STATE.rows = [];
     setStatus('');
-    if (window.setVisionAuthToken) window.setVisionAuthToken(window.__lexoraAuthToken || '');
+    if (window.__dataExtractionEngine && window.__dataExtractionEngine.setVisionAuthToken) window.__dataExtractionEngine.setVisionAuthToken(window.__lexoraAuthToken || '');
     log(`System > ${useOcr ? 'With OCR' : 'Without OCR'} + ${fields.length} field(s)`, 'Success');
     rerender();
 
@@ -406,8 +406,8 @@ ${fields.map(function (f) { return `    ${JSON.stringify(f.header)}: "..."`; }).
 
       let fileCharged = 0, pagesDone = 0, fileJson = 0, fileImage = 0;
       try {
-        if (window.setPipelineEventHandler) {
-          window.setPipelineEventHandler(function (ev) {
+        if (window.__dataExtractionEngine && window.__dataExtractionEngine.setPipelineEventHandler) {
+          window.__dataExtractionEngine.setPipelineEventHandler(function (ev) {
             if (!ev || ev.type !== 'scan') return;
             entry.scanProgress = Math.round((ev.page / (ev.totalPages || 1)) * 100);
             if (entry.scanProgress >= 100) {

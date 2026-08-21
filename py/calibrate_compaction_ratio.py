@@ -1,5 +1,5 @@
 """
-Empirical calibration for js/translation-offline.js's FLAT_COMPACTION_RATIO.
+Empirical calibration for js/engine-ocr.js's FLAT_COMPACTION_RATIO.
 
 This is NOT a guess - it's how the 0.85 value actually got chosen. Given
 a real OCR-generated .docx (produced by the actual pipeline) that Word

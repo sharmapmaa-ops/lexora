@@ -696,8 +696,8 @@ at all.
   fields-list portion that must stay dynamic).
 - **Not yet wired** (still hardcoded in Python/JS, seeded as empty
   placeholder rows pointing at the real file so the next pass knows
-  where to look): Translation (`js/translation-offline.js`), OCR
-  (`js/ocr-service.js`), Content Writing Tool, Humanize Document Tool.
+  where to look): Translation (`js/engine-translation.js`), OCR
+  (`js/ocr-service.js` + `js/engine-ocr.js`), Content Writing Tool, Humanize Document Tool.
   Lease Abstraction's prompt is a special case - its real text lives in
   `json/extraction_prompt.txt` and gets read into the AI Prompts row at
   migration time so it's visible/editable there, but `lease_engine.py`

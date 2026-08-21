@@ -1148,7 +1148,7 @@ def _fetch_translation_rules_block():
     Rules table (Admin > PostgreSQL > Translation Rules, resource name
     "translation-rules" - see db.py's doc_translation_rules) was only
     ever being read by the BROWSER-side pipeline
-    (js/translation-offline.js's v14FetchTranslationRules(), which builds
+    (js/engine-translation.js's v14FetchTranslationRules(), which builds
     this exact same block for its own prompt). This test pipeline
     (py/aspose_test_pipeline.py) calls translate_text() directly, which
     is a completely separate prompt-building path that never touched

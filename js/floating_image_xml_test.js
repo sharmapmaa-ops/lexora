@@ -1,5 +1,5 @@
 // Directly executes the REAL floatingImageXml source (extracted verbatim
-// from translation-offline.js, not reimplemented) and validates its
+// from engine-ocr.js, not reimplemented) and validates its
 // output is well-formed XML - this function is pure string construction
 // with no DOM/browser dependency, so it can run as-is in plain Node.
 //
@@ -11,10 +11,10 @@ const path = require('path');
 
 // Pull the real function's exact source out of the real file, so this
 // test can never silently drift from what's actually shipped.
-const src = fs.readFileSync(path.join(__dirname, 'translation-offline.js'), 'utf8');
+const src = fs.readFileSync(path.join(__dirname, 'engine-ocr.js'), 'utf8');
 const startMarker = 'function floatingImageXml(relId, xPt, yPt, wPt, hPt, name) {';
 const startIdx = src.indexOf(startMarker);
-if (startIdx === -1) throw new Error('floatingImageXml not found in translation-offline.js');
+if (startIdx === -1) throw new Error('floatingImageXml not found in engine-ocr.js');
 // Find the matching closing brace by depth-counting from the function start.
 let depth = 0, i = startIdx, endIdx = -1;
 for (; i < src.length; i++) {
