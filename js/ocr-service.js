@@ -197,7 +197,27 @@
     const billing = window.LexoraBilling;
     if (!billing) return setStatus('Billing is unavailable - please reload the page.', 'error');
     if (!window.__ocrEngine || !window.__ocrEngine.buildOfflineDocxBlob) {
-      return setStatus('The document engine failed to load - please reload the page.', 'error');
+      // ENHANCED per real reported case: the generic message alone gave
+      // no way to tell WHY window.__ocrEngine was missing at this exact
+      // moment - was engine-ocr.js never loaded at all this session, did
+      // it load but throw partway through (so early markers like
+      // __ocrEngineBuildTag exist but the final export never ran), or
+      // something else? This captures the real, live diagnostic state
+      // AT THE EXACT MOMENT this check fires, so the next report already
+      // has the answer instead of needing a separate admin-panel check
+      // that might reflect a different page load's state entirely.
+      const diag = {
+        ocrEngineExists: !!window.__ocrEngine,
+        buildOfflineDocxBlobExists: !!(window.__ocrEngine && window.__ocrEngine.buildOfflineDocxBlob),
+        buildTag: window.__ocrEngineBuildTag || '(not set - engine-ocr.js may not have started executing at all)',
+        textBoxXmlSourcePresent: !!window.__ocrTextBoxXmlSource,
+      };
+      try { console.error('OCR engine diagnostic at failure time:', JSON.stringify(diag)); } catch (e) {}
+      return setStatus(
+        'The document engine failed to load - please reload the page. [diag: engine=' + diag.ocrEngineExists +
+        ', buildFn=' + diag.buildOfflineDocxBlobExists + ', tag=' + diag.buildTag + ']',
+        'error'
+      );
     }
 
     const rate = billing.perPageRate('ocr');
