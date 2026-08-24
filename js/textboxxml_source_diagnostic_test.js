@@ -28,7 +28,7 @@ assert(defIdx !== -1 && exportIdx !== -1 && exportIdx > defIdx, 'The export happ
 
 assert(appSrc.includes("getElementById('ocrTextBoxXmlFixCheck')"), 'app.js displays a clear yes/no verdict on whether the real function has the fix');
 assert(appSrc.includes("getElementById('ocrTextBoxXmlSourceDisplay')"), 'app.js can show the full real source on demand for manual inspection');
-assert(appSrc.includes("_src.indexOf('wordCount >= 2')"), 'The admin panel checks for the exact real fix string (wordCount >= 2), not an HTML-escaped or approximate variant');
+assert(appSrc.includes("_src.indexOf('naturalWidthPt')"), 'The admin panel checks for the exact real fix string (naturalWidthPt), not an HTML-escaped or approximate variant');
 
 // Directly exercise the real function + the exact same check expression
 // used in the admin panel, end to end.
@@ -48,7 +48,7 @@ function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').
 // eslint-disable-next-line no-eval
 eval(extractFn('textBoxXml').replace('function textBoxXml', 'var textBoxXml = function'));
 const realFnSrc = textBoxXml.toString();
-const hasFix = !!(realFnSrc && realFnSrc.indexOf('wordCount >= 2') !== -1);
+const hasFix = !!(realFnSrc && realFnSrc.indexOf('naturalWidthPt') !== -1);
 assert(hasFix === true, 'End-to-end: the exact admin-panel check expression correctly finds the fix in the real, currently-defined function');
 
 console.log(process.exitCode ? '\nSOME TESTS FAILED' : '\nALL TESTS PASSED');

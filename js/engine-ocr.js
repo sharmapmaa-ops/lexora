@@ -17,7 +17,7 @@
   // instead of needing to inspect the file manually). Bump the string
   // whenever a real functional change is made to this file, so the
   // marker is only useful if kept honest.
-  window.__ocrEngineBuildTag = 'ocr-singleword-leftalign-fix-2026-08-20';
+  window.__ocrEngineBuildTag = 'ocr-manual-wordspacing-fix-2026-08-20';
   const EMU = 12700;
   const MIN_FONT_PT = 6;
   const FONT_FLOOR_RATIO = 0.55;
@@ -248,35 +248,85 @@
     const cy = Math.max(1, Math.round(line.hPt * EMU));
     const lineTw = Math.max(20, Math.round(line.hPt * 20)); // exact line height (twips)
 
-    // CONFIRMED REAL BUG (via actual MS Word screenshot, not
-    // LibreOffice - LibreOffice does NOT reproduce this): jc=
-    // "distribute" on a line with only ONE word gives Word no inter-
-    // WORD gap to distribute, so real Word falls back to spreading
-    // individual CHARACTERS across the box width instead - e.g. "MARR"
-    // rendered as "M A R R", "Tra" as "T" ... "r" stretched across the
-    // whole line. LibreOffice leaves single-word "distribute" lines
-    // alone, which is why this wasn't caught by LibreOffice-based
-    // testing. Fix: only apply "distribute" when the line has 2+
-    // words (a real inter-word gap to distribute); a single word gets
-    // plain "left" - there is nothing meaningful to "justify" in a
-    // one-word line regardless of box width.
-    const wordCount = (line.runs || []).map(function (r) { return r.text || ''; }).join(' ').trim().split(/\s+/).filter(Boolean).length;
-    const jc = wordCount >= 2 ? 'distribute' : 'left';
+    // REAL ROOT CAUSE (confirmed via Microsoft's own OpenXML SDK docs,
+    // not assumed): w:jc="distribute" is literally defined as
+    // "Distribute ALL CHARACTERS Equally" - it is a CJK/Thai-style
+    // character-level justification by design, not a Latin-script
+    // word-level one. This is why the earlier "word count >= 2" fix
+    // (which correctly identified single-word lines but still used
+    // "distribute" for 2+-word lines) did NOT actually fix the real
+    // problem - a real reported screenshot showed a 6-word title STILL
+    // character-spread ("A C C O R D O..."), because "distribute"
+    // spreads every character regardless of word count.
+    //
+    // jc="both" (real Word-standard word-level justify) was ALSO
+    // already tried and confirmed broken for a different reason: Word
+    // exempts a paragraph's only/last line from "both"-style stretching
+    // - and every line here IS its own one-line paragraph.
+    //
+    // Neither built-in jc value can do "stretch space between WORDS
+    // only, even for a single-line paragraph" - so this computes and
+    // injects the needed extra inter-word spacing manually, via
+    // w:spacing (character tracking) applied ONLY to the space
+    // character between words, never within a word. jc is left as
+    // "left" unconditionally; the box's own real width (line.wPt, from
+    // the source PDF's real glyph positions) is compared against the
+    // natural (unstretched) width the same words need - if the box is
+    // genuinely wider than the text needs, that slack is distributed
+    // across the real inter-word gaps; if the box already matches the
+    // natural width (a normal ragged-right line), no extra spacing gets
+    // added at all. This needs no per-line "is this justified" guess -
+    // it falls directly out of comparing real geometry to real text
+    // measurement.
+    const rawText = (line.runs || []).map(function (r) { return r.text || ''; }).join('');
+    const wordList = rawText.trim().split(/\s+/).filter(Boolean);
+    const gapCount = Math.max(0, wordList.length - 1);
+
+    let naturalWidthPt = 0;
+    (line.runs || []).forEach(function (r) {
+      const tokens = (r.text || '').split(/(\s+)/).filter(function (t) { return t.length > 0; });
+      tokens.forEach(function (tok) {
+        naturalWidthPt += measureTextPt(tok, r.sizePt || 11, r.family, r.bold, r.italic);
+      });
+    });
+    const extraSpacePt = gapCount > 0 ? Math.max(0, line.wPt - naturalWidthPt) : 0;
+    const extraPerGapTwips = gapCount > 0 ? Math.round((extraSpacePt / gapCount) * 20) : 0;
 
     const order = line.rtl ? line.runs.slice().reverse() : line.runs;
+    let gapsSeenSoFar = 0;
     const runsXml = order.map(function(r){
       const sz  = Math.max(2, Math.round((r.sizePt || 11) * 2)); // half-points, fractional preserved
       const col = /^[0-9A-F]{6}$/i.test(r.color || '') ? r.color.toUpperCase() : '000000';
       const fam = esc(r.family || 'Arial');
-      return '<w:r><w:rPr>' +
+      const baseRPr =
         '<w:rFonts w:ascii="' + fam + '" w:hAnsi="' + fam + '" w:cs="' + fam + '"/>' +
         (r.bold ? '<w:b/><w:bCs/>' : '') +
         (r.italic ? '<w:i/><w:iCs/>' : '') +
         '<w:color w:val="' + col + '"/>' +
         '<w:sz w:val="' + sz + '"/><w:szCs w:val="' + sz + '"/>' +
-        (line.rtl ? '<w:rtl/>' : '') +
-        '</w:rPr><w:t xml:space="preserve">' + esc(r.text) + '</w:t></w:r>';
+        (line.rtl ? '<w:rtl/>' : '');
+
+      if (extraPerGapTwips <= 0) {
+        // No real slack to distribute (box already matches natural
+        // width, or a single-word line) - emit the run exactly as
+        // before, unchanged.
+        return '<w:r><w:rPr>' + baseRPr + '</w:rPr><w:t xml:space="preserve">' + esc(r.text) + '</w:t></w:r>';
+      }
+
+      // Split this run into word/space tokens so extra tracking can be
+      // applied to inter-word spaces only, never within a word.
+      const tokens = (r.text || '').split(/(\s+)/).filter(function (t) { return t.length > 0; });
+      return tokens.map(function (tok) {
+        const isSpace = /^\s+$/.test(tok);
+        if (isSpace && gapsSeenSoFar < gapCount) {
+          gapsSeenSoFar++;
+          return '<w:r><w:rPr>' + baseRPr + '<w:spacing w:val="' + extraPerGapTwips + '"/></w:rPr><w:t xml:space="preserve">' + esc(tok) + '</w:t></w:r>';
+        }
+        return '<w:r><w:rPr>' + baseRPr + '</w:rPr><w:t xml:space="preserve">' + esc(tok) + '</w:t></w:r>';
+      }).join('');
     }).join('');
+
+    const jc = 'left';
 
     return '<w:r><w:drawing>' +
       '<wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="' + drawId +
