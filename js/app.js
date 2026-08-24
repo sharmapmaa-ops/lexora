@@ -1508,16 +1508,18 @@
                 }
             };
 
-            const translationHybridMode = false;   // With OCR checkbox removed - translation is text-based only now.
             // Image is ALWAYS placed behind the text now (no more With Image
-            // checkbox), and cleaning is automatic: Text-based mode always
-            // uses deterministic local paint; With-OCR mode uses the page's
-            // own OCR JSON background flag to decide between AI clean (real
-            // background/graphics present) and local paint (text-only page).
+            // checkbox), and cleaning is automatic: text-layer mode always
+            // uses deterministic local paint; vision-OCR fallback mode uses
+            // the page's own OCR JSON background flag to decide between AI
+            // clean (real background/graphics present) and local paint
+            // (text-only page).
             window.setTranslationHybridMode = function() {
-                // No-op: the With OCR checkbox was removed - translation is
-                // always text-based extraction now (translationHybridMode is
-                // a fixed constant above), kept only so nothing throws if
+                // No-op: the old "With OCR" checkbox was removed, and the
+                // aspose-vs-pdf.js-vs-vision-OCR decision it used to gate is
+                // now made automatically per file (see the Translation
+                // processing flow's translationStrategy analysis) rather
+                // than by any manual toggle - kept only so nothing throws if
                 // some stale cached markup still references this function.
             };
 
@@ -1936,13 +1938,17 @@
 
                 // What the user actually selected for this run.
                 if (serviceId === 'translation') {
-                    const _hc = document.getElementById('translationHybridCheck');
-                    const _ocrOn = _hc ? !!_hc.checked : translationHybridMode;
+                    // "With OCR" pre-selection log removed: that decision is no
+                    // longer a manual checkbox - it's now made automatically,
+                    // per file, from real table/background analysis (Aspose vs
+                    // pdf.js text-layer, with automatic vision-OCR fallback for
+                    // genuinely scanned PDFs) - logged individually per file as
+                    // that analysis actually runs, not as a single upfront choice.
                     const _ls = document.getElementById('translationLangSelect');
                     const _lang = (_ls && _ls.value) || 'original';
                     const _translateOn = _lang !== 'original';
                     addActivity(serviceId,
-                        `System > ${_ocrOn ? 'With OCR' : 'Without OCR'} + ${_translateOn ? 'With Translation (' + _lang + ')' : 'Without Translation'}`,
+                        `System > ${_translateOn ? 'With Translation (' + _lang + ')' : 'Without Translation'}`,
                         'Success');
                     refreshServicePage(serviceId);
                 }
@@ -2721,11 +2727,6 @@
                     const langSelectNow = document.getElementById('translationLangSelect');
                     const targetLanguage = (langSelectNow && langSelectNow.value) || file.targetLang || 'English';
                     file.targetLang = targetLanguage;
-                    // Read the Hybrid checkbox fresh too, for the same
-                    // reason as the language above.
-                    // Hybrid + With Image — render ke waqt fresh read
-                    const hybridCheckNow = document.getElementById('translationHybridCheck');
-                    const hybridMode = hybridCheckNow ? !!hybridCheckNow.checked : translationHybridMode;
                     // Image is ALWAYS included behind the text now (no
                     // checkbox). Cleaning is automatic and decided inside the
                     // pipeline per page, so no cleanImage flag is passed.
@@ -2751,37 +2752,45 @@
                         if (processState.stopped) return;
 
                         // ============================================================
-                        // TEXT-BASED (With OCR unchecked): local pdf.js text-layer
-                        // extraction, run entirely in the browser (translation-
-                        // offline.js). Translation and Clean Image are the only
-                        // two API calls this mode makes (when the user asks for
-                        // them) - OCR itself never happens here.
+                        // ROUTING (table/background rule, same as OCR service):
+                        // a source PDF with tables or background color coverage goes
+                        // through Aspose.Words Cloud (structure-aware conversion +
+                        // real in-place LLM translation - see
+                        // aspose_test_pipeline.run_full_test, already tested via the
+                        // admin Aspose test route before being wired here for real
+                        // use). Everything else uses the existing client-side pdf.js
+                        // text-layer pipeline (window.__translationEngine.
+                        // buildOfflineDocxBlob), falling back automatically to the
+                        // vision-based OCR pipeline (buildHybridDocxBlob) if that
+                        // throws the existing "scanned/image-based" signal - exactly
+                        // mirroring ocr-service.js's own fallback. The old manual
+                        // "With OCR" checkbox is gone; this decision is now always
+                        // made per-file from real PDF analysis, never a user toggle.
                         // ============================================================
-                        // Browser-side deliverable banega jab:
-                        //  (a) With OCR unchecked -> local text-layer extraction, YA
-                        //  (b) With OCR checked + Original(No Translation) -> vision OCR
-                        //      browser me (Box-tool jaisa line-level, tez),
-                        //      koi translation nahi, image sirf With Image par.
-                        // With OCR checked -> sab kuch browser vision path me
-                        // (OCR-only ya OCR+translate, dono Test.html criteria ke
-                        // saath: page-type detect + tone). With OCR unchecked ->
-                        // local text-layer extraction.
+                        let translationStrategy = 'lightweight';
+                        let translationStrategyAnalysis = null;
+                        try {
+                            const stratResp = await fetch('/api/translation/analyze-strategy', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
+                                body: JSON.stringify({ fileName: file.name, pdfBase64: dataBase64 })
+                            });
+                            const stratData = await stratResp.json();
+                            if (stratData && stratData.ok) {
+                                translationStrategy = stratData.strategy;
+                                translationStrategyAnalysis = stratData.analysis;
+                            }
+                            // A failed analysis call shouldn't block translation -
+                            // default to the client-side text-layer path (which
+                            // itself falls back to vision OCR if the PDF turns out
+                            // scanned), same defensive default OCR's own
+                            // analyzeOcrStrategy() uses.
+                        } catch (stratErr) { /* keep default 'lightweight' */ }
+
                         const browserBuild = true;
                         if (browserBuild) {
                             const baseName = originalFileName.replace(/\.[^.]+$/, '');
-                            // FIX: translation is now available in BOTH modes (not
-                            // just With OCR) - this used to be gated by hybridMode,
-                            // which mislabeled text-based+translation runs as "no
-                            // translation" in the filename/activity log/billing text.
                             const isTranslate = targetLanguage !== 'original';
-                            const modeName = hybridMode ? 'With OCR' : 'Text-based';
-                            // OUTPUT FILENAME:
-                            //  Text-based + Original:  "<name> Text-based - Without Translation - Translation"
-                            //  Text-based + <language>: "<name> Text-based - <language> - Translation"
-                            //  With OCR + Original:    "<name> With OCR - Without Translation - Translation"
-                            //  With OCR + <language>:   "<name> With OCR - <language> - Translation"
-                            const docName = baseName + ' ' + modeName + ' - ' + (isTranslate ? targetLanguage : 'Without Translation') + ' - Translation';
-                            const modeLabel = modeName + (hybridMode ? ' (Vision)' : ' (local extraction)') + (isTranslate ? (' + Translate -> ' + targetLanguage) : ' only');
 
                             // ── NEW ACTIVITY LOG FORMAT ───────────────────
                             // Rows are driven by STRUCTURED events from the
@@ -2802,6 +2811,7 @@
                             let totalCharged = 0, pagesCharged = 0;
 
                             let offlineBlob;
+                            let actualStrategyUsed = 'client_text_layer';
                             let lastLoggedMsg = '';
                             try {
                                 // PER-PAGE / UPDATE-DATA events from the pipeline.
@@ -2860,23 +2870,72 @@
                                     addActivity('translation', `${fl}${m}`, isProblem ? 'Failed' : 'Info');
                                     refreshServicePage('translation');
                                 };
-                                // Uses the Translation service's OWN, fully-separate engine
-                                // copy (window.__translationEngine) - not a shared global
-                                // with other services, per explicit separation requirement.
-                                if (window.__translationEngine && window.__translationEngine.setVisionAuthToken) window.__translationEngine.setVisionAuthToken(AUTH_TOKEN || '');
-                                if (window.__translationEngine && window.__translationEngine.setVisionStopCheck) window.__translationEngine.setVisionStopCheck(function () { return processState.stopped; });
-                                if (window.__translationEngine && window.__translationEngine.setPipelineEventHandler) window.__translationEngine.setPipelineEventHandler(onEvent);
-                                if (window.__translationEngine && window.__translationEngine.resetPipelineApiCounters) window.__translationEngine.resetPipelineApiCounters();
-                                if (hybridMode) {
-                                    offlineBlob = await window.__translationEngine.buildHybridDocxBlob(blob, {
-                                        withImage: withImageOpt,
-                                        targetLang: targetLanguage
-                                    }, onLog);
+
+                                if (translationStrategy === 'aspose') {
+                                    actualStrategyUsed = 'aspose';
+                                    addActivity('translation', `${fl}System > Table/background detected - using Aspose (structure-aware conversion + translation)`, 'Info');
+                                    const asposeResp = await fetch('/api/translation/process-aspose', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
+                                        body: JSON.stringify({ fileName: file.name, pdfBase64: dataBase64, targetLanguage: targetLanguage })
+                                    });
+                                    const asposeData = await asposeResp.json();
+                                    if (!asposeData || !asposeData.ok) {
+                                        if (asposeData && asposeData.asposeNotConfigured) {
+                                            throw new Error('Aspose is not configured on this server yet: ' + asposeData.error);
+                                        }
+                                        throw new Error((asposeData && asposeData.error) || 'Aspose translation failed.');
+                                    }
+                                    if (Array.isArray(asposeData.log)) {
+                                        asposeData.log.forEach(function (line) { onLog(line, 'info'); });
+                                    }
+                                    const binary = atob(asposeData.outputBase64);
+                                    const bytes = new Uint8Array(binary.length);
+                                    for (let bi = 0; bi < binary.length; bi++) bytes[bi] = binary.charCodeAt(bi);
+                                    offlineBlob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+
+                                    // No per-page event stream from this server-side
+                                    // path (one request/response for the whole
+                                    // document, not a page-by-page pipeline) - bill
+                                    // using the page count already known from the
+                                    // analyze-strategy call above, same "whole
+                                    // document succeeded or the request threw" shape
+                                    // as everything else here.
+                                    const asposePageCount = (translationStrategyAnalysis && translationStrategyAnalysis.page_count) || 1;
+                                    pagesCharged = asposePageCount;
+                                    totalCharged = perDocument ? 0 : perPageRate * asposePageCount;
+                                    file.progress = '80';
+                                    refreshServicePage('translation');
                                 } else {
-                                    offlineBlob = await window.__translationEngine.buildOfflineDocxBlob(blob, {
-                                        withImage: withImageOpt,
-                                        targetLang: targetLanguage
-                                    }, onLog);
+                                    // Uses the Translation service's OWN, fully-separate engine
+                                    // copy (window.__translationEngine) - not a shared global
+                                    // with other services, per explicit separation requirement.
+                                    if (window.__translationEngine && window.__translationEngine.setVisionAuthToken) window.__translationEngine.setVisionAuthToken(AUTH_TOKEN || '');
+                                    if (window.__translationEngine && window.__translationEngine.setVisionStopCheck) window.__translationEngine.setVisionStopCheck(function () { return processState.stopped; });
+                                    if (window.__translationEngine && window.__translationEngine.setPipelineEventHandler) window.__translationEngine.setPipelineEventHandler(onEvent);
+                                    if (window.__translationEngine && window.__translationEngine.resetPipelineApiCounters) window.__translationEngine.resetPipelineApiCounters();
+                                    try {
+                                        offlineBlob = await window.__translationEngine.buildOfflineDocxBlob(blob, {
+                                            withImage: withImageOpt,
+                                            targetLang: targetLanguage
+                                        }, onLog);
+                                        actualStrategyUsed = 'client_text_layer';
+                                    } catch (textLayerErr) {
+                                        // buildOfflineDocxBlob throws a clear, specific
+                                        // error when the PDF has no usable text layer
+                                        // (genuinely scanned/photographed) - that's the
+                                        // correct signal to fall back to vision-based
+                                        // OCR, not a failure to surface to the user.
+                                        // Exactly mirrors ocr-service.js's own fallback.
+                                        const looksLikeScanSignal = /scanned|image-based/i.test(textLayerErr.message || '');
+                                        if (!looksLikeScanSignal || !window.__translationEngine || !window.__translationEngine.buildHybridDocxBlob) throw textLayerErr;
+                                        onLog('Text layer not usable - falling back to vision-based OCR.', 'warn');
+                                        offlineBlob = await window.__translationEngine.buildHybridDocxBlob(blob, {
+                                            withImage: withImageOpt,
+                                            targetLang: targetLanguage
+                                        }, onLog);
+                                        actualStrategyUsed = 'vision_ocr_fallback';
+                                    }
                                 }
                             } catch (offErr) {
                                 // ERROR LINE: rehti hai (hatti nahi), aur File Processing
@@ -2897,16 +2956,33 @@
                                 continue;
                             }
                             file.progress = '85';   // extraction/translation done -> building output
+
+                            // OUTPUT FILENAME (three possible modes now, not two):
+                            //  Text-based + Original:  "<name> Text-based - Without Translation - Translation"
+                            //  Text-based + <language>: "<name> Text-based - <language> - Translation"
+                            //  Aspose + Original:      "<name> Aspose - Without Translation - Translation"
+                            //  Aspose + <language>:     "<name> Aspose - <language> - Translation"
+                            //  With OCR + Original:    "<name> With OCR - Without Translation - Translation"
+                            //  With OCR + <language>:   "<name> With OCR - <language> - Translation"
+                            const modeName = actualStrategyUsed === 'aspose' ? 'Aspose'
+                                : actualStrategyUsed === 'vision_ocr_fallback' ? 'With OCR'
+                                : 'Text-based';
+                            const docName = baseName + ' ' + modeName + ' - ' + (isTranslate ? targetLanguage : 'Without Translation') + ' - Translation';
+                            const modeLabel = modeName +
+                                (actualStrategyUsed === 'vision_ocr_fallback' ? ' (Vision)' : actualStrategyUsed === 'aspose' ? ' (Aspose structure-aware)' : ' (local extraction)') +
+                                (isTranslate ? (' + Translate -> ' + targetLanguage) : ' only');
+                            // Hybrid (vision fallback) output is MHT-format Word ->
+                            // .doc (docx zip nahi hai; .docx extension se Word file
+                            // reject karega). Aspose and text-based are both real
+                            // .docx (Aspose.Words Cloud's own conversion, and
+                            // buildOfflineDocxBlob's JSZip-built docx, respectively).
+                            const outExt = actualStrategyUsed === 'vision_ocr_fallback' ? '.doc' : '.docx';
                             refreshServicePage('translation');
 
                             // Bug 4: translation output ab SERVER PE SAVE NAHI hota.
                             // Browser me bana docx blob ko sirf is session me rakhte
                             // hain — user isi process ke dauran download karta hai.
                             // Koi server file, koi Output.docx disk pe nahi.
-                            // Hybrid output MHT-format Word hai -> .doc (docx zip
-                            // nahi hai; .docx extension se Word file reject karega).
-                            // Offline (No Hybrid) pehle jaisa .docx hi.
-                            const outExt = hybridMode ? '.doc' : '.docx';
                             translationBlobStore[file.id] = { blob: offlineBlob, name: docName + outExt };
                             file.progress = '95';
 
@@ -8937,26 +9013,25 @@
                                     </p>
                                     <div id="claudeDebugPanel">
                                         <div class="claude-debug-topic">
-                                            <h4>Topic 1: OCR: source page N content landing on output page N+1 (page-break/spacing strategy)</h4>
-                                            <p class="ds-card-sub" style="margin:4px 0 8px;">Poora solution-space - alag-alag ARCHITECTURES, sirf ek approach ke parameters nahi. Selection localStorage me save hoti hai, page-reload ke baad bhi wahi active rehti hai.</p>
-                                            <select onchange="window.__ocrPageBreakStrategy = this.value; try { localStorage.setItem('lexora_ocrPageBreakStrategy', this.value); } catch(e) {}">
-                                                <option value="forced-budget" selected>Solution 1: forced break + 15% spacing reduction (empirically verified against a real document - current default)</option>
-                                                <option value="forced-budget-aggressive">Solution 2: forced break + 25% spacing reduction (more aggressive, same lever as #1)</option>
-                                                <option value="forced-nobudget">Solution 3: forced break per source page, NO compaction at all</option>
-                                                <option value="natural">Solution 4: NO forced break - natural Word/LibreOffice pagination (original pre-fix behavior)</option>
-                                                <option value="font-reduce">Solution 5: shrink font size ~10% instead of spacing (different lever, not empirically verified yet)</option>
-                                                <option value="margin-tighten">Solution 6: tighten page margins ~35% instead of spacing/font (different lever, not empirically verified yet)</option>
-                                                <option value="combined-mild">Solution 7: combine mild spacing + font + margin reduction together (gentler per-lever, not empirically verified yet)</option>
-                                                <option value="feedback-loop">Solution 8: REAL server-verified feedback loop - generates, actually renders via LibreOffice on the server, checks real page count, tightens and retries until it matches (most robust, slowest - genuinely different architecture)</option>
-                                                <option value="absolute-position">Solution 9: absolute-positioned text boxes per source line, including embedded images/signatures (bypasses Word's own pagination entirely - genuinely different architecture; user-confirmed working well)</option>
-                                            </select>
+                                            <h4>Topic 1: OCR: source page N content landing on output page N+1 (page-break/spacing strategy) — FINALIZED</h4>
+                                            <p class="ds-card-sub" style="margin:4px 0 8px;">
+                                                <b>Solution 2</b> (forced page break per source page + 25% flat spacing
+                                                reduction) confirmed working and finalized as the sole, permanent
+                                                behavior. The other 8 explored architectures (milder 15% spacing,
+                                                no-compaction, natural pagination, font-shrink, margin-tighten,
+                                                combined-mild, the server feedback-loop, and the absolute-positioned
+                                                per-line-box approach) have been removed from selection per this
+                                                panel's own stated rule - once a solution is confirmed, it becomes
+                                                permanent and the alternatives are removed rather than left
+                                                selectable. Their code is kept, unused, as available tested
+                                                infrastructure in case that architecture is wanted again later.
+                                            </p>
                                         </div>
-                                        <img src="x" onerror="this.remove(); try { var _s = localStorage.getItem('lexora_ocrPageBreakStrategy'); if (_s) { var _el = document.querySelector('#claudeDebugPanel select'); if (_el) { _el.value = _s; window.__ocrPageBreakStrategy = _s; } } } catch(e) {}" style="display:none;" alt="">
                                         <div class="ds-card-sub" style="margin-top:12px; padding-top:8px; border-top:1px solid #eee;">
                                             Loaded OCR engine version: <b id="ocrEngineVersionDisplay">checking...</b>
                                             <span id="ocrEngineVersionWarn" style="display:none; color:#b00;"> — is browser me PURANI file chal rahi hai (redeploy ke baad bhi cache/CDN se old JS load ho raha ho sakta hai) - naya version load karne ke liye Ctrl+Shift+R (ya deployment/cache settings check karo)</span>
                                         </div>
-                                        <img src="x" onerror="this.remove(); try { var _v = window.__ocrEngineBuildTag; var _el2 = document.getElementById('ocrEngineVersionDisplay'); var _warn = document.getElementById('ocrEngineVersionWarn'); var _expected = 'ocr-manual-wordspacing-fix-2026-08-20'; if (_el2) { _el2.textContent = _v || 'NOT FOUND (bahut purana JS load ho raha hai)'; if (_warn) { _warn.style.display = (_v === _expected) ? 'none' : 'inline'; } } } catch(e) {}" style="display:none;" alt="">
+                                        <img src="x" onerror="this.remove(); try { var _v = window.__ocrEngineBuildTag; var _el2 = document.getElementById('ocrEngineVersionDisplay'); var _warn = document.getElementById('ocrEngineVersionWarn'); var _expected = 'ocr-solution2-finalized-blankpage-2026-08-20'; if (_el2) { _el2.textContent = _v || 'NOT FOUND (bahut purana JS load ho raha hai)'; if (_warn) { _warn.style.display = (_v === _expected) ? 'none' : 'inline'; } } } catch(e) {}" style="display:none;" alt="">
                                         <div class="ds-card-sub" style="margin-top:10px;">
                                             textBoxXml me "naturalWidthPt" (manual word-gap fix, real char-spread bug ka asli fix) hai: <b id="ocrTextBoxXmlFixCheck">checking...</b>
                                             <details style="margin-top:6px;"><summary style="cursor:pointer;">Real function source dekhein (click karo)</summary>

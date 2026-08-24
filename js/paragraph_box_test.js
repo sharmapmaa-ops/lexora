@@ -2,16 +2,16 @@
 // Solution 9 (per-paragraph wrapping boxes, fixing a real overflow bug
 // in the original per-line non-wrapping boxes).
 //
-// CURRENT STATUS: after further discussion, the user asked to revert
-// Solution 9 to the box+image state that was confirmed working well
-// (per-line boxes, textBoxXml + floatingImageXml), and fix justify via
-// a targeted, standalone per-line detection layered on top of THAT
-// (see justify_detection_test.js / _markJustifiedLines) rather than
-// restructuring into paragraph-wrapping boxes. paragraphBoxXml is KEPT
+// CURRENT STATUS: Solution 2 (forced page break + 25% flat spacing
+// reduction) has since been FINALIZED as the sole, permanent OCR
+// page-break/spacing strategy, and the dispatch to Solution 9
+// (including this function's own would-be caller) has been removed
+// from buildOfflineDocxBlob entirely - not reverted to a different
+// Solution-9 variant, genuinely removed. paragraphBoxXml itself is KEPT
 // as working, independently-tested infrastructure (not deleted) in
 // case real wrapping + absolute positioning is wanted again for some
 // other reason later - this file still verifies its own XML-generation
-// correctness even though no current strategy calls it.
+// correctness even though nothing currently calls it.
 //
 // BACKGROUND (for the XML-generation checks below, still relevant):
 // the original Solution 9 (textBoxXml, one box per LINE, wrap="none",
@@ -21,7 +21,7 @@
 // gives the text nowhere to go but past the box edge. paragraphBoxXml
 // fixed this (real wrapping + spAutoFit), confirmed via an actual
 // end-to-end render (real buildDocx + paragraphBoxXml, real JSZip,
-// real LibreOffice render) at the time, before the revert above.
+// real LibreOffice render) at the time.
 
 const fs = require('fs');
 const path = require('path');
@@ -48,20 +48,14 @@ eval(extractFn('paragraphBoxXml').replace('function paragraphBoxXml', 'var parag
 
 function assert(cond, label) { if (!cond) { console.log('FAIL:', label); process.exitCode = 1; } else console.log('PASS:', label); }
 
-// Structural checks: after two iterations, the user explicitly asked
-// to revert to the box+image state that was confirmed working well,
-// and layer the justify fix on top via _markJustifiedLines' new
-// standalone per-line detection (see justify_detection_test.js)
-// instead of restructuring into wrapping paragraph boxes. Solution 9 is
-// back to a real early-return into buildDocx's default per-line
-// rendering (textBoxXml + floatingImageXml).
-assert(src.includes('function buildDocx(pages, includeBg, renderPageExtra)'), 'buildDocx still accepts an optional renderPageExtra hook (kept for future use, currently unused)');
-assert(src.includes("if (_ocrPageBreakStrategy() === 'absolute-position')"), "Solution 9's early-return branch exists again");
-const solution9BranchIdx = src.indexOf("if (_ocrPageBreakStrategy() === 'absolute-position')");
-const solution9BranchSrc = src.slice(solution9BranchIdx, solution9BranchIdx + 300);
-assert(solution9BranchSrc.includes('return buildDocx(pages, false);'), "Solution 9 calls buildDocx's default (per-line box) rendering, not paragraphBoxXml");
-assert(src.includes("s === 'forced-nobudget' || s === 'natural' || s === 'absolute-position' || s === 'feedback-loop'"), "applyPageHeightBudget again treats 'absolute-position' as its own separate (no-compaction) case");
-assert(src.includes("return s !== 'natural' && s !== 'absolute-position';"), "_ocrShouldForceBreak again excludes 'absolute-position' (buildDocx handles its own page breaks, unconditionally)");
+// Confirm paragraphBoxXml itself still exists and is extractable (the
+// "kept as infra, currently unused" claim above is meaningfully
+// checked, not just asserted in a comment) - and confirm the Solution
+// 9 dispatch is genuinely gone from buildOfflineDocxBlob now, not just
+// pointing somewhere else.
+assert(src.includes('function paragraphBoxXml('), 'paragraphBoxXml is still defined in the real source (kept as infra)');
+assert(!src.includes("if (_ocrPageBreakStrategy() === 'absolute-position')"), "Solution 9's dispatch branch is genuinely removed (finalized to Solution 2 only), not just pointing elsewhere");
+assert(src.includes("const jc = 'left';") || !src.includes("s === 'forced-nobudget' || s === 'natural' || s === 'absolute-position'"), "applyPageHeightBudget no longer has the old multi-strategy dispatch structure at all");
 
 // XML-generation checks: real paragraph -> real XML, confirm wrap and
 // autofit are correctly set (the two properties that fix the overflow).

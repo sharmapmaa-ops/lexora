@@ -3843,6 +3843,8 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/translation/vision-proxy": self._handle_translation_vision_proxy,
             "/api/translation/inpaint-proxy": self._handle_translation_inpaint_proxy,
             "/api/translation/generate-pdf": self._handle_translation_generate_pdf,
+            "/api/translation/analyze-strategy": self._handle_translation_analyze_strategy,
+            "/api/translation/process-aspose": self._handle_translation_process_aspose,
             "/api/test/aspose-translate": self._handle_aspose_test_translate,
             "/api/ocr/process-router": self._handle_ocr_process_router,
             "/api/ocr/analyze-strategy": self._handle_ocr_analyze_strategy,
@@ -6691,10 +6693,114 @@ class Handler(SimpleHTTPRequestHandler):
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
+    def _handle_translation_analyze_strategy(self, body):
+        """REAL Translation service entry point (not the admin test
+        route) implementing the requested routing rule: PDFs with
+        tables or background colors get Aspose.Words Cloud's
+        structure-aware conversion + real translation; everything else
+        gets the existing client-side pdf.js pipeline. Reuses
+        ocr_router.analyze_pdf_for_ocr_strategy directly rather than a
+        second copy of the same table/background-detection logic - that
+        function's own docstring already states its decision is
+        document-generic, not OCR-specific, so there's nothing
+        OCR-specific to duplicate or diverge from here.
+
+        Same 2-endpoint shape as /api/ocr/analyze-strategy +
+        /api/ocr/process-router:
+          - "aspose"      -> call /api/translation/process-aspose
+                             (server-side, Aspose.Words Cloud +
+                             real LLM translation - see
+                             aspose_test_pipeline.run_full_test,
+                             already tested via the admin Aspose test
+                             route before being wired here for real use)
+          - "lightweight" -> use the EXISTING client-side
+                             window.__translationEngine.buildOfflineDocxBlob
+                             (js/engine-translation.js, pdf.js-based)
+                             directly, no server round trip - falling
+                             back automatically to buildHybridDocxBlob
+                             (vision-based OCR) if that throws the
+                             existing "scanned/image-based" signal,
+                             exactly mirroring how ocr-service.js
+                             already handles that fallback."""
+        pdf_b64 = body.get("pdfBase64")
+        file_name = _safe_filename(body.get("fileName"), "document.pdf")
+        if not pdf_b64:
+            raise ValueError("pdfBase64 is required")
+
+        import ocr_router
+
+        tmp_dir = tempfile.mkdtemp(prefix="translation_analyze_")
+        try:
+            pdf_path = os.path.join(tmp_dir, _safe_filename(file_name))
+            with open(pdf_path, "wb") as f:
+                f.write(base64.b64decode(pdf_b64))
+            analysis = ocr_router.analyze_pdf_for_ocr_strategy(pdf_path)
+            return 200, {"ok": True, "analysis": analysis, "strategy": analysis["strategy"]}
+        except Exception as err:
+            return 200, {"ok": False, "error": str(err)}
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _handle_translation_process_aspose(self, body):
+        """REAL Translation service's Aspose path - reuses
+        aspose_test_pipeline.run_full_test (Aspose structure conversion
+        + real in-place LLM translation), the SAME function already
+        exercised via the admin-only /api/test/aspose-translate route,
+        now wired here for actual user-facing Translation requests
+        rather than duplicating that pipeline a second time. Never fails
+        outright just because Aspose credentials aren't configured -
+        reports that clearly via asposeNotConfigured so the caller can
+        fall back to the client-side pdf.js path instead of the request
+        simply erroring out."""
+        file_name = _safe_filename(body.get("fileName"), "document.pdf")
+        pdf_b64 = body.get("pdfBase64")
+        target_language = body.get("targetLanguage") or "English"
+        if not pdf_b64:
+            raise ValueError("pdfBase64 is required")
+
+        import aspose_test_pipeline as asp_test
+
+        tmp_dir = tempfile.mkdtemp(prefix="translation_aspose_")
+        try:
+            pdf_path = os.path.join(tmp_dir, _safe_filename(file_name))
+            with open(pdf_path, "wb") as f:
+                f.write(base64.b64decode(pdf_b64))
+            output_path = os.path.join(tmp_dir, "output.docx")
+
+            try:
+                result = asp_test.run_full_test(pdf_path, target_language, output_path)
+            except asp_test.AsposeNotConfiguredError as err:
+                return 200, {"ok": False, "asposeNotConfigured": True, "error": str(err)}
+
+            with open(result["output_path"], "rb") as f:
+                output_b64 = base64.b64encode(f.read()).decode()
+
+            return 200, {
+                "ok": True,
+                "outputBase64": output_b64,
+                "outputFileName": "translation-" + os.path.splitext(file_name)[0] + ".docx",
+                "segmentsTranslated": result.get("segments_translated"),
+                "segmentsSkipped": result.get("segments_skipped"),
+                "translationProviders": result.get("translation_providers"),
+                "totalSeconds": result.get("total_seconds"),
+                "log": result.get("log"),
+            }
+        except Exception as err:
+            return 200, {"ok": False, "error": str(err)}
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
     def _handle_aspose_test_translate(self, body):
-        """ISOLATED TEST ROUTE - see py/aspose_test_pipeline.py's module
-        docstring. Does not touch, call, or affect the real translation
-        pipeline in any way. Admin/Developer only.
+        """ADMIN TEST ROUTE - see py/aspose_test_pipeline.py's module
+        docstring. This route itself is admin-only and separate from the
+        real Translation service, but "full" mode calls the SAME
+        run_full_test() function the real service's
+        /api/translation/process-aspose now also calls for table/
+        background documents - so this remains a genuine way to test
+        that exact pipeline (useful for trying a document or checking
+        behavior without going through the real Translation UI), it
+        just no longer means "this code path is unreachable from real
+        traffic." Admin/Developer only.
         `mode`: "structure" (PDF->DOCX via Aspose's own conversion, no
         translation, zero LLM cost) or "full" (extract+translate+rebuild)."""
         self._require_role(("Admin", "Developer"))

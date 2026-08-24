@@ -17,7 +17,7 @@
   // instead of needing to inspect the file manually). Bump the string
   // whenever a real functional change is made to this file, so the
   // marker is only useful if kept honest.
-  window.__ocrEngineBuildTag = 'ocr-manual-wordspacing-fix-2026-08-20';
+  window.__ocrEngineBuildTag = 'ocr-solution2-finalized-blankpage-2026-08-20';
   const EMU = 12700;
   const MIN_FONT_PT = 6;
   const FONT_FLOOR_RATIO = 0.55;
@@ -1153,93 +1153,60 @@
   // selected across page reloads / new sessions, not just live in
   // memory for the current tab.
   function _ocrPageBreakStrategy() {
-    if (window.__ocrPageBreakStrategy) return window.__ocrPageBreakStrategy;
-    try {
-      const saved = localStorage.getItem('lexora_ocrPageBreakStrategy');
-      if (saved) { window.__ocrPageBreakStrategy = saved; return saved; }
-    } catch (e) { /* localStorage unavailable (private mode etc.) - fall through to default */ }
-    return 'forced-budget';
+    // FINALIZED per explicit direction: Solution 2 (forced-budget-
+    // aggressive: forced page break per source page + 25% flat spacing
+    // reduction) is now the ONLY, permanent OCR page-break behavior.
+    // The admin "Claude" tab's strategy dropdown (which offered 9
+    // experimental options while this was being decided) has been
+    // removed accordingly, per its own stated philosophy: once a
+    // solution is confirmed correct, it becomes permanent and the
+    // other options are removed rather than left selectable.
+    return 'forced-budget-aggressive';
   }
   function _ocrShouldForceBreak() {
     const s = _ocrPageBreakStrategy();
     return s !== 'natural' && s !== 'absolute-position';
   }
 
-  // ── PAGE SPACING/FONT/MARGIN COMPACTION ────────────────────────────────
-  // Multiple genuinely DIFFERENT approaches (not just parameter variants
-  // of one approach) to the reported "source page N content lands on
-  // output page N+1" problem - all selectable live from the admin
-  // "Claude" tab, per explicit instruction to list every possible
-  // solution rather than pre-selecting a favorite.
-  //
-  // Solutions 1-2 (spacing-only) were empirically calibrated against a
-  // real reported document: its actual generated DOCX was rebuilt with
-  // spacing uniformly scaled across a range of ratios and each one was
-  // ACTUALLY RENDERED (LibreOffice) to find the real page count - see
-  // py/calibrate_compaction_ratio.py. 0.85 was the value found to work
-  // with a safety margin (the real cliff was ~0.90).
-  const FLAT_COMPACTION_RATIO = 0.85;
+  // ── PAGE SPACING COMPACTION (Solution 2, FINALIZED) ─────────────────────
+  // Multiple genuinely different approaches to the "source page N content
+  // lands on output page N+1" problem were built and tested live from the
+  // admin "Claude" tab; Solution 2 (spacing-only, 25% flat reduction) was
+  // confirmed correct and is now the sole, permanent behavior - the other
+  // 8 (Solution 1's milder 0.85 ratio, font-reduce, margin-tighten,
+  // combined-mild, forced-nobudget, natural, absolute-position's separate
+  // box pipeline, and the server feedback-loop) have been removed, per the
+  // admin tab's own stated philosophy: once a solution is confirmed, it
+  // becomes permanent and the alternatives are removed rather than left
+  // selectable. The 0.75 ratio itself follows the same empirical-
+  // calibration approach used for the original 0.85 value (see
+  // py/calibrate_compaction_ratio.py) - actually re-rendering real
+  // documents at candidate ratios rather than guessing.
   const BUDGET_LINE_FLOOR_TWIPS = 200;       // ~single-spacing floor, never go tighter
   const BUDGET_SPACE_AFTER_FLOOR_TWIPS = 40; // ~2pt floor between paragraphs
-  const FONT_FLOOR_PT = 7;                   // never shrink body text below this
 
   function applyPageHeightBudget(pg) {
-    const s = _ocrPageBreakStrategy();
-
-    // These strategies don't touch spacing/font/margin at all - handled
-    // by entirely separate code paths ('absolute-position' renders via
-    // buildDocx's own per-line boxes, bypassing this whole flowing-
-    // paragraph pipeline entirely - see the Solution 9 branch further
-    // down; 'feedback-loop' has its own wrapper).
-    if (s === 'forced-nobudget' || s === 'natural' || s === 'absolute-position' || s === 'feedback-loop') return;
-
-    let spacingRatio = 1.0, fontRatio = 1.0, marginRatio = 1.0;
-    if (s === 'forced-budget') {
-      spacingRatio = FLAT_COMPACTION_RATIO; // Solution 1
-    } else if (s === 'forced-budget-aggressive') {
-      spacingRatio = 0.75; // Solution 2
-    } else if (s === 'font-reduce') {
-      fontRatio = 0.90; // Solution 5 - shrink font instead of spacing
-    } else if (s === 'margin-tighten') {
-      marginRatio = 0.65; // Solution 6 - tighten margins instead of spacing/font
-    } else if (s === 'combined-mild') {
-      spacingRatio = 0.92; fontRatio = 0.95; marginRatio = 0.85; // Solution 7 - a little of each, gentler per-lever
-    }
-
-    if (spacingRatio < 1.0) {
-      (pg.paragraphs || []).forEach(function (p) {
-        p.lineTwips = Math.max(BUDGET_LINE_FLOOR_TWIPS, Math.round((p.lineTwips || 276) * spacingRatio));
-        p.spaceAfterTwips = Math.max(
-          BUDGET_SPACE_AFTER_FLOOR_TWIPS,
-          Math.round((p.spaceAfterTwips != null ? p.spaceAfterTwips : 160) * spacingRatio)
-        );
-      });
-    }
-    if (fontRatio < 1.0) {
-      (pg.paragraphs || []).forEach(function (p) {
-        (p.segments || []).forEach(function (seg) {
-          seg.sizePt = Math.max(FONT_FLOOR_PT, (seg.sizePt || 11) * fontRatio);
-        });
-      });
-    }
-    if (marginRatio < 1.0 && pg.margins) {
-      // NOTE: only the LAST page's margins end up in the final DOCX (one
-      // shared <w:sectPr> for the whole document - see the sectPr
-      // dedup fix elsewhere in this file), but this is applied to every
-      // page's margins uniformly so whichever page ends up last already
-      // has the reduced value.
-      pg.margins.top = Math.round(pg.margins.top * marginRatio);
-      pg.margins.bottom = Math.round(pg.margins.bottom * marginRatio);
-      pg.margins.left = Math.round(pg.margins.left * marginRatio);
-      pg.margins.right = Math.round(pg.margins.right * marginRatio);
-    }
-    // HONEST LIMITATION: these are flat ratios calibrated (for
-    // Solutions 1-2) or reasoned (for 5-7, NOT yet empirically verified
-    // against a real render) against ONE real document. A page whose
-    // content is much denser than that calibration case could still
-    // overflow. Solution 8 (feedback loop) is the only one of these
-    // that verifies against real rendering for the SPECIFIC document
-    // being processed, not a fixed pre-calibrated assumption.
+    // FINALIZED per explicit direction: only Solution 2 (spacing-only,
+    // 25% reduction - same lever as Solution 1, just more aggressive)
+    // just more aggressive) is used now. The other 7 experimental
+    // strategies (font-reduce, margin-tighten, combined-mild,
+    // forced-nobudget, natural, absolute-position's separate pipeline,
+    // feedback-loop) have been removed from this function entirely, per
+    // the admin "Claude" tab's own stated philosophy: once a solution is
+    // confirmed correct, it becomes permanent and the others are
+    // removed rather than left selectable.
+    const SPACING_RATIO = 0.75;
+    (pg.paragraphs || []).forEach(function (p) {
+      p.lineTwips = Math.max(BUDGET_LINE_FLOOR_TWIPS, Math.round((p.lineTwips || 276) * SPACING_RATIO));
+      p.spaceAfterTwips = Math.max(
+        BUDGET_SPACE_AFTER_FLOOR_TWIPS,
+        Math.round((p.spaceAfterTwips != null ? p.spaceAfterTwips : 160) * SPACING_RATIO)
+      );
+    });
+    // HONEST LIMITATION (unchanged from before): this is a flat ratio
+    // calibrated against ONE real document (py/calibrate_compaction_ratio.py).
+    // A page whose content is much denser than that calibration case
+    // could still overflow.
   }
 
   // ── Solution 8: REAL server-verified feedback loop ─────────────────────
@@ -2710,21 +2677,18 @@ trailingSectPr + '</w:body></w:document>';
     // Solution 9: absolute-positioned, per-LINE boxes (textBoxXml +
     // floatingImageXml, via buildDocx's DEFAULT rendering when no
     // renderPageExtra is given). This is the EXACT checkpoint state
-    // from right after the missing-signature-image bug was fixed
-    // (floatingImageXml added) - explicitly restored to here per user
-    // request, with the standalone per-line justify-detection work that
-    // came after this point REMOVED again (jc="both" is back to being
-    // hardcoded in textBoxXml, unconditional, no line.justify checks
-    // anywhere) - not because that later work was proven wrong, but
-    // because the user wanted this exact known-good state back as the
-    // current baseline. paragraphBoxXml is kept, unused, as available
-    // tested infrastructure in case real wrapping + absolute
-    // positioning is wanted again later.
-    if (_ocrPageBreakStrategy() === 'absolute-position') {
-      log('OCR strategy: Solution 9 (absolute-positioned per-line boxes + embedded images - image-fix checkpoint, justify not yet applied)', 'info');
-      return buildDocx(pages, false);
-    }
-
+    // Solution 9 (absolute-positioned per-line boxes) and Solution 8
+    // (server feedback-loop) were both real, working alternative
+    // architectures for the "source page N content lands on output
+    // page N+1" problem, explored and tested via the admin "Claude"
+    // tab. Solution 2 (forced page break + 25% spacing reduction) has
+    // now been FINALIZED as the sole, permanent behavior per explicit
+    // direction, so the dispatch to Solutions 8/9 has been removed
+    // here (their implementations - buildDocx, textBoxXml,
+    // buildWithFeedbackLoop, etc. - are kept, unused, as available
+    // tested infrastructure in case that architecture is wanted again
+    // later, consistent with how paragraphBoxXml was already kept
+    // after an earlier finalize/revert).
 
     // TRANSLATION: the other exception to "no API call" in text-based
     // mode. Each PARAGRAPH (not each raw line) is translated as one
@@ -2857,14 +2821,6 @@ trailingSectPr + '</w:body></w:document>';
         });
         (pg.tables || []).forEach(function (t) { t.rtl = outputRtl; });
       });
-    }
-
-    // Solution 8: REAL server-verified feedback loop - see
-    // buildWithFeedbackLoop's own comment for why this is architecturally
-    // different from the fixed-ratio strategies (1/2/5/6/7).
-    if (_ocrPageBreakStrategy() === 'feedback-loop') {
-      log('OCR strategy: Solution 8 (real server-verified feedback loop)', 'info');
-      return buildWithFeedbackLoop(pages, pdf.numPages, function (m, level) { log(m, level); });
     }
 
     return buildFlowingDocx(pages);

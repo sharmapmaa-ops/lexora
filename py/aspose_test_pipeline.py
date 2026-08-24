@@ -1,10 +1,19 @@
 """
-Lexora - ASPOSE CLOUD TEST PIPELINE (isolated, experimental)
+Lexora - ASPOSE CLOUD PIPELINE (originally isolated/experimental,
+now also the real Translation service's Aspose path)
 ==============================================================
 
-This does NOT touch translate_pipeline.py, lease_engine.py's real
-translation flow, or any of the js/engine-*.js browser-side files. Only
-reachable via its own admin-only test route.
+This does NOT touch translate_pipeline.py or lease_engine.py's real
+translation flow. Originally reachable only via its own admin-only test
+route (/api/test/aspose-translate); run_full_test() is now ALSO called
+directly by the real, user-facing Translation service for documents
+with tables/background color (see server.py's
+_handle_translation_process_aspose and py/ocr_router.py's
+analyze_pdf_for_ocr_strategy, which decides when that applies) - one
+Aspose+translate pipeline, not two, reused rather than duplicated for
+the real service once it was confirmed working via the admin test
+route. js/engine-*.js's browser-side pdf.js pipeline remains untouched
+and is still the path for documents WITHOUT tables/background.
 
 Needs NO self-hosting - Aspose runs the actual service, we just call it
 with a Client Id/Secret. Genuinely just `pip install aspose-words-cloud

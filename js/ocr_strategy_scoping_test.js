@@ -79,11 +79,17 @@ assert(ocrStrategyLine < buildOfflineDocxBlobLine, '_ocrPageBreakStrategy is def
 assert(applyBudgetLine < buildOfflineDocxBlobLine, 'applyPageHeightBudget is defined before buildOfflineDocxBlob (textual order)');
 assert(feedbackLoopLine < buildOfflineDocxBlobLine, 'buildWithFeedbackLoop is defined before buildOfflineDocxBlob (textual order)');
 
-// And buildOfflineDocxBlob must actually reference them (confirms the
-// call sites this bug affected are still present, not accidentally
-// removed instead of fixed).
-const buildOfflineDocxBlobSrc = lines.slice(buildOfflineDocxBlobLine).join('\n');
-assert(buildOfflineDocxBlobSrc.includes('_ocrPageBreakStrategy()'), 'buildOfflineDocxBlob still calls _ocrPageBreakStrategy()');
-assert(buildOfflineDocxBlobSrc.includes('buildWithFeedbackLoop('), 'buildOfflineDocxBlob still calls buildWithFeedbackLoop()');
+// And the real callers must still reference them. Solution 2 being
+// finalized (see solution2_finalized_test.js) means buildOfflineDocxBlob
+// no longer dispatches to buildWithFeedbackLoop/absolute-position
+// directly (that dispatch was intentionally removed) - but
+// buildFlowingDocx (which buildOfflineDocxBlob still calls
+// unconditionally now) still calls _ocrShouldForceBreak(), which itself
+// calls _ocrPageBreakStrategy() - so the scoping concern this test
+// exists for is still real and still checked, just via the current
+// real call path rather than the pre-finalization one.
+const buildFlowingDocxSrc = lines.slice(buildFlowingDocxLine).join('\n');
+assert(buildFlowingDocxSrc.includes('_ocrShouldForceBreak()'), 'buildFlowingDocx still calls _ocrShouldForceBreak() (which calls _ocrPageBreakStrategy()) - the real current call path after Solution 2 finalization');
+assert(!lines.slice(buildOfflineDocxBlobLine).join('\n').includes('buildWithFeedbackLoop('), 'buildOfflineDocxBlob no longer dispatches to buildWithFeedbackLoop - intentionally removed when Solution 2 was finalized, not an accidental scoping regression');
 
 console.log(process.exitCode ? '\nSOME TESTS FAILED' : '\nALL TESTS PASSED');
