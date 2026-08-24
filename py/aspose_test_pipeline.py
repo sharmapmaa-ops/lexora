@@ -1228,7 +1228,6 @@ def _fix_paragraph_direction(doc, target_language):
     fixed = 0
     clause_numbers_fixed = 0
     errors_encountered = 0
-    body = doc.element.body
 
     # Item (WRONG-HEADING-SIGNAL, confirmed real bug) - the margin-
     # normalization fix below needs to tell a genuine Article heading
@@ -1269,50 +1268,15 @@ def _fix_paragraph_direction(doc, target_language):
         if _heading_shd_fill:
             break
 
-    # Item (STANDALONE-DATA-PARAGRAPH-BREAKS-OUT-OF-TABLE-BOX) -
-    # confirmed real bug: a standalone paragraph (e.g. "Name: Al-Anoud
-    # Sulaiman Ali Al-Masoud", or an "Email: ..." line) sitting directly
-    # between two table sections - the same "Aspose left this ONE data
-    # row standalone instead of inside the table" pattern documented in
-    # _fix_incomplete_header_bar_shading's docstring - got normalized to
-    # the flat clause-body indent (446 twips) same as ordinary Article
-    # body text. But THIS kind of paragraph is meant to visually align
-    # with the table sitting right next to it, not with unrelated
-    # clause text elsewhere in the document - and the adjacent tables'
-    # own left indent (867 / 691 twips in a real confirmed case) is
-    # LARGER than 446, so the paragraph ends up sitting further left
-    # than the table above and below it, visibly breaking out of the
-    # table's left edge instead of lining up with it.
-    #
-    # Builds a lookup, once, from each top-level body paragraph's
-    # element id to the indent of the NEAREST adjacent table (checking
-    # a small window of siblings both before and after, since Aspose
-    # sometimes leaves more than one such paragraph in a row) - used
-    # below instead of the flat clause default whenever a match is
-    # found, so these paragraphs align with their neighboring table
-    # instead of an unrelated generic value.
-    _adjacent_table_indent = {}
-    _body_children = list(body.iterchildren())
-    for _idx, _child in enumerate(_body_children):
-        if _child.tag != qn("w:p"):
-            continue
-        _found_indent = None
-        for _offset in (1, -1, 2, -2):
-            _j = _idx + _offset
-            if _j < 0 or _j >= len(_body_children):
-                continue
-            _sib = _body_children[_j]
-            if _sib.tag == qn("w:tbl"):
-                _sib_tblPr = _sib.find(qn("w:tblPr"))
-                _sib_tblInd = _sib_tblPr.find(qn("w:tblInd")) if _sib_tblPr is not None else None
-                if _sib_tblInd is not None and _sib_tblInd.get(qn("w:w")):
-                    _found_indent = _sib_tblInd.get(qn("w:w"))
-                break
-            if _sib.tag == qn("w:p"):
-                continue  # keep looking past other plain paragraphs in the same run
-            break
-        if _found_indent:
-            _adjacent_table_indent[id(_child)] = _found_indent
+    # Item (STANDALONE-DATA-PARAGRAPH-BREAKS-OUT-OF-TABLE-BOX) - this
+    # was previously handled by aligning a standalone data-row paragraph
+    # to its neighboring table's own indent, as an exception to the old
+    # flat-normalize default. Removed along with that default: per the
+    # redesigned mirror-based rule below, a paragraph's OWN original
+    # left/right margin is now preserved (mirrored, not replaced), so
+    # there is no longer a flat generic value for a standalone data row
+    # to diverge from in the first place - this table-adjacency lookup
+    # is no longer needed.
 
     # Item (SILENT-CASCADING-FAILURE) - confirmed real bug pattern: in a
     # real production run, an ENTIRE block of 24 consecutive clause
@@ -1459,53 +1423,44 @@ def _fix_paragraph_direction(doc, target_language):
                     # heading style and must stay as-is. is_table_cell_
                     # paragraph/is_heading_styled were already computed
                     # above (shared with the jc fix) - reused as-is here.
-                    should_normalize_margin = is_normal_body_paragraph
+                    #
+                    # REDESIGNED per explicit direction, replacing the
+                    # earlier "flatten every paragraph's left-indent to
+                    # one hardcoded constant (446 twips, or 0 for
+                    # headings), discard right/firstLine/hanging
+                    # entirely" approach. That approach was based on a
+                    # real observation (sibling clause left-indents
+                    # varying 809-1661 twips with no obvious structural
+                    # correlation) but the conclusion drawn from it -
+                    # "this variance is meaningless Aspose noise, safe
+                    # to discard" - was never actually verified against
+                    # the ORIGINAL untranslated RTL document to confirm
+                    # the variance wasn't genuine, meaningful original
+                    # positioning. The corrected rule: an RTL->LTR
+                    # paragraph's own original left/right margin is
+                    # MIRRORED (new_left = old_right, new_right =
+                    # old_left, width/content unaffected), not replaced
+                    # by an external constant - preserving whatever
+                    # real positioning data the original paragraph
+                    # actually had, for both ordinary body paragraphs
+                    # and headings alike (a heading's indent was
+                    # ALSO previously flattened to a hardcoded 0,
+                    # which is the same category of discard-instead-
+                    # of-preserve mistake).
+                    should_mirror_margin = is_normal_body_paragraph or (is_heading_styled and not is_table_cell_paragraph)
 
-                    if should_normalize_margin:
+                    if should_mirror_margin:
                         ind = pPr.find(qn("w:ind"))
-                        if ind is None:
-                            ind = OxmlElement("w:ind")
-                            pPr.append(ind)
-                        # Prefer the adjacent table's own indent (see
-                        # the lookup built above) so a standalone
-                        # data-row paragraph aligns with the table box
-                        # it visually belongs next to, instead of a
-                        # generic clause-body value.
-                        target_indent = _adjacent_table_indent.get(id(p._p), "446")
-                        if ind.get(qn("w:left")) != target_indent:
-                            ind.set(qn("w:left"), target_indent)
-                            changed = True
-                        for attr in ("w:right", "w:firstLine", "w:hanging"):
-                            if ind.get(qn(attr)) is not None:
-                                del ind.attrib[qn(attr)]
+                        if ind is not None:
+                            old_left = int(ind.get(qn("w:left")) or "0")
+                            old_right = int(ind.get(qn("w:right")) or "0")
+                            if old_left != old_right:
+                                ind.set(qn("w:left"), str(old_right))
+                                ind.set(qn("w:right"), str(old_left))
                                 changed = True
-                    elif is_heading_styled and not is_table_cell_paragraph:
-                        # Item (HEADING-ALSO-HAS-RANDOM-INDENT) -
-                        # confirmed real: excluding headings from the
-                        # margin fix above (correct, so their intended
-                        # heading STYLE isn't disturbed) accidentally
-                        # left their random Aspose-inherited INDENT
-                        # untouched too - a real document showed Article
-                        # One/Two/Three/Four headings with left-indent
-                        # values of 1119/1040/1176/1002 twips, the exact
-                        # same per-paragraph-random pattern as the
-                        # clause-body bug, not an intentional design
-                        # choice. Headings should sit at the page's left
-                        # margin (left=0) - normalized separately here,
-                        # distinct from the 446-twip clause-body value,
-                        # since a heading is a different visual element
-                        # or the numbered clauses.
-                        ind = pPr.find(qn("w:ind"))
-                        if ind is None:
-                            ind = OxmlElement("w:ind")
-                            pPr.append(ind)
-                        if ind.get(qn("w:left")) != "0":
-                            ind.set(qn("w:left"), "0")
-                            changed = True
-                        for attr in ("w:right", "w:firstLine", "w:hanging"):
-                            if ind.get(qn(attr)) is not None:
-                                del ind.attrib[qn(attr)]
-                                changed = True
+                        # if there's no w:ind element at all, there is no
+                        # original margin to mirror - correctly left
+                        # untouched rather than inventing one.
 
             if want_rtl:
                 if pPr is None:
