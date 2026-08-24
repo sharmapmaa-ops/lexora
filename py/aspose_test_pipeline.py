@@ -710,6 +710,12 @@ def run_structure_only_test(pdf_path, output_path):
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
+    duplicate_rows_removed = 0
+    try:
+        duplicate_rows_removed = _remove_duplicate_table_rows(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
     leaked_names_fixed = 0
     try:
         leaked_names_fixed = _fix_leaked_internal_field_names(doc)
@@ -730,6 +736,7 @@ def run_structure_only_test(pdf_path, output_path):
         "header_bars_fixed": headers_fixed,
         "headings_split": headings_split,
         "tables_repositioned": tables_repositioned,
+        "duplicate_rows_removed": duplicate_rows_removed,
         "leaked_names_fixed": leaked_names_fixed,
         "split_numeric_findings": split_numeric_findings,
         "aspose_words_calls": 1,
@@ -1579,6 +1586,51 @@ def _fix_exact_row_heights(doc):
     return fixed
 
 
+def _remove_duplicate_table_rows(doc):
+    """Item (DUPLICATE-TABLE-ROW, real reported bug): a real Appendix
+    table ("Clause Number | Field | Clarification") had one row
+    ("1 | Contract Execution Date | This field indicates the date of
+    documenting the lease contract by both parties.") appearing TWICE
+    in a row, character-for-character identical in every cell -
+    confirmed directly in the real document's XML, not assumed.
+
+    DELIBERATELY CONSERVATIVE, to avoid a real false-positive found in
+    the SAME document: two rows can legitimately share the same Field
+    name with GENUINELY DIFFERENT Clarification text (e.g. "Lessor"
+    appeared twice with two different, real clarifications about who a
+    lessor can be vs. what identity types apply) - that is real,
+    intentional content, not a bug, and must never be removed. So this
+    only removes a row when it is an EXACT match (every cell's text,
+    in order) to the row IMMEDIATELY BEFORE it - never "same field
+    name", never a fuzzy/partial match, and never a match to some
+    earlier non-adjacent row (a document could legitimately repeat an
+    identical short value like a single clause number far apart -
+    adjacency is what makes this specific pattern look like an
+    accidental double-write rather than real repeated content).
+
+    Returns the number of rows removed."""
+    from docx.oxml.ns import qn
+
+    removed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        rows = tbl_el.findall(qn("w:tr"))
+        prev_text = None
+        for tr in rows:
+            cell_texts = []
+            for t_el in tr.iter(qn("w:t")):
+                cell_texts.append(t_el.text or "")
+            row_text = "\x1f".join(cell_texts)  # unlikely-to-collide separator
+            if prev_text is not None and row_text == prev_text and row_text.strip("\x1f").strip():
+                tr.getparent().remove(tr)
+                removed += 1
+                # prev_text stays the same - if a THIRD identical row
+                # somehow followed, it would also be caught against the
+                # same still-standing previous row.
+                continue
+            prev_text = row_text
+    return removed
+
+
 def _fix_table_overflow_indent(doc):
     """Item (APPENDIX-TABLE-OFF-PAGE, P0-critical) - confirmed real,
     pre-existing Aspose conversion defect: this document's Appendix
@@ -1594,22 +1646,53 @@ def _fix_table_overflow_indent(doc):
     700-870 twips, so this is clearly anomalous, not an intentional
     layout choice.
 
-    Fix: for every table in the document, if its indent plus total
-    column width would exceed the page's content width, clamp the
-    indent down to fit ("content_width - table_width", never negative)
-    - a minimal, targeted change that only touches tables which are
-    actually mispositioned, leaving every correctly-placed table
-    (indent ~700-870, safely within bounds) untouched. Verified against
-    the real document: 4 tables fixed, Appendix went from having its
-    Clause Number/Field columns entirely clipped off-page to being
-    fully visible with all three columns readable."""
+    REAL BUG FOUND IN THE FIRST VERSION OF THIS FIX (confirmed via a
+    second real document): the original correction formula,
+    "content_width - total_w", is a NO-OP for a table whose indent
+    already lands EXACTLY at that same boundary (indent + width ==
+    content_width, not exceeding it) - "clamp to the maximum that
+    fits" just recomputes the SAME anomalous indent when the table is
+    already sitting exactly at that maximum. Confirmed directly: a
+    real Appendix table with indent=1437, width=9423, content_width=
+    10860 triggered the fix (reported "fixed"), but its visible indent
+    never actually changed, because 10860-9423=1437, the same value it
+    started at - meanwhile every OTHER table in that same document used
+    691-867, so the table was still clearly mispositioned relative to
+    its own document's siblings even though the fix claimed success.
+
+    REAL FIX: instead of clamping to "the maximum that mathematically
+    fits" (which can be a no-op exactly at the boundary), reset an
+    anomalous table's indent to the MEDIAN indent among that same
+    document's own OTHER, non-anomalous tables - i.e. match its
+    siblings' actual typical position, not just "technically inside
+    the page". Verified this also correctly handles the original
+    ~6766-twip overflow case (median ~700-870 + ~9430 width lands
+    safely under a ~10860 content width, same as it did before) as
+    well as the new exactly-at-boundary case (median replaces the
+    anomalous 1437/1438 outright, producing a REAL, visible change
+    this time) - confirmed by rerunning against both the original
+    overflow-only document and the newly reported boundary-case
+    document, checking before/after indents directly on the real XML,
+    not just trusting the returned count.
+
+    A table only counts as "anomalous" if its indent+width reaches or
+    exceeds the content width (the same condition as before) - normal
+    tables (real buffer against the right margin) are never touched,
+    and are exactly what supplies the median target for the anomalous
+    ones. If there are no non-anomalous tables to take a median from
+    (a document where literally every table is anomalous), falls back
+    to the original clamp-to-fit formula rather than leaving the
+    table untouched."""
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
 
     sec = doc.sections[0]
     content_width_twips = round((sec.page_width - sec.left_margin - sec.right_margin) / 635)
 
-    fixed = 0
+    # Pass 1: collect (element, ind_val, total_w, is_anomalous) for every
+    # table, so the median can be computed from the non-anomalous ones
+    # BEFORE any correction is applied.
+    entries = []
     for tbl_el in doc.element.body.iter(qn("w:tbl")):
         tblPr = tbl_el.find(qn("w:tblPr"))
         if tblPr is None:
@@ -1621,14 +1704,30 @@ def _fix_table_overflow_indent(doc):
             continue
         tblInd = tblPr.find(qn("w:tblInd"))
         ind_val = int(tblInd.get(qn("w:w"))) if tblInd is not None else 0
-        if ind_val + total_w > content_width_twips:
-            new_ind = max(0, content_width_twips - total_w)
-            if tblInd is None:
-                tblInd = OxmlElement("w:tblInd")
-                tblInd.set(qn("w:type"), "dxa")
-                tblPr.append(tblInd)
-            tblInd.set(qn("w:w"), str(new_ind))
-            fixed += 1
+        is_anomalous = (ind_val + total_w) >= content_width_twips
+        entries.append({"tblPr": tblPr, "tblInd": tblInd, "ind_val": ind_val, "total_w": total_w, "anomalous": is_anomalous})
+
+    normal_indents = sorted(e["ind_val"] for e in entries if not e["anomalous"])
+    if normal_indents:
+        median_indent = normal_indents[len(normal_indents) // 2]
+    else:
+        median_indent = None  # no non-anomalous table to learn a target from
+
+    fixed = 0
+    for e in entries:
+        if not e["anomalous"]:
+            continue
+        if median_indent is not None:
+            new_ind = median_indent
+        else:
+            new_ind = max(0, content_width_twips - e["total_w"])  # fallback: original clamp-to-fit
+        tblInd = e["tblInd"]
+        if tblInd is None:
+            tblInd = OxmlElement("w:tblInd")
+            tblInd.set(qn("w:type"), "dxa")
+            e["tblPr"].append(tblInd)
+        tblInd.set(qn("w:w"), str(new_ind))
+        fixed += 1
     return fixed
 
 
@@ -2797,6 +2896,20 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
+    # Runs BEFORE translation, same reasoning as the column-order fix
+    # right below: removing an exact-duplicate row here means the LLM
+    # never wastes a translation call on a row that's about to be
+    # deleted anyway, and exact-duplicate detection is more reliable
+    # against the ORIGINAL source text than against independently
+    # translated text (two separate LLM calls on identical source text
+    # are not guaranteed to produce byte-identical translations, which
+    # would make the same real duplicate harder to detect afterward).
+    duplicate_rows_removed = 0
+    try:
+        duplicate_rows_removed = _remove_duplicate_table_rows(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
     # Item (TABLE-COLUMN-ORDER-NOT-MIRRORED) - see
     # _fix_table_column_order_for_target_direction()'s docstring. MUST
     # run BEFORE translation - it tells "genuinely RTL monolingual
@@ -2897,6 +3010,7 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
         "header_bars_fixed": headers_fixed,
         "headings_split": headings_split,
         "tables_repositioned": tables_repositioned,
+        "duplicate_rows_removed": duplicate_rows_removed,
         "columns_reordered": columns_reordered,
         "narrow_columns_fixed": narrow_columns_fixed,
         "direction_fixed": direction_fixed,
@@ -2954,6 +3068,8 @@ def run_full_test(pdf_path, target_language, output_path):
         log.append(f"Article headings split out from a merged previous clause: {rebuild_result['headings_split']}")
     if rebuild_result.get("tables_repositioned"):
         log.append(f"Off-page tables repositioned (were overflowing page boundary): {rebuild_result['tables_repositioned']}")
+    if rebuild_result.get("duplicate_rows_removed"):
+        log.append(f"Exact-duplicate table rows removed: {rebuild_result['duplicate_rows_removed']}")
     if rebuild_result.get("columns_reordered"):
         log.append(f"Table column order mirrored for LTR reading (was RTL physical order): {rebuild_result['columns_reordered']}")
     if rebuild_result.get("narrow_columns_fixed"):
