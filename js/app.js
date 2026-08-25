@@ -2752,41 +2752,16 @@
                         if (processState.stopped) return;
 
                         // ============================================================
-                        // ROUTING (table/background rule, same as OCR service):
-                        // a source PDF with tables or background color coverage goes
-                        // through Aspose.Words Cloud (structure-aware conversion +
-                        // real in-place LLM translation - see
-                        // aspose_test_pipeline.run_full_test, already tested via the
-                        // admin Aspose test route before being wired here for real
-                        // use). Everything else uses the existing client-side pdf.js
-                        // text-layer pipeline (window.__translationEngine.
-                        // buildOfflineDocxBlob), falling back automatically to the
-                        // vision-based OCR pipeline (buildHybridDocxBlob) if that
-                        // throws the existing "scanned/image-based" signal - exactly
-                        // mirroring ocr-service.js's own fallback. The old manual
-                        // "With OCR" checkbox is gone; this decision is now always
-                        // made per-file from real PDF analysis, never a user toggle.
                         // ============================================================
-                        let translationStrategy = 'lightweight';
-                        let translationStrategyAnalysis = null;
-                        try {
-                            const stratResp = await fetch('/api/translation/analyze-strategy', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
-                                body: JSON.stringify({ fileName: file.name, pdfBase64: dataBase64 })
-                            });
-                            const stratData = await stratResp.json();
-                            if (stratData && stratData.ok) {
-                                translationStrategy = stratData.strategy;
-                                translationStrategyAnalysis = stratData.analysis;
-                            }
-                            // A failed analysis call shouldn't block translation -
-                            // default to the client-side text-layer path (which
-                            // itself falls back to vision OCR if the PDF turns out
-                            // scanned), same defensive default OCR's own
-                            // analyzeOcrStrategy() uses.
-                        } catch (stratErr) { /* keep default 'lightweight' */ }
-
+                        // STEP 1 ONLY, per explicit direction: on start, Translation
+                        // now unconditionally sends the source PDF to Aspose.Words
+                        // Cloud and gets back the converted Word document - nothing
+                        // else yet. No table/background routing, no translation, no
+                        // pdf.js/vision-OCR fallback right now - those were removed
+                        // deliberately, not forgotten, per explicit direction to keep
+                        // this to just the first step until further instruction on
+                        // what comes next.
+                        // ============================================================
                         const browserBuild = true;
                         if (browserBuild) {
                             const baseName = originalFileName.replace(/\.[^.]+$/, '');
@@ -2871,72 +2846,44 @@
                                     refreshServicePage('translation');
                                 };
 
-                                if (translationStrategy === 'aspose') {
-                                    actualStrategyUsed = 'aspose';
-                                    addActivity('translation', `${fl}System > Table/background detected - using Aspose (structure-aware conversion + translation)`, 'Info');
-                                    const asposeResp = await fetch('/api/translation/process-aspose', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
-                                        body: JSON.stringify({ fileName: file.name, pdfBase64: dataBase64, targetLanguage: targetLanguage })
-                                    });
-                                    const asposeData = await asposeResp.json();
-                                    if (!asposeData || !asposeData.ok) {
-                                        if (asposeData && asposeData.asposeNotConfigured) {
-                                            throw new Error('Aspose is not configured on this server yet: ' + asposeData.error);
-                                        }
-                                        throw new Error((asposeData && asposeData.error) || 'Aspose translation failed.');
+                                // STEP 1 ONLY: always send the PDF to Aspose and get
+                                // back the converted Word document - structure-only
+                                // conversion (aspose_test_pipeline.run_structure_only_
+                                // test), no translation happening yet. Further steps
+                                // (extraction into JSON, translation, RTL/LTR margin
+                                // mirroring, injection, review) are NOT implemented
+                                // here - to be wired in only per further explicit
+                                // instruction.
+                                actualStrategyUsed = 'aspose';
+                                addActivity('translation', `${fl}System > Sending PDF to Aspose for conversion`, 'Info');
+                                const asposeResp = await fetch('/api/translation/aspose-convert', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
+                                    body: JSON.stringify({ fileName: file.name, pdfBase64: dataBase64 })
+                                });
+                                const asposeData = await asposeResp.json();
+                                if (!asposeData || !asposeData.ok) {
+                                    if (asposeData && asposeData.asposeNotConfigured) {
+                                        throw new Error('Aspose is not configured on this server yet: ' + asposeData.error);
                                     }
-                                    if (Array.isArray(asposeData.log)) {
-                                        asposeData.log.forEach(function (line) { onLog(line, 'info'); });
-                                    }
-                                    const binary = atob(asposeData.outputBase64);
-                                    const bytes = new Uint8Array(binary.length);
-                                    for (let bi = 0; bi < binary.length; bi++) bytes[bi] = binary.charCodeAt(bi);
-                                    offlineBlob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-
-                                    // No per-page event stream from this server-side
-                                    // path (one request/response for the whole
-                                    // document, not a page-by-page pipeline) - bill
-                                    // using the page count already known from the
-                                    // analyze-strategy call above, same "whole
-                                    // document succeeded or the request threw" shape
-                                    // as everything else here.
-                                    const asposePageCount = (translationStrategyAnalysis && translationStrategyAnalysis.page_count) || 1;
-                                    pagesCharged = asposePageCount;
-                                    totalCharged = perDocument ? 0 : perPageRate * asposePageCount;
-                                    file.progress = '80';
-                                    refreshServicePage('translation');
-                                } else {
-                                    // Uses the Translation service's OWN, fully-separate engine
-                                    // copy (window.__translationEngine) - not a shared global
-                                    // with other services, per explicit separation requirement.
-                                    if (window.__translationEngine && window.__translationEngine.setVisionAuthToken) window.__translationEngine.setVisionAuthToken(AUTH_TOKEN || '');
-                                    if (window.__translationEngine && window.__translationEngine.setVisionStopCheck) window.__translationEngine.setVisionStopCheck(function () { return processState.stopped; });
-                                    if (window.__translationEngine && window.__translationEngine.setPipelineEventHandler) window.__translationEngine.setPipelineEventHandler(onEvent);
-                                    if (window.__translationEngine && window.__translationEngine.resetPipelineApiCounters) window.__translationEngine.resetPipelineApiCounters();
-                                    try {
-                                        offlineBlob = await window.__translationEngine.buildOfflineDocxBlob(blob, {
-                                            withImage: withImageOpt,
-                                            targetLang: targetLanguage
-                                        }, onLog);
-                                        actualStrategyUsed = 'client_text_layer';
-                                    } catch (textLayerErr) {
-                                        // buildOfflineDocxBlob throws a clear, specific
-                                        // error when the PDF has no usable text layer
-                                        // (genuinely scanned/photographed) - that's the
-                                        // correct signal to fall back to vision-based
-                                        // OCR, not a failure to surface to the user.
-                                        // Exactly mirrors ocr-service.js's own fallback.
-                                        const looksLikeScanSignal = /scanned|image-based/i.test(textLayerErr.message || '');
-                                        if (!looksLikeScanSignal || !window.__translationEngine || !window.__translationEngine.buildHybridDocxBlob) throw textLayerErr;
-                                        onLog('Text layer not usable - falling back to vision-based OCR.', 'warn');
-                                        offlineBlob = await window.__translationEngine.buildHybridDocxBlob(blob, {
-                                            withImage: withImageOpt,
-                                            targetLang: targetLanguage
-                                        }, onLog);
-                                        actualStrategyUsed = 'vision_ocr_fallback';
-                                    }
+                                    throw new Error((asposeData && asposeData.error) || 'Aspose conversion failed.');
                                 }
+                                const binary = atob(asposeData.outputBase64);
+                                const bytes = new Uint8Array(binary.length);
+                                for (let bi = 0; bi < binary.length; bi++) bytes[bi] = binary.charCodeAt(bi);
+                                offlineBlob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+
+                                // No per-page event stream from this server-side path
+                                // (one request/response for the whole document) and no
+                                // page-count analysis call right now either (removed
+                                // along with the table/background routing) - billed as
+                                // a single whole-document unit for now; real per-page
+                                // billing can be revisited once further instruction
+                                // clarifies what the next steps actually are.
+                                pagesCharged = 1;
+                                totalCharged = perDocument ? 0 : perPageRate;
+                                file.progress = '80';
+                                refreshServicePage('translation');
                             } catch (offErr) {
                                 // ERROR LINE: rehti hai (hatti nahi), aur File Processing
                                 // ki alag failed line bhi.

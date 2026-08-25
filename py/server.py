@@ -3845,6 +3845,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/translation/generate-pdf": self._handle_translation_generate_pdf,
             "/api/translation/analyze-strategy": self._handle_translation_analyze_strategy,
             "/api/translation/process-aspose": self._handle_translation_process_aspose,
+            "/api/translation/aspose-convert": self._handle_translation_aspose_convert,
             "/api/test/aspose-translate": self._handle_aspose_test_translate,
             "/api/ocr/process-router": self._handle_ocr_process_router,
             "/api/ocr/analyze-strategy": self._handle_ocr_analyze_strategy,
@@ -6736,6 +6737,53 @@ class Handler(SimpleHTTPRequestHandler):
                 f.write(base64.b64decode(pdf_b64))
             analysis = ocr_router.analyze_pdf_for_ocr_strategy(pdf_path)
             return 200, {"ok": True, "analysis": analysis, "strategy": analysis["strategy"]}
+        except Exception as err:
+            return 200, {"ok": False, "error": str(err)}
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _handle_translation_aspose_convert(self, body):
+        """FIRST STEP ONLY of the real Translation service's pipeline,
+        per explicit direction: on start, Translation now unconditionally
+        sends the source PDF to Aspose.Words Cloud and gets back the
+        converted Word document - nothing else yet (no translation, no
+        further processing). Reuses aspose_test_pipeline.
+        run_structure_only_test (pure PDF->DOCX conversion + the already
+        -fixed structural cleanup passes - header bars, headings, table
+        indent/duplicate rows - but zero LLM/translation calls), the SAME
+        function already exercised via the admin Aspose test route's
+        "structure" mode, rather than a second copy of the conversion
+        call. Later steps (JSON extraction, translation, RTL/LTR margin
+        mirroring, injection, review) are deliberately NOT implemented
+        here yet - to be wired in only per further explicit instruction,
+        not assumed or built ahead of that direction."""
+        file_name = _safe_filename(body.get("fileName"), "document.pdf")
+        pdf_b64 = body.get("pdfBase64")
+        if not pdf_b64:
+            raise ValueError("pdfBase64 is required")
+
+        import aspose_test_pipeline as asp_test
+
+        tmp_dir = tempfile.mkdtemp(prefix="translation_aspose_convert_")
+        try:
+            pdf_path = os.path.join(tmp_dir, _safe_filename(file_name))
+            with open(pdf_path, "wb") as f:
+                f.write(base64.b64decode(pdf_b64))
+            output_path = os.path.join(tmp_dir, "output.docx")
+
+            try:
+                result = asp_test.run_structure_only_test(pdf_path, output_path)
+            except asp_test.AsposeNotConfiguredError as err:
+                return 200, {"ok": False, "asposeNotConfigured": True, "error": str(err)}
+
+            with open(result["output_path"], "rb") as f:
+                output_b64 = base64.b64encode(f.read()).decode()
+
+            return 200, {
+                "ok": True,
+                "outputBase64": output_b64,
+                "outputFileName": os.path.splitext(file_name)[0] + ".docx",
+            }
         except Exception as err:
             return 200, {"ok": False, "error": str(err)}
         finally:

@@ -1,21 +1,27 @@
 """
-Standalone regression test for the NEW Translation-service Aspose
-routing wired into py/server.py:
+Standalone regression test for the table/background Aspose routing
+that was wired into py/server.py:
   /api/translation/analyze-strategy -> _handle_translation_analyze_strategy
   /api/translation/process-aspose   -> _handle_translation_process_aspose
 
-Per explicit direction: table/background documents route to Aspose
-(structure-aware conversion + real in-place LLM translation, via
-aspose_test_pipeline.run_full_test - already tested through the admin
-Aspose test route); everything else uses the existing client-side
-pdf.js text-layer pipeline (js/engine-translation.js), unchanged.
+STATUS UPDATE (per explicit direction): the real Translation service's
+CLIENT-SIDE flow (js/app.js) no longer calls either of these endpoints
+- it was simplified back to a single, explicit first step (send the PDF
+to Aspose, get back the converted Word document - see
+aspose_convert_step1_test.py for that current real flow), with further
+steps to be wired in only per further instruction. These two endpoints
+and their SERVER-side handlers are kept as-is, unused for now, in case
+this table/background-routing design is wanted again once further
+instructions arrive - not deleted, since rebuilding them later would be
+wasted effort if they end up needed again. This test therefore only
+verifies the SERVER-side code (which still exists and still works
+correctly) - it does not claim these endpoints are part of the current
+live user flow.
 
 This deliberately reuses ocr_router.analyze_pdf_for_ocr_strategy
 directly (not a second copy of the same table/background-detection
 logic) and aspose_test_pipeline.run_full_test directly (not a second
-Aspose+translate pipeline) - this test confirms BOTH the reuse is wired
-correctly AND the underlying decision is still correct for Translation's
-own real documents.
+Aspose+translate pipeline).
 
 Run: python3 translation_aspose_routing_test.py [path/to/table_pdf.pdf]
 The second PDF (with real tables/background) is optional - if not
