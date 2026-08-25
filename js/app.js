@@ -2872,14 +2872,44 @@
                                 const bytes = new Uint8Array(binary.length);
                                 for (let bi = 0; bi < binary.length; bi++) bytes[bi] = binary.charCodeAt(bi);
                                 offlineBlob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+                                file.progress = '50';
+                                refreshServicePage('translation');
 
-                                // No per-page event stream from this server-side path
-                                // (one request/response for the whole document) and no
-                                // page-count analysis call right now either (removed
-                                // along with the table/background routing) - billed as
-                                // a single whole-document unit for now; real per-page
-                                // billing can be revisited once further instruction
-                                // clarifies what the next steps actually are.
+                                // STEP 2, per explicit direction: inject the actual
+                                // translation into the step-1 Aspose-converted docx.
+                                // Deliberately does NOT do RTL/LTR direction fixing
+                                // (table column order, margin mirroring) yet - excluded
+                                // per direction, to be wired in only later as its own
+                                // step.
+                                addActivity('translation', `${fl}System > Injecting translation`, 'Info');
+                                const step1DocxBase64 = await new Promise((resolve, reject) => {
+                                    const reader = new FileReader();
+                                    reader.onload = () => resolve(reader.result.split(',')[1]);
+                                    reader.onerror = reject;
+                                    reader.readAsDataURL(offlineBlob);
+                                });
+                                const injectResp = await fetch('/api/translation/inject-translation', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
+                                    body: JSON.stringify({ fileName: file.name, docxBase64: step1DocxBase64, targetLanguage: targetLanguage })
+                                });
+                                const injectData = await injectResp.json();
+                                if (!injectData || !injectData.ok) {
+                                    throw new Error((injectData && injectData.error) || 'Translation injection failed.');
+                                }
+                                const injectBinary = atob(injectData.outputBase64);
+                                const injectBytes = new Uint8Array(injectBinary.length);
+                                for (let bi = 0; bi < injectBinary.length; bi++) injectBytes[bi] = injectBinary.charCodeAt(bi);
+                                offlineBlob = new Blob([injectBytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+                                addActivity('translation',
+                                    `${fl}System > Translation injected - ${injectData.segmentsTranslated || 0} segment(s) translated, ${injectData.segmentsSkipped || 0} skipped`, 'Info');
+
+                                // No per-page event stream from either server-side step
+                                // (one request/response each) and no page-count analysis
+                                // call right now either (removed along with the table/
+                                // background routing) - billed as a single whole-document
+                                // unit for now; real per-page billing can be revisited
+                                // once further instruction clarifies what comes next.
                                 pagesCharged = 1;
                                 totalCharged = perDocument ? 0 : perPageRate;
                                 file.progress = '80';

@@ -3846,6 +3846,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/translation/analyze-strategy": self._handle_translation_analyze_strategy,
             "/api/translation/process-aspose": self._handle_translation_process_aspose,
             "/api/translation/aspose-convert": self._handle_translation_aspose_convert,
+            "/api/translation/inject-translation": self._handle_translation_inject_translation,
             "/api/test/aspose-translate": self._handle_aspose_test_translate,
             "/api/ocr/process-router": self._handle_ocr_process_router,
             "/api/ocr/analyze-strategy": self._handle_ocr_analyze_strategy,
@@ -6783,6 +6784,52 @@ class Handler(SimpleHTTPRequestHandler):
                 "ok": True,
                 "outputBase64": output_b64,
                 "outputFileName": os.path.splitext(file_name)[0] + ".docx",
+            }
+        except Exception as err:
+            return 200, {"ok": False, "error": str(err)}
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _handle_translation_inject_translation(self, body):
+        """STEP 2 ONLY, per explicit direction: takes a docx that has
+        ALREADY been through step 1 (see _handle_translation_aspose_
+        convert - Aspose conversion, already deployed and tested) and
+        injects the actual translation into it - reuses
+        aspose_test_pipeline.translate_existing_docx, which itself
+        reuses _translate_docx_segments_in_place (the same, already-
+        tested translation-injection logic rebuild_docx_with_
+        translated_text uses), just starting from an existing DOCX
+        instead of converting from a PDF itself. Deliberately does NOT
+        run the RTL/LTR direction-fixing step (table column order,
+        margin mirroring) - explicitly excluded per direction, to be
+        wired in only later as its own separate step."""
+        file_name = _safe_filename(body.get("fileName"), "document.docx")
+        docx_b64 = body.get("docxBase64")
+        target_language = body.get("targetLanguage") or "English"
+        if not docx_b64:
+            raise ValueError("docxBase64 is required")
+
+        import aspose_test_pipeline as asp_test
+
+        tmp_dir = tempfile.mkdtemp(prefix="translation_inject_")
+        try:
+            docx_path = os.path.join(tmp_dir, _safe_filename(file_name))
+            with open(docx_path, "wb") as f:
+                f.write(base64.b64decode(docx_b64))
+            output_path = os.path.join(tmp_dir, "output.docx")
+
+            result = asp_test.translate_existing_docx(docx_path, target_language, output_path)
+
+            with open(result["output_path"], "rb") as f:
+                output_b64 = base64.b64encode(f.read()).decode()
+
+            return 200, {
+                "ok": True,
+                "outputBase64": output_b64,
+                "outputFileName": os.path.splitext(file_name)[0] + "-translated.docx",
+                "segmentsTranslated": result.get("segments_translated"),
+                "segmentsSkipped": result.get("segments_skipped"),
+                "translationProviders": result.get("translation_providers"),
             }
         except Exception as err:
             return 200, {"ok": False, "error": str(err)}

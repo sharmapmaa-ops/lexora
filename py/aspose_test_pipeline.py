@@ -2660,6 +2660,46 @@ def _detect_split_numeric_values(doc):
     return findings
 
 
+def translate_existing_docx(docx_path, target_language, output_path, llm_config=None):
+    """STEP 2 ONLY, per explicit direction: takes a docx that has
+    ALREADY been through step 1 (Aspose PDF->DOCX conversion + the
+    structural cleanup passes - header bars, headings, table indent,
+    duplicate rows - all already applied there), and does ONLY the
+    translation-injection step - _translate_docx_segments_in_place(),
+    unchanged, the same real function rebuild_docx_with_translated_text
+    uses. Deliberately does NOT re-run the structural fixes (this docx
+    already has them from step 1 - repeating them here would be
+    redundant, not harmful, but there is no reason to redo work already
+    done) and deliberately does NOT run _fix_paragraph_direction (the
+    RTL/LTR column-order and margin-mirroring step) - explicitly
+    excluded per direction, to be wired in only later as its own step.
+
+    Takes an existing DOCX path (not a PDF) as input - this is the key
+    difference from rebuild_docx_with_translated_text, which converts
+    from a PDF itself. Here, conversion has already happened elsewhere
+    (step 1) and this function's only job is translating what's
+    already there."""
+    from docx import Document
+
+    doc = Document(docx_path)
+
+    (translated_count, skipped_count, failed_batches, total_batches,
+     llm_calls_by_provider) = _translate_docx_segments_in_place(doc, target_language, llm_config)
+
+    doc.save(output_path)
+    return {
+        "output_path": output_path,
+        "mode": "translate_only",
+        "pipeline_code_version": PIPELINE_CODE_VERSION,
+        "segments_translated": translated_count,
+        "segments_skipped": skipped_count,
+        "translation_batches_failed": failed_batches,
+        "translation_batches_total": total_batches,
+        "translation_providers": sorted(llm_calls_by_provider.keys()),
+        "llm_calls_by_provider": llm_calls_by_provider,
+    }
+
+
 def _translate_docx_segments_in_place(doc, target_language, llm_config):
     """Item (IN-PLACE-MERGE) - replaces the old approach of translating
     the PDF's extracted text as one big blob and appending it as a
