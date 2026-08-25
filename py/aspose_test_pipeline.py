@@ -2678,8 +2678,27 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
     difference from rebuild_docx_with_translated_text, which converts
     from a PDF itself. Here, conversion has already happened elsewhere
     (step 1) and this function's only job is translating what's
-    already there."""
+    already there.
+
+    CONFIRMED REAL BUG (first version of this function): left
+    llm_config defaulting to None with no caller ever loading a real
+    one, unlike every other real caller of _translate_docx_segments_in_
+    place (run_full_test explicitly does "llm_config = le.load_llm_
+    config()" before calling it) - the server handler for this function
+    called it with no llm_config argument at all, so every real
+    translation attempt got None, every LLM batch call failed silently
+    (caught by _translate_docx_segments_in_place's own try/except,
+    counted as a failed batch), and EVERY segment was left in its
+    original source-language text - confirmed directly against a real
+    reported document that came back from this endpoint completely
+    untranslated. Fixed by loading a real config here whenever the
+    caller doesn't already have one, so this function is correct by
+    itself and not dependent on every future caller remembering to load
+    and pass one."""
     from docx import Document
+
+    if llm_config is None:
+        llm_config = le.load_llm_config()
 
     doc = Document(docx_path)
 

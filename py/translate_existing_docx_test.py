@@ -25,7 +25,8 @@ def run():
     src = open(os.path.join(os.path.dirname(__file__), "aspose_test_pipeline.py")).read()
     fn_start = src.find("def translate_existing_docx(")
     assert_(fn_start != -1, "translate_existing_docx is defined")
-    fn_body = src[fn_start:fn_start + 1800]
+    next_def = src.find("\ndef ", fn_start + 1)
+    fn_body = src[fn_start:next_def if next_def != -1 else fn_start + 3500]
     assert_("_translate_docx_segments_in_place(" in fn_body, "Reuses _translate_docx_segments_in_place directly - not a second translation implementation")
     assert_("_fix_paragraph_direction(" not in fn_body, "Does NOT call _fix_paragraph_direction - RTL/LTR fixing is deliberately excluded per direction")
     assert_("run_structure_only_test(" not in fn_body and "convert_document(" not in fn_body,
