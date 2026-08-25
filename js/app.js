@@ -2903,13 +2903,48 @@
                                 offlineBlob = new Blob([injectBytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
                                 addActivity('translation',
                                     `${fl}System > Translation injected - ${injectData.segmentsTranslated || 0} segment(s) translated, ${injectData.segmentsSkipped || 0} skipped`, 'Info');
+                                file.progress = '65';
+                                refreshServicePage('translation');
 
-                                // No per-page event stream from either server-side step
-                                // (one request/response each) and no page-count analysis
-                                // call right now either (removed along with the table/
-                                // background routing) - billed as a single whole-document
-                                // unit for now; real per-page billing can be revisited
-                                // once further instruction clarifies what comes next.
+                                // STEP 3, per explicit direction: document reviewer. Takes
+                                // BOTH the original (step 1's untranslated) docx and the
+                                // translated (step 2's) docx, identifies every line/object,
+                                // finds real issues (formatting, style, background,
+                                // ordering, LTR/RTL direction) versus the original, builds
+                                // a full issue+solution list, and applies every fix.
+                                addActivity('translation', `${fl}System > Reviewing translated document`, 'Info');
+                                const translatedDocxBase64 = await new Promise((resolve, reject) => {
+                                    const reader = new FileReader();
+                                    reader.onload = () => resolve(reader.result.split(',')[1]);
+                                    reader.onerror = reject;
+                                    reader.readAsDataURL(offlineBlob);
+                                });
+                                const reviewResp = await fetch('/api/translation/review', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
+                                    body: JSON.stringify({ fileName: file.name, originalDocxBase64: step1DocxBase64, translatedDocxBase64: translatedDocxBase64, targetLanguage: targetLanguage })
+                                });
+                                const reviewData = await reviewResp.json();
+                                if (!reviewData || !reviewData.ok) {
+                                    throw new Error((reviewData && reviewData.error) || 'Document review failed.');
+                                }
+                                const reviewBinary = atob(reviewData.outputBase64);
+                                const reviewBytes = new Uint8Array(reviewBinary.length);
+                                for (let bi = 0; bi < reviewBinary.length; bi++) reviewBytes[bi] = reviewBinary.charCodeAt(bi);
+                                offlineBlob = new Blob([reviewBytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+                                addActivity('translation',
+                                    `${fl}System > Review complete - ${reviewData.issueCount || 0} issue(s) found and fixed`, 'Info');
+                                (reviewData.issues || []).forEach(function (iss) {
+                                    addActivity('translation', `${fl}Review > ${iss.location} > ${iss.issue} > Fix: ${iss.solution}`, 'Info');
+                                });
+
+                                // No per-page event stream from any of these server-side
+                                // steps (one request/response each) and no page-count
+                                // analysis call right now either (removed along with the
+                                // table/background routing) - billed as a single whole-
+                                // document unit for now; real per-page billing can be
+                                // revisited once further instruction clarifies what comes
+                                // next.
                                 pagesCharged = 1;
                                 totalCharged = perDocument ? 0 : perPageRate;
                                 file.progress = '80';

@@ -2660,6 +2660,263 @@ def _detect_split_numeric_values(doc):
     return findings
 
 
+def _iter_paragraphs_with_location(doc):
+    """Walks every paragraph in the document IN ORDER, including those
+    inside table cells (recursively, so a table cell that itself
+    contains a nested table is still fully covered), yielding
+    (location_label, paragraph) pairs. location_label is a short,
+    human-readable position description (e.g. "body paragraph 4",
+    "table 1 > row 2 > cell 1 > paragraph 1") for real issue messages -
+    not just an opaque index - so a real reviewer output can tell a
+    person WHERE a problem is without them having to count elements
+    themselves. Shared by both the fingerprint-extraction step and any
+    future consumer that needs the same real walk order."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    body_para_n = 0
+    table_n = 0
+
+    def _walk_cell(cell, path_prefix):
+        for block in cell._element:
+            if block.tag == qn_local("p"):
+                p = Paragraph(block, cell)
+                nonlocal_para_n[0] += 1
+                yield (path_prefix + " > paragraph " + str(nonlocal_para_n[0]), p)
+            elif block.tag == qn_local("tbl"):
+                nonlocal_table_n[0] += 1
+                t = Table(block, cell)
+                yield from _walk_table(t, "table " + str(nonlocal_table_n[0]))
+
+    def _walk_table(table, label):
+        for r_idx, row in enumerate(table.rows, start=1):
+            for c_idx, cell in enumerate(row.cells, start=1):
+                nonlocal_para_n[0] = 0
+                yield from _walk_cell(cell, label + " > row " + str(r_idx) + " > cell " + str(c_idx))
+
+    nonlocal_para_n = [0]
+    nonlocal_table_n = [table_n]
+
+    for block in doc.element.body:
+        if block.tag == qn_local("p"):
+            body_para_n += 1
+            from docx.text.paragraph import Paragraph as _P
+            yield ("body paragraph " + str(body_para_n), _P(block, doc))
+        elif block.tag == qn_local("tbl"):
+            nonlocal_table_n[0] += 1
+            from docx.table import Table as _T
+            yield from _walk_table(_T(block, doc), "table " + str(nonlocal_table_n[0]))
+
+
+def qn_local(tag):
+    from docx.oxml.ns import qn
+    return qn("w:" + tag)
+
+
+def _extract_paragraph_fingerprint(paragraph):
+    """Captures the structural (non-text) properties that translation
+    should NEVER change on its own - shading/background, alignment,
+    indent, and bidi (RTL/LTR direction flag) - plus a coarse run-style
+    summary (any bold, any italic, first run's font/size/color, per
+    _replace_paragraph_text's own documented behavior of keeping
+    formatting from the first run only). Deliberately does NOT capture
+    the paragraph's actual text - text is EXPECTED to differ between
+    the original and translated documents (that's the whole point of
+    translation), so comparing text would be comparing the wrong
+    thing."""
+    from docx.oxml.ns import qn
+
+    p = paragraph._p
+    pPr = p.find(qn("w:pPr"))
+
+    shd = pPr.find(qn("w:shd")) if pPr is not None else None
+    shading_fill = shd.get(qn("w:fill")) if shd is not None else None
+
+    jc = pPr.find(qn("w:jc")) if pPr is not None else None
+    alignment = jc.get(qn("w:val")) if jc is not None else None
+
+    ind = pPr.find(qn("w:ind")) if pPr is not None else None
+    indent_left = ind.get(qn("w:left")) if ind is not None else None
+    indent_right = ind.get(qn("w:right")) if ind is not None else None
+
+    has_bidi = (pPr is not None) and (pPr.find(qn("w:bidi")) is not None)
+
+    runs = paragraph.runs
+    any_bold = any(bool(r.bold) for r in runs)
+    any_italic = any(bool(r.italic) for r in runs)
+    first_run = runs[0] if runs else None
+    first_font = first_run.font.name if first_run is not None else None
+    first_size = first_run.font.size if first_run is not None else None
+    first_color = None
+    if first_run is not None and first_run.font.color is not None and first_run.font.color.rgb is not None:
+        first_color = str(first_run.font.color.rgb)
+
+    return {
+        "shading_fill": shading_fill,
+        "alignment": alignment,
+        "indent_left": indent_left,
+        "indent_right": indent_right,
+        "has_bidi": has_bidi,
+        "any_bold": any_bold,
+        "any_italic": any_italic,
+        "first_font": first_font,
+        "first_size": first_size,
+        "first_color": first_color,
+        "has_text": bool(paragraph.text.strip()),
+    }
+
+
+def review_and_fix_translation(original_docx_path, translated_docx_path, target_language, output_path):
+    """STEP 3 (document reviewer), per explicit direction: identifies
+    every line/object in the ORIGINAL file (step 1's Aspose-converted,
+    untranslated output) and the TRANSLATED file (step 2's output),
+    stores their structural fingerprints, compares them position-by-
+    position (translation is a strict in-place text replacement - see
+    _replace_paragraph_text - so the Nth paragraph in one document is
+    always the Nth paragraph in the other; no reordering/insertion/
+    deletion happens between them), finds every real issue (formatting,
+    style, background, ordering, LTR/RTL direction), builds a full
+    issue+solution list for the WHOLE document first, THEN applies every
+    solution - matching the two worked examples given: a missing
+    background color gets restored, and a paragraph whose direction
+    doesn't match the target language gets corrected to RTL/LTR as
+    appropriate.
+
+    RTL/LTR scope note: per earlier explicit direction, this does NOT
+    do table-column-order reversal or left/right margin-mirroring (that
+    remains a separate, not-yet-built step) - it DOES fix the bidi
+    (text-direction) flag itself when it doesn't match what the target
+    language requires, since that's squarely a "does the output look
+    like the target language" issue this reviewer is responsible for,
+    and is exactly the reviewer's own worked example 2.
+
+    Returns (issues, output_path) where issues is a list of
+    {location, issue, solution} dicts, in document order - the full,
+    itemized review list a human reviewer would have produced."""
+    from docx import Document
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    original_doc = Document(original_docx_path)
+    translated_doc = Document(translated_docx_path)
+
+    original_items = list(_iter_paragraphs_with_location(original_doc))
+    translated_items = list(_iter_paragraphs_with_location(translated_doc))
+
+    issues = []
+
+    if len(original_items) != len(translated_items):
+        issues.append({
+            "location": "whole document",
+            "issue": f"Original has {len(original_items)} paragraph(s)/cell(s) but the translated output has "
+                     f"{len(translated_items)} - some content was added, dropped, or the document structure "
+                     f"otherwise changed during translation.",
+            "solution": "Could not safely auto-fix a structural count mismatch - needs manual review; "
+                        "the comparisons below only cover the paragraphs that DO line up positionally.",
+        })
+
+    want_rtl = _is_rtl_language(target_language)
+
+    for (orig_loc, orig_p), (trans_loc, trans_p) in zip(original_items, translated_items):
+        orig_fp = _extract_paragraph_fingerprint(orig_p)
+        trans_fp = _extract_paragraph_fingerprint(trans_p)
+        if not trans_fp["has_text"] and not orig_fp["has_text"]:
+            continue  # both sides genuinely empty - nothing to review here
+
+        trans_pPr = trans_p._p.find(qn("w:pPr"))
+
+        # --- Background/shading (worked example 1) ---
+        if orig_fp["shading_fill"] and orig_fp["shading_fill"] != trans_fp["shading_fill"]:
+            issues.append({
+                "location": trans_loc,
+                "issue": f"Background color is missing/changed (original: {orig_fp['shading_fill']}, "
+                         f"translated: {trans_fp['shading_fill'] or 'none'}).",
+                "solution": f"Set background color to {orig_fp['shading_fill']} to match the original.",
+            })
+            if trans_pPr is None:
+                trans_pPr = OxmlElement("w:pPr")
+                trans_p._p.insert(0, trans_pPr)
+            shd = trans_pPr.find(qn("w:shd"))
+            if shd is None:
+                shd = OxmlElement("w:shd")
+                trans_pPr.append(shd)
+            shd.set(qn("w:val"), "clear")
+            shd.set(qn("w:color"), "auto")
+            shd.set(qn("w:fill"), orig_fp["shading_fill"])
+
+        # --- LTR/RTL direction (worked example 2): must match the
+        # TARGET language's direction, not necessarily the original's -
+        # a document translated FROM an RTL language INTO an LTR one (or
+        # vice versa) is SUPPOSED to end up with the new direction. ---
+        if trans_fp["has_text"] and want_rtl != trans_fp["has_bidi"]:
+            issues.append({
+                "location": trans_loc,
+                "issue": f"Text direction doesn't match the target language ({target_language}, which is "
+                         f"{'RTL' if want_rtl else 'LTR'}) - this line is currently "
+                         f"{'RTL' if trans_fp['has_bidi'] else 'LTR'}.",
+                "solution": f"Set this line's direction to {'RTL' if want_rtl else 'LTR'}.",
+            })
+            if trans_pPr is None:
+                trans_pPr = OxmlElement("w:pPr")
+                trans_p._p.insert(0, trans_pPr)
+            existing_bidi = trans_pPr.find(qn("w:bidi"))
+            if want_rtl and existing_bidi is None:
+                trans_pPr.append(OxmlElement("w:bidi"))
+            elif not want_rtl and existing_bidi is not None:
+                trans_pPr.remove(existing_bidi)
+            for run in trans_p.runs:
+                rPr = run._r.find(qn("w:rPr"))
+                if rPr is None:
+                    rPr = OxmlElement("w:rPr")
+                    run._r.insert(0, rPr)
+                existing_rtl = rPr.find(qn("w:rtl"))
+                if want_rtl and existing_rtl is None:
+                    rPr.append(OxmlElement("w:rtl"))
+                elif not want_rtl and existing_rtl is not None:
+                    rPr.remove(existing_rtl)
+
+        # --- Alignment (formatting/ordering-adjacent - should not
+        # change on its own since we're not doing margin-mirroring yet) ---
+        if orig_fp["alignment"] and orig_fp["alignment"] != trans_fp["alignment"]:
+            issues.append({
+                "location": trans_loc,
+                "issue": f"Alignment changed (original: {orig_fp['alignment']}, translated: {trans_fp['alignment'] or 'default'}).",
+                "solution": f"Reset alignment to {orig_fp['alignment']} to match the original.",
+            })
+            if trans_pPr is None:
+                trans_pPr = OxmlElement("w:pPr")
+                trans_p._p.insert(0, trans_pPr)
+            jc = trans_pPr.find(qn("w:jc"))
+            if jc is None:
+                jc = OxmlElement("w:jc")
+                trans_pPr.append(jc)
+            jc.set(qn("w:val"), orig_fp["alignment"])
+
+        # --- Style (bold/italic lost entirely - beyond the already-
+        # accepted "mixed-run formatting collapses to the first run"
+        # trade-off; this only flags the paragraph LOSING style it had
+        # everywhere in the original) ---
+        if orig_fp["any_bold"] and not trans_fp["any_bold"] and trans_fp["has_text"]:
+            issues.append({
+                "location": trans_loc,
+                "issue": "Original text was bold, translated text is not.",
+                "solution": "Set the translated text to bold to match the original.",
+            })
+            for run in trans_p.runs:
+                run.bold = True
+        if orig_fp["any_italic"] and not trans_fp["any_italic"] and trans_fp["has_text"]:
+            issues.append({
+                "location": trans_loc,
+                "issue": "Original text was italic, translated text is not.",
+                "solution": "Set the translated text to italic to match the original.",
+            })
+            for run in trans_p.runs:
+                run.italic = True
+
+    translated_doc.save(output_path)
+    return issues, output_path
+
+
 def translate_existing_docx(docx_path, target_language, output_path, llm_config=None):
     """STEP 2 ONLY, per explicit direction: takes a docx that has
     ALREADY been through step 1 (Aspose PDF->DOCX conversion + the

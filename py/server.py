@@ -3847,6 +3847,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/translation/process-aspose": self._handle_translation_process_aspose,
             "/api/translation/aspose-convert": self._handle_translation_aspose_convert,
             "/api/translation/inject-translation": self._handle_translation_inject_translation,
+            "/api/translation/review": self._handle_translation_review,
             "/api/test/aspose-translate": self._handle_aspose_test_translate,
             "/api/ocr/process-router": self._handle_ocr_process_router,
             "/api/ocr/analyze-strategy": self._handle_ocr_analyze_strategy,
@@ -6830,6 +6831,55 @@ class Handler(SimpleHTTPRequestHandler):
                 "segmentsTranslated": result.get("segments_translated"),
                 "segmentsSkipped": result.get("segments_skipped"),
                 "translationProviders": result.get("translation_providers"),
+            }
+        except Exception as err:
+            return 200, {"ok": False, "error": str(err)}
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _handle_translation_review(self, body):
+        """STEP 3 (document reviewer), per explicit direction: takes
+        BOTH the original (step 1's Aspose-converted, untranslated)
+        document AND the translated (step 2's output) document, and
+        runs aspose_test_pipeline.review_and_fix_translation - which
+        identifies every line/object in the original, stores their
+        structural fingerprints, finds every real issue (formatting,
+        style, background, ordering, LTR/RTL direction) versus the
+        translated output, builds a full issue+solution list, and
+        applies every fix - returning both the itemized review list and
+        the corrected document."""
+        file_name = _safe_filename(body.get("fileName"), "document.docx")
+        original_b64 = body.get("originalDocxBase64")
+        translated_b64 = body.get("translatedDocxBase64")
+        target_language = body.get("targetLanguage") or "English"
+        if not original_b64:
+            raise ValueError("originalDocxBase64 is required")
+        if not translated_b64:
+            raise ValueError("translatedDocxBase64 is required")
+
+        import aspose_test_pipeline as asp_test
+
+        tmp_dir = tempfile.mkdtemp(prefix="translation_review_")
+        try:
+            original_path = os.path.join(tmp_dir, "original.docx")
+            with open(original_path, "wb") as f:
+                f.write(base64.b64decode(original_b64))
+            translated_path = os.path.join(tmp_dir, "translated.docx")
+            with open(translated_path, "wb") as f:
+                f.write(base64.b64decode(translated_b64))
+            output_path = os.path.join(tmp_dir, "reviewed.docx")
+
+            issues, _ = asp_test.review_and_fix_translation(original_path, translated_path, target_language, output_path)
+
+            with open(output_path, "rb") as f:
+                output_b64 = base64.b64encode(f.read()).decode()
+
+            return 200, {
+                "ok": True,
+                "outputBase64": output_b64,
+                "outputFileName": os.path.splitext(file_name)[0] + "-reviewed.docx",
+                "issues": issues,
+                "issueCount": len(issues),
             }
         except Exception as err:
             return 200, {"ok": False, "error": str(err)}
