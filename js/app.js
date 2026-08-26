@@ -1855,7 +1855,7 @@
                 });
             }
 
-            window.startProcess = function(serviceId) {
+            window.startProcess = async function(serviceId) {
                 if (processState.isRunning) {
                     showWarning('Processing is already running for this batch.');
                     return;
@@ -1950,6 +1950,20 @@
                     addActivity(serviceId,
                         `System > ${_translateOn ? 'With Translation (' + _lang + ')' : 'Without Translation'}`,
                         'Success');
+                    refreshServicePage(serviceId);
+
+                    // NEW, per explicit direction: ask ONCE per batch (not once
+                    // per file) whether to use Aspose. Stored on processState so
+                    // the per-file processing code (processTranslationFileAt)
+                    // can read it later without needing this confirmation
+                    // threaded through as an explicit parameter everywhere.
+                    const useAspose = await new Promise(function (resolve) {
+                        showConfirm('Use Aspose?', 'Use Aspose for this translation run? Choose "No" to use the existing OCR-style text-box extraction pipeline instead.', resolve);
+                    });
+                    processState.translationUseAspose = useAspose;
+                    addActivity(serviceId,
+                        `System > ${useAspose ? 'Using Aspose' : 'Using OCR-style text-box pipeline (no Aspose)'}`,
+                        'Info');
                     refreshServicePage(serviceId);
                 }
 
@@ -2846,97 +2860,138 @@
                                     refreshServicePage('translation');
                                 };
 
-                                // STEP 1 ONLY: always send the PDF to Aspose and get
-                                // back the converted Word document - structure-only
-                                // conversion (aspose_test_pipeline.run_structure_only_
-                                // test), no translation happening yet. Further steps
-                                // (extraction into JSON, translation, RTL/LTR margin
-                                // mirroring, injection, review) are NOT implemented
-                                // here - to be wired in only per further explicit
-                                // instruction.
-                                actualStrategyUsed = 'aspose';
-                                addActivity('translation', `${fl}System > Sending PDF to Aspose for conversion`, 'Info');
-                                const asposeResp = await fetch('/api/translation/aspose-convert', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
-                                    body: JSON.stringify({ fileName: file.name, pdfBase64: dataBase64 })
-                                });
-                                const asposeData = await asposeResp.json();
-                                if (!asposeData || !asposeData.ok) {
-                                    if (asposeData && asposeData.asposeNotConfigured) {
-                                        throw new Error('Aspose is not configured on this server yet: ' + asposeData.error);
+                                let step1DocxBase64 = null;  // only meaningful on the Aspose path
+                                let reviewIssues = [];
+
+                                if (processState.translationUseAspose) {
+                                    // STEP 1: send the PDF to Aspose and get back the
+                                    // converted Word document - structure-only conversion
+                                    // (aspose_test_pipeline.run_structure_only_test), no
+                                    // translation happening yet.
+                                    actualStrategyUsed = 'aspose';
+                                    addActivity('translation', `${fl}System > Sending PDF to Aspose for conversion`, 'Info');
+                                    const asposeResp = await fetch('/api/translation/aspose-convert', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
+                                        body: JSON.stringify({ fileName: file.name, pdfBase64: dataBase64 })
+                                    });
+                                    const asposeData = await asposeResp.json();
+                                    if (!asposeData || !asposeData.ok) {
+                                        if (asposeData && asposeData.asposeNotConfigured) {
+                                            throw new Error('Aspose is not configured on this server yet: ' + asposeData.error);
+                                        }
+                                        throw new Error((asposeData && asposeData.error) || 'Aspose conversion failed.');
                                     }
-                                    throw new Error((asposeData && asposeData.error) || 'Aspose conversion failed.');
-                                }
-                                const binary = atob(asposeData.outputBase64);
-                                const bytes = new Uint8Array(binary.length);
-                                for (let bi = 0; bi < binary.length; bi++) bytes[bi] = binary.charCodeAt(bi);
-                                offlineBlob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-                                file.progress = '50';
-                                refreshServicePage('translation');
+                                    const binary = atob(asposeData.outputBase64);
+                                    const bytes = new Uint8Array(binary.length);
+                                    for (let bi = 0; bi < binary.length; bi++) bytes[bi] = binary.charCodeAt(bi);
+                                    offlineBlob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+                                    file.progress = '50';
+                                    refreshServicePage('translation');
 
-                                // STEP 2, per explicit direction: inject the actual
-                                // translation into the step-1 Aspose-converted docx.
-                                // Deliberately does NOT do RTL/LTR direction fixing
-                                // (table column order, margin mirroring) yet - excluded
-                                // per direction, to be wired in only later as its own
-                                // step.
-                                addActivity('translation', `${fl}System > Injecting translation`, 'Info');
-                                const step1DocxBase64 = await new Promise((resolve, reject) => {
-                                    const reader = new FileReader();
-                                    reader.onload = () => resolve(reader.result.split(',')[1]);
-                                    reader.onerror = reject;
-                                    reader.readAsDataURL(offlineBlob);
-                                });
-                                const injectResp = await fetch('/api/translation/inject-translation', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
-                                    body: JSON.stringify({ fileName: file.name, docxBase64: step1DocxBase64, targetLanguage: targetLanguage })
-                                });
-                                const injectData = await injectResp.json();
-                                if (!injectData || !injectData.ok) {
-                                    throw new Error((injectData && injectData.error) || 'Translation injection failed.');
-                                }
-                                const injectBinary = atob(injectData.outputBase64);
-                                const injectBytes = new Uint8Array(injectBinary.length);
-                                for (let bi = 0; bi < injectBinary.length; bi++) injectBytes[bi] = injectBinary.charCodeAt(bi);
-                                offlineBlob = new Blob([injectBytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-                                addActivity('translation',
-                                    `${fl}System > Translation injected - ${injectData.segmentsTranslated || 0} segment(s) translated, ${injectData.segmentsSkipped || 0} skipped`, 'Info');
-                                file.progress = '65';
-                                refreshServicePage('translation');
+                                    // STEP 2: inject the actual translation into the step-1
+                                    // Aspose-converted docx. Deliberately does NOT do
+                                    // RTL/LTR direction fixing (table column order, margin
+                                    // mirroring) yet - excluded per direction, to be wired
+                                    // in only later as its own step.
+                                    addActivity('translation', `${fl}System > Injecting translation`, 'Info');
+                                    step1DocxBase64 = await new Promise((resolve, reject) => {
+                                        const reader = new FileReader();
+                                        reader.onload = () => resolve(reader.result.split(',')[1]);
+                                        reader.onerror = reject;
+                                        reader.readAsDataURL(offlineBlob);
+                                    });
+                                    const injectResp = await fetch('/api/translation/inject-translation', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
+                                        body: JSON.stringify({ fileName: file.name, docxBase64: step1DocxBase64, targetLanguage: targetLanguage })
+                                    });
+                                    const injectData = await injectResp.json();
+                                    if (!injectData || !injectData.ok) {
+                                        throw new Error((injectData && injectData.error) || 'Translation injection failed.');
+                                    }
+                                    const injectBinary = atob(injectData.outputBase64);
+                                    const injectBytes = new Uint8Array(injectBinary.length);
+                                    for (let bi = 0; bi < injectBinary.length; bi++) injectBytes[bi] = injectBinary.charCodeAt(bi);
+                                    offlineBlob = new Blob([injectBytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+                                    addActivity('translation',
+                                        `${fl}System > Translation injected - ${injectData.segmentsTranslated || 0} segment(s) translated, ${injectData.segmentsSkipped || 0} skipped`, 'Info');
+                                    file.progress = '65';
+                                    refreshServicePage('translation');
 
-                                // STEP 3, per explicit direction: document reviewer. Takes
-                                // BOTH the original (step 1's untranslated) docx and the
-                                // translated (step 2's) docx, identifies every line/object,
-                                // finds real issues (formatting, style, background,
-                                // ordering, LTR/RTL direction) versus the original, builds
-                                // a full issue+solution list, and applies every fix.
-                                addActivity('translation', `${fl}System > Reviewing translated document`, 'Info');
-                                const translatedDocxBase64 = await new Promise((resolve, reject) => {
-                                    const reader = new FileReader();
-                                    reader.onload = () => resolve(reader.result.split(',')[1]);
-                                    reader.onerror = reject;
-                                    reader.readAsDataURL(offlineBlob);
-                                });
-                                const reviewResp = await fetch('/api/translation/review', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
-                                    body: JSON.stringify({ fileName: file.name, originalDocxBase64: step1DocxBase64, translatedDocxBase64: translatedDocxBase64, targetLanguage: targetLanguage })
-                                });
-                                const reviewData = await reviewResp.json();
-                                if (!reviewData || !reviewData.ok) {
-                                    throw new Error((reviewData && reviewData.error) || 'Document review failed.');
+                                    // STEP 3: document reviewer. Takes BOTH the original
+                                    // (step 1's untranslated) docx and the translated
+                                    // (step 2's) docx, identifies every line/object, finds
+                                    // real issues (formatting, style, background,
+                                    // ordering, LTR/RTL direction) versus the original,
+                                    // builds a full issue+solution list, and applies every
+                                    // fix.
+                                    addActivity('translation', `${fl}System > Reviewing translated document`, 'Info');
+                                    const translatedDocxBase64 = await new Promise((resolve, reject) => {
+                                        const reader = new FileReader();
+                                        reader.onload = () => resolve(reader.result.split(',')[1]);
+                                        reader.onerror = reject;
+                                        reader.readAsDataURL(offlineBlob);
+                                    });
+                                    const reviewResp = await fetch('/api/translation/review', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
+                                        body: JSON.stringify({ fileName: file.name, originalDocxBase64: step1DocxBase64, translatedDocxBase64: translatedDocxBase64, targetLanguage: targetLanguage })
+                                    });
+                                    const reviewData = await reviewResp.json();
+                                    if (!reviewData || !reviewData.ok) {
+                                        throw new Error((reviewData && reviewData.error) || 'Document review failed.');
+                                    }
+                                    const reviewBinary = atob(reviewData.outputBase64);
+                                    const reviewBytes = new Uint8Array(reviewBinary.length);
+                                    for (let bi = 0; bi < reviewBinary.length; bi++) reviewBytes[bi] = reviewBinary.charCodeAt(bi);
+                                    offlineBlob = new Blob([reviewBytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+                                    reviewIssues = reviewData.issues || [];
+                                    addActivity('translation',
+                                        `${fl}System > Review complete - ${reviewData.issueCount || 0} issue(s) found and fixed`, 'Info');
+                                    reviewIssues.forEach(function (iss) {
+                                        addActivity('translation', `${fl}Review > ${iss.location} > ${iss.issue} > Fix: ${iss.solution}`, 'Info');
+                                    });
+                                } else {
+                                    // "No" branch, per explicit direction: use the NEW
+                                    // real per-line bounding-box (Solution 9 style)
+                                    // pipeline - buildBoxBasedTranslatedDocxBlob, which
+                                    // extracts each line into a real x/y/w/h box,
+                                    // merges multi-box paragraphs for translation,
+                                    // gates font-resize on a genuine character-count
+                                    // comparison, and mirrors box position for RTL/LTR
+                                    // - instead of the plain buildOfflineDocxBlob/
+                                    // buildHybridDocxBlob pipeline previously reused
+                                    // here as a placeholder.
+                                    if (window.__translationEngine && window.__translationEngine.setVisionAuthToken) window.__translationEngine.setVisionAuthToken(AUTH_TOKEN || '');
+                                    if (window.__translationEngine && window.__translationEngine.setVisionStopCheck) window.__translationEngine.setVisionStopCheck(function () { return processState.stopped; });
+                                    if (window.__translationEngine && window.__translationEngine.setPipelineEventHandler) window.__translationEngine.setPipelineEventHandler(onEvent);
+                                    if (window.__translationEngine && window.__translationEngine.resetPipelineApiCounters) window.__translationEngine.resetPipelineApiCounters();
+                                    try {
+                                        offlineBlob = await window.__translationEngine.buildBoxBasedTranslatedDocxBlob(blob, {
+                                            targetLang: targetLanguage
+                                        }, onLog);
+                                        actualStrategyUsed = 'client_box_based';
+                                    } catch (textLayerErr) {
+                                        // buildBoxBasedTranslatedDocxBlob throws the same
+                                        // clear, specific error buildOfflineDocxBlob did
+                                        // when the PDF has no usable text layer
+                                        // (genuinely scanned/photographed) - that's the
+                                        // correct signal to fall back to vision-based
+                                        // OCR, not a failure to surface to the user.
+                                        // Exactly mirrors ocr-service.js's own fallback.
+                                        const looksLikeScanSignal = /scanned|image-based/i.test(textLayerErr.message || '');
+                                        if (!looksLikeScanSignal || !window.__translationEngine || !window.__translationEngine.buildHybridDocxBlob) throw textLayerErr;
+                                        onLog('Text layer not usable - falling back to vision-based OCR.', 'warn');
+                                        offlineBlob = await window.__translationEngine.buildHybridDocxBlob(blob, {
+                                            withImage: withImageOpt,
+                                            targetLang: targetLanguage
+                                        }, onLog);
+                                        actualStrategyUsed = 'vision_ocr_fallback';
+                                    }
+                                    file.progress = '65';
+                                    refreshServicePage('translation');
                                 }
-                                const reviewBinary = atob(reviewData.outputBase64);
-                                const reviewBytes = new Uint8Array(reviewBinary.length);
-                                for (let bi = 0; bi < reviewBinary.length; bi++) reviewBytes[bi] = reviewBinary.charCodeAt(bi);
-                                offlineBlob = new Blob([reviewBytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-                                addActivity('translation',
-                                    `${fl}System > Review complete - ${reviewData.issueCount || 0} issue(s) found and fixed`, 'Info');
-                                (reviewData.issues || []).forEach(function (iss) {
-                                    addActivity('translation', `${fl}Review > ${iss.location} > ${iss.issue} > Fix: ${iss.solution}`, 'Info');
-                                });
 
                                 // No per-page event stream from any of these server-side
                                 // steps (one request/response each) and no page-count

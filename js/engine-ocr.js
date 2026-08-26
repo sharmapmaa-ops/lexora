@@ -2259,7 +2259,152 @@ trailingSectPr + '</w:body></w:document>';
     };
   }
 
-  async function buildOfflineDocxBlob(file, opts, logFn) {
+async function buildBoxBasedTranslatedDocxBlob(file, opts, logFn) {
+    // NEW, per explicit direction: real per-line bounding-box (Solution
+    // 9 style, absolute x/y/w/h) translation pipeline for the "No
+    // Aspose" path - genuinely reuses every existing piece of
+    // infrastructure rather than rebuilding any of it:
+    //   - extractOfflinePage/autofitPage: same real pdf.js line
+    //     extraction this file already uses.
+    //   - v14GroupLinesIntoParagraphs: same paragraph-grouping already
+    //     used for the flowing-paragraph path - here it decides which
+    //     LINES get the same paragraph_id, so a paragraph spanning
+    //     multiple boxes is translated as ONE merged unit, not each box
+    //     in isolation, matching the explicit requirement.
+    //   - v14TranslateAllPages(..., true)/v14ApplyTranslations/
+    //     v14ReflowTextIntoBlocks: the SAME merge-translate-then-
+    //     redistribute-across-original-box-widths mechanism the
+    //     vision-based pipeline already uses (previously opt-in only
+    //     for that caller) - reused here rather than a second
+    //     implementation.
+    //   - v14FindSmartFontSize: the SAME real (Canvas-measured, binary-
+    //     search) font-fit mechanism already built - triggered by a
+    //     character-count comparison (translated vs original length)
+    //     per explicit direction, rather than always re-measuring
+    //     every box regardless of whether translation even made it
+    //     longer.
+    //   - buildDocx/textBoxXml: the SAME Solution 9 renderer, already
+    //     fixed (manual inter-word spacing, no jc="distribute").
+    // Genuinely NEW pieces: the character-count-based sizing GATE, and
+    // RTL/LTR box position-mirroring (a box's own x-coordinate is
+    // mirrored within the page - new_x = pageWidth - old_x - width -
+    // when the target language's direction differs from the line's
+    // original direction; this is a DIFFERENT mechanism from
+    // _fix_paragraph_direction's margin-mirroring on the Aspose side,
+    // since these boxes are absolutely positioned by coordinate, not
+    // paragraph indent).
+    if (typeof logFn === 'function') _log = logFn;
+    opts = opts || {};
+    const model = opts.model || (window.COMPANY_INFO && window.COMPANY_INFO.textExtractionModel) || 'google/gemini-2.5-flash';
+    const targetLang = opts.targetLang || 'original';
+    const keepOriginal = !targetLang || String(targetLang).toLowerCase() === 'original';
+    const wantRtl = !keepOriginal && typeof v14IsRtlLanguage === 'function' && v14IsRtlLanguage(targetLang);
+    if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js failed to load');
+    if (typeof JSZip === 'undefined') throw new Error('JSZip failed to load');
+
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    let sampleItems = 0;
+    for (let sp = 1; sp <= Math.min(2, pdf.numPages); sp++) {
+      const tc0 = await (await pdf.getPage(sp)).getTextContent();
+      sampleItems += tc0.items.filter(function (it) { return it.str && it.str.trim(); }).length;
+    }
+    if (sampleItems < 3) {
+      throw new Error('This PDF looks scanned/image-based — box-based mode only processes text-based PDFs.');
+    }
+
+    const pages = [];
+    const allBlocks = [];       // flat, translation-pipeline-shaped entries, one per line
+    const blockToLine = {};     // block id -> the actual line object (so results can be written straight back)
+    let blockCounter = 0;
+
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const vp1 = page.getViewport({ scale: 1 });
+      const lines = await extractOfflinePage(page, vp1, p);
+      if (lines.length) autofitPage(lines, vp1.width, vp1.height, p);
+      const rawImages = await extractOfflineImages(page, vp1.height, p);
+
+      const paragraphs = v14GroupLinesIntoParagraphs(lines);
+      paragraphs.forEach(function (paraLines, paraIdx) {
+        const paragraphId = paraLines.length > 1 ? ('p' + p + '_' + paraIdx) : undefined;
+        paraLines.forEach(function (line) {
+          const text = (line.runs || []).map(function (r) { return r.text || ''; }).join('').trim();
+          if (!text) return;
+          blockCounter++;
+          const id = 'ln' + blockCounter;
+          const firstRun = (line.runs && line.runs[0]) || {};
+          const sizePt = firstRun.sizePt || 11;
+          allBlocks.push({
+            id: id,
+            page: p,
+            paragraph_id: paragraphId,
+            reading_order: blockCounter,
+            text: text,
+            language: 'unknown',
+            direction: line.rtl ? 'rtl' : 'ltr',
+            width: line.wPt * 96 / 72,   // px, to match v14ReflowTextIntoBlocks/v14MeasureTextWidthPx's units
+            font_size_px: sizePt * 96 / 72,
+            style: firstRun.bold ? 'bold' : '',
+          });
+          blockToLine[id] = line;
+        });
+      });
+
+      pages.push({ wPt: vp1.width, hPt: vp1.height, lines: lines, images: rawImages, pageNo: p });
+    }
+
+    if (!keepOriginal && allBlocks.length > 0) {
+      log('Translating extracted text to ' + targetLang + ' (' + allBlocks.length + ' line(s), paragraph-merged where applicable)...');
+      const translationResult = await v14TranslateAllPages(model, allBlocks, targetLang, true);
+      const applied = v14ApplyTranslations(allBlocks, translationResult.translations || []);
+
+      applied.blocks.forEach(function (b) {
+        const line = blockToLine[b.id];
+        if (!line) return;
+        const originalText = (line.runs || []).map(function (r) { return r.text || ''; }).join('').trim();
+        const translatedText = b.text || '';
+        if (!translatedText) return;  // nothing came back for this line - leave it as the original text untouched
+
+        // --- Character-count comparison decides whether size needs to
+        // change at all, per explicit direction - not every box gets
+        // re-measured regardless of whether translation even made it
+        // longer. ---
+        const firstRun = (line.runs && line.runs[0]) || {};
+        const originalSizePt = firstRun.sizePt || 11;
+        let newSizePt = originalSizePt;
+        if (translatedText.length > originalText.length) {
+          const fit = v14FindSmartFontSize(translatedText, line.wPt * 96 / 72, line.hPt * 96 / 72, !!firstRun.bold);
+          newSizePt = Math.min(originalSizePt, fit.fontSize * 72 / 96);
+        }
+
+        // --- RTL/LTR box position-mirroring: only the BOX's own
+        // x-coordinate changes (page-relative mirror); width/height are
+        // untouched, matching "same width, sides swapped" exactly as
+        // for the Aspose-side margin mirror, just expressed as an
+        // absolute coordinate instead of a paragraph indent. ---
+        if (!keepOriginal && wantRtl !== line.rtl) {
+          const pageForThisLine = pages.find(function (pg) { return pg.pageNo === line.pageNo || pg.lines.indexOf(line) !== -1; });
+          const pageWidthPt = pageForThisLine ? pageForThisLine.wPt : line.xPt + line.wPt;
+          line.xPt = Math.max(0, pageWidthPt - line.xPt - line.wPt);
+          line.rtl = wantRtl;
+        }
+
+        line.runs = [{
+          text: translatedText,
+          sizePt: newSizePt,
+          bold: !!firstRun.bold,
+          italic: !!firstRun.italic,
+          color: firstRun.color,
+          family: firstRun.family,
+        }];
+      });
+    }
+
+    return buildDocx(pages, true);
+  }
+
+    async function buildOfflineDocxBlob(file, opts, logFn) {
     if (typeof logFn === 'function') _log = logFn;
     opts = opts || {};
     // Image is always kept behind the text now, and text-based mode

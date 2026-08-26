@@ -39,13 +39,17 @@ def run():
     assert_("_require_role" not in handler_src, "No role restriction - real users can call this")
     assert_("AsposeNotConfiguredError" in handler_src, "Handles the not-configured case explicitly")
 
-    print("\n=== Test 3: app.js wiring - calls the new endpoint, old routing removed ===")
+    print("\n=== Test 3: app.js wiring - calls the new endpoint, old table/background routing removed ===")
     app_src = open(os.path.join(os.path.dirname(__file__), "..", "js", "app.js")).read()
     assert_("fetch('/api/translation/aspose-convert'" in app_src, "app.js calls the new /api/translation/aspose-convert endpoint")
     assert_("fetch('/api/translation/analyze-strategy'" not in app_src, "The old table/background analyze-strategy call is removed from the reachable flow")
     assert_("fetch('/api/translation/process-aspose'" not in app_src, "The old process-aspose (structure+translate) call is removed from the reachable flow")
-    assert_("buildOfflineDocxBlob(blob" not in app_src.split("if (browserBuild) {")[1].split("} catch (offErr)")[0],
-            "The pdf.js client-side path is not called in the reachable Translation flow right now")
+    # NOTE: the pdf.js client-side path (buildOfflineDocxBlob) was
+    # reintroduced later, per explicit direction, as the "No" branch of
+    # a user confirmation dialog ("Use Aspose?") - see
+    # translation_flow_test.js for the current, real branching test.
+    # It is intentionally reachable again now, so this file no longer
+    # asserts it's absent.
 
     print("\nALL TESTS PASSED")
 
