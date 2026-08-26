@@ -49,7 +49,7 @@ const services = [
   { file: 'engine-calculators.js', ns: '__calculatorsEngine' },
 ];
 
-const requiredKeys = ['buildHybridDocxBlob', 'buildOfflineDocxBlob', 'setVisionAuthToken', 'setVisionStopCheck', 'setPipelineEventHandler', 'lexoraProxyJson', 'lexoraPdfToImages', 'resetPipelineApiCounters', 'abortVision'];
+const requiredKeys = ['buildHybridDocxBlob', 'buildOfflineDocxBlob', 'buildBoxBasedTranslatedDocxBlob', 'setVisionAuthToken', 'setVisionStopCheck', 'setPipelineEventHandler', 'lexoraProxyJson', 'lexoraPdfToImages', 'resetPipelineApiCounters', 'abortVision'];
 
 const allNamespaces = new Set();
 

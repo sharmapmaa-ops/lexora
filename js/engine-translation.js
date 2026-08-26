@@ -5457,6 +5457,7 @@ ${JSON.stringify(texts)}`;
   window.__translationEngine = {
     buildHybridDocxBlob: buildHybridDocxBlob,
     buildOfflineDocxBlob: buildOfflineDocxBlob,
+    buildBoxBasedTranslatedDocxBlob: buildBoxBasedTranslatedDocxBlob,
     setVisionAuthToken: setVisionAuthToken,
     setVisionStopCheck: setStopCheck,
     setPipelineEventHandler: setPipelineEventHandler,

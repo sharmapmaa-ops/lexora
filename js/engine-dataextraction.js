@@ -5470,6 +5470,7 @@ ${JSON.stringify(texts)}`;
   window.__dataExtractionEngine = {
     buildHybridDocxBlob: buildHybridDocxBlob,
     buildOfflineDocxBlob: buildOfflineDocxBlob,
+    buildBoxBasedTranslatedDocxBlob: buildBoxBasedTranslatedDocxBlob,
     setVisionAuthToken: setVisionAuthToken,
     setVisionStopCheck: setStopCheck,
     setPipelineEventHandler: setPipelineEventHandler,
