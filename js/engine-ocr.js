@@ -5229,9 +5229,46 @@ Return ONLY this JSON shape, nothing else, no commentary:
   // ---- HYBRID ENTRY (public API same: (file, opts, logFn) -> Blob) ----
   // opts: { withImage, cleanImage, targetLang, model? }
   // Output ab MHT-format Word document hai — .doc extension (docx zip nahi).
+  function _assembleHybridDocumentBlob(allPagesJson, pageDims, totalPages, pageBackgrounds, withImage) {
+    // Factored out of buildHybridDocxBlob, per explicit direction: this
+    // exact assembly step (allPagesJson -> per-page HTML -> final Word
+    // document, MHT-packed if there are images) now needs to run TWICE
+    // - once right after OCR/extraction (before translation, for the
+    // "OCR" checkpoint download) and once again after translation (for
+    // the "Translation" checkpoint download) - rather than only once at
+    // the very end. Pulling it into its own function means both calls
+    // use the exact same real assembly logic, not two copies of it.
+    const allPageHtmls = [];
+    const mhtImages = [];
+    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+      const pageBlocks = allPagesJson.filter(function (b) { return (Number(b.page) || 1) === pageNum; });
+      if (pageBlocks.length === 0) continue;
+      const bg = pageBackgrounds[pageNum] || {};
+      const pageHtml = v14GenerateSinglePageWord(pageBlocks, pageDims, pageNum, !!(withImage && bg.bgDataUrl));
+      allPageHtmls.push(pageHtml);
+      if (withImage && bg.bgDataUrl) {
+        const parsedImg = v14ParseDataUrl(bg.bgDataUrl);
+        if (parsedImg) {
+          mhtImages.push({ location: 'file:///C:/fake/image' + pageNum + '.png', mime: parsedImg.mime, base64: parsedImg.base64 });
+        }
+      }
+    }
+    const finalDoc = v14BuildFinalWordDocument(allPageHtmls, pageDims, totalPages);
+    const finalOut = mhtImages.length > 0 ? v14BuildMhtDocument(finalDoc, mhtImages) : finalDoc;
+    return new Blob([finalOut], { type: 'application/msword' });
+  }
+
   async function buildHybridDocxBlob(file, opts, logFn) {
     if (typeof logFn === 'function') _log = logFn;
     opts = opts || {};
+    // NEW, per explicit direction: an optional checkpoint callback,
+    // called with ('ocr', blob) right after OCR/extraction completes
+    // (BEFORE translation - the un-translated, structurally-extracted
+    // document) and again with ('translation', blob) right after
+    // translation completes - so the caller can trigger an immediate
+    // download at each real stage as it finishes, not just once at the
+    // very end. Optional: if not provided, behaves exactly as before.
+    const onCheckpoint = typeof opts.onCheckpoint === 'function' ? opts.onCheckpoint : null;
     const model = opts.model || (window.COMPANY_INFO && window.COMPANY_INFO.textExtractionModel) || 'google/gemini-2.5-flash';
     const cleanModel = opts.cleanModel || (window.COMPANY_INFO && window.COMPANY_INFO.imageCleaningModel) || 'google/gemini-3.1-flash-image';
     const withImage = true;   // image is always kept behind the text now
@@ -5373,6 +5410,20 @@ Return ONLY this JSON shape, nothing else, no commentary:
     if (stoppedEarly) log('Stop requested — partial output up to ' + Object.keys(pageBackgrounds).length + '/' + totalPages + ' pages');
     if (pageErrors.length) log('WARNING: page(s) ' + pageErrors.map(function (e) { return e.page; }).join(', ') + ' skipped', 'warn');
 
+    // OCR checkpoint, per explicit direction: as soon as OCR/extraction
+    // finishes and this (untranslated) document is ready, hand it to
+    // the caller immediately - BEFORE translation runs - so it can be
+    // downloaded right away rather than waiting for the whole pipeline
+    // to finish.
+    if (onCheckpoint) {
+      try {
+        const ocrBlob = _assembleHybridDocumentBlob(allPagesJson, pageDims, totalPages, pageBackgrounds, withImage);
+        onCheckpoint('ocr', ocrBlob);
+      } catch (ckErr) {
+        log('OCR checkpoint document could not be assembled: ' + ckErr.message, 'warn');
+      }
+    }
+
     // 3) ═══ CALL 3: TRANSLATION — sirf EK baar, POORE document ke liye ═══
     if (!keepOriginal && !_shouldStop()) {
       const updBefore = snapshotApiCalls();
@@ -5402,38 +5453,21 @@ Return ONLY this JSON shape, nothing else, no commentary:
       });
     }
 
-    // 4) FINAL TEXT (translated ya original) se har page ka HTML + MHT images
-    const allPageHtmls = [];
-    const mhtImages = [];
-    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-      const pageBlocks = allPagesJson.filter(function (b) { return (Number(b.page) || 1) === pageNum; });
-      if (pageBlocks.length === 0) continue;
+    // 4) FINAL TEXT (translated ya original) se document assemble karo -
+    // reuses _assembleHybridDocumentBlob (same helper as the OCR
+    // checkpoint above), rather than a second copy of this logic.
+    const finalBlob = _assembleHybridDocumentBlob(allPagesJson, pageDims, totalPages, pageBackgrounds, withImage);
 
-      const bg = pageBackgrounds[pageNum] || {};
-      const pageHtml = v14GenerateSinglePageWord(pageBlocks, pageDims, pageNum, !!(withImage && bg.bgDataUrl));
-      allPageHtmls.push(pageHtml);
-
-      if (withImage && bg.bgDataUrl) {
-        const parsedImg = v14ParseDataUrl(bg.bgDataUrl);
-        if (parsedImg) {
-          mhtImages.push({
-            location: 'file:///C:/fake/image' + pageNum + '.png',
-            mime: parsedImg.mime,
-            base64: parsedImg.base64
-          });
-        } else {
-          log('P' + pageNum + ': dataUrl failed to parse — this page\'s image will not appear in the document', 'warn');
-        }
-      }
+    // Translation checkpoint, per explicit direction: right after the
+    // translated document is ready (whether or not a separate "final
+    // output" review step runs afterward), hand it to the caller
+    // immediately so it can download right away.
+    if (onCheckpoint && !keepOriginal) {
+      try { onCheckpoint('translation', finalBlob); } catch (ckErr) { log('Translation checkpoint callback failed: ' + ckErr.message, 'warn'); }
     }
 
-    const finalDoc = v14BuildFinalWordDocument(allPageHtmls, pageDims, totalPages);
-    // Images hain to MHT container me pack karo (warna plain HTML) —
-    // extension .doc hi rehta hai, Word MHT natively kholta hai.
-    const finalOut = mhtImages.length > 0 ? v14BuildMhtDocument(finalDoc, mhtImages) : finalDoc;
-
-    log('Word document ready: ' + allPageHtmls.length + ' page(s), ' + allPagesJson.length + ' textboxes');
-    return new Blob([finalOut], { type: 'application/msword' });
+    log('Word document ready: ' + allPagesJson.length + ' textboxes');
+    return finalBlob;
   }
 
   async function translateTexts(apiKey, model, texts, targetLang, pageType){

@@ -10,14 +10,15 @@
 //           (formatting, style, background, ordering, LTR/RTL
 //           direction), builds an issue+solution list, and applies
 //           every fix (/api/translation/review)
-// If NO, the NEW real per-line bounding-box (Solution 9 style) pipeline
-// runs (window.__translationEngine.buildBoxBasedTranslatedDocxBlob) -
-// extracts each line into a real x/y/w/h box, merges multi-box
-// paragraphs for translation (v14TranslateAllPages with paragraph
-// grouping), gates font-resize on a genuine character-count
-// comparison, and mirrors box position for RTL/LTR - falling back to
-// the existing vision-OCR pipeline (buildHybridDocxBlob) for
-// genuinely scanned PDFs, same fallback shape as before.
+// If NO, the EXISTING vision-based hybrid pipeline runs
+// (window.__translationEngine.buildHybridDocxBlob) - proper
+// text/table/background/image extraction AND translation together,
+// per explicit direction, replacing the newer box-based (Solution 9
+// style) pipeline after real testing showed it performing worse on
+// dense, multi-column bilingual documents.
+// Both paths now trigger 3 immediate downloads as each real stage's
+// document becomes ready (OCR, Translation, Final Output) - not one
+// download at the very end of the whole run.
 // Table-column-order reversal and left/right margin-mirroring remain
 // deliberately NOT wired into the reviewer (excluded per direction) -
 // the reviewer DOES fix the bidi/direction FLAG itself when it doesn't
@@ -58,11 +59,25 @@ const s3 = asposeBranch.indexOf("fetch('/api/translation/review'");
 assert(s1 < s2 && s2 < s3, 'Aspose branch: Step 1 -> Step 2 -> Step 3 run in the correct real order');
 assert(asposeBranch.includes('reviewIssues = reviewData.issues'), "The reviewer's issue list is captured, not discarded");
 
-// The non-Aspose ("No") branch: uses the NEW box-based pipeline.
+// The Aspose branch: 3 immediate downloads, one per real stage.
+assert(asposeBranch.includes("_downloadBlobImmediately(offlineBlob, baseName + ' OCR.docx')"), 'Aspose branch: OCR stage downloads immediately after Step 1');
+assert(asposeBranch.includes("_downloadBlobImmediately(offlineBlob, baseName + ' Translation.docx')"), 'Aspose branch: Translation stage downloads immediately after Step 2');
+assert(asposeBranch.includes("_downloadBlobImmediately(offlineBlob, baseName + ' Final Output.docx')"), 'Aspose branch: Final Output stage downloads immediately after Step 3 (reviewer)');
+
+// The non-Aspose ("No") branch: uses the EXISTING hybrid pipeline.
 const nonAsposeBranch = src.slice(asposeBranchEnd, src.indexOf("file.progress = '65';", asposeBranchEnd) + 200);
-assert(nonAsposeBranch.includes('buildBoxBasedTranslatedDocxBlob(blob'), 'Non-Aspose branch: calls the new real per-line box-based pipeline');
-assert(nonAsposeBranch.includes('buildHybridDocxBlob('), 'Non-Aspose branch: still falls back to the existing vision-OCR pipeline for genuinely scanned PDFs');
+assert(nonAsposeBranch.includes('buildHybridDocxBlob(blob'), 'Non-Aspose branch: calls the existing vision-based hybrid pipeline');
+assert(!nonAsposeBranch.includes('buildBoxBasedTranslatedDocxBlob('), 'Non-Aspose branch no longer calls the box-based pipeline');
 assert(!nonAsposeBranch.includes("fetch('/api/translation/aspose-convert'"), 'Non-Aspose branch does NOT call any Aspose endpoint');
+
+// The non-Aspose branch: 3 immediate downloads via onCheckpoint + a
+// direct Final Output download (no compatible reviewer for this
+// pipeline's MHT output format yet, so Final Output currently reuses
+// the Translation-stage document rather than a separately reviewed one).
+assert(nonAsposeBranch.includes("onCheckpoint: function (stage, ckBlob)"), 'Non-Aspose branch passes an onCheckpoint callback into buildHybridDocxBlob');
+assert(nonAsposeBranch.includes("stage === 'ocr'") && nonAsposeBranch.includes("baseName + ' OCR.doc'"), 'onCheckpoint downloads the OCR-stage document immediately when it fires');
+assert(nonAsposeBranch.includes("stage === 'translation'") && nonAsposeBranch.includes("baseName + ' Translation.doc'"), 'onCheckpoint downloads the Translation-stage document immediately when it fires');
+assert(nonAsposeBranch.includes("baseName + ' Final Output.doc'"), 'Non-Aspose branch also downloads a Final Output file, so both paths produce all 3 real files');
 
 // The old table/background routing is genuinely gone (replaced by the
 // explicit user confirmation dialog instead).

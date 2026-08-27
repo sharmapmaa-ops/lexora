@@ -870,6 +870,21 @@
             // One-shot convenience wrapper (e.g. a manual "download again"
             // click after the batch already finished) - not part of a
             // multi-file run, so it finalizes immediately after itself.
+            // Simple, direct browser download - no system-config/email/
+            // cloud-provider routing, just an immediate save-as-you-go
+            // download. Used for the Translation service's 3 real
+            // checkpoint stages (OCR, Translation, Final Output), per
+            // explicit direction: each stage's file should download the
+            // moment that stage's own document is ready, not wait for
+            // the whole batch/run to finish.
+            function _downloadBlobImmediately(blob, filename) {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = filename;
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                setTimeout(() => URL.revokeObjectURL(url), 4000);
+            }
+
             window.standaloneSmartDownload = async function(serviceId, blob, filename) {
                 const runCtx = await createStandaloneRunCtx(serviceId);
                 await runCtx.download(blob, filename);
@@ -2889,6 +2904,13 @@
                                     file.progress = '50';
                                     refreshServicePage('translation');
 
+                                    // Immediate download #1 (OCR stage), per explicit
+                                    // direction: the moment this stage's document is
+                                    // ready, download it right away - don't wait for
+                                    // translation/review to finish.
+                                    _downloadBlobImmediately(offlineBlob, baseName + ' OCR.docx');
+                                    addActivity('translation', `${fl}System > OCR file downloaded`, 'Info');
+
                                     // STEP 2: inject the actual translation into the step-1
                                     // Aspose-converted docx. Deliberately does NOT do
                                     // RTL/LTR direction fixing (table column order, margin
@@ -2918,6 +2940,10 @@
                                         `${fl}System > Translation injected - ${injectData.segmentsTranslated || 0} segment(s) translated, ${injectData.segmentsSkipped || 0} skipped`, 'Info');
                                     file.progress = '65';
                                     refreshServicePage('translation');
+
+                                    // Immediate download #2 (Translation stage).
+                                    _downloadBlobImmediately(offlineBlob, baseName + ' Translation.docx');
+                                    addActivity('translation', `${fl}System > Translation file downloaded`, 'Info');
 
                                     // STEP 3: document reviewer. Takes BOTH the original
                                     // (step 1's untranslated) docx and the translated
@@ -2952,43 +2978,51 @@
                                     reviewIssues.forEach(function (iss) {
                                         addActivity('translation', `${fl}Review > ${iss.location} > ${iss.issue} > Fix: ${iss.solution}`, 'Info');
                                     });
+
+                                    // Immediate download #3 (Final Output stage).
+                                    _downloadBlobImmediately(offlineBlob, baseName + ' Final Output.docx');
+                                    addActivity('translation', `${fl}System > Final Output file downloaded`, 'Info');
                                 } else {
-                                    // "No" branch, per explicit direction: use the NEW
-                                    // real per-line bounding-box (Solution 9 style)
-                                    // pipeline - buildBoxBasedTranslatedDocxBlob, which
-                                    // extracts each line into a real x/y/w/h box,
-                                    // merges multi-box paragraphs for translation,
-                                    // gates font-resize on a genuine character-count
-                                    // comparison, and mirrors box position for RTL/LTR
-                                    // - instead of the plain buildOfflineDocxBlob/
-                                    // buildHybridDocxBlob pipeline previously reused
-                                    // here as a placeholder.
+                                    // "No" branch, per explicit direction: switched back to
+                                    // the EXISTING vision-based hybrid pipeline
+                                    // (buildHybridDocxBlob - proper text/table/background/
+                                    // image extraction AND translation together), replacing
+                                    // the newer box-based (Solution 9 style) pipeline, which
+                                    // real testing showed performing worse on dense,
+                                    // multi-column bilingual documents. onCheckpoint fires
+                                    // ('ocr', blob) the moment OCR/extraction finishes
+                                    // (BEFORE translation) and ('translation', blob) right
+                                    // after translation finishes - each downloaded
+                                    // immediately, not just once at the very end.
                                     if (window.__translationEngine && window.__translationEngine.setVisionAuthToken) window.__translationEngine.setVisionAuthToken(AUTH_TOKEN || '');
                                     if (window.__translationEngine && window.__translationEngine.setVisionStopCheck) window.__translationEngine.setVisionStopCheck(function () { return processState.stopped; });
                                     if (window.__translationEngine && window.__translationEngine.setPipelineEventHandler) window.__translationEngine.setPipelineEventHandler(onEvent);
                                     if (window.__translationEngine && window.__translationEngine.resetPipelineApiCounters) window.__translationEngine.resetPipelineApiCounters();
-                                    try {
-                                        offlineBlob = await window.__translationEngine.buildBoxBasedTranslatedDocxBlob(blob, {
-                                            targetLang: targetLanguage
-                                        }, onLog);
-                                        actualStrategyUsed = 'client_box_based';
-                                    } catch (textLayerErr) {
-                                        // buildBoxBasedTranslatedDocxBlob throws the same
-                                        // clear, specific error buildOfflineDocxBlob did
-                                        // when the PDF has no usable text layer
-                                        // (genuinely scanned/photographed) - that's the
-                                        // correct signal to fall back to vision-based
-                                        // OCR, not a failure to surface to the user.
-                                        // Exactly mirrors ocr-service.js's own fallback.
-                                        const looksLikeScanSignal = /scanned|image-based/i.test(textLayerErr.message || '');
-                                        if (!looksLikeScanSignal || !window.__translationEngine || !window.__translationEngine.buildHybridDocxBlob) throw textLayerErr;
-                                        onLog('Text layer not usable - falling back to vision-based OCR.', 'warn');
-                                        offlineBlob = await window.__translationEngine.buildHybridDocxBlob(blob, {
-                                            withImage: withImageOpt,
-                                            targetLang: targetLanguage
-                                        }, onLog);
-                                        actualStrategyUsed = 'vision_ocr_fallback';
-                                    }
+                                    offlineBlob = await window.__translationEngine.buildHybridDocxBlob(blob, {
+                                        withImage: withImageOpt,
+                                        targetLang: targetLanguage,
+                                        onCheckpoint: function (stage, ckBlob) {
+                                            if (stage === 'ocr') {
+                                                _downloadBlobImmediately(ckBlob, baseName + ' OCR.doc');
+                                                addActivity('translation', `${fl}System > OCR file downloaded`, 'Info');
+                                            } else if (stage === 'translation') {
+                                                _downloadBlobImmediately(ckBlob, baseName + ' Translation.doc');
+                                                addActivity('translation', `${fl}System > Translation file downloaded`, 'Info');
+                                            }
+                                        }
+                                    }, onLog);
+                                    actualStrategyUsed = 'vision_ocr_fallback';
+
+                                    // Final Output stage for this path: no separate
+                                    // document-reviewer pass exists yet for this pipeline's
+                                    // output format (MHT/HTML-based, not a real OOXML docx
+                                    // - the Python reviewer built for the Aspose path can't
+                                    // open it) - Final Output is the same translated
+                                    // document as the Translation stage for now, still
+                                    // downloaded as its own file so this path also produces
+                                    // all 3 real files.
+                                    _downloadBlobImmediately(offlineBlob, baseName + ' Final Output.doc');
+                                    addActivity('translation', `${fl}System > Final Output file downloaded`, 'Info');
                                     file.progress = '65';
                                     refreshServicePage('translation');
                                 }
