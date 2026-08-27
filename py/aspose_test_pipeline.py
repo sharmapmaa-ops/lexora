@@ -670,6 +670,146 @@ def _fix_heading_merged_into_previous_clause(doc):
     return fixed
 
 
+def _fix_merged_numbered_subclause(doc):
+    """Item (SUBCLAUSE-MERGED-INTO-PREVIOUS, real reported issue 2) -
+    confirmed real, same class of pre-existing Aspose defect as
+    _fix_heading_merged_into_previous_clause, just for a DIFFERENT
+    boundary pattern: two adjacent numbered sub-clauses ended up in one
+    single paragraph with no break between them. Confirmed directly in
+    a real document: "13-1-5 The Tenant and its employees shall not
+    smoke in the corridors and lobbies of the property and shall
+    comply with smoking in designated areas. 14-1-5 The Tenant shall
+    dispose of waste..." was ONE paragraph holding BOTH clause 13-1-5
+    AND clause 14-1-5, while every other numbered clause in the same
+    document (12-1-5, 15-1-5, 16-1-5, ...) was correctly its own
+    separate paragraph.
+
+    REAL DIFFERENCE FROM THE HEADING-MERGE CASE (confirmed directly,
+    not assumed): the heading-merge bug had the two logical units
+    stored as two SEPARATE w:r runs, so a run-boundary search worked.
+    This bug's merge is a SINGLE run whose own text string contains
+    BOTH clauses end-to-end - checked directly against the real
+    document, this paragraph had exactly ONE run holding the entire
+    "13-1-5 ... 14-1-5 ..." text. A run-boundary-only search (like the
+    heading-merge fix uses) finds nothing here, because there is no
+    second run to find. So this fix searches WITHIN each run's own
+    text for a mid-string clause-number boundary and splits the RUN
+    ITSELF (into two runs with identical formatting, since it's the
+    same original run just cut in two) before moving the tail into a
+    new paragraph - a necessary difference in mechanism from the
+    heading-merge fix, even though the end RESULT (two clean
+    paragraphs) is the same kind of fix.
+
+    Clause numbers like "13-1-5" are language-agnostic digits/hyphens,
+    unaffected by translation either way - runs at the same point in
+    the pipeline as the other structural split fixes (before
+    translation, on the raw Aspose conversion) for the same reason
+    given there: the LLM sees two clean, independent segments to
+    translate instead of one run-on paragraph mixing two clauses'
+    content together. Also handles the case where the boundary DOES
+    fall on an existing run boundary (checked first, cheaper) before
+    falling back to the mid-run text search.
+
+    Only matches a clause number following ". " (end of a completed
+    sentence) - never mid-sentence text that merely contains digits and
+    hyphens, which keeps this from false-triggering on real prose."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from copy import deepcopy
+
+    body = doc.element.body
+    children = list(body.iterchildren())
+    clause_at_start_pattern = re.compile(r"^\d+-\d+-\d+\s")
+    clause_mid_pattern = re.compile(r"\.\s+(\d+-\d+-\d+\s)")
+
+    fixed = 0
+    for child in children:
+        if child.tag != qn("w:p"):
+            continue
+        all_runs = child.findall(qn("w:r"))
+        if not all_runs:
+            continue
+
+        # Pass 1 (cheaper, matches the heading-merge fix's own
+        # approach): a later run whose OWN text starts with the
+        # pattern - a genuine separate-run boundary.
+        split_run_idx = None
+        for idx, r in enumerate(all_runs):
+            if idx == 0:
+                continue
+            t = r.find(qn("w:t"))
+            if t is None or not t.text or not t.text.strip():
+                continue
+            if clause_at_start_pattern.match(t.text.strip()):
+                split_run_idx = idx
+                break
+
+        if split_run_idx is not None:
+            try:
+                pPr_source = child.find(qn("w:pPr"))
+                new_p = OxmlElement("w:p")
+                if pPr_source is not None:
+                    new_p.append(deepcopy(pPr_source))
+                for r in all_runs[split_run_idx:]:
+                    child.remove(r)
+                    new_p.append(r)
+                child.addnext(new_p)
+                fixed += 1
+            except Exception as err:  # noqa: BLE001
+                print(f"[subclause-merge-fix] skipped one paragraph (run-boundary case) after an error: {err}")
+            continue
+
+        # Pass 2: the merge is INSIDE a single run's own text (the real
+        # case confirmed on the actual reported document) - find the
+        # first run whose text contains a mid-string ". <clause> "
+        # boundary, split that run's text in two, and move the tail
+        # (plus any later runs) into a new paragraph.
+        target_run = None
+        match = None
+        for r in all_runs:
+            t = r.find(qn("w:t"))
+            if t is None or not t.text:
+                continue
+            m = clause_mid_pattern.search(t.text)
+            if m:
+                target_run = r
+                match = m
+                break
+        if target_run is None:
+            continue
+
+        try:
+            t = target_run.find(qn("w:t"))
+            full_text = t.text
+            split_at = match.start(1)  # right before the clause number itself
+            before_text = full_text[:split_at]
+            after_text = full_text[split_at:]
+
+            t.text = before_text
+
+            tail_run = deepcopy(target_run)
+            tail_t = tail_run.find(qn("w:t"))
+            tail_t.text = after_text
+            tail_t.set(qn("xml:space"), "preserve")
+
+            target_run_idx = all_runs.index(target_run)
+            pPr_source = child.find(qn("w:pPr"))
+            new_p = OxmlElement("w:p")
+            if pPr_source is not None:
+                new_p.append(deepcopy(pPr_source))
+            new_p.append(tail_run)
+            # any runs AFTER the split run also belong to the new (second) paragraph
+            for r in all_runs[target_run_idx + 1:]:
+                child.remove(r)
+                new_p.append(r)
+            child.addnext(new_p)
+            fixed += 1
+        except Exception as err:  # noqa: BLE001
+            print(f"[subclause-merge-fix] skipped one paragraph (mid-run case) after an error: {err}")
+
+    return fixed
+
+
 def run_structure_only_test(pdf_path, output_path):
     """PDF -> DOCX via Aspose.Words Cloud's own native conversion,
     source-language text (no translation). Answers "does Aspose's own
@@ -704,6 +844,12 @@ def run_structure_only_test(pdf_path, output_path):
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
+    subclauses_split = 0
+    try:
+        subclauses_split = _fix_merged_numbered_subclause(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
     tables_repositioned = 0
     try:
         tables_repositioned = _fix_table_overflow_indent(doc)
@@ -735,6 +881,7 @@ def run_structure_only_test(pdf_path, output_path):
         "pipeline_code_version": PIPELINE_CODE_VERSION,
         "header_bars_fixed": headers_fixed,
         "headings_split": headings_split,
+        "subclauses_split": subclauses_split,
         "tables_repositioned": tables_repositioned,
         "duplicate_rows_removed": duplicate_rows_removed,
         "leaked_names_fixed": leaked_names_fixed,
@@ -1168,6 +1315,178 @@ def _fix_reversed_clause_number_prefix(paragraph):
         run.text = fixed_prefix + ws + rest
         return True
     return False
+
+
+def _fix_body_paragraph_center_alignment(doc):
+    """Item (BODY-PARAGRAPH-WRONGLY-CENTERED, real reported issues 1,
+    2, and 3, follow-up after the right-indent fix) - confirmed real:
+    9 genuinely long (multi-sentence, >=80 character) body clause
+    paragraphs carried w:jc="center" in a real reported document -
+    confirmed directly against that document's own real distribution:
+    every OTHER long body paragraph (44 of them) correctly used
+    w:jc="both" (justify), and EVERY short paragraph in the whole
+    document (61 of them) used "both" or "left" - "center" appeared on
+    zero short paragraphs and only on long ones, with no structural
+    reason for those 9 specifically to be centered - clearly a
+    conversion artifact, not an intentional design choice anywhere in
+    this document.
+
+    Real, confirmed visual effect (checked via an actual LibreOffice
+    render): a long, multi-line paragraph rendered with w:jc="center"
+    produces a "staircase" look - each wrapped line centers on ITS OWN
+    width independently, so consecutive lines start at different
+    horizontal positions instead of a consistent one. This directly
+    explains all three symptoms the user reported: text not starting
+    right after the left margin, text appearing to start "from the
+    right" on some lines (short trailing lines center further right),
+    and a wrapped line's start position not matching the paragraph's
+    own first line - all three are the same root cause, not three
+    separate bugs.
+
+    Fix: reset w:jc from "center" to "both" (matching this document's
+    own overwhelmingly dominant, clearly-intentional norm for body
+    text) for non-table paragraphs. Left deliberately narrow - only
+    touches "center", never touches "both" or "left" (both are valid,
+    real choices already in use elsewhere in the same document) - so
+    this cannot flip a paragraph that was already correctly aligned."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for p in doc.paragraphs:
+        if not p.text.strip():
+            continue
+        if p._p.getparent().tag == qn("w:tc"):
+            continue  # table-cell paragraph - untouched
+        pPr = p._p.find(qn("w:pPr"))
+        if pPr is None:
+            continue
+        jc = pPr.find(qn("w:jc"))
+        if jc is not None and jc.get(qn("w:val")) == "center":
+            jc.set(qn("w:val"), "both")
+            fixed += 1
+    return fixed
+
+
+def _fix_body_paragraph_right_indent(doc):
+    """Item (BODY-PARAGRAPH-WRONG-RIGHT-INDENT, real reported issues 1
+    and 4) - confirmed real: a body (non-table) paragraph's w:right
+    indent value is essentially a meaningless Aspose-conversion
+    artifact, exactly like the left-indent randomness documented in
+    _fix_paragraph_direction's own history. Confirmed against a real
+    reported document: 78 of ~120 non-empty body paragraphs carried a
+    NEGATIVE right-indent of exactly -200 twips (letting text run 200
+    twips PAST the true right-margin boundary before wrapping), and the
+    rest carried a wide scatter of positive values (475 to 3829 twips)
+    with no structural correlation - the same "random per-paragraph
+    artifact" signature as the left-indent bug, just on the other side.
+
+    Real, visible effect: text was wrapping either past the intended
+    right margin (negative values) or well short of it (large positive
+    values), and per the user's own report, this is also why a line's
+    start position didn't consistently land right after the correct
+    margin for its language direction - a stray right-indent changes
+    the USABLE width Word wraps within, which shifts where wrapped
+    continuation text can start relative to the margin.
+
+    Fix: reset w:right to 0 for every real (non-empty-text) body
+    paragraph, letting Word wrap using the full actual width available
+    between wherever the paragraph's own left-indent lands and the
+    page's own right margin - no artificial extra reservation or
+    shortfall. Table-cell paragraphs are untouched (they use
+    cell-relative width, not page margins, and a table's own column
+    widths already constrain wrapping correctly). Must run AFTER
+    _fix_paragraph_direction's left/right mirror (that step's job is
+    getting the LEFT position right per direction; this step then
+    resets RIGHT to 0 so Word has the full remaining width to work
+    with, rather than fighting over the same w:right attribute)."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for p in doc.paragraphs:
+        if not p.text.strip():
+            continue
+        if p._p.getparent().tag == qn("w:tc"):
+            continue  # table-cell paragraph - untouched, uses cell width
+        pPr = p._p.find(qn("w:pPr"))
+        if pPr is None:
+            continue
+        ind = pPr.find(qn("w:ind"))
+        if ind is None:
+            continue
+        current = ind.get(qn("w:right"))
+        if current is not None and current != "0":
+            ind.set(qn("w:right"), "0")
+            fixed += 1
+    return fixed
+
+
+def _promote_uniform_run_shading_to_paragraph(doc):
+    """Item (RUN-LEVEL-SHADING-NOT-FULL-WIDTH, real reported issue 3) -
+    confirmed real: "Article Four: Rent" carried its DDDDDD background
+    color on the RUN's own rPr (w:rPr/w:shd), not the paragraph's pPr -
+    confirmed directly in the real document's XML. A run-level shading
+    only highlights the exact characters of that run, not the full
+    line/row between the page's margins - Word only extends a
+    background across the full paragraph width when the shading lives
+    on the paragraph (w:pPr/w:shd), not a run inside it.
+
+    Per the user's own stated condition: only promote when the WHOLE
+    paragraph shares ONE uniform shading color - if some runs have a
+    different color (or no shading at all) while others do, promoting
+    would incorrectly paint the whole row instead of just the
+    genuinely-shaded portion, so that case is left alone.
+
+    Fix: for each paragraph, if every run that has any text carries
+    the exact same non-empty w:shd fill color, move that shading onto
+    the paragraph's own pPr (so it spans the full margin-to-margin
+    width) and remove it from the individual runs (avoiding a
+    redundant, now-inconsistent duplicate). Table-cell paragraphs are
+    untouched (a cell's own shading/width behaves differently - this is
+    specifically about non-table body text)."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    fixed = 0
+    for p in doc.paragraphs:
+        if not p.text.strip():
+            continue
+        if p._p.getparent().tag == qn("w:tc"):
+            continue  # table-cell paragraph - untouched
+
+        runs_with_text = [r for r in p.runs if r.text]
+        if not runs_with_text:
+            continue
+
+        fills = []
+        for r in runs_with_text:
+            rPr = r._r.find(qn("w:rPr"))
+            shd = rPr.find(qn("w:shd")) if rPr is not None else None
+            fills.append(shd.get(qn("w:fill")) if shd is not None else None)
+
+        uniform_fill = fills[0]
+        if not uniform_fill or any(f != uniform_fill for f in fills):
+            continue  # no shading, or not uniform across every run - leave alone
+
+        pPr = p._p.find(qn("w:pPr"))
+        if pPr is None:
+            pPr = OxmlElement("w:pPr")
+            p._p.insert(0, pPr)
+        para_shd = pPr.find(qn("w:shd"))
+        if para_shd is None:
+            para_shd = OxmlElement("w:shd")
+            pPr.append(para_shd)
+        para_shd.set(qn("w:val"), "clear")
+        para_shd.set(qn("w:color"), "auto")
+        para_shd.set(qn("w:fill"), uniform_fill)
+
+        for r in runs_with_text:
+            rPr = r._r.find(qn("w:rPr"))
+            run_shd = rPr.find(qn("w:shd")) if rPr is not None else None
+            if run_shd is not None:
+                rPr.remove(run_shd)
+
+        fixed += 1
+    return fixed
 
 
 def _fix_paragraph_direction(doc, target_language):
@@ -2962,6 +3281,30 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
     (translated_count, skipped_count, failed_batches, total_batches,
      llm_calls_by_provider) = _translate_docx_segments_in_place(doc, target_language, llm_config)
 
+    # Real reported issues 1, 3, 4 - confirmed real formatting bugs that
+    # only matter/are checkable once the FINAL translated text is in
+    # place (right-indent affects where translated text wraps;
+    # shading-width affects the translated row's highlight). Both are
+    # non-fatal cosmetic passes, same pattern as every other fix in
+    # this pipeline.
+    right_indent_fixed = 0
+    try:
+        right_indent_fixed = _fix_body_paragraph_right_indent(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
+    shading_promoted = 0
+    try:
+        shading_promoted = _promote_uniform_run_shading_to_paragraph(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
+    center_alignment_fixed = 0
+    try:
+        center_alignment_fixed = _fix_body_paragraph_center_alignment(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
     doc.save(output_path)
     return {
         "output_path": output_path,
@@ -2973,6 +3316,9 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
         "translation_batches_total": total_batches,
         "translation_providers": sorted(llm_calls_by_provider.keys()),
         "llm_calls_by_provider": llm_calls_by_provider,
+        "right_indent_fixed": right_indent_fixed,
+        "shading_promoted": shading_promoted,
+        "center_alignment_fixed": center_alignment_fixed,
     }
 
 
