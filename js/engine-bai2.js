@@ -2209,15 +2209,36 @@ trailingSectPr + '</w:body></w:document>';
     });
 
     // ---- Har row ko horizontal gaps par split (table columns alag boxes) ----
+    // CONFIRMED REAL BUG (found via real reported document, a dense
+    // bilingual multi-column government contract form): this row-split
+    // already correctly separates a multi-column row into distinct
+    // line/box segments at the right x-gaps - that part was always
+    // correct. But the resulting segments were always pushed into
+    // `lines` in ascending-x (left-to-right) order, regardless of
+    // whether the ROW's own reading direction is right-to-left. For a
+    // row like [English label (x=66)] [Arabic value (x=294)] [Arabic
+    // label (x=493)] whose TRUE reading order is right-to-left (this
+    // is an RTL-templated form; English labels sit at the LEFT end of
+    // an otherwise-RTL row), left-to-right push order put the segments
+    // in exactly the wrong sequence, which propagated directly into
+    // wrong reading_order for translation - confirmed as the actual
+    // cause of severely scrambled translated output on a real
+    // document. Fix: collect a row's segments first, decide the row's
+    // own direction (RTL if most of its segments are RTL text), and
+    // push them in READING order (reversed, right-to-left, for an
+    // RTL-dominant row) - geometry (xPt/wPt) for each segment is
+    // completely unaffected, only the ORDER they're appended to
+    // `lines` (and therefore reading_order downstream) changes.
     const lines = [];
     rows.forEach(function(R){
       R.items.sort(function(a,b){ return a.x - b.x; });
+      const rowSegments = [];
       let seg = [R.items[0]];
       for (let i = 1; i < R.items.length; i++){
         const prev = seg[seg.length - 1], cur = R.items[i];
         const gap = cur.x - (prev.x + prev.w);
         if (gap > Math.max(prev.sizePt, cur.sizePt) * 1.5){
-          lines.push(makeLine(seg, pageH)); seg = [cur];
+          rowSegments.push(seg); seg = [cur];
         } else {
           // agar visible gap hai par space missing, ek space daal do
           if (gap > Math.max(prev.sizePt, cur.sizePt) * 0.15 && !/\s$/.test(prev.text) && !/^\s/.test(cur.text)){
@@ -2226,7 +2247,12 @@ trailingSectPr + '</w:body></w:document>';
           seg.push(cur);
         }
       }
-      lines.push(makeLine(seg, pageH));
+      rowSegments.push(seg);
+
+      const rtlSegCount = rowSegments.filter(function (s) { return s.some(function (r) { return hasRTL(r.text); }); }).length;
+      const rowIsRtl = rtlSegCount > rowSegments.length / 2;
+      const orderedSegments = rowIsRtl ? rowSegments.slice().reverse() : rowSegments;
+      orderedSegments.forEach(function (s) { lines.push(makeLine(s, pageH)); });
     });
     return lines;
   }
@@ -2397,6 +2423,47 @@ async function buildBoxBasedTranslatedDocxBlob(file, opts, logFn) {
           family: firstRun.family,
         }];
       });
+
+      // --- Untranslated-box retry pass, per explicit direction:
+      // confirmed real bug against a real reported document - roughly
+      // 6% of lines (short, isolated label fragments, e.g. a
+      // colon-terminated Arabic label alone) came back from the main
+      // merged-paragraph translation call still in the source
+      // script, when the target language is NOT RTL-scripted (so any
+      // remaining RTL text is a genuine leftover, not legitimately
+      // untranslated content). Rather than accept this silently, do
+      // ONE individual (non-merged) retry pass over exactly the lines
+      // that are still wrong, giving each one a focused, isolated
+      // translation call - real evidence showed the failures were
+      // sparse and scattered (not systematic to one paragraph group),
+      // so re-asking for just those specific lines, alone, is a
+      // reasonable second chance rather than re-running the entire
+      // document's translation again. ---
+      if (!wantRtl) {
+        const stillUntranslated = allBlocks.filter(function (blk) {
+          const line = blockToLine[blk.id];
+          if (!line || !line.runs || !line.runs[0]) return false;
+          return hasRTL(line.runs[0].text || '');
+        });
+        if (stillUntranslated.length > 0) {
+          log('Retrying ' + stillUntranslated.length + ' line(s) that came back untranslated...', 'warn');
+          const retryBlocks = stillUntranslated.map(function (blk) {
+            const line = blockToLine[blk.id];
+            return { id: blk.id, page: blk.page, paragraph_id: undefined, reading_order: blk.reading_order, text: line.runs[0].text, language: 'unknown', direction: line.rtl ? 'rtl' : 'ltr', width: blk.width, font_size_px: blk.font_size_px, style: blk.style };
+          });
+          try {
+            const retryResult = await v14TranslateAllPages(model, retryBlocks, targetLang, false);
+            const retryApplied = v14ApplyTranslations(retryBlocks, retryResult.translations || []);
+            retryApplied.blocks.forEach(function (b) {
+              const line = blockToLine[b.id];
+              if (!line || !b.text || hasRTL(b.text)) return;  // still failed - leave as-is rather than write a worse/partial result
+              line.runs = [{ text: b.text, sizePt: line.runs[0].sizePt, bold: line.runs[0].bold, italic: line.runs[0].italic, color: line.runs[0].color, family: line.runs[0].family }];
+            });
+          } catch (retryErr) {
+            log('Untranslated-line retry pass failed, leaving those lines as-is: ' + retryErr.message, 'warn');
+          }
+        }
+      }
     }
 
     return buildDocx(pages, true);
