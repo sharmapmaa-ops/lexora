@@ -22,6 +22,19 @@ Aspose-translated document:
              width independently), which explains all three symptoms
              at once - fixed by resetting center to "both", matching
              this document's own dominant real norm.
+  Follow-up round 2 (real reported margin/continuity issues, after
+             direct comparison against a user-provided reference
+             image): the original right-indent-only fix wasn't enough
+             - w:left was still random per paragraph, w:firstLine was
+             never reset, and what reads as one flowing clause was
+             often stored as MULTIPLE separate paragraphs with no real
+             sentence break between them. Fixed via the user's own
+             explicit methodology (derive left/right margins from the
+             real "Contract Data" table's own width/position),
+             resetting firstLine, merging genuine continuation
+             paragraphs back into one real paragraph, and normalizing
+             the "before" spacing on clause-start paragraphs so
+             adjacent clauses get a consistent visible gap.
 
 Run: python3 formatting_fixes_test.py
 """
@@ -32,6 +45,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from docx import Document
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+from docx.shared import Twips
 import aspose_test_pipeline as asp
 
 
@@ -43,14 +57,16 @@ def assert_(cond, label):
 
 
 def run():
-    print("=== Test 1: real document - right-indent reset (issues 1 and 4) ===")
+    print("=== Test 1: real document - margin normalization (issues 1 and 4) ===")
     real_docx = "/home/claude/work/aspose_debug4/input7.docx"
     if os.path.exists(real_docx):
         doc = Document(real_docx)
         fixed = asp._fix_body_paragraph_right_indent(doc)
-        assert_(fixed > 100, "A large, real number of body paragraphs had their right-indent reset (got " + str(fixed) + ")")
-        # spot-check: no non-table paragraph should carry a non-zero right-indent afterward
-        remaining_nonzero = 0
+        assert_(fixed > 100, "A large, real number of body paragraphs had their margin normalized (got " + str(fixed) + ")")
+        # spot-check: every non-table paragraph's right-indent should now
+        # be a SINGLE consistent value (either the table-derived one, or
+        # 0 if no reference table was found) - not scattered per-paragraph
+        right_values = set()
         for p in doc.paragraphs:
             if not p.text.strip():
                 continue
@@ -58,13 +74,13 @@ def run():
                 continue
             pPr = p._p.find(qn("w:pPr"))
             ind = pPr.find(qn("w:ind")) if pPr is not None else None
-            if ind is not None and ind.get(qn("w:right")) not in (None, "0"):
-                remaining_nonzero += 1
-        assert_(remaining_nonzero == 0, "No non-table paragraph retains a non-zero right-indent after the fix")
+            if ind is not None and ind.get(qn("w:right")) is not None:
+                right_values.add(ind.get(qn("w:right")))
+        assert_(len(right_values) == 1, "Every non-table paragraph now shares the exact same right-indent value (got " + str(right_values) + ")")
     else:
         print("  (real document not present in this environment - using synthetic test below instead)")
 
-    print("\n=== Test 2 (synthetic, exact mechanics): negative right-indent -> 0, table cells untouched ===")
+    print("\n=== Test 2 (synthetic, exact mechanics): no reference table found -> falls back to right=0, table cells untouched ===")
     doc2 = Document()
     p2 = doc2.add_paragraph("Some real body text that should wrap at the true margin.")
     pPr2 = p2._p.get_or_add_pPr()
@@ -73,8 +89,14 @@ def run():
     ind2.set(qn("w:right"), "-200")
     pPr2.append(ind2)
     t2 = doc2.add_table(rows=1, cols=1)
+    # A first-cell text this long deliberately does NOT look like a real
+    # section-header label (e.g. "Contract Data") - keeps
+    # _find_reference_margin_table from matching this unrelated table,
+    # so this test genuinely exercises the "no reference table found"
+    # fallback path, not the table-derived one.
+    long_cell_text = "This is a long paragraph of body text sitting inside a table cell, not a real section header"
     cell_p = t2.rows[0].cells[0].paragraphs[0]
-    cell_p.text = "Cell text"
+    cell_p.text = long_cell_text
     cPPr = cell_p._p.get_or_add_pPr()
     cind = OxmlElement("w:ind")
     cind.set(qn("w:right"), "-999")
@@ -82,8 +104,8 @@ def run():
     fixed2 = asp._fix_body_paragraph_right_indent(doc2)
     assert_(fixed2 == 1, "Exactly 1 body paragraph fixed (the table cell is untouched)")
     ind_after = p2._p.find(qn("w:pPr")).find(qn("w:ind"))
-    assert_(ind_after.get(qn("w:right")) == "0", "The body paragraph's right-indent is now 0")
-    assert_(ind_after.get(qn("w:left")) == "771", "The left-indent is untouched - only right changes")
+    assert_(ind_after.get(qn("w:right")) == "0", "No reference table found - falls back to resetting right-indent to 0")
+    assert_(ind_after.get(qn("w:left")) == "771", "No reference table found - left-indent is left untouched (no basis to change it)")
     cell_ind_after = cell_p._p.find(qn("w:pPr")).find(qn("w:ind"))
     assert_(cell_ind_after.get(qn("w:right")) == "-999", "The table-cell paragraph's right-indent is NOT touched")
 
@@ -195,6 +217,101 @@ def run():
     assert_(pPr8b.find(qn("w:jc")).get(qn("w:val")) == "both", "An already-'both' paragraph is untouched")
     assert_(pPr8c.find(qn("w:jc")).get(qn("w:val")) == "left", "A 'left' paragraph is untouched - not forced to 'both'")
     assert_(cjc8.get(qn("w:val")) == "center", "A table-cell paragraph's center alignment is NOT touched")
+
+    print("\n=== Test 9: table-derived margin computation - the exact reported case ===")
+    real_docx3 = "/home/claude/work/margin_debug2/final_output.docx"
+    if os.path.exists(real_docx3):
+        doc9 = Document(real_docx3)
+        left, right = asp._compute_table_derived_margins(doc9)
+        assert_(left == 867, "Computed target left margin is 867 twips (matches the real Contract Data table's own indent)")
+        assert_(right == 555, "Computed target right margin is 555 twips (matches where the real table ends)")
+    else:
+        print("  (real document not present in this environment - skipped)")
+
+    print("\n=== Test 10: right-indent fix now also fixes left + firstLine, using table-derived values ===")
+    doc10 = Document()
+    sec10 = doc10.sections[0]
+    sec10.page_width = Twips(11900)
+    sec10.left_margin = Twips(540)
+    sec10.right_margin = Twips(500)
+    t10 = doc10.add_table(rows=1, cols=1)
+    t10.rows[0].cells[0].text = "Contract Data"
+    tblPr10 = t10._tbl.find(qn("w:tblPr"))
+    tblInd10 = OxmlElement("w:tblInd")
+    tblInd10.set(qn("w:w"), "867")
+    tblInd10.set(qn("w:type"), "dxa")
+    tblPr10.append(tblInd10)
+    grid10 = t10._tbl.find(qn("w:tblGrid"))
+    gc10 = grid10.find(qn("w:gridCol"))
+    gc10.set(qn("w:w"), "9438")
+
+    p10 = doc10.add_paragraph("Some real body text with a wrong random indent.")
+    pPr10 = p10._p.get_or_add_pPr()
+    ind10 = OxmlElement("w:ind")
+    ind10.set(qn("w:left"), "1742")
+    ind10.set(qn("w:right"), "-200")
+    ind10.set(qn("w:firstLine"), "229")
+    pPr10.append(ind10)
+
+    fixed10 = asp._fix_body_paragraph_right_indent(doc10)
+    assert_(fixed10 == 1, "Exactly 1 body paragraph fixed")
+    ind10_after = p10._p.find(qn("w:pPr")).find(qn("w:ind"))
+    assert_(ind10_after.get(qn("w:left")) == "867", "Left indent is now the table-derived value (867)")
+    assert_(ind10_after.get(qn("w:right")) == "555", "Right indent is now the table-derived value (555)")
+    assert_(ind10_after.get(qn("w:firstLine")) == "0", "firstLine is reset to 0")
+
+    print("\n=== Test 11: continuation-paragraph merge - the exact reported case (14-1 split across 2 paragraphs) ===")
+    doc11 = Document()
+    doc11.add_paragraph(
+        "14-1 The lessor shall return the security deposit amount specified in clause number (12) of this "
+        "contract after vacating the rental unit, provided that there are no damages or defects caused by the "
+        "tenant to the rental unit and that there are no outstanding bills that have not been paid or any "
+        "amounts due from the tenant relating to general services or rent, and in these cases"
+    )
+    doc11.add_paragraph(
+        "the value of bills or rent or general services or the cost of repairing damages shall be deducted "
+        "from the paid security deposit amount and the remainder, if any, shall be returned to the tenant."
+    )
+    doc11.add_paragraph("14-2 The lessor bears the burden of proving the amounts due or damages claimed.")
+    before_count11 = len(doc11.paragraphs)
+    merged11 = asp._merge_continuation_paragraphs(doc11)
+    assert_(merged11 == 1, "Exactly 1 continuation paragraph merged")
+    after_count11 = len(doc11.paragraphs)
+    assert_(after_count11 == before_count11 - 1, "Paragraph count decreased by exactly 1")
+    texts11 = [p.text for p in doc11.paragraphs if p.text.strip()]
+    assert_("and in these cases the value of bills" in texts11[0], "The merged paragraph reads as one continuous sentence")
+    assert_(texts11[1].startswith("14-2"), "14-2 remains its own separate paragraph, untouched")
+
+    print("\n=== Test 12: continuation-merge - real 'Label: Value' fields are NEVER merged (no false positive) ===")
+    doc12 = Document()
+    doc12.add_paragraph("This contract is considered an authenticated contract dated 3/4/1435 AH")
+    doc12.add_paragraph("Name: Al-Anoud Sulaiman Ali Al-Masoud")
+    merged12 = asp._merge_continuation_paragraphs(doc12)
+    assert_(merged12 == 0, "Zero merges - a real 'Name:' field is never merged into unrelated preceding text")
+
+    print("\n=== Test 13: continuation-merge - adjacent short 'Label:' fields are never merged into each other ===")
+    doc13 = Document()
+    doc13.add_paragraph("Unit Type: Office")
+    doc13.add_paragraph("Special sign")
+    merged13 = asp._merge_continuation_paragraphs(doc13)
+    assert_(merged13 == 0, "Zero merges - 'Unit Type: Office' itself looks like a field, so nothing merges into it")
+
+    print("\n=== Test 14: clause-start spacing normalization ===")
+    doc14 = Document()
+    p14a = doc14.add_paragraph("14-1 First clause.")
+    pPr14a = p14a._p.get_or_add_pPr()
+    sp14a = OxmlElement("w:spacing")
+    sp14a.set(qn("w:before"), "22")
+    pPr14a.append(sp14a)
+    p14b = doc14.add_paragraph("14-2 Second clause.")
+    pPr14b = p14b._p.get_or_add_pPr()
+    sp14b = OxmlElement("w:spacing")
+    sp14b.set(qn("w:before"), "4")
+    pPr14b.append(sp14b)
+    fixed14 = asp._fix_clause_start_spacing(doc14)
+    assert_(fixed14 == 2, "Both clause-start paragraphs got their spacing normalized")
+    assert_(sp14a.get(qn("w:before")) == "134", "First clause now has the consistent gap value")
+    assert_(sp14b.get(qn("w:before")) == "134", "Second clause now has the consistent gap value")
 
     print("\nALL TESTS PASSED")
 

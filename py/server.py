@@ -6831,6 +6831,11 @@ class Handler(SimpleHTTPRequestHandler):
                 "segmentsTranslated": result.get("segments_translated"),
                 "segmentsSkipped": result.get("segments_skipped"),
                 "translationProviders": result.get("translation_providers"),
+                "rightIndentFixed": result.get("right_indent_fixed"),
+                "shadingPromoted": result.get("shading_promoted"),
+                "centerAlignmentFixed": result.get("center_alignment_fixed"),
+                "continuationParagraphsMerged": result.get("continuation_paragraphs_merged"),
+                "clauseSpacingFixed": result.get("clause_spacing_fixed"),
             }
         except Exception as err:
             return 200, {"ok": False, "error": str(err)}

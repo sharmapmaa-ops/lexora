@@ -1367,39 +1367,107 @@ def _fix_body_paragraph_center_alignment(doc):
     return fixed
 
 
-def _fix_body_paragraph_right_indent(doc):
-    """Item (BODY-PARAGRAPH-WRONG-RIGHT-INDENT, real reported issues 1
-    and 4) - confirmed real: a body (non-table) paragraph's w:right
-    indent value is essentially a meaningless Aspose-conversion
-    artifact, exactly like the left-indent randomness documented in
-    _fix_paragraph_direction's own history. Confirmed against a real
-    reported document: 78 of ~120 non-empty body paragraphs carried a
-    NEGATIVE right-indent of exactly -200 twips (letting text run 200
-    twips PAST the true right-margin boundary before wrapping), and the
-    rest carried a wide scatter of positive values (475 to 3829 twips)
-    with no structural correlation - the same "random per-paragraph
-    artifact" signature as the left-indent bug, just on the other side.
+def _find_reference_margin_table(doc):
+    """Locates a real, early table in the document to use as the
+    margin REFERENCE for non-table text, per explicit direction: check
+    the page's own width and the table's own width to derive the real
+    left/right margin area non-table text should also respect, rather
+    than guessing or hardcoding a value. Looks for the first table
+    whose top-left cell's text looks like a real section-header label
+    (e.g. "Contract Data") - short, title-like text - since that's
+    reliably the FIRST substantive table in this kind of document, not
+    a stray one-off table elsewhere. Returns None if no such table is
+    found (caller falls back to a safe default rather than crashing)."""
+    for t in doc.tables:
+        if not t.rows or not t.rows[0].cells:
+            continue
+        first_cell_text = t.rows[0].cells[0].text.strip()
+        if first_cell_text and len(first_cell_text) < 40:
+            return t
+    return None
 
-    Real, visible effect: text was wrapping either past the intended
-    right margin (negative values) or well short of it (large positive
-    values), and per the user's own report, this is also why a line's
-    start position didn't consistently land right after the correct
-    margin for its language direction - a stray right-indent changes
-    the USABLE width Word wraps within, which shifts where wrapped
-    continuation text can start relative to the margin.
 
-    Fix: reset w:right to 0 for every real (non-empty-text) body
-    paragraph, letting Word wrap using the full actual width available
-    between wherever the paragraph's own left-indent lands and the
-    page's own right margin - no artificial extra reservation or
-    shortfall. Table-cell paragraphs are untouched (they use
-    cell-relative width, not page margins, and a table's own column
-    widths already constrain wrapping correctly). Must run AFTER
-    _fix_paragraph_direction's left/right mirror (that step's job is
-    getting the LEFT position right per direction; this step then
-    resets RIGHT to 0 so Word has the full remaining width to work
-    with, rather than fighting over the same w:right attribute)."""
+def _compute_table_derived_margins(doc):
+    """Computes the real left/right paragraph-indent values that make
+    non-table text occupy EXACTLY the same horizontal span as the
+    document's own reference table (see _find_reference_margin_table) -
+    the user's own explicit methodology: (1) check the page's real
+    width and the table's real width to get the total margin area,
+    (2) from that, work out how much is on the left vs the right side
+    specifically. Returns (target_left, target_right) in twips, or
+    (None, None) if no reference table was found (caller should then
+    leave indents alone rather than apply a guessed value).
+
+    Confirmed against a real reported document: page width 11900,
+    table indent 867, table width 9438 twips -> target_left=867,
+    target_right=555 - independently verified these are the exact
+    values that make a paragraph's usable width (10860-867-555=9438)
+    equal the table's own real width."""
     from docx.oxml.ns import qn
+
+    table = _find_reference_margin_table(doc)
+    if table is None:
+        return None, None
+
+    sec = doc.sections[0]
+    page_width = round(sec.page_width / 635)
+    page_right_margin = round(sec.right_margin / 635)
+
+    tblPr = table._tbl.find(qn("w:tblPr"))
+    if tblPr is None:
+        return None, None
+    tblInd_el = tblPr.find(qn("w:tblInd"))
+    table_indent = int(tblInd_el.get(qn("w:w"))) if tblInd_el is not None else 0
+    grid = table._tbl.find(qn("w:tblGrid"))
+    if grid is None:
+        return None, None
+    cols = grid.findall(qn("w:gridCol"))
+    table_width = sum(int(c.get(qn("w:w"))) for c in cols)
+
+    target_left = table_indent
+    table_right_from_page_left_margin_start = round(sec.left_margin / 635) + table_indent + table_width
+    target_right = (page_width - page_right_margin) - table_right_from_page_left_margin_start
+    if target_right < 0:
+        target_right = 0  # a genuinely overflowing reference table shouldn't push this negative
+    return target_left, target_right
+
+
+def _fix_body_paragraph_right_indent(doc):
+    """Item (BODY-PARAGRAPH-WRONG-MARGIN, real reported issues 1, 2,
+    and 4, refined after further real-document testing) - confirmed
+    real: a body (non-table) paragraph's w:left AND w:right indent
+    values are both essentially meaningless Aspose-conversion
+    artifacts. The FIRST version of this fix only reset w:right to 0,
+    leaving w:left completely untouched - confirmed against a real
+    document this was NOT enough: paragraphs still carried scattered,
+    random left-indent values (1069, 1742, ...), producing exactly the
+    "text not starting after the left margin" and "wrapped line
+    doesn't match the paragraph's own start" symptoms the user
+    continued to report even after the right-indent-only fix shipped.
+
+    REAL, USER-SPECIFIED METHODOLOGY (not guessed): derive the correct
+    margin from the document's own real "Contract Data" reference
+    table - page width minus table width gives the total margin area,
+    and the table's own actual left/right position within the page
+    gives the specific left vs right split (see
+    _compute_table_derived_margins). Confirmed via an actual
+    LibreOffice render, compared directly against a user-provided
+    reference image, that applying these table-derived values (rather
+    than a flat reset to 0) makes non-table paragraphs align exactly
+    with the table's own visual margins.
+
+    Also resets w:firstLine to 0 and removes any w:hanging - confirmed
+    real: a leftover non-zero firstLine value was why one paragraph's
+    OWN first line started at a different indent than its own wrapped
+    continuation lines, even after left/right were corrected.
+
+    Falls back to the simpler "reset right to 0 only" behavior if no
+    reference table can be found in the document (keeps working on a
+    document that doesn't have this document's specific "Contract
+    Data"-style table, rather than skipping the fix or crashing)."""
+    from docx.oxml.ns import qn
+
+    target_left, target_right = _compute_table_derived_margins(doc)
 
     fixed = 0
     for p in doc.paragraphs:
@@ -1413,9 +1481,206 @@ def _fix_body_paragraph_right_indent(doc):
         ind = pPr.find(qn("w:ind"))
         if ind is None:
             continue
-        current = ind.get(qn("w:right"))
-        if current is not None and current != "0":
-            ind.set(qn("w:right"), "0")
+        changed = False
+        if target_left is not None and target_right is not None:
+            if ind.get(qn("w:left")) != str(target_left):
+                ind.set(qn("w:left"), str(target_left))
+                changed = True
+            if ind.get(qn("w:right")) != str(target_right):
+                ind.set(qn("w:right"), str(target_right))
+                changed = True
+        else:
+            # No reference table found - fall back to the original,
+            # simpler behavior (right-only reset) rather than guessing
+            # a left value with no real basis.
+            current_right = ind.get(qn("w:right"))
+            if current_right is not None and current_right != "0":
+                ind.set(qn("w:right"), "0")
+                changed = True
+        if ind.get(qn("w:firstLine")) not in (None, "0"):
+            ind.set(qn("w:firstLine"), "0")
+            changed = True
+        if ind.get(qn("w:hanging")) is not None:
+            del ind.attrib[qn("w:hanging")]
+            changed = True
+        if changed:
+            fixed += 1
+    return fixed
+
+
+def _merge_continuation_paragraphs(doc):
+    """Item (CONTINUATION-TEXT-WRONGLY-SPLIT-INTO-SEPARATE-PARAGRAPHS,
+    real reported issue) - confirmed real: what reads as ONE flowing
+    sentence/clause is often stored as MULTIPLE separate <w:p>
+    paragraph elements in Aspose's conversion - e.g. a real document
+    had "14-1 The lessor shall...and in these cases" as one paragraph,
+    immediately followed by "the value of bills or rent...returned to
+    the tenant." as a SEPARATE paragraph, with no real sentence break
+    between them at all. Simply giving both paragraphs the same
+    left/right margin (the first version of this whole fix) still left
+    a visible seam between them - confirmed via a real render compared
+    against a user-provided reference image - because they were still
+    two separate paragraph elements with their own (small but nonzero)
+    "before" spacing, not one truly continuous paragraph.
+
+    Detects a paragraph that is very likely a continuation of the
+    PRECEDING one, using several signals TOGETHER (confirmed via a
+    real whole-document dry run that combining them, not any single
+    one alone, is what keeps real "Label: Value" style fields - e.g.
+    "Name: ...", "Unit Type: Office" - from being wrongly merged into
+    unrelated neighboring text, since those don't reliably differ from
+    genuine continuations by punctuation alone):
+      - this paragraph does NOT start a new clause number ("14-2 ..."),
+        a new "Article X:" heading, or is not itself a heading
+      - this paragraph does NOT itself look like a "Label: Value" field
+      - the PRECEDING real paragraph does NOT end with terminal
+        punctuation (. ! ? :) - i.e. looks cut off mid-sentence
+      - the PRECEDING paragraph does NOT itself look like a "Label:
+        Value" field (a field is normally standalone, not something a
+        later paragraph continues)
+      - the PRECEDING paragraph is not itself a heading
+      - the PRECEDING paragraph's text is not suspiciously short
+        (<20 chars) - a short fragment right before this one is more
+        likely another disconnected label than the start of a real
+        sentence this paragraph continues
+
+    Confirmed via a real whole-document dry run this combination drops
+    false-positive candidates from an initial 42 down to a small
+    residual few, concentrated in one specific type of content (dense,
+    fragmented financial-data labels with no punctuation at all) - per
+    explicit direction to implement document-wide anyway and verify
+    carefully rather than pre-emptively scope this out, that residual
+    risk is accepted, not unaddressed.
+
+    Merges by moving the continuation paragraph's own runs onto the
+    end of the preceding paragraph (with a single space between them),
+    then removing the now-empty paragraph element - the preceding
+    paragraph's own formatting (margins, justify, etc.) already
+    applies to the newly-appended text, so no separate re-formatting
+    step is needed for the merged-in runs themselves."""
+    from docx.oxml.ns import qn
+    from copy import deepcopy
+
+    clause_start_pattern = re.compile(r"^\d+-\d+(-\d+)?\s")
+    article_pattern = re.compile(r"^Article\s+\S+(?:\s+\S+)?\s*:")
+    label_value_pattern = re.compile(r"^[A-Za-z][\w\s/]{0,40}:\s")
+
+    def is_heading(p_el):
+        pPr = p_el.find(qn("w:pPr"))
+        if pPr is None:
+            return False
+        shd = pPr.find(qn("w:shd"))
+        return shd is not None and shd.get(qn("w:fill")) not in (None, "auto", "FFFFFF")
+
+    body = doc.element.body
+    merged = 0
+    i = 0
+    while True:
+        children = list(body.iterchildren())
+        if i >= len(children):
+            break
+        child = children[i]
+        if child.tag != qn("w:p") or child.getparent().tag == qn("w:tc"):
+            i += 1
+            continue
+        text = "".join((t.text or "") for t in child.findall(".//" + qn("w:t"))).strip()
+        if not text:
+            i += 1
+            continue
+
+        prev_p, prev_text = None, ""
+        for j in range(i - 1, -1, -1):
+            if children[j].tag == qn("w:p") and children[j].getparent().tag != qn("w:tc"):
+                candidate_text = "".join((t.text or "") for t in children[j].findall(".//" + qn("w:t"))).strip()
+                if candidate_text:
+                    prev_p, prev_text = children[j], candidate_text
+                    break
+            elif children[j].tag == qn("w:tbl"):
+                break  # a table sits between - don't reach across it
+
+        if prev_p is None:
+            i += 1
+            continue
+
+        starts_new_unit = bool(clause_start_pattern.match(text)) or bool(article_pattern.match(text)) or is_heading(child)
+        looks_like_field = bool(label_value_pattern.match(text))
+        prev_looks_like_field = bool(label_value_pattern.match(prev_text))
+        prev_ends_terminal = prev_text.endswith((".", "!", "?", ":"))
+        prev_is_heading = is_heading(prev_p)
+        prev_too_short = len(prev_text) < 20
+
+        should_merge = (
+            not starts_new_unit
+            and not looks_like_field
+            and not prev_ends_terminal
+            and not prev_is_heading
+            and not prev_looks_like_field
+            and not prev_too_short
+        )
+
+        if not should_merge:
+            i += 1
+            continue
+
+        try:
+            runs = child.findall(qn("w:r"))
+            if runs:
+                space_r = deepcopy(runs[0])
+                space_t = space_r.find(qn("w:t"))
+                if space_t is not None:
+                    space_t.text = " "
+                    space_t.set(qn("xml:space"), "preserve")
+                prev_p.append(space_r)
+            for r in runs:
+                child.remove(r)
+                prev_p.append(r)
+            child.getparent().remove(child)
+            merged += 1
+        except Exception as err:  # noqa: BLE001
+            print(f"[continuation-merge-fix] skipped one paragraph after an error, continuing with the rest: {err}")
+            i += 1
+        # deliberately do NOT advance i - re-check from the same index,
+        # since the next sibling has shifted into this position and
+        # might ALSO be a continuation of what's now the (bigger) prev_p
+
+    return merged
+
+
+def _fix_clause_start_spacing(doc):
+    """Item (NO-VISIBLE-GAP-BETWEEN-CLAUSES, real reported issue,
+    follow-up to _merge_continuation_paragraphs) - confirmed real via
+    an actual rendered comparison against a user-provided reference
+    image: after continuation paragraphs are correctly merged back
+    into one real paragraph per clause, adjacent CLAUSES (e.g. "14-1"
+    ending and "14-2" beginning) still had no visible gap between them
+    - the "before" spacing on a real document's own clause-start
+    paragraphs varied inconsistently (134 twips on one, only 22 on the
+    next), so some clauses got a visible gap and others didn't, for no
+    structural reason.
+
+    Fix: every paragraph that starts a new numbered clause (matches the
+    same "<digits>-<digits>(-<digits>)? " pattern
+    _merge_continuation_paragraphs and _fix_merged_numbered_subclause
+    both use) gets the same "before" spacing value - the real value a
+    working clause-start already used in the reported document (134
+    twips), confirmed via an actual render to produce a clear, visible
+    gap without looking exaggerated."""
+    from docx.oxml.ns import qn
+
+    clause_start_pattern = re.compile(r"^\d+-\d+(-\d+)?\s")
+    GAP_BEFORE = "134"
+
+    fixed = 0
+    for p in doc.paragraphs:
+        text = p.text.strip()
+        if not text or not clause_start_pattern.match(text):
+            continue
+        if p._p.getparent().tag == qn("w:tc"):
+            continue
+        pPr = p._p.find(qn("w:pPr"))
+        spacing = pPr.find(qn("w:spacing")) if pPr is not None else None
+        if spacing is not None and spacing.get(qn("w:before")) != GAP_BEFORE:
+            spacing.set(qn("w:before"), GAP_BEFORE)
             fixed += 1
     return fixed
 
@@ -3281,27 +3546,48 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
     (translated_count, skipped_count, failed_batches, total_batches,
      llm_calls_by_provider) = _translate_docx_segments_in_place(doc, target_language, llm_config)
 
-    # Real reported issues 1, 3, 4 - confirmed real formatting bugs that
-    # only matter/are checkable once the FINAL translated text is in
-    # place (right-indent affects where translated text wraps;
-    # shading-width affects the translated row's highlight). Both are
-    # non-fatal cosmetic passes, same pattern as every other fix in
-    # this pipeline.
-    right_indent_fixed = 0
-    try:
-        right_indent_fixed = _fix_body_paragraph_right_indent(doc)
-    except Exception:
-        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
-
+    # Real reported issues 1, 2, 3, 4 - confirmed real formatting bugs
+    # that only matter/are checkable once the FINAL translated text is
+    # in place. All non-fatal cosmetic passes, same pattern as every
+    # other fix in this pipeline.
+    #
+    # ORDER MATTERS, confirmed via a real bug found during testing:
+    # shading MUST be promoted to paragraph-level BEFORE the
+    # continuation-merge step runs, because that step's own heading
+    # detection (is_heading()) checks PARAGRAPH-level shading - running
+    # it first left headings still only shaded at the run level,
+    # making is_heading() wrongly return False for them and letting a
+    # sub-heading's text get incorrectly merged into the wrong
+    # preceding paragraph. Merging must then happen BEFORE the margin
+    # and clause-start-spacing fixes, since those operate on whatever
+    # paragraphs exist AFTER merging (not the pre-merge fragments).
     shading_promoted = 0
     try:
         shading_promoted = _promote_uniform_run_shading_to_paragraph(doc)
     except Exception:
         pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
 
+    continuation_paragraphs_merged = 0
+    try:
+        continuation_paragraphs_merged = _merge_continuation_paragraphs(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
+    right_indent_fixed = 0
+    try:
+        right_indent_fixed = _fix_body_paragraph_right_indent(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
     center_alignment_fixed = 0
     try:
         center_alignment_fixed = _fix_body_paragraph_center_alignment(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
+    clause_spacing_fixed = 0
+    try:
+        clause_spacing_fixed = _fix_clause_start_spacing(doc)
     except Exception:
         pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
 
@@ -3319,6 +3605,8 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
         "right_indent_fixed": right_indent_fixed,
         "shading_promoted": shading_promoted,
         "center_alignment_fixed": center_alignment_fixed,
+        "continuation_paragraphs_merged": continuation_paragraphs_merged,
+        "clause_spacing_fixed": clause_spacing_fixed,
     }
 
 
