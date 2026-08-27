@@ -850,6 +850,16 @@ def run_structure_only_test(pdf_path, output_path):
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
+    # Real reported issue 4 - runs BEFORE the other table-structural
+    # fixes below, so those operate on the final, correctly-merged
+    # table shape rather than on fragments that are about to be
+    # combined anyway.
+    appendix_tables_merged = 0
+    try:
+        appendix_tables_merged = _merge_adjacent_header_tables(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
     tables_repositioned = 0
     try:
         tables_repositioned = _fix_table_overflow_indent(doc)
@@ -882,6 +892,7 @@ def run_structure_only_test(pdf_path, output_path):
         "header_bars_fixed": headers_fixed,
         "headings_split": headings_split,
         "subclauses_split": subclauses_split,
+        "appendix_tables_merged": appendix_tables_merged,
         "tables_repositioned": tables_repositioned,
         "duplicate_rows_removed": duplicate_rows_removed,
         "leaked_names_fixed": leaked_names_fixed,
@@ -2168,6 +2179,113 @@ def _remove_duplicate_table_rows(doc):
                 continue
             prev_text = row_text
     return removed
+
+
+def _merge_adjacent_header_tables(doc):
+    """Item (APPENDIX-TABLE-HEADER-WRONG-PAGE-POSITION, real reported
+    issue 4) - confirmed real: a real document's Appendix content was
+    split into 3 SEPARATE <w:tbl> elements (16, 14, and 15 rows), each
+    carrying its OWN "Clause Number | Field | Explanation" header row,
+    with NOTHING but empty filler between them (confirmed directly:
+    the XML between consecutive appendix tables was empty paragraph
+    markup, no real text). Word/LibreOffice paginates each of these as
+    its own independent table, so a NEW table's own header can start
+    partway down a page (right after the previous table's last row
+    finishes) - which is what LOOKS like "the header is on the wrong
+    row" but is actually a separate table's own correctly-positioned
+    header, just visually indistinguishable from a genuine continuation
+    of one bigger table.
+
+    Detects consecutive tables whose header row matches the same
+    generic "looks like a real column-header row" signature (checked
+    via shading, since Aspose consistently uses a distinct dark fill
+    for header rows - not hardcoded to specific header text, so this
+    works for any language) with only empty/whitespace content between
+    them, and merges them into ONE real table: keeps the FIRST table's
+    header row, appends every OTHER row from the later tables (skipping
+    each one's own duplicate header row), removes the now-empty later
+    <w:tbl> elements and the empty filler between them.
+
+    Also marks the surviving header row with <w:trPr><w:tblHeader/></w:trPr>
+    - the real, standard OOXML "repeat this row at the top of every
+    page this table spans" mechanism - so once these fragments are
+    correctly merged into one continuous table, its header genuinely
+    repeats at the top of EVERY page it spans, not just wherever it
+    happened to start."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    def header_row_shading(tbl_el):
+        rows = tbl_el.findall(qn("w:tr"))
+        if not rows:
+            return None
+        first_row = rows[0]
+        shd = first_row.find(".//" + qn("w:shd"))
+        return shd.get(qn("w:fill")) if shd is not None else None
+
+    body = doc.element.body
+    tables_merged = 0
+
+    while True:
+        children = list(body.iterchildren())
+        merged_this_pass = False
+        for i, child in enumerate(children):
+            if child.tag != qn("w:tbl"):
+                continue
+            this_shading = header_row_shading(child)
+            if not this_shading:
+                continue
+
+            # walk forward past ONLY empty (no real text) paragraphs to
+            # find the next real element
+            j = i + 1
+            while j < len(children) and children[j].tag == qn("w:p"):
+                text = "".join((t.text or "") for t in children[j].findall(".//" + qn("w:t"))).strip()
+                if text:
+                    break
+                j += 1
+            if j >= len(children) or children[j].tag != qn("w:tbl"):
+                continue
+            next_tbl = children[j]
+            if header_row_shading(next_tbl) != this_shading:
+                continue  # different header style - not the same appendix table family, don't merge
+
+            # Merge: keep child's own header row, append next_tbl's
+            # rows EXCEPT its own (duplicate) header row.
+            next_rows = next_tbl.findall(qn("w:tr"))
+            for r in next_rows[1:]:
+                next_tbl.remove(r)
+                child.append(r)
+
+            # remove the now-empty filler paragraphs and the drained table
+            for k in range(i + 1, j + 1):
+                el = children[k]
+                el.getparent().remove(el)
+
+            tables_merged += 1
+            merged_this_pass = True
+            break  # restart the scan - the child list has changed
+
+        if not merged_this_pass:
+            break
+
+    # Mark each surviving appendix table's header row to repeat on
+    # every page it spans.
+    for tbl_el in body.iter(qn("w:tbl")):
+        if not header_row_shading(tbl_el):
+            continue
+        rows = tbl_el.findall(qn("w:tr"))
+        if not rows:
+            continue
+        header_row = rows[0]
+        trPr = header_row.find(qn("w:trPr"))
+        if trPr is None:
+            trPr = OxmlElement("w:trPr")
+            header_row.insert(0, trPr)
+        if trPr.find(qn("w:tblHeader")) is None:
+            trPr.append(OxmlElement("w:tblHeader"))
+
+    return tables_merged
 
 
 def _fix_table_overflow_indent(doc):
@@ -3461,7 +3579,29 @@ def review_and_fix_translation(original_docx_path, translated_docx_path, target_
 
         # --- Alignment (formatting/ordering-adjacent - should not
         # change on its own since we're not doing margin-mirroring yet) ---
-        if orig_fp["alignment"] and orig_fp["alignment"] != trans_fp["alignment"]:
+        # CONFIRMED REAL BUG: this check used to force the translated
+        # paragraph's alignment to match the ORIGINAL's alignment on
+        # ANY mismatch, assuming the original was always correct. That
+        # assumption broke once _fix_body_paragraph_center_alignment
+        # started legitimately fixing a real pre-existing Aspose defect
+        # (body clauses wrongly center-aligned) in step 2 - the
+        # ORIGINAL (step 1's untranslated output) still had the SAME
+        # uncorrected "center" bug, so this reviewer was comparing
+        # against a known-buggy baseline and "fixing" the translated
+        # paragraph BACK to center, undoing step 2's real fix.
+        # Confirmed directly against a real reported document: several
+        # paragraphs correctly fixed to "both" in step 2 came back as
+        # "center" again in the Final Output, exactly matching this
+        # mechanism. Fix: an original alignment of "center" is never
+        # treated as the correct value to revert to - if the
+        # translated side is "both" (the known-correct target), that's
+        # left alone rather than flagged as an issue.
+        orig_alignment_is_known_bug = orig_fp["alignment"] == "center"
+        if (
+            orig_fp["alignment"]
+            and orig_fp["alignment"] != trans_fp["alignment"]
+            and not (orig_alignment_is_known_bug and trans_fp["alignment"] == "both")
+        ):
             issues.append({
                 "location": trans_loc,
                 "issue": f"Alignment changed (original: {orig_fp['alignment']}, translated: {trans_fp['alignment'] or 'default'}).",
@@ -3591,6 +3731,19 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
     except Exception:
         pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
 
+    # Real reported issue 3 - runs LAST, after every other fix, since
+    # it needs to measure the FINAL translated text's actual width
+    # requirements (an English translation is often physically wider
+    # than the Arabic source it replaced, which is the real root cause
+    # of a column rendering character-by-character - see this
+    # function's own docstring for the confirmed mechanism).
+    narrow_columns_fixed = 0
+    try:
+        narrow_columns_fixed = _fix_narrow_column_word_wrap(doc)
+        narrow_columns_fixed += _fix_oversized_cell_padding(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
     doc.save(output_path)
     return {
         "output_path": output_path,
@@ -3607,6 +3760,7 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
         "center_alignment_fixed": center_alignment_fixed,
         "continuation_paragraphs_merged": continuation_paragraphs_merged,
         "clause_spacing_fixed": clause_spacing_fixed,
+        "narrow_columns_fixed": narrow_columns_fixed,
     }
 
 

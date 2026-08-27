@@ -6785,6 +6785,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "ok": True,
                 "outputBase64": output_b64,
                 "outputFileName": os.path.splitext(file_name)[0] + ".docx",
+                "appendixTablesMerged": result.get("appendix_tables_merged"),
             }
         except Exception as err:
             return 200, {"ok": False, "error": str(err)}
@@ -6836,6 +6837,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "centerAlignmentFixed": result.get("center_alignment_fixed"),
                 "continuationParagraphsMerged": result.get("continuation_paragraphs_merged"),
                 "clauseSpacingFixed": result.get("clause_spacing_fixed"),
+                "narrowColumnsFixed": result.get("narrow_columns_fixed"),
             }
         except Exception as err:
             return 200, {"ok": False, "error": str(err)}
