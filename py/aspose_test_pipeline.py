@@ -890,6 +890,12 @@ def run_structure_only_test(pdf_path, output_path):
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
+    cell_width_mismatches_fixed = 0
+    try:
+        cell_width_mismatches_fixed = _fix_cell_width_vs_column_mismatch(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
     leaked_names_fixed = 0
     try:
         leaked_names_fixed = _fix_leaked_internal_field_names(doc)
@@ -915,6 +921,7 @@ def run_structure_only_test(pdf_path, output_path):
         "row_level_indent_overrides_fixed": row_level_indent_overrides_fixed,
         "duplicate_rows_removed": duplicate_rows_removed,
         "ambiguous_table_width_fixed": ambiguous_table_width_fixed,
+        "cell_width_mismatches_fixed": cell_width_mismatches_fixed,
         "leaked_names_fixed": leaked_names_fixed,
         "split_numeric_findings": split_numeric_findings,
         "aspose_words_calls": 1,
@@ -2333,6 +2340,24 @@ def _fix_ambiguous_table_width(doc):
     the ambiguity entirely, telling every renderer the same, single,
     unambiguous width - the fixed columns already summed to.
 
+    REAL FOLLOW-UP BUG (registered in CLAUDE_INSTRUCTIONS.md, same
+    class as the tblPrEx/tblInd incident): this fix originally only
+    corrected the TABLE-level <w:tblPr><w:tblW> - a real user then
+    reported tables with a CORRECT left position (already fixed) still
+    showing content cut off past the right margin in real Word.
+    Checking again with the "check every override level, not just the
+    obvious one" lesson applied: EVERY <w:tblPrEx> in the affected
+    document ALSO carried its own <w:tblW w:w="0" w:type="auto"/> -
+    the exact same ambiguity, just at the per-ROW level, which the
+    original version of this fix never touched. If a renderer resolves
+    a row's OWN ambiguous tblPrEx/tblW differently from the table's
+    (now-corrected) tblPr/tblW, that specific row can render wider than
+    the table's defined columns - explaining right-edge cutoff on some
+    rows while the table's own overall position/width looks correct.
+    Now also walks every row's <w:tblPrEx> and applies the identical
+    correction (resolve w:type="auto"/w="0" to an explicit w:type="dxa"
+    matching the table's own real column-width sum) wherever found.
+
     This is a defensive, low-risk correction (the computed value is
     never a guess - it is exactly what the table's own explicit column
     widths already summed to) rather than a confirmed root-cause fix,
@@ -2351,13 +2376,75 @@ def _fix_ambiguous_table_width(doc):
         total_w = sum(int(c.get(qn("w:w"))) for c in cols) if cols else 0
         if total_w <= 0:
             continue
-        tblW = tblPr.find(qn("w:tblW"))
-        if tblW is None:
+
+        def _resolve_ambiguous_width(width_el):
+            nonlocal fixed
+            if width_el is not None and width_el.get(qn("w:type")) == "auto" and width_el.get(qn("w:w")) in ("0", None):
+                width_el.set(qn("w:type"), "dxa")
+                width_el.set(qn("w:w"), str(total_w))
+                fixed += 1
+
+        _resolve_ambiguous_width(tblPr.find(qn("w:tblW")))
+
+        # Row-level: every row's own tblPrEx can carry the SAME
+        # ambiguous width, independently of the table-level one above -
+        # must be resolved separately, per row, using this table's own
+        # real width (not assumed to inherit the table-level fix).
+        for tr_el in tbl_el.findall(qn("w:tr")):
+            tblPrEx = tr_el.find(qn("w:tblPrEx"))
+            if tblPrEx is not None:
+                _resolve_ambiguous_width(tblPrEx.find(qn("w:tblW")))
+    return fixed
+
+
+def _fix_cell_width_vs_column_mismatch(doc):
+    """Item (CELL-WIDTH-NOT-MATCHING-TABLE-COLUMN, real reported
+    follow-up, minor/secondary finding from the same investigation as
+    the tblPrEx/tblW fix above) - confirmed real via a direct,
+    comprehensive scan of every cell in every table in a real reported
+    document: exactly one row (2 cells) had a w:tcW (cell width) that
+    did not match the table's own <w:tblGrid> column width at that
+    position - one cell was double its column's real width, the
+    adjacent cell correspondingly narrower, with the row's own total
+    still summing correctly (so this specific case does not itself
+    cause right-margin overflow) but the row's internal column
+    boundaries don't line up with the rest of the table's rows, a real
+    (if more cosmetic) inconsistency.
+
+    Fix: for every row where the cell count exactly matches the
+    table's own column count (skipping rows with merged/spanned cells,
+    identified via w:gridSpan, where a 1:1 comparison would be
+    meaningless), reset each cell's own w:tcW to match its
+    corresponding w:gridCol value exactly."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        grid = tbl_el.find(qn("w:tblGrid"))
+        cols = grid.findall(qn("w:gridCol")) if grid is not None else []
+        if not cols:
             continue
-        if tblW.get(qn("w:type")) == "auto" and tblW.get(qn("w:w")) in ("0", None):
-            tblW.set(qn("w:type"), "dxa")
-            tblW.set(qn("w:w"), str(total_w))
-            fixed += 1
+        col_widths = [c.get(qn("w:w")) for c in cols]
+
+        for tr_el in tbl_el.findall(qn("w:tr")):
+            cells = tr_el.findall(qn("w:tc"))
+            if len(cells) != len(col_widths):
+                continue  # merged/spanned row - a 1:1 comparison doesn't apply
+            has_span = any(tc.find(".//" + qn("w:gridSpan")) is not None for tc in cells)
+            if has_span:
+                continue
+
+            for tc, expected_w in zip(cells, col_widths):
+                tcPr = tc.find(qn("w:tcPr"))
+                if tcPr is None:
+                    continue
+                tcW = tcPr.find(qn("w:tcW"))
+                if tcW is None:
+                    continue
+                if tcW.get(qn("w:w")) != expected_w:
+                    tcW.set(qn("w:w"), expected_w)
+                    tcW.set(qn("w:type"), "dxa")
+                    fixed += 1
     return fixed
 
 
