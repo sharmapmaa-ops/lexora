@@ -872,6 +872,12 @@ def run_structure_only_test(pdf_path, output_path):
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
+    ambiguous_table_width_fixed = 0
+    try:
+        ambiguous_table_width_fixed = _fix_ambiguous_table_width(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
     leaked_names_fixed = 0
     try:
         leaked_names_fixed = _fix_leaked_internal_field_names(doc)
@@ -895,6 +901,7 @@ def run_structure_only_test(pdf_path, output_path):
         "appendix_tables_merged": appendix_tables_merged,
         "tables_repositioned": tables_repositioned,
         "duplicate_rows_removed": duplicate_rows_removed,
+        "ambiguous_table_width_fixed": ambiguous_table_width_fixed,
         "leaked_names_fixed": leaked_names_fixed,
         "split_numeric_findings": split_numeric_findings,
         "aspose_words_calls": 1,
@@ -2286,6 +2293,59 @@ def _merge_adjacent_header_tables(doc):
             trPr.append(OxmlElement("w:tblHeader"))
 
     return tables_merged
+
+
+def _fix_ambiguous_table_width(doc):
+    """Item (TABLE-AMBIGUOUS-AUTO-WIDTH-REAL-WORD-DISCREPANCY, real
+    reported issue) - confirmed real, but genuinely unverifiable in
+    this sandbox (no real MS Word available to test against directly -
+    flagged explicitly, not glossed over): a real user reported tables
+    showing an unexpected left gap, or width overflowing the margin, in
+    real MS Word screenshots, while the SAME document's XML (indent and
+    gridCol widths) measured completely consistent and correct, and
+    LibreOffice rendered those same tables correctly with no visible
+    problem at all. This is the same class of LibreOffice/real-Word
+    OOXML rendering discrepancy already documented elsewhere in this
+    file (jc="distribute" was another confirmed instance) - LibreOffice
+    confirmation is not equivalent to real Word confirmation for
+    properties like this.
+
+    Every affected table carried <w:tblW w:w="0" w:type="auto"/>
+    TOGETHER WITH <w:tblLayout w:type="fixed"/> and explicit per-column
+    <w:gridCol> widths - a genuinely ambiguous combination ("auto-size
+    the table" and "use exactly these fixed column widths" stated at
+    the same time). Different renderers can reasonably resolve that
+    ambiguity differently; explicitly setting w:tblW to the table's own
+    REAL width (the sum of its gridCol widths, w:type="dxa") removes
+    the ambiguity entirely, telling every renderer the same, single,
+    unambiguous width - the fixed columns already summed to.
+
+    This is a defensive, low-risk correction (the computed value is
+    never a guess - it is exactly what the table's own explicit column
+    widths already summed to) rather than a confirmed root-cause fix,
+    since the actual real-Word rendering behavior could not be directly
+    tested here. Real MS Word verification of this specific fix is
+    needed, not assumed."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        tblPr = tbl_el.find(qn("w:tblPr"))
+        if tblPr is None:
+            continue
+        grid = tbl_el.find(qn("w:tblGrid"))
+        cols = grid.findall(qn("w:gridCol")) if grid is not None else []
+        total_w = sum(int(c.get(qn("w:w"))) for c in cols) if cols else 0
+        if total_w <= 0:
+            continue
+        tblW = tblPr.find(qn("w:tblW"))
+        if tblW is None:
+            continue
+        if tblW.get(qn("w:type")) == "auto" and tblW.get(qn("w:w")) in ("0", None):
+            tblW.set(qn("w:type"), "dxa")
+            tblW.set(qn("w:w"), str(total_w))
+            fixed += 1
+    return fixed
 
 
 def _fix_table_overflow_indent(doc):
