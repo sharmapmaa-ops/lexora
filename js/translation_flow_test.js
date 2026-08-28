@@ -48,7 +48,15 @@ assert(src.includes('if (processState.translationUseAspose) {'), 'Per-file proce
 
 // The Aspose branch: all 3 steps present, in the right order, wired correctly.
 const asposeBranchStart = src.indexOf('if (processState.translationUseAspose) {');
-const asposeBranchEnd = src.indexOf('} else {', asposeBranchStart);
+// The branch now has an INNER if/else (docx-upload vs PDF-upload, for
+// Step 1 specifically) nested inside it, so a naive "first } else {
+// after the start" would incorrectly find that inner boundary instead
+// of the true outer one - anchor on the Final Output download (the
+// last real action in the branch) and find the outer "} else {" AFTER
+// that, which is unambiguous regardless of how much nesting exists
+// earlier in the branch.
+const finalOutputDownloadIdx = src.indexOf("_downloadBlobImmediately(offlineBlob, baseName + ' Final Output.docx')", asposeBranchStart);
+const asposeBranchEnd = src.indexOf('} else {', finalOutputDownloadIdx);
 const asposeBranch = src.slice(asposeBranchStart, asposeBranchEnd);
 assert(asposeBranch.includes("fetch('/api/translation/aspose-convert'"), 'Aspose branch, Step 1: calls /api/translation/aspose-convert');
 assert(asposeBranch.includes("fetch('/api/translation/inject-translation'"), 'Aspose branch, Step 2: calls /api/translation/inject-translation');
@@ -64,11 +72,24 @@ assert(asposeBranch.includes("_downloadBlobImmediately(offlineBlob, baseName + '
 assert(asposeBranch.includes("_downloadBlobImmediately(offlineBlob, baseName + ' Translation.docx')"), 'Aspose branch: Translation stage downloads immediately after Step 2');
 assert(asposeBranch.includes("_downloadBlobImmediately(offlineBlob, baseName + ' Final Output.docx')"), 'Aspose branch: Final Output stage downloads immediately after Step 3 (reviewer)');
 
+// Real reported edge case: a Word (.docx) upload skips Step 1 entirely
+// (there's no PDF for Aspose to convert) - the uploaded file is used
+// directly as step 1's own output instead.
+assert(asposeBranch.includes('if (file.isDocxUpload) {'), 'Aspose branch checks for a docx upload before deciding whether to call Aspose at all');
+assert(asposeBranch.includes('step1DocxBase64 = dataBase64'), 'A docx upload\'s own content is used directly as step 1\'s output - Aspose is skipped for it');
+
 // The non-Aspose ("No") branch: uses the EXISTING hybrid pipeline.
 const nonAsposeBranch = src.slice(asposeBranchEnd, src.indexOf("file.progress = '65';", asposeBranchEnd) + 200);
-assert(nonAsposeBranch.includes('buildHybridDocxBlob(blob'), 'Non-Aspose branch: calls the existing vision-based hybrid pipeline');
+assert(nonAsposeBranch.includes('buildHybridDocxBlob(hybridInputBlob'), 'Non-Aspose branch: calls the existing vision-based hybrid pipeline');
 assert(!nonAsposeBranch.includes('buildBoxBasedTranslatedDocxBlob('), 'Non-Aspose branch no longer calls the box-based pipeline');
 assert(!nonAsposeBranch.includes("fetch('/api/translation/aspose-convert'"), 'Non-Aspose branch does NOT call any Aspose endpoint');
+
+// Real reported edge case: a Word (.docx) upload in the "No" branch is
+// converted to a real PDF first (the hybrid pipeline needs real PDF
+// page images for its own vision-OCR extraction, same as OCR service),
+// THEN the existing pipeline runs on that PDF exactly as normal.
+assert(nonAsposeBranch.includes("fetch('/api/translation/docx-to-pdf'"), 'Non-Aspose branch converts a docx upload to PDF first, via the new endpoint');
+assert(nonAsposeBranch.includes('hybridInputBlob = new Blob'), 'The converted PDF bytes replace the hybrid pipeline\'s input for a docx upload');
 
 // The non-Aspose branch: 3 immediate downloads via onCheckpoint + a
 // direct Final Output download (no compatible reviewer for this

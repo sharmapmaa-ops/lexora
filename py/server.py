@@ -3848,6 +3848,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/translation/aspose-convert": self._handle_translation_aspose_convert,
             "/api/translation/inject-translation": self._handle_translation_inject_translation,
             "/api/translation/review": self._handle_translation_review,
+            "/api/translation/docx-to-pdf": self._handle_translation_docx_to_pdf,
             "/api/test/aspose-translate": self._handle_aspose_test_translate,
             "/api/ocr/process-router": self._handle_ocr_process_router,
             "/api/ocr/analyze-strategy": self._handle_ocr_analyze_strategy,
@@ -6841,6 +6842,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "continuationParagraphsMerged": result.get("continuation_paragraphs_merged"),
                 "clauseSpacingFixed": result.get("clause_spacing_fixed"),
                 "narrowColumnsFixed": result.get("narrow_columns_fixed"),
+                "tableColumnsReversed": result.get("table_columns_reversed"),
             }
         except Exception as err:
             return 200, {"ok": False, "error": str(err)}
@@ -6890,6 +6892,53 @@ class Handler(SimpleHTTPRequestHandler):
                 "outputFileName": os.path.splitext(file_name)[0] + "-reviewed.docx",
                 "issues": issues,
                 "issueCount": len(issues),
+            }
+        except Exception as err:
+            return 200, {"ok": False, "error": str(err)}
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _handle_translation_docx_to_pdf(self, body):
+        """NEW, per explicit direction: supports the "No Aspose" branch
+        when the user uploaded a Word document instead of a PDF for
+        Translation - the existing "No" (vision-based hybrid) pipeline
+        (buildHybridDocxBlob) needs REAL PDF PAGE IMAGES to run its own
+        OCR/vision extraction on (matching how OCR service works), so a
+        Word upload can't be fed to it directly. This converts the
+        uploaded .docx to a real PDF first (reusing the exact same
+        LibreOffice-based conversion already used elsewhere in this
+        file - see _handle_ocr_check_page_count), so the client can then
+        run the EXISTING hybrid pipeline on the result exactly as if the
+        user had uploaded that PDF in the first place - no new
+        extraction logic, just converting the input into the shape the
+        existing pipeline already expects."""
+        docx_b64 = body.get("docxBase64")
+        file_name = _safe_filename(body.get("fileName"), "document.docx")
+        if not docx_b64:
+            raise ValueError("docxBase64 is required")
+
+        tmp_dir = tempfile.mkdtemp(prefix="translation_docx_to_pdf_")
+        try:
+            docx_path = os.path.join(tmp_dir, _safe_filename(file_name))
+            with open(docx_path, "wb") as f:
+                f.write(base64.b64decode(docx_b64))
+
+            result = subprocess.run(
+                ["libreoffice", "--headless", "--convert-to", "pdf", docx_path, "--outdir", tmp_dir],
+                capture_output=True, timeout=120,
+            )
+            base_name = os.path.splitext(os.path.basename(docx_path))[0]
+            pdf_path = os.path.join(tmp_dir, base_name + ".pdf")
+            if not os.path.isfile(pdf_path):
+                return 200, {"ok": False, "error": f"LibreOffice conversion failed: {result.stderr.decode(errors='replace')[:500]}"}
+
+            with open(pdf_path, "rb") as f:
+                pdf_b64 = base64.b64encode(f.read()).decode()
+
+            return 200, {
+                "ok": True,
+                "pdfBase64": pdf_b64,
+                "pdfFileName": os.path.splitext(file_name)[0] + ".pdf",
             }
         except Exception as err:
             return 200, {"ok": False, "error": str(err)}

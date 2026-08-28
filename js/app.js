@@ -1240,11 +1240,11 @@
                                             <path d="M60 68V52M52 58l8-8 8 8" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
                                         </svg>
                                         <div class="drop-text">Drag &amp; drop files here</div>
-                                        <div class="drop-sub">or click to browse (PDF only)</div>
+                                        <div class="drop-sub">or click to browse (${isTranslation ? 'PDF or Word' : 'PDF only'})</div>
 
                                     </div>
-                                    <div class="drop-meta">Maximum file size: <b>50MB</b> &nbsp;\u2022&nbsp; Supported: <b>PDF</b></div>
-                                    <input type="file" id="fileInput" multiple style="display:none;" accept=".pdf" onchange="handleFileUpload(event, '${serviceId}')" />
+                                    <div class="drop-meta">Maximum file size: <b>50MB</b> &nbsp;\u2022&nbsp; Supported: <b>${isTranslation ? 'PDF, DOCX' : 'PDF'}</b></div>
+                                    <input type="file" id="fileInput" multiple style="display:none;" accept="${isTranslation ? '.pdf,.docx' : '.pdf'}" onchange="handleFileUpload(event, '${serviceId}')" />
                                 </div>
                             </div>
 
@@ -2879,28 +2879,46 @@
                                 let reviewIssues = [];
 
                                 if (processState.translationUseAspose) {
-                                    // STEP 1: send the PDF to Aspose and get back the
-                                    // converted Word document - structure-only conversion
-                                    // (aspose_test_pipeline.run_structure_only_test), no
-                                    // translation happening yet.
                                     actualStrategyUsed = 'aspose';
-                                    addActivity('translation', `${fl}System > Sending PDF to Aspose for conversion`, 'Info');
-                                    const asposeResp = await fetch('/api/translation/aspose-convert', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
-                                        body: JSON.stringify({ fileName: file.name, pdfBase64: dataBase64 })
-                                    });
-                                    const asposeData = await asposeResp.json();
-                                    if (!asposeData || !asposeData.ok) {
-                                        if (asposeData && asposeData.asposeNotConfigured) {
-                                            throw new Error('Aspose is not configured on this server yet: ' + asposeData.error);
+                                    if (file.isDocxUpload) {
+                                        // NEW, per explicit direction: the uploaded file is
+                                        // ALREADY a Word document (e.g. from an earlier
+                                        // OCR/Aspose run, or any other source) - there is no
+                                        // PDF here for Aspose to convert, so Step 1 is
+                                        // skipped entirely and the uploaded docx is used
+                                        // directly as if it WERE step 1's own output.
+                                        addActivity('translation', `${fl}System > Word document uploaded - skipping Aspose conversion (already in structured format)`, 'Info');
+                                        step1DocxBase64 = dataBase64;
+                                        offlineBlob = blob;
+                                    } else {
+                                        // STEP 1: send the PDF to Aspose and get back the
+                                        // converted Word document - structure-only conversion
+                                        // (aspose_test_pipeline.run_structure_only_test), no
+                                        // translation happening yet.
+                                        addActivity('translation', `${fl}System > Sending PDF to Aspose for conversion`, 'Info');
+                                        const asposeResp = await fetch('/api/translation/aspose-convert', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
+                                            body: JSON.stringify({ fileName: file.name, pdfBase64: dataBase64 })
+                                        });
+                                        const asposeData = await asposeResp.json();
+                                        if (!asposeData || !asposeData.ok) {
+                                            if (asposeData && asposeData.asposeNotConfigured) {
+                                                throw new Error('Aspose is not configured on this server yet: ' + asposeData.error);
+                                            }
+                                            throw new Error((asposeData && asposeData.error) || 'Aspose conversion failed.');
                                         }
-                                        throw new Error((asposeData && asposeData.error) || 'Aspose conversion failed.');
+                                        const binary = atob(asposeData.outputBase64);
+                                        const bytes = new Uint8Array(binary.length);
+                                        for (let bi = 0; bi < binary.length; bi++) bytes[bi] = binary.charCodeAt(bi);
+                                        offlineBlob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+                                        step1DocxBase64 = await new Promise((resolve, reject) => {
+                                            const reader = new FileReader();
+                                            reader.onload = () => resolve(reader.result.split(',')[1]);
+                                            reader.onerror = reject;
+                                            reader.readAsDataURL(offlineBlob);
+                                        });
                                     }
-                                    const binary = atob(asposeData.outputBase64);
-                                    const bytes = new Uint8Array(binary.length);
-                                    for (let bi = 0; bi < binary.length; bi++) bytes[bi] = binary.charCodeAt(bi);
-                                    offlineBlob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
                                     file.progress = '50';
                                     refreshServicePage('translation');
 
@@ -2917,12 +2935,6 @@
                                     // mirroring) yet - excluded per direction, to be wired
                                     // in only later as its own step.
                                     addActivity('translation', `${fl}System > Injecting translation`, 'Info');
-                                    step1DocxBase64 = await new Promise((resolve, reject) => {
-                                        const reader = new FileReader();
-                                        reader.onload = () => resolve(reader.result.split(',')[1]);
-                                        reader.onerror = reject;
-                                        reader.readAsDataURL(offlineBlob);
-                                    });
                                     const injectResp = await fetch('/api/translation/inject-translation', {
                                         method: 'POST',
                                         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
@@ -2994,11 +3006,35 @@
                                     // (BEFORE translation) and ('translation', blob) right
                                     // after translation finishes - each downloaded
                                     // immediately, not just once at the very end.
+                                    let hybridInputBlob = blob;
+                                    if (file.isDocxUpload) {
+                                        // NEW, per explicit direction: buildHybridDocxBlob
+                                        // needs real PDF page images to run its own vision-
+                                        // OCR extraction on (same as OCR service) - a Word
+                                        // upload can't be fed to it directly, so convert the
+                                        // uploaded docx to a real PDF first (server-side,
+                                        // LibreOffice), then run the EXISTING pipeline on
+                                        // that PDF exactly as if the user had uploaded it.
+                                        addActivity('translation', `${fl}System > Word document uploaded - converting to PDF for text/table/image extraction`, 'Info');
+                                        const convResp = await fetch('/api/translation/docx-to-pdf', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
+                                            body: JSON.stringify({ fileName: file.name, docxBase64: dataBase64 })
+                                        });
+                                        const convData = await convResp.json();
+                                        if (!convData || !convData.ok) {
+                                            throw new Error((convData && convData.error) || 'Converting the uploaded Word document to PDF failed.');
+                                        }
+                                        const convBinary = atob(convData.pdfBase64);
+                                        const convBytes = new Uint8Array(convBinary.length);
+                                        for (let bi = 0; bi < convBinary.length; bi++) convBytes[bi] = convBinary.charCodeAt(bi);
+                                        hybridInputBlob = new Blob([convBytes], { type: 'application/pdf' });
+                                    }
                                     if (window.__translationEngine && window.__translationEngine.setVisionAuthToken) window.__translationEngine.setVisionAuthToken(AUTH_TOKEN || '');
                                     if (window.__translationEngine && window.__translationEngine.setVisionStopCheck) window.__translationEngine.setVisionStopCheck(function () { return processState.stopped; });
                                     if (window.__translationEngine && window.__translationEngine.setPipelineEventHandler) window.__translationEngine.setPipelineEventHandler(onEvent);
                                     if (window.__translationEngine && window.__translationEngine.resetPipelineApiCounters) window.__translationEngine.resetPipelineApiCounters();
-                                    offlineBlob = await window.__translationEngine.buildHybridDocxBlob(blob, {
+                                    offlineBlob = await window.__translationEngine.buildHybridDocxBlob(hybridInputBlob, {
                                         withImage: withImageOpt,
                                         targetLang: targetLanguage,
                                         onCheckpoint: function (stage, ckBlob) {
@@ -3861,25 +3897,36 @@
                 const files = event.target.files;
                 if (files.length === 0) return;
 
-                // PDF-only for both Lease Abstraction and Translation - the
-                // accept=".pdf" on the <input> is just a browser hint (and
-                // is bypassed entirely by drag & drop), so this is the real
-                // enforcement point both paths funnel through.
-                const nonPdf = Array.from(files).filter(f => !/\.pdf$/i.test(f.name));
-                if (nonPdf.length > 0) {
-                    showWarning('Only PDF files are supported. ' +
-                        (nonPdf.length === files.length ? 'Please select PDF file(s) only.' :
-                        `Skipped non-PDF file(s): ${nonPdf.map(f => f.name).join(', ')}`));
+                const isTranslation = serviceId === 'translation';
+
+                // PDF-only for Lease Abstraction (unchanged). Translation
+                // ALSO accepts .docx now (per explicit direction: if the
+                // user already has a Word document - e.g. from an earlier
+                // OCR/Aspose run, or any other source - there's no need to
+                // re-derive it from a PDF; see the Start-confirmation flow
+                // below for how a .docx upload skips the Aspose-conversion
+                // step). The accept="" on the <input> is just a browser
+                // hint (and is bypassed entirely by drag & drop), so this
+                // is the real enforcement point both paths funnel through.
+                const isAllowed = isTranslation
+                    ? (f) => /\.(pdf|docx)$/i.test(f.name)
+                    : (f) => /\.pdf$/i.test(f.name);
+                const nonAllowed = Array.from(files).filter(f => !isAllowed(f));
+                if (nonAllowed.length > 0) {
+                    const allowedLabel = isTranslation ? 'PDF or DOCX files are' : 'PDF files are';
+                    showWarning(`Only ${allowedLabel} supported. ` +
+                        (nonAllowed.length === files.length ? `Please select ${isTranslation ? 'PDF/DOCX' : 'PDF'} file(s) only.` :
+                        `Skipped unsupported file(s): ${nonAllowed.map(f => f.name).join(', ')}`));
                 }
-                const pdfFiles = Array.from(files).filter(f => /\.pdf$/i.test(f.name));
+                const pdfFiles = Array.from(files).filter(isAllowed);
                 if (pdfFiles.length === 0) { event.target.value = ''; return; }
 
-                const isTranslation = serviceId === 'translation';
                 const idCounter = isTranslation ? nextTranslationFileId : nextLeaseFileId;
 
                 let newFiles = [];
                 for (let i = 0; i < pdfFiles.length; i++) {
                     const file = pdfFiles[i];
+                    const isDocx = /\.docx$/i.test(file.name);
 
                     const newFile = {
                         id: idCounter + i,
@@ -3891,7 +3938,8 @@
                         progress: '0',
                         action: 'Pending',
                         selected: true,
-                        savedPath: getUserClientFilePath(CURRENT_USER_ID, file.name)
+                        savedPath: getUserClientFilePath(CURRENT_USER_ID, file.name),
+                        isDocxUpload: isDocx
                     };
 
                     if (isTranslation) {
@@ -3908,10 +3956,13 @@
                     for (let i = 0; i < pdfFiles.length; i++) {
                         translationFileBlobs[newFiles[i].id] = pdfFiles[i];
                     }
-                    // PAGE COUNT: Uploaded Files card me no-of-pages dikhane ke liye
-                    // pdf.js se numPages nikaalo (async, non-blocking).
+                    // PAGE COUNT: Uploaded Files card me no-of-pages dikhane ke
+                    // liye pdf.js se numPages nikaalo (async, non-blocking) -
+                    // sirf real PDFs ke liye; pdf.js ek .docx ko parse nahi kar
+                    // sakta, is call ko silently skip karte hain uske liye.
                     newFiles.forEach(function (nf, idx) {
                         const blobFile = pdfFiles[idx];
+                        if (nf.isDocxUpload) return;
                         if (typeof pdfjsLib === 'undefined') return;
                         blobFile.arrayBuffer().then(function (buf) {
                             return pdfjsLib.getDocument({ data: buf }).promise;

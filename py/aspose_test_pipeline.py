@@ -2448,6 +2448,71 @@ def _fix_cell_width_vs_column_mismatch(doc):
     return fixed
 
 
+def _reverse_table_column_order(doc, target_language):
+    """Item (TABLE-COLUMN-ORDER-NOT-MIRRORED-FOR-DIRECTION, per explicit
+    direction, with a user-provided reference image showing the exact
+    expected before/after): a table converted from an RTL source
+    document (Arabic) keeps its RTL-ordered column sequence even after
+    translation into an LTR target language - visually wrong, since an
+    LTR reader expects the FIRST column (left-to-right) to be the
+    "first" logical column, not the last. Per the reference image's own
+    worked example: Arabic table columns
+    "Translation(T2,T1) | Data(D2,D1) | SR.No" become, in the English
+    version, "SR.No | Data(D1,D2) | Translation(T1,T2)" - the ENTIRE
+    column sequence is reversed end-to-end (not just the top-level
+    groups mirrored while sub-columns stay put - "Translation 2" was
+    first in Arabic and is LAST in English, "Translation 1" was second
+    and is FIRST) - and every row (headers AND data rows alike) follows
+    the exact same reversal, since a cell's own column position is
+    positional, not content-dependent.
+
+    Applies to EVERY table in the document, unconditionally in the
+    sense that no table is special-cased or skipped - but only actually
+    runs the reversal when the target language's direction differs from
+    the source's (RTL source, non-RTL/LTR target) - reusing
+    _is_rtl_language, the same direction-detection already used
+    elsewhere in this file, rather than a new one. If the target
+    language is ALSO RTL (translating between two RTL languages, or
+    keeping the original), no reversal happens - the columns are
+    already in the right order for an RTL reader.
+
+    Mechanism: for each table, reverses the order of <w:gridCol>
+    elements in its <w:tblGrid> (so column WIDTHS follow the same new
+    positions), and for each row, reverses the order of its <w:tc>
+    (cell) children - a cell that spans multiple columns (w:gridSpan)
+    moves as one whole unit to its new position, its own span value
+    unchanged, exactly matching how the reference image shows a merged
+    header ("Translation" spanning 2 sub-columns) staying merged, just
+    relocated as a block."""
+    from docx.oxml.ns import qn
+
+    want_rtl = _is_rtl_language(target_language)
+    if want_rtl:
+        return 0  # target is ALSO RTL - the existing column order is already correct
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        grid = tbl_el.find(qn("w:tblGrid"))
+        if grid is not None:
+            cols = grid.findall(qn("w:gridCol"))
+            if len(cols) > 1:
+                for c in cols:
+                    grid.remove(c)
+                for c in reversed(cols):
+                    grid.append(c)
+
+        for tr_el in tbl_el.findall(qn("w:tr")):
+            cells = tr_el.findall(qn("w:tc"))
+            if len(cells) <= 1:
+                continue
+            for c in cells:
+                tr_el.remove(c)
+            for c in reversed(cells):
+                tr_el.append(c)
+            fixed += 1
+    return fixed
+
+
 def _fix_row_level_table_indent_override(doc):
     """Item (ROW-LEVEL-TBLPREX-INDENT-OVERRIDE, real reported issue,
     the ACTUAL root cause of a table showing 50%+ left margin in real
@@ -3982,6 +4047,16 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
     except Exception:
         pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
 
+    # Real reported issue, per an explicit user-provided reference
+    # image: only runs when the target language's direction differs
+    # from the source's (see the function's own docstring) - reverses
+    # every table's ENTIRE column sequence, header and data rows alike.
+    table_columns_reversed = 0
+    try:
+        table_columns_reversed = _reverse_table_column_order(doc, target_language)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
     doc.save(output_path)
     return {
         "output_path": output_path,
@@ -3999,6 +4074,7 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
         "continuation_paragraphs_merged": continuation_paragraphs_merged,
         "clause_spacing_fixed": clause_spacing_fixed,
         "narrow_columns_fixed": narrow_columns_fixed,
+        "table_columns_reversed": table_columns_reversed,
     }
 
 
