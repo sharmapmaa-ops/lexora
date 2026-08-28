@@ -866,6 +866,18 @@ def run_structure_only_test(pdf_path, output_path):
     except Exception:
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
+    # Must run right after the table-level fix above, so this can
+    # compare each row's own override against the ALREADY-corrected
+    # table-level indent (see this function's own docstring for the
+    # real reported bug this addresses - a table-level indent that
+    # looked correct while row-level tblPrEx overrides silently pushed
+    # the actual rendered position 50%+ into the page in real Word).
+    row_level_indent_overrides_fixed = 0
+    try:
+        row_level_indent_overrides_fixed = _fix_row_level_table_indent_override(doc)
+    except Exception:
+        pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
+
     duplicate_rows_removed = 0
     try:
         duplicate_rows_removed = _remove_duplicate_table_rows(doc)
@@ -900,6 +912,7 @@ def run_structure_only_test(pdf_path, output_path):
         "subclauses_split": subclauses_split,
         "appendix_tables_merged": appendix_tables_merged,
         "tables_repositioned": tables_repositioned,
+        "row_level_indent_overrides_fixed": row_level_indent_overrides_fixed,
         "duplicate_rows_removed": duplicate_rows_removed,
         "ambiguous_table_width_fixed": ambiguous_table_width_fixed,
         "leaked_names_fixed": leaked_names_fixed,
@@ -2348,69 +2361,154 @@ def _fix_ambiguous_table_width(doc):
     return fixed
 
 
+def _fix_row_level_table_indent_override(doc):
+    """Item (ROW-LEVEL-TBLPREX-INDENT-OVERRIDE, real reported issue,
+    the ACTUAL root cause of a table showing 50%+ left margin in real
+    MS Word screenshots - registered in CLAUDE_INSTRUCTIONS.md as a
+    real mistake this pipeline made repeatedly before finding it).
+
+    CONFIRMED REAL, directly in the actual reported document's XML:
+    every earlier version of the table-position fix
+    (_fix_table_overflow_indent) only ever checked <w:tblPr><w:tblInd>
+    - the TABLE-level indent - which was genuinely correct (771 twips,
+    matching the document's own reference). But 37 of this table's
+    rows ALSO carried their own <w:tblPrEx><w:tblInd w:w="6766".../>
+    (or 6767) - a completely SEPARATE OOXML mechanism (Table Property
+    Exceptions, one per <w:tr>) that can override the parent table's
+    own properties for that specific row. 6766 twips is ~56.8% of an
+    11900-twip page width - exactly the "50%+ left margin" the user
+    reported seeing in real Word, while every XML/render check of only
+    tblPr kept (wrongly) reporting the table as correctly positioned.
+
+    LibreOffice apparently does not honor tblPrEx's row-level indent
+    override (or handles it differently from real Word) - this is why
+    LibreOffice renders of the same document never reproduced the bug,
+    even though the real document's raw XML clearly carried it. This
+    is a genuine, confirmed instance of a broader lesson: a structured
+    format can override the SAME property at a MORE SPECIFIC level
+    than the obvious/top-level one, and checking only the top-level
+    property is not sufficient.
+
+    Fix: for every row (<w:tr>) in every table, if its own <w:tblPrEx>
+    contains a <w:tblInd> that differs from the PARENT table's own
+    (already-corrected) <w:tblPr><w:tblInd>, remove the tblInd from
+    that row's tblPrEx entirely - letting the row correctly inherit
+    the table-level indent instead of overriding it. If tblPrEx becomes
+    completely empty after removing tblInd, remove the tblPrEx element
+    itself too (an empty property-exception carries no real information
+    and is just clutter). tblPrEx elements that DON'T contain a tblInd
+    at all (e.g., only tblW or tblLayout) are left completely alone -
+    this fix is narrowly scoped to the confirmed real problem
+    (indent), not a blanket "remove all tblPrEx" pass.
+
+    Must run AFTER _fix_table_overflow_indent (so the parent table's
+    own tblInd is already correct/known before comparing row-level
+    overrides against it)."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        tblPr = tbl_el.find(qn("w:tblPr"))
+        if tblPr is None:
+            continue
+        table_tblInd = tblPr.find(qn("w:tblInd"))
+        table_ind_val = table_tblInd.get(qn("w:w")) if table_tblInd is not None else "0"
+
+        for tr_el in tbl_el.findall(qn("w:tr")):
+            tblPrEx = tr_el.find(qn("w:tblPrEx"))
+            if tblPrEx is None:
+                continue
+            row_tblInd = tblPrEx.find(qn("w:tblInd"))
+            if row_tblInd is None:
+                continue  # this row's tblPrEx doesn't touch indent at all - leave it alone
+            if row_tblInd.get(qn("w:w")) == table_ind_val:
+                continue  # already matches the (correct) table-level value - nothing to fix
+            tblPrEx.remove(row_tblInd)
+            fixed += 1
+            if len(tblPrEx) == 0:
+                tr_el.remove(tblPrEx)
+    return fixed
+
+
 def _fix_table_overflow_indent(doc):
-    """Item (APPENDIX-TABLE-OFF-PAGE, P0-critical) - confirmed real,
-    pre-existing Aspose conversion defect: this document's Appendix
-    tables ("Clause Number | Field | Clarification") carry a
-    w:tblInd (table left-indent) of ~6766-6767 twips, while the table's
-    own column widths sum to ~9422 twips and the page's content width is
-    only ~10860 twips - so indent + width = ~16188 twips, roughly 5300
-    twips (over 3.5 inches) past the page's right edge. Confirmed this
-    exact broken indent already exists in Aspose's OWN untranslated
-    structure-only conversion (unrelated to translation or anything
-    this pipeline does), pushing nearly the entire table off-page -
-    every OTHER table in the same document uses an indent around
-    700-870 twips, so this is clearly anomalous, not an intentional
-    layout choice.
+    """Item (TABLE-LEFT-POSITION-NOT-MATCHING-REFERENCE-MARGIN, real
+    reported issue, current design after a real user-identified gap in
+    every earlier version of this fix) - the story of WHY this function
+    looks the way it does now matters, because the earlier versions'
+    mistake is exactly the trap to not fall back into:
 
-    REAL BUG FOUND IN THE FIRST VERSION OF THIS FIX (confirmed via a
-    second real document): the original correction formula,
-    "content_width - total_w", is a NO-OP for a table whose indent
-    already lands EXACTLY at that same boundary (indent + width ==
-    content_width, not exceeding it) - "clamp to the maximum that
-    fits" just recomputes the SAME anomalous indent when the table is
-    already sitting exactly at that maximum. Confirmed directly: a
-    real Appendix table with indent=1437, width=9423, content_width=
-    10860 triggered the fix (reported "fixed"), but its visible indent
-    never actually changed, because 10860-9423=1437, the same value it
-    started at - meanwhile every OTHER table in that same document used
-    691-867, so the table was still clearly mispositioned relative to
-    its own document's siblings even though the fix claimed success.
+    V1 only clamped an indent when it made the table overflow the raw
+    page width. V2 (median-based) still ONLY corrected a table when
+    "indent + width >= content_width" - i.e. still gated on overflow.
+    A REAL document then showed a table sitting at indent=50%+ of the
+    page width, entirely visible in a screenshot, that NEITHER version
+    touched - because that table's own width was narrow enough that
+    indent+width never reached the overflow threshold at all. The bug
+    was not the formula; it was the CONDITION - "only fix it if it
+    overflows" quietly assumes a table's horizontal position is only
+    ever wrong when it visibly runs off the page, which is false: a
+    table can sit anomalously far right while still being narrow enough
+    to fit "inside the boundary" on paper.
 
-    REAL FIX: instead of clamping to "the maximum that mathematically
-    fits" (which can be a no-op exactly at the boundary), reset an
-    anomalous table's indent to the MEDIAN indent among that same
-    document's own OTHER, non-anomalous tables - i.e. match its
-    siblings' actual typical position, not just "technically inside
-    the page". Verified this also correctly handles the original
-    ~6766-twip overflow case (median ~700-870 + ~9430 width lands
-    safely under a ~10860 content width, same as it did before) as
-    well as the new exactly-at-boundary case (median replaces the
-    anomalous 1437/1438 outright, producing a REAL, visible change
-    this time) - confirmed by rerunning against both the original
-    overflow-only document and the newly reported boundary-case
-    document, checking before/after indents directly on the real XML,
-    not just trusting the returned count.
+    THE REAL RULE (given directly, not inferred): every table's left
+    position must match the SAME reference margin non-table paragraphs
+    already use (see _compute_table_derived_margins - derived from the
+    document's own real "Contract Data"-style table) - unconditionally,
+    not only when a table happens to overflow. So this function no
+    longer asks "is this table's indent+width past the boundary?" at
+    all - every table's w:tblInd is simply set to the reference value,
+    full stop. A table that already happened to match needs no change
+    (and costs nothing to re-set to the same value); a table sitting at
+    any wrong position - whether that means overflow, or 50%+ into the
+    page while technically still fitting - gets corrected the same way.
 
-    A table only counts as "anomalous" if its indent+width reaches or
-    exceeds the content width (the same condition as before) - normal
-    tables (real buffer against the right margin) are never touched,
-    and are exactly what supplies the median target for the anomalous
-    ones. If there are no non-anomalous tables to take a median from
-    (a document where literally every table is anomalous), falls back
-    to the original clamp-to-fit formula rather than leaving the
-    table untouched."""
+    Table-cell paragraphs' own NESTED tables are left untouched (a
+    table inside a cell uses cell-relative width, not the page's own
+    margins, so the page-level reference value doesn't apply to it).
+
+    Falls back to the OLD median-of-siblings approach, restricted to
+    genuinely overflowing tables, only when no reference table can be
+    found at all (see _compute_table_derived_margins's own fallback
+    behavior) - so a document without an identifiable reference table
+    still gets SOME correction for the clearest, most damaging case
+    (genuine off-page overflow) rather than none."""
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
 
+    target_left, _ = _compute_table_derived_margins(doc)
+
+    fixed = 0
+    if target_left is not None:
+        # THE REAL RULE: unconditional - every table's left position
+        # matches the reference, regardless of whether it currently
+        # overflows, undershoots, or "technically fits".
+        for tbl_el in doc.element.body.iter(qn("w:tbl")):
+            if tbl_el.getparent().tag == qn("w:tc"):
+                continue  # nested table inside a cell - cell-relative width, not page margin
+            tblPr = tbl_el.find(qn("w:tblPr"))
+            if tblPr is None:
+                continue
+            tblInd = tblPr.find(qn("w:tblInd"))
+            if tblInd is None:
+                tblInd = OxmlElement("w:tblInd")
+                tblInd.set(qn("w:type"), "dxa")
+                tblPr.append(tblInd)
+            if tblInd.get(qn("w:w")) != str(target_left):
+                tblInd.set(qn("w:w"), str(target_left))
+                fixed += 1
+        return fixed
+
+    # Fallback: no reference table found anywhere in the document -
+    # the old overflow-only, median-of-siblings correction, since some
+    # real correction for the clearest case (genuine off-page overflow)
+    # is still better than none.
     sec = doc.sections[0]
     content_width_twips = round((sec.page_width - sec.left_margin - sec.right_margin) / 635)
 
-    # Pass 1: collect (element, ind_val, total_w, is_anomalous) for every
-    # table, so the median can be computed from the non-anomalous ones
-    # BEFORE any correction is applied.
     entries = []
     for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        if tbl_el.getparent().tag == qn("w:tc"):
+            continue
         tblPr = tbl_el.find(qn("w:tblPr"))
         if tblPr is None:
             continue
@@ -2425,19 +2523,12 @@ def _fix_table_overflow_indent(doc):
         entries.append({"tblPr": tblPr, "tblInd": tblInd, "ind_val": ind_val, "total_w": total_w, "anomalous": is_anomalous})
 
     normal_indents = sorted(e["ind_val"] for e in entries if not e["anomalous"])
-    if normal_indents:
-        median_indent = normal_indents[len(normal_indents) // 2]
-    else:
-        median_indent = None  # no non-anomalous table to learn a target from
+    median_indent = normal_indents[len(normal_indents) // 2] if normal_indents else None
 
-    fixed = 0
     for e in entries:
         if not e["anomalous"]:
             continue
-        if median_indent is not None:
-            new_ind = median_indent
-        else:
-            new_ind = max(0, content_width_twips - e["total_w"])  # fallback: original clamp-to-fit
+        new_ind = median_indent if median_indent is not None else max(0, content_width_twips - e["total_w"])
         tblInd = e["tblInd"]
         if tblInd is None:
             tblInd = OxmlElement("w:tblInd")

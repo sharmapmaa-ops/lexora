@@ -442,3 +442,50 @@ par decide karega.
   ek unexplained mismatch (claimed-fixed code vs actual delivered
   behavior) baar-baar repeat hota raha — jiska poora root cause abhi
   tak clear nahi hai.
+
+- **STRUCTURED-FORMAT PROPERTY CHECKS: sirf "obvious"/top-level jagah
+  check karke "property sahi hai" confidently bol dena galat hai — jab
+  tak har OVERRIDE-LEVEL check na ho jaaye.** Real incident: user ne
+  MULTIPLE baar (screenshot ke saath) bola ki ek table ka left-margin
+  page-width ka 50%+ hai real MS Word me. Maine har baar `<w:tblPr>
+  <w:tblInd>` (table-LEVEL indent) check kiya, "771 twips, ~1.36cm,
+  sirf ~6.5% hai" dekha, aur confidently "table sahi position pe hai"
+  bol diya — 2-3 baar, alag-alag angles se (XML measurement, LibreOffice
+  render, reference-line-overlay annotation) — har baar SAME incomplete
+  check ko repeat karke, kabhi genuinely NAYI jagah nahi dekhi. User ne
+  khud pucha "tune file check karne ke liye kya use kiya" — tab pata
+  chala maine sirf table-level property dekhi thi, kabhi row-level
+  `<w:tblPrEx>` (Table Property EXCEPTIONS — OOXML ka ek ALAG mechanism
+  jisme har individual `<w:tr>` apna khud ka override tblInd/tblW/etc.
+  rakh sakta hai, jo table-level property ko us specific row ke liye
+  OVERRIDE kar deta hai) ka wujood tak consider nahi kiya. Real XML me
+  37 rows ke `<w:tblPrEx>` me `tblInd=6766/6767 twips` (~11.9cm, ~56.8%
+  of page width) tha — bilkul wahi jo screenshot me dikh raha tha —
+  jabki table-level `tblInd=771` genuinely, sach me sahi tha. LibreOffice
+  bhi is bug ko reproduce nahi karta (shayad `tblPrEx`'s row-level
+  indent-override ko respect hi nahi karta), isliye render-based
+  verification bhi galat confidence de raha tha.
+  **Sabak (STOP-AND-VERIFY, har baar):**
+  1. Jab kisi FORMATTING/POSITION property (indent, width, alignment,
+     shading, etc.) ka bug diagnose karna ho, top-level/obvious jagah
+     (jaise `tblPr`, ya kisi style-definition) check karna SHURUAT hai,
+     ANT nahi. Explicitly khud se pucho: "kya isi property ko kisi
+     ZYADA SPECIFIC/NESTED level pe (row-level exception, direct
+     run-level override, conditional style) OVERRIDE kiya ja sakta hai
+     is format me?" — aur agar spec/schema me aisa koi mechanism
+     EXIST karta hai, usko explicitly search karo (jaise yahan
+     `tblPrEx` — chahe pehle kabhi na dekha ho), sirf apne pehle-se-
+     jaane-hue properties tak simit mat raho.
+  2. Jab user REPEATEDLY (2+ baar) ek hi cheez ko contradict kare apne
+     REAL evidence (screenshot) ke saath, aur mera check "sahi" keh
+     raha ho — ye ek STRONG signal hai ke MAIN KUCH MISS KAR RAHA HU,
+     na ke user galat hai. Aisi situation me SAME check ko dobara-tibara
+     alag tarike se present karna (naya render, nayi annotation) kaafi
+     nahi hai — genuinely NAYI jagah dhoondhni hai jo abhi tak check
+     nahi ki.
+  3. Jab bhi "main confidently keh raha hu X sahi hai" — us confidence
+     ka SCOPE explicitly socho: "maine sirf property Y check ki, ya us
+     property ke SAARE possible declaration/override-locations?" Agar
+     sirf ek jagah check ki hai, "verified" ki jagah "is ek specific
+     jagah se sahi lagta hai, lekin format me aur override-mechanisms
+     ho sakte hain jo maine nahi check kiye" bolna chahiye.

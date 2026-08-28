@@ -1,17 +1,25 @@
 """
-Regression test for _fix_table_overflow_indent's real bug fix: the
-original correction formula ("content_width - total_w") was a NO-OP
-for a table whose indent already landed EXACTLY at that boundary
-(indent + width == content_width) - confirmed against a real reported
-document where 4 Appendix tables had indent=1437/1438 (roughly double
-every other table's 691-867 range), and the original fix reported
-"4 fixed" while the visible indent never actually changed.
+Regression test for _fix_table_overflow_indent, covering its full real
+history:
+  V1/V2 bug (older, still covered by Tests 1-5 via the fallback path
+  when no reference table exists): the correction only triggered when
+  a table's indent+width literally overflowed the page, and even then
+  a formula bug made it a no-op exactly at the boundary.
 
-This test uses a synthetic docx built to reproduce the EXACT real
-numbers found in that document (41 normal tables at indent 691-867,
-4 anomalous tables at indent 1437-1438, all with the same real column
-widths), rather than requiring the actual uploaded file to be present,
-so it can run standalone and keep catching this regression.
+  THE REAL, CURRENT BUG (Test 6, the case that matters most): a real
+  user reported a table sitting at 50%+ of the page width in a real
+  MS Word screenshot that NEITHER earlier version touched at all -
+  because that table's own width was narrow enough that indent+width
+  never reached the overflow threshold. The bug was the CONDITION
+  itself ("only fix it if it overflows"), not the formula. Current
+  fix: when a real reference table (e.g. "Contract Data") exists,
+  EVERY table's position is forced to match it unconditionally - not
+  gated on whether it currently overflows.
+
+This test uses synthetic docs built to reproduce the exact real
+numbers found in reported documents, rather than requiring the actual
+uploaded files to be present, so it can run standalone and keep
+catching this regression.
 
 Run: python3 table_indent_fix_test.py
 """
@@ -105,6 +113,56 @@ def run():
             all_unchanged = False
             print("  unexpected change at table", i, ":", expected, "->", actual)
     assert_(all_unchanged, "All 41 normal tables retain their original indent exactly")
+
+    print("\n=== Test 6 (THE REAL REPORTED CASE): with a real 'Contract Data' reference table present, EVERY table's position is forced to match it - unconditionally, not only when it overflows ===")
+    doc2 = Document()
+    sec2 = doc2.sections[0]
+    sec2.page_width = Twips(11900)
+    sec2.page_height = Twips(16840)
+    sec2.left_margin = Twips(540)
+    sec2.right_margin = Twips(500)
+
+    # The real reference table, exactly as found in the real document.
+    ref_table = doc2.add_table(rows=1, cols=2)
+    ref_table.rows[0].cells[0].text = "Contract Data"
+    ref_tblPr = ref_table._tbl.find(qn("w:tblPr"))
+    ref_tblInd = OxmlElement("w:tblInd")
+    ref_tblInd.set(qn("w:w"), "867")
+    ref_tblInd.set(qn("w:type"), "dxa")
+    ref_tblPr.append(ref_tblInd)
+    ref_grid = ref_table._tbl.find(qn("w:tblGrid"))
+    ref_cols = ref_grid.findall(qn("w:gridCol"))
+    ref_cols[0].set(qn("w:w"), "4695")
+    ref_cols[1].set(qn("w:w"), "4743")
+
+    # A NARROW table sitting anomalously far right - the exact real bug:
+    # indent=6000 (way more than the reference's 867), but its own width
+    # (2000) is narrow enough that indent+width=8000 never reaches the
+    # content-width overflow threshold (10860) - the old fix would
+    # NEVER have touched this table at all.
+    narrow_el = _make_table(doc2, 6000, [1000, 1000])
+
+    # A table that ALREADY happens to look "normal" under the OLD
+    # anomaly definition (small indent, real buffer) but still doesn't
+    # match the reference exactly - must ALSO be corrected now, since
+    # the new rule is "match the reference", not "don't overflow".
+    almost_right_el = _make_table(doc2, 700, [3467, 3226, 2730])
+
+    fixed6 = asp._fix_table_overflow_indent(doc2)
+    assert_(fixed6 == 2, "Both non-matching tables were fixed (got " + str(fixed6) + ") - the reference table itself needs no change and isn't counted")
+
+    narrow_ind_after = narrow_el.find(qn("w:tblPr")).find(qn("w:tblInd"))
+    assert_(narrow_ind_after.get(qn("w:w")) == "867", "The narrow, far-right table (real reported bug: 50%+ indent, never overflowed) is now at the reference position 867")
+
+    almost_ind_after = almost_right_el.find(qn("w:tblPr")).find(qn("w:tblInd"))
+    assert_(almost_ind_after.get(qn("w:w")) == "867", "A table that was already 'not overflowing' but still didn't match the reference is ALSO corrected to 867")
+
+    ref_ind_after = ref_table._tbl.find(qn("w:tblPr")).find(qn("w:tblInd"))
+    assert_(ref_ind_after.get(qn("w:w")) == "867", "The reference table itself is untouched (already correct)")
+
+    print("\n=== Test 7: re-running the fix again is a safe no-op (every table already matches) ===")
+    fixed7 = asp._fix_table_overflow_indent(doc2)
+    assert_(fixed7 == 0, "Zero tables reported as changed on a second run - nothing left to fix")
 
     print("\nALL TESTS PASSED")
 

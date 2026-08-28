@@ -6787,6 +6787,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "outputFileName": os.path.splitext(file_name)[0] + ".docx",
                 "appendixTablesMerged": result.get("appendix_tables_merged"),
                 "ambiguousTableWidthFixed": result.get("ambiguous_table_width_fixed"),
+                "rowLevelIndentOverridesFixed": result.get("row_level_indent_overrides_fixed"),
             }
         except Exception as err:
             return 200, {"ok": False, "error": str(err)}
