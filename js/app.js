@@ -1967,19 +1967,13 @@
                         'Success');
                     refreshServicePage(serviceId);
 
-                    // NEW, per explicit direction: ask ONCE per batch (not once
-                    // per file) whether to use Aspose. Stored on processState so
-                    // the per-file processing code (processTranslationFileAt)
-                    // can read it later without needing this confirmation
-                    // threaded through as an explicit parameter everywhere.
-                    const useAspose = await new Promise(function (resolve) {
-                        showConfirm('Use Aspose?', 'Use Aspose for this translation run? Choose "No" to use the existing OCR-style text-box extraction pipeline instead.', resolve);
-                    });
-                    processState.translationUseAspose = useAspose;
-                    addActivity(serviceId,
-                        `System > ${useAspose ? 'Using Aspose' : 'Using OCR-style text-box pipeline (no Aspose)'}`,
-                        'Info');
-                    refreshServicePage(serviceId);
+                    // The old single upfront "Use Aspose?" confirmation dialog
+                    // is GONE, per explicit direction - Aspose vs pdf.js is now
+                    // decided automatically, PER FILE, from real content
+                    // (table/image detection for a PDF upload; a Word upload
+                    // always skips OCR entirely) - see the per-file decision in
+                    // processTranslationFileAt, right before each file's own
+                    // processing branch.
                 }
 
                 processState.isRunning = true;
@@ -2878,7 +2872,60 @@
                                 let step1DocxBase64 = null;  // only meaningful on the Aspose path
                                 let reviewIssues = [];
 
-                                if (processState.translationUseAspose) {
+                                // NEW, per explicit direction, replacing the old
+                                // single upfront "Use Aspose?" confirmation dialog
+                                // with a PER-FILE, content-based decision:
+                                //   - a Word (.docx) upload ALWAYS routes into the
+                                //     "Aspose" branch below - which, for a docx
+                                //     upload specifically, skips the actual Aspose
+                                //     call entirely and goes straight to Step 2+3
+                                //     (confirmed via a real reported case: routing
+                                //     a Word-sourced document through the vision/OCR
+                                //     hybrid pipeline instead badly mangled its
+                                //     paragraph structure - bolding everything into
+                                //     one run and scrambling clause order - because
+                                //     that pipeline re-extracts structure from a
+                                //     rendered PDF image, destroying structure a
+                                //     real docx already has correctly).
+                                //   - a PDF upload is analyzed automatically (real
+                                //     table/image detection via pdfplumber,
+                                //     server-side) - Aspose is used only when a real
+                                //     table or image is actually found on some page;
+                                //     otherwise the lighter pdf.js/vision pipeline
+                                //     runs, matching the user's own stated rule.
+                                let useAsposeForThisFile;
+                                if (file.isDocxUpload) {
+                                    useAsposeForThisFile = true;
+                                } else {
+                                    addActivity('translation', `${fl}System > Checking for tables/images to decide processing method`, 'Info');
+                                    try {
+                                        const detectResp = await fetch('/api/translation/detect-pdf-content', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
+                                            body: JSON.stringify({ pdfBase64: dataBase64 })
+                                        });
+                                        const detectData = await detectResp.json();
+                                        if (detectData && detectData.ok) {
+                                            useAsposeForThisFile = !!detectData.recommendAspose;
+                                            const why = detectData.recommendAspose
+                                                ? `table(s) on page(s) [${detectData.pagesWithTables.join(', ')}], image(s) on page(s) [${detectData.pagesWithImages.join(', ')}]`
+                                                : 'no tables or images found on any page';
+                                            addActivity('translation', `${fl}System > ${useAsposeForThisFile ? 'Using Aspose' : 'Using pdf.js text-layer pipeline'} (${why})`, 'Info');
+                                        } else {
+                                            // detection failed - fail safe toward Aspose
+                                            // (the more capable path) rather than risk
+                                            // silently mishandling a table/image page.
+                                            useAsposeForThisFile = true;
+                                            addActivity('translation', `${fl}System > Content check failed, defaulting to Aspose`, 'Info');
+                                        }
+                                    } catch (err) {
+                                        useAsposeForThisFile = true;
+                                        addActivity('translation', `${fl}System > Content check failed, defaulting to Aspose`, 'Info');
+                                    }
+                                }
+                                refreshServicePage('translation');
+
+                                if (useAsposeForThisFile) {
                                     actualStrategyUsed = 'aspose';
                                     if (file.isDocxUpload) {
                                         // NEW, per explicit direction: the uploaded file is
@@ -2995,46 +3042,25 @@
                                     _downloadBlobImmediately(offlineBlob, baseName + ' Final Output.docx');
                                     addActivity('translation', `${fl}System > Final Output file downloaded`, 'Info');
                                 } else {
-                                    // "No" branch, per explicit direction: switched back to
-                                    // the EXISTING vision-based hybrid pipeline
-                                    // (buildHybridDocxBlob - proper text/table/background/
-                                    // image extraction AND translation together), replacing
-                                    // the newer box-based (Solution 9 style) pipeline, which
-                                    // real testing showed performing worse on dense,
-                                    // multi-column bilingual documents. onCheckpoint fires
-                                    // ('ocr', blob) the moment OCR/extraction finishes
-                                    // (BEFORE translation) and ('translation', blob) right
-                                    // after translation finishes - each downloaded
-                                    // immediately, not just once at the very end.
-                                    let hybridInputBlob = blob;
-                                    if (file.isDocxUpload) {
-                                        // NEW, per explicit direction: buildHybridDocxBlob
-                                        // needs real PDF page images to run its own vision-
-                                        // OCR extraction on (same as OCR service) - a Word
-                                        // upload can't be fed to it directly, so convert the
-                                        // uploaded docx to a real PDF first (server-side,
-                                        // LibreOffice), then run the EXISTING pipeline on
-                                        // that PDF exactly as if the user had uploaded it.
-                                        addActivity('translation', `${fl}System > Word document uploaded - converting to PDF for text/table/image extraction`, 'Info');
-                                        const convResp = await fetch('/api/translation/docx-to-pdf', {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
-                                            body: JSON.stringify({ fileName: file.name, docxBase64: dataBase64 })
-                                        });
-                                        const convData = await convResp.json();
-                                        if (!convData || !convData.ok) {
-                                            throw new Error((convData && convData.error) || 'Converting the uploaded Word document to PDF failed.');
-                                        }
-                                        const convBinary = atob(convData.pdfBase64);
-                                        const convBytes = new Uint8Array(convBinary.length);
-                                        for (let bi = 0; bi < convBinary.length; bi++) convBytes[bi] = convBinary.charCodeAt(bi);
-                                        hybridInputBlob = new Blob([convBytes], { type: 'application/pdf' });
-                                    }
+                                    // "No Aspose" branch, per explicit direction: the
+                                    // EXISTING vision-based hybrid pipeline
+                                    // (buildHybridDocxBlob) - now reached only for a
+                                    // PDF upload with no real table/image detected
+                                    // (see the automatic per-file decision above). A
+                                    // Word (.docx) upload NEVER reaches this branch -
+                                    // useAsposeForThisFile is unconditionally true for
+                                    // one, routing it into the Aspose branch above,
+                                    // which skips the actual Aspose call for it and
+                                    // goes straight to Step 2+3 instead. onCheckpoint
+                                    // fires ('ocr', blob) the moment OCR/extraction
+                                    // finishes (BEFORE translation) and ('translation',
+                                    // blob) right after translation finishes - each
+                                    // downloaded immediately, not just once at the end.
                                     if (window.__translationEngine && window.__translationEngine.setVisionAuthToken) window.__translationEngine.setVisionAuthToken(AUTH_TOKEN || '');
                                     if (window.__translationEngine && window.__translationEngine.setVisionStopCheck) window.__translationEngine.setVisionStopCheck(function () { return processState.stopped; });
                                     if (window.__translationEngine && window.__translationEngine.setPipelineEventHandler) window.__translationEngine.setPipelineEventHandler(onEvent);
                                     if (window.__translationEngine && window.__translationEngine.resetPipelineApiCounters) window.__translationEngine.resetPipelineApiCounters();
-                                    offlineBlob = await window.__translationEngine.buildHybridDocxBlob(hybridInputBlob, {
+                                    offlineBlob = await window.__translationEngine.buildHybridDocxBlob(blob, {
                                         withImage: withImageOpt,
                                         targetLang: targetLanguage,
                                         onCheckpoint: function (stage, ckBlob) {

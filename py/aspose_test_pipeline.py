@@ -1546,6 +1546,81 @@ def _fix_body_paragraph_right_indent(doc):
     return fixed
 
 
+def _split_first_numbered_list_item_onto_new_line(doc):
+    """Item (NUMBERED-LIST-START-MERGED-WITH-PRECEDING-SENTENCE, real
+    reported issue - "agar kisi jagah se numbering order start ho raha
+    ho to wo new line se start hona chahiye") - confirmed real via a
+    real document AND a real pdftotext -layout render: a cell's text
+    "This field indicates the annual rent value...Tenant. 1. Cleaning.
+    2. Operations. 3. Security and guarding...." already had items 2
+    onward correctly on their own separate lines (confirmed 8 separate
+    <w:p> elements in the real cell) - the ONLY genuinely merged part
+    was item "1." itself, still attached to the END of the preceding
+    intro sentence's own paragraph, instead of starting its own line
+    like every item after it.
+
+    Deliberately scoped to specifically "1." (not any digit) - a list
+    beginning at 1 is a strong, low-false-positive signal that this is
+    genuinely the START of a numbered list (unlike a bare mid-sentence
+    digit, which could be anything and isn't safe to split on
+    generally). Detects a run whose text contains ". 1. " (sentence end
+    directly followed by the first list item) mid-string, splits the
+    run's text there, and moves the "1. ..." tail (plus any later runs
+    in the same paragraph) into a new paragraph - the exact same
+    mechanism as _fix_merged_numbered_subclause's mid-run split, for a
+    different real pattern."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from copy import deepcopy
+
+    pattern = re.compile(r"\.\s+(1\.\s)")
+
+    fixed = 0
+    for tc in doc.element.body.iter(qn("w:tc")):
+        for child in list(tc.iterchildren()):
+            if child.tag != qn("w:p"):
+                continue
+            all_runs = child.findall(qn("w:r"))
+            target_run, match = None, None
+            for r in all_runs:
+                t = r.find(qn("w:t"))
+                if t is None or not t.text:
+                    continue
+                m = pattern.search(t.text)
+                if m:
+                    target_run, match = r, m
+                    break
+            if target_run is None:
+                continue
+            try:
+                t = target_run.find(qn("w:t"))
+                full_text = t.text
+                split_at = match.start(1)
+                before_text = full_text[:split_at]
+                after_text = full_text[split_at:]
+                t.text = before_text
+
+                tail_run = deepcopy(target_run)
+                tail_t = tail_run.find(qn("w:t"))
+                tail_t.text = after_text
+                tail_t.set(qn("xml:space"), "preserve")
+
+                target_run_idx = all_runs.index(target_run)
+                pPr_source = child.find(qn("w:pPr"))
+                new_p = OxmlElement("w:p")
+                if pPr_source is not None:
+                    new_p.append(deepcopy(pPr_source))
+                new_p.append(tail_run)
+                for r in all_runs[target_run_idx + 1:]:
+                    child.remove(r)
+                    new_p.append(r)
+                child.addnext(new_p)
+                fixed += 1
+            except Exception as err:  # noqa: BLE001
+                print(f"[numbered-list-split-fix] skipped one paragraph after an error, continuing with the rest: {err}")
+    return fixed
+
+
 def _merge_continuation_paragraphs(doc):
     """Item (CONTINUATION-TEXT-WRONGLY-SPLIT-INTO-SEPARATE-PARAGRAPHS,
     real reported issue) - confirmed real: what reads as ONE flowing
@@ -1682,6 +1757,321 @@ def _merge_continuation_paragraphs(doc):
         # might ALSO be a continuation of what's now the (bigger) prev_p
 
     return merged
+
+
+def _fix_table_row_height_autofit(doc):
+    """Item (TABLE-ROW-HEIGHT-NOT-AUTOFIT, real reported issue) -
+    confirmed real: every single trHeight in a real reported document
+    (95 of them) used hRule="exact" - a FIXED height that clips/
+    truncates content that doesn't fit, rather than growing the row to
+    fit its actual content. Fix: reset hRule to "auto" everywhere,
+    keeping the existing height VALUE as a minimum (auto-fit still
+    respects w:val as a floor, per OOXML semantics, but never clips
+    taller content the way "exact" does)."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for trHeight in doc.element.body.iter(qn("w:trHeight")):
+        if trHeight.get(qn("w:hRule")) != "auto":
+            trHeight.set(qn("w:hRule"), "auto")
+            fixed += 1
+    return fixed
+
+
+def _fix_table_vertical_alignment(doc):
+    """Item (TABLE-CELL-VERTICAL-ALIGNMENT-INCONSISTENT, real reported
+    issue) - confirmed real: a real document's table cells had wildly
+    inconsistent vertical alignment (88 "bottom", 48 "center", 1 "top",
+    and 246 cells with none set at all, defaulting to top). Fix: every
+    non-empty table cell gets w:vAlign set to "center" (middle),
+    unconditionally - matches the explicit rule given (table data
+    should always be vertically centered)."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    fixed = 0
+    for tc in doc.element.body.iter(qn("w:tc")):
+        tcPr = tc.find(qn("w:tcPr"))
+        if tcPr is None:
+            tcPr = OxmlElement("w:tcPr")
+            tc.insert(0, tcPr)
+        vAlign = tcPr.find(qn("w:vAlign"))
+        if vAlign is None:
+            vAlign = OxmlElement("w:vAlign")
+            tcPr.append(vAlign)
+        if vAlign.get(qn("w:val")) != "center":
+            vAlign.set(qn("w:val"), "center")
+            fixed += 1
+    return fixed
+
+
+def _split_label_value_pairs_within_cell(doc):
+    """Item (CELL-CONTAINS-MULTIPLE-DISTINCT-LABEL-VALUE-PAIRS, real
+    reported general rule, per an explicit example - a cell whose
+    original source text reads like "Nationality:     Indian" should
+    render as two distinct pieces WITHIN that one cell: the label
+    ("Nationality:") sitting at the cell's own left edge, and the value
+    ("Indian") sitting at the cell's own right edge, on the same line -
+    not as one continuous run of text with a large literal gap in the
+    middle. A single cell can contain more than one such pair (each on
+    its own line within the cell).
+
+    Detects the pattern "<label>:<2+ spaces><value>" - the 2+-space gap
+    is the real signal (an OCR/extraction artifact from what were
+    originally two separately-positioned text elements in the source
+    PDF merging into one run with excess whitespace between them) - a
+    normal, single-space "Label: Value" is left completely alone, since
+    that's ordinary continuous text, not this bug.
+
+    Fix mechanism: for each paragraph inside a table cell whose text
+    matches the pattern, sets a right-aligned tab stop at the cell's
+    own real width (from its w:tcW, so the value lands exactly at that
+    cell's own right edge, not some other cell's), and replaces the
+    excess-whitespace gap with a single tab character - this keeps
+    label and value on the SAME line, label naturally at the paragraph
+    start and value pushed flush to the tab stop, matching the
+    left-box/right-box description exactly. If a single paragraph
+    contains MORE than one such pair, it is split into one paragraph
+    per pair (each getting its own tab-stop treatment) so every pair
+    still ends up on its own line within the cell, as described."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from copy import deepcopy
+
+    pattern = re.compile(r"([A-Za-z][\w\s]{1,40}:)\s{2,}([^:]+?)(?=\s{2,}[A-Za-z][\w\s]{1,40}:|$)")
+
+    def _cell_width_twips(tc):
+        tcPr = tc.find(qn("w:tcPr"))
+        tcW = tcPr.find(qn("w:tcW")) if tcPr is not None else None
+        if tcW is not None and tcW.get(qn("w:w")):
+            try:
+                return int(tcW.get(qn("w:w")))
+            except ValueError:
+                pass
+        return None
+
+    def _set_right_tab(pPr, pos):
+        tabs = pPr.find(qn("w:tabs"))
+        if tabs is None:
+            tabs = OxmlElement("w:tabs")
+            pPr.insert(0, tabs)
+        tab = OxmlElement("w:tab")
+        tab.set(qn("w:val"), "right")
+        tab.set(qn("w:pos"), str(pos))
+        tabs.append(tab)
+
+    fixed = 0
+    for tc in doc.element.body.iter(qn("w:tc")):
+        cell_width = _cell_width_twips(tc)
+        if not cell_width:
+            continue
+        for p in list(tc.findall(qn("w:p"))):
+            all_runs = p.findall(qn("w:r"))
+            target_run, matches = None, []
+            for r in all_runs:
+                t = r.find(qn("w:t"))
+                if t is None or not t.text:
+                    continue
+                found = list(pattern.finditer(t.text))
+                if found:
+                    target_run, matches = r, found
+                    break
+            if not matches:
+                continue
+
+            try:
+                t = target_run.find(qn("w:t"))
+                pPr = p.find(qn("w:pPr"))
+                if pPr is None:
+                    pPr = OxmlElement("w:pPr")
+                    p.insert(0, pPr)
+
+                pairs = [(m.group(1).strip(), m.group(2).strip()) for m in matches]
+                # first pair replaces this paragraph's own text + gets the tab stop
+                label0, value0 = pairs[0]
+                t.text = label0
+                tab_run = OxmlElement("w:r")
+                tab_run.append(OxmlElement("w:tab"))
+                # insert tab between label run and a new value run
+                value_run = deepcopy(target_run)
+                value_t = value_run.find(qn("w:t"))
+                value_t.text = value0
+                target_run.addnext(value_run)
+                target_run.addnext(tab_run)
+                _set_right_tab(pPr, cell_width)
+
+                # any FURTHER pairs each become their own new paragraph,
+                # inserted right after this one, each with the same
+                # tab-stop treatment.
+                insert_after = p
+                for label, value in pairs[1:]:
+                    new_p = OxmlElement("w:p")
+                    new_pPr = OxmlElement("w:pPr")
+                    new_p.append(new_pPr)
+                    _set_right_tab(new_pPr, cell_width)
+                    label_run = deepcopy(target_run)
+                    label_t = label_run.find(qn("w:t"))
+                    label_t.text = label
+                    new_p.append(label_run)
+                    new_tab_run = OxmlElement("w:r")
+                    new_tab_run.append(OxmlElement("w:tab"))
+                    new_p.append(new_tab_run)
+                    val_run = deepcopy(target_run)
+                    val_t = val_run.find(qn("w:t"))
+                    val_t.text = value
+                    new_p.append(val_run)
+                    insert_after.addnext(new_p)
+                    insert_after = new_p
+                    fixed += 1
+
+                fixed += 1
+            except Exception as err:  # noqa: BLE001
+                print(f"[label-value-split-fix] skipped one cell paragraph after an error, continuing with the rest: {err}")
+    return fixed
+
+
+def _fix_table_cell_alignment_by_length(doc, length_threshold=50):
+    """Item (TABLE-CELL-ALIGNMENT-SHORT-VS-LONG, real reported rule -
+    "table me agar short text he to wo cell me center me ayega lekin
+    agar long text ho to wo left side se saru hona chahiye jaisa humne
+    article ke liye set kiya tha") - mirrors the SAME short/long
+    distinction already established for body Article/clause text
+    elsewhere in this file, applied here to table DATA cells
+    specifically (never header/title cells - those are always
+    centered regardless of length, per _fix_table_header_alignment,
+    which is a completely separate rule).
+
+    Threshold picked from this project's own real data: a direct
+    length-distribution check across a real reported document's 355
+    non-empty cells showed a natural gap around 40-50 characters
+    (66% of cells are pure short labels/values under 20 chars; content
+    at or above ~50 chars is consistently genuine sentence-like
+    explanatory text, not a label). Cells at or under the threshold get
+    jc="center"; cells over it get jc="left" (not "both"/justify - per
+    the explicit rule given, table cell long-text is LEFT-aligned,
+    distinct from the "both" rule used for body Article/clause
+    paragraphs elsewhere in this file). Header/title rows (detected the
+    same way as _fix_table_header_alignment) are skipped entirely -
+    they stay centered unconditionally regardless of their own length."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    def is_header_row(tr_el):
+        shd = tr_el.find(".//" + qn("w:shd"))
+        return shd is not None and shd.get(qn("w:fill")) not in (None, "auto", "FFFFFF")
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        rows = tbl_el.findall(qn("w:tr"))
+        for i, tr_el in enumerate(rows):
+            if i == 0 and is_header_row(tr_el):
+                continue  # header/title row - always centered, a separate rule
+            for tc in tr_el.findall(qn("w:tc")):
+                ts = tc.findall(".//" + qn("w:t"))
+                text = "".join(t.text or "" for t in ts).strip()
+                if not text:
+                    continue
+                target = "center" if len(text) <= length_threshold else "left"
+                for p in tc.findall(qn("w:p")):
+                    pPr = p.find(qn("w:pPr"))
+                    if pPr is None:
+                        pPr = OxmlElement("w:pPr")
+                        p.insert(0, pPr)
+                    jc = pPr.find(qn("w:jc"))
+                    if jc is None:
+                        jc = OxmlElement("w:jc")
+                        pPr.append(jc)
+                    if jc.get(qn("w:val")) != target:
+                        jc.set(qn("w:val"), target)
+                        fixed += 1
+    return fixed
+
+
+def _fix_table_header_alignment(doc):
+    """Item (TABLE-HEADER-NOT-CENTERED, real reported issue) -
+    confirmed real: a real document's shaded header/title rows used a
+    scattered mix of "both" (dominant), "left", and "center" for their
+    own jc value. Fix: every paragraph inside a header row (detected
+    via the same dark-shading signature used elsewhere in this file -
+    _merge_adjacent_header_tables's header_row_shading) gets jc set to
+    "center", unconditionally - matches the explicit rule given (table
+    headers/titles should always be centered)."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    def is_header_row(tr_el):
+        shd = tr_el.find(".//" + qn("w:shd"))
+        return shd is not None and shd.get(qn("w:fill")) not in (None, "auto", "FFFFFF")
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        rows = tbl_el.findall(qn("w:tr"))
+        if not rows or not is_header_row(rows[0]):
+            continue
+        for p in rows[0].iter(qn("w:p")):
+            pPr = p.find(qn("w:pPr"))
+            if pPr is None:
+                pPr = OxmlElement("w:pPr")
+                p.insert(0, pPr)
+            jc = pPr.find(qn("w:jc"))
+            if jc is None:
+                jc = OxmlElement("w:jc")
+                pPr.append(jc)
+            if jc.get(qn("w:val")) != "center":
+                jc.set(qn("w:val"), "center")
+                fixed += 1
+    return fixed
+
+
+_ARTICLE_NUMBER_WORDS = {
+    "One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5, "Six": 6,
+    "Seven": 7, "Eight": 8, "Nine": 9, "Ten": 10, "Eleven": 11,
+    "Twelve": 12, "Thirteen": 13, "Fourteen": 14, "Fifteen": 15,
+    "Sixteen": 16, "Seventeen": 17, "Eighteen": 18, "Nineteen": 19,
+    "Twenty": 20,
+}
+
+
+def _convert_article_word_numbers_to_digits(doc):
+    """Item (ARTICLE-HEADING-WORD-NUMBER, real reported issue, per
+    explicit direction to build a rule identifying word-form numbering
+    in general, not hardcode one document's specific article count) -
+    confirmed real: a real document had all 17 of its "Article <Word>:"
+    headings spelled out ("Article One:" ... "Article Seventeen:")
+    instead of digits ("Article 1:" ... "Article 17:"). Fix: replaces
+    "Article <Word>" with "Article <digit>" wherever the word exactly
+    matches a known English number-word (One through Twenty - covers
+    real contract lengths with real headroom). Works per-run first (the
+    common case, since a heading's "Article One" text usually lives in
+    one run); if the pattern only resolves at the whole-paragraph text
+    level (split across multiple runs - rare, but real for translated
+    text), the fix is applied by rewriting the first run to the full
+    corrected text and clearing the rest, rather than leaving it
+    unfixed."""
+    from docx.oxml.ns import qn
+
+    pattern = re.compile(r"\bArticle (" + "|".join(_ARTICLE_NUMBER_WORDS.keys()) + r")\b")
+
+    def _replace(m):
+        return f"Article {_ARTICLE_NUMBER_WORDS[m.group(1)]}"
+
+    fixed = 0
+    for p in doc.paragraphs:
+        if not pattern.search(p.text):
+            continue
+        resolved_per_run = True
+        for r in p.runs:
+            if r.text and pattern.search(r.text):
+                r.text = pattern.sub(_replace, r.text)
+        if pattern.search(p.text) and p.runs:
+            # per-run replacement didn't fully resolve it (pattern
+            # spanned multiple runs) - rebuild from full paragraph text.
+            new_full = pattern.sub(_replace, p.text)
+            p.runs[0].text = new_full
+            for r in p.runs[1:]:
+                r.text = ""
+        fixed += 1
+    return fixed
 
 
 def _fix_clause_start_spacing(doc):
@@ -2208,6 +2598,86 @@ def _remove_duplicate_table_rows(doc):
     return removed
 
 
+def _fix_mismatched_column_header_labels(doc):
+    """Item (TABLE-HEADER-LABEL-DOESNT-MATCH-COLUMN-CONTENT, real
+    reported issue - "table ke header check karo galat show ho rahe he
+    aur translation sahi se nahi hua he") - confirmed real directly in
+    a reported document: an appendix table's header row read
+    ['Explanation', 'Field', 'Item Number'], but its own data rows
+    showed column 0 holding short numeric IDs ("1", "2", ...) and
+    column 2 holding the long explanatory sentences - i.e. the labels
+    for columns 0 and 2 were swapped relative to what those columns
+    actually contain (translation-injection apparently matched the
+    header text to the wrong cell for this table).
+
+    Detects this via each column's own real content: a header whose
+    text matches a "count/number"-style label (contains "number") is
+    expected to sit over a column of SHORT values; a header matching a
+    "description"-style label (contains "explanation", "clarification",
+    "description", or "details") is expected to sit over a column of
+    LONG values. When a table's header row has exactly one column of
+    each kind and their actual average content length is the OPPOSITE
+    of what their own labels imply, the two header cells' text is
+    swapped to match reality - the data itself is never touched, only
+    the header labeling."""
+    from docx.oxml.ns import qn
+
+    NUMBER_WORDS = ("number", "no.", "no ")
+    DESC_WORDS = ("explanation", "clarification", "description", "details")
+
+    def _cell_text(tc):
+        ts = tc.findall(".//" + qn("w:t"))
+        return "".join(t.text or "" for t in ts).strip()
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        rows = tbl_el.findall(qn("w:tr"))
+        if len(rows) < 3:
+            continue
+        header_cells = rows[0].findall(qn("w:tc"))
+        if len(header_cells) < 2:
+            continue
+
+        header_texts = [_cell_text(tc) for tc in header_cells]
+        number_col = next((i for i, t in enumerate(header_texts) if any(w in t.lower() for w in NUMBER_WORDS)), None)
+        desc_col = next((i for i, t in enumerate(header_texts) if any(w in t.lower() for w in DESC_WORDS)), None)
+        if number_col is None or desc_col is None or number_col == desc_col:
+            continue
+
+        data_rows = rows[1:]
+        number_col_lengths, desc_col_lengths = [], []
+        for row in data_rows:
+            cells = row.findall(qn("w:tc"))
+            if len(cells) <= max(number_col, desc_col):
+                continue
+            number_col_lengths.append(len(_cell_text(cells[number_col])))
+            desc_col_lengths.append(len(_cell_text(cells[desc_col])))
+        if not number_col_lengths:
+            continue
+        avg_number_col = sum(number_col_lengths) / len(number_col_lengths)
+        avg_desc_col = sum(desc_col_lengths) / len(desc_col_lengths)
+
+        # Mismatch: the column labeled "number" actually holds the
+        # LONGER content, and the column labeled "explanation" holds
+        # the SHORTER content - the opposite of what the labels imply.
+        if avg_number_col > avg_desc_col and avg_number_col > 20 and avg_desc_col < 10:
+            number_tc = header_cells[number_col]
+            desc_tc = header_cells[desc_col]
+            number_ts = number_tc.findall(".//" + qn("w:t"))
+            desc_ts = desc_tc.findall(".//" + qn("w:t"))
+            if number_ts and desc_ts:
+                number_first_text = number_ts[0].text or ""
+                desc_first_text = desc_ts[0].text or ""
+                number_ts[0].text = desc_first_text
+                for t in number_ts[1:]:
+                    t.text = ""
+                desc_ts[0].text = number_first_text
+                for t in desc_ts[1:]:
+                    t.text = ""
+                fixed += 1
+    return fixed
+
+
 def _merge_adjacent_header_tables(doc):
     """Item (APPENDIX-TABLE-HEADER-WRONG-PAGE-POSITION, real reported
     issue 4) - confirmed real: a real document's Appendix content was
@@ -2313,6 +2783,56 @@ def _merge_adjacent_header_tables(doc):
             trPr.append(OxmlElement("w:tblHeader"))
 
     return tables_merged
+
+
+def _remove_duplicate_field_labels_in_row(doc):
+    """Item (DUPLICATE-FIELD-LABEL-IN-SAME-ROW, real reported issue,
+    per a user-provided page-1 screenshot) - confirmed real directly in
+    the reported document's own XML: rows in the Contract Data-style
+    tables repeat the SAME field label twice within one row - e.g.
+    ['Contract Sealing Date:', '2025-06-17', 'Contract Sealing Date',
+    'Contract Sealing Location:', 'Riyadh', 'Contract Sealing
+    Location'] - cells 0 and 2 (and 3 and 5) carry the identical label
+    text, once with a trailing colon (the real field label) and once
+    without (a leftover duplicate, likely from the original
+    bilingual/dual-column source layout surviving translation).
+
+    Fix: within each row, group cells by their normalized text (strip
+    a trailing colon and surrounding whitespace) - when two or more
+    cells share the same normalized text, keep the FIRST occurrence
+    exactly as it was and empty out every later duplicate. Scoped to
+    matches of at least 5 characters containing a letter (not just
+    digits/punctuation) - keeps this from ever accidentally treating a
+    short, coincidentally-matching VALUE (a date, a number) as a
+    duplicate label; genuine field labels are real English phrases,
+    coincidental short/numeric matches are not this bug."""
+    from docx.oxml.ns import qn
+
+    def _normalize(text):
+        t = text.strip()
+        if t.endswith(":"):
+            t = t[:-1].strip()
+        return t
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        for tr_el in tbl_el.findall(qn("w:tr")):
+            cells = tr_el.findall(qn("w:tc"))
+            seen = {}
+            for tc in cells:
+                ts = tc.findall(".//" + qn("w:t"))
+                raw_text = "".join(t.text or "" for t in ts)
+                norm = _normalize(raw_text)
+                if len(norm) < 5 or not any(ch.isalpha() for ch in norm):
+                    continue
+                if norm in seen:
+                    for t in ts:
+                        t.text = ""
+                    if ts:
+                        fixed += 1
+                else:
+                    seen[norm] = tc
+    return fixed
 
 
 def _fix_ambiguous_table_width(doc):
@@ -2510,6 +3030,85 @@ def _reverse_table_column_order(doc, target_language):
             for c in reversed(cells):
                 tr_el.append(c)
             fixed += 1
+    return fixed
+
+
+def _fix_article_heading_spacing(doc):
+    """Item (ARTICLE-HEADING-EXCESS-BEFORE-SPACING, real reported
+    issue - "white lining" in the title bar and excess heading height)
+    - confirmed real: a real document's 17 "Article <N>:" headings had
+    scattered w:spacing/@w:before values (401, 197, 244 x13, 1 x2,
+    243) - the dominant, clearly-intentional value (244) appeared 13
+    times, while "Article One" at 401 (nearly double) rendered with a
+    visibly taller shaded bar and a gap of empty (white) space above
+    its own text - exactly the reported symptom. Fix: every "Article
+    <N>:" heading paragraph's own w:before is reset to match this
+    document's own dominant real value among ALL such headings (falls
+    back to leaving values alone if there's no real, non-trivial
+    majority to learn from)."""
+    from docx.oxml.ns import qn
+    from collections import Counter
+
+    article_pattern = re.compile(r"^Article\s+\d+\s*:")
+
+    before_values = []
+    target_paragraphs = []
+    for p in doc.paragraphs:
+        if article_pattern.match(p.text.strip()):
+            pPr = p._p.find(qn("w:pPr"))
+            spacing = pPr.find(qn("w:spacing")) if pPr is not None else None
+            before = spacing.get(qn("w:before")) if spacing is not None else None
+            target_paragraphs.append((p, spacing))
+            if before is not None:
+                before_values.append(before)
+
+    if not before_values:
+        return 0
+    dominant, count = Counter(before_values).most_common(1)[0]
+    if count < 2:
+        return 0  # no real majority to learn from - don't guess
+
+    fixed = 0
+    for p, spacing in target_paragraphs:
+        if spacing is not None and spacing.get(qn("w:before")) != dominant:
+            spacing.set(qn("w:before"), dominant)
+            fixed += 1
+    return fixed
+
+
+def _fix_anomalous_header_shading_on_data_cell(doc):
+    """Item (DATA-CELL-CARRYING-HEADER-SHADING, real reported issue -
+    "table data me formatting ka issue") - confirmed real: a real
+    document had a data cell ("1928550.00", row 1 of a payment-schedule
+    table) shaded with the exact same dark fill (666666) used by that
+    table's OWN header row, while every other data cell in the same
+    column/table used the normal light alternating-row shading
+    (EEEEEE) - a real, visibly wrong "highlighted like a header" data
+    value. Fix: for every table, identify its own header-shading color
+    (from row 0, matching the detection used elsewhere in this file),
+    then for every LATER row (not row 0 itself), any cell carrying that
+    SAME header-shading color has it reset to "auto" (no shading) -
+    removing the leftover/mis-assigned header-color rather than
+    guessing what the "correct" row-shading should have been."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        rows = tbl_el.findall(qn("w:tr"))
+        if len(rows) < 2:
+            continue
+        header_shd = rows[0].find(".//" + qn("w:shd"))
+        header_fill = header_shd.get(qn("w:fill")) if header_shd is not None else None
+        if not header_fill or header_fill in ("auto", "FFFFFF"):
+            continue
+        for row in rows[1:]:
+            for tc in row.findall(qn("w:tc")):
+                tcPr = tc.find(qn("w:tcPr"))
+                shd = tcPr.find(qn("w:shd")) if tcPr is not None else None
+                if shd is not None and shd.get(qn("w:fill")) == header_fill:
+                    shd.set(qn("w:fill"), "auto")
+                    shd.set(qn("w:val"), "clear")
+                    fixed += 1
     return fixed
 
 
@@ -4034,6 +4633,86 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
     except Exception:
         pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
 
+    # Batch of 11 real reported issues, wired in dependency order:
+    # content fixes first (article-numbering must resolve to digits
+    # BEFORE the spacing-fix can match "Article <digit>:" headings;
+    # header-label and duplicate-label fixes are independent but kept
+    # here for locality), then STRUCTURAL splits (each creates NEW
+    # paragraphs that the LATER alignment-by-length fix needs to see),
+    # then the remaining formatting-only fixes.
+    article_numbers_converted = 0
+    try:
+        article_numbers_converted = _convert_article_word_numbers_to_digits(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
+    header_labels_fixed = 0
+    try:
+        header_labels_fixed = _fix_mismatched_column_header_labels(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
+    duplicate_field_labels_removed = 0
+    try:
+        duplicate_field_labels_removed = _remove_duplicate_field_labels_in_row(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
+    numbered_list_starts_split = 0
+    try:
+        numbered_list_starts_split = _split_first_numbered_list_item_onto_new_line(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
+    label_value_pairs_split = 0
+    try:
+        label_value_pairs_split = _split_label_value_pairs_within_cell(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
+    # Must run AFTER _convert_article_word_numbers_to_digits - its own
+    # detection pattern requires "Article <digit>:", not the word form
+    # (confirmed real ordering dependency during testing).
+    article_spacing_fixed = 0
+    try:
+        article_spacing_fixed = _fix_article_heading_spacing(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
+    row_height_autofit_fixed = 0
+    try:
+        row_height_autofit_fixed = _fix_table_row_height_autofit(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
+    anomalous_header_shading_fixed = 0
+    try:
+        anomalous_header_shading_fixed = _fix_anomalous_header_shading_on_data_cell(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
+    cell_vertical_alignment_fixed = 0
+    try:
+        cell_vertical_alignment_fixed = _fix_table_vertical_alignment(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
+    header_alignment_fixed = 0
+    try:
+        header_alignment_fixed = _fix_table_header_alignment(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
+    # Runs AFTER the two structural splits above, so newly-created
+    # paragraphs (the list-item split, the label/value split) also get
+    # a real alignment decision, not just the paragraphs that existed
+    # before this pass ran.
+    cell_alignment_by_length_fixed = 0
+    try:
+        cell_alignment_by_length_fixed = _fix_table_cell_alignment_by_length(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
     # Real reported issue 3 - runs LAST, after every other fix, since
     # it needs to measure the FINAL translated text's actual width
     # requirements (an English translation is often physically wider
@@ -4075,6 +4754,17 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
         "clause_spacing_fixed": clause_spacing_fixed,
         "narrow_columns_fixed": narrow_columns_fixed,
         "table_columns_reversed": table_columns_reversed,
+        "article_numbers_converted": article_numbers_converted,
+        "header_labels_fixed": header_labels_fixed,
+        "duplicate_field_labels_removed": duplicate_field_labels_removed,
+        "numbered_list_starts_split": numbered_list_starts_split,
+        "label_value_pairs_split": label_value_pairs_split,
+        "article_spacing_fixed": article_spacing_fixed,
+        "row_height_autofit_fixed": row_height_autofit_fixed,
+        "anomalous_header_shading_fixed": anomalous_header_shading_fixed,
+        "cell_vertical_alignment_fixed": cell_vertical_alignment_fixed,
+        "header_alignment_fixed": header_alignment_fixed,
+        "cell_alignment_by_length_fixed": cell_alignment_by_length_fixed,
     }
 
 

@@ -1,28 +1,28 @@
 // Test for the Translation service's CURRENT real flow, per explicit
-// direction: on Start, a confirmation dialog asks "Use Aspose?" (once
-// per batch, not per file). If YES, the Aspose 3-step pipeline runs:
+// direction: the old single upfront "Use Aspose?" confirmation dialog
+// is GONE. Instead, for EACH file, a decision is made automatically:
+//   - a Word (.docx) upload ALWAYS routes into the Aspose branch,
+//     which for a docx upload specifically skips the actual Aspose
+//     call and uses the uploaded file directly as step 1's output
+//     (confirmed real reported case: routing a Word-sourced document
+//     through the vision/OCR hybrid pipeline instead badly mangled
+//     its structure - bolded everything into one run and scrambled
+//     clause order).
+//   - a PDF upload is analyzed automatically via a new server
+//     endpoint (/api/translation/detect-pdf-content, real pdfplumber
+//     table/image detection) - Aspose is used only if a real table or
+//     image is found on some page; otherwise the lighter pdf.js/
+//     vision pipeline runs.
+// If Aspose is used, the 3-step pipeline runs:
 //   Step 1: send the PDF to Aspose, get back the converted Word doc
 //           (/api/translation/aspose-convert)
 //   Step 2: inject the actual translation into that docx
 //           (/api/translation/inject-translation)
-//   Step 3: document reviewer - identifies every line/object in the
-//           original vs translated document, finds real issues
-//           (formatting, style, background, ordering, LTR/RTL
-//           direction), builds an issue+solution list, and applies
-//           every fix (/api/translation/review)
-// If NO, the EXISTING vision-based hybrid pipeline runs
-// (window.__translationEngine.buildHybridDocxBlob) - proper
-// text/table/background/image extraction AND translation together,
-// per explicit direction, replacing the newer box-based (Solution 9
-// style) pipeline after real testing showed it performing worse on
-// dense, multi-column bilingual documents.
-// Both paths now trigger 3 immediate downloads as each real stage's
-// document becomes ready (OCR, Translation, Final Output) - not one
-// download at the very end of the whole run.
-// Table-column-order reversal and left/right margin-mirroring remain
-// deliberately NOT wired into the reviewer (excluded per direction) -
-// the reviewer DOES fix the bidi/direction FLAG itself when it doesn't
-// match the target language (the user's own worked example 2).
+//   Step 3: document reviewer (/api/translation/review)
+// Otherwise, the EXISTING vision-based hybrid pipeline runs
+// (window.__translationEngine.buildHybridDocxBlob).
+// Both paths trigger 3 immediate downloads as each real stage's
+// document becomes ready (OCR, Translation, Final Output).
 
 const fs = require('fs');
 const path = require('path');
@@ -31,30 +31,28 @@ const src = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
 
 function assert(cond, label) { if (!cond) { console.log('FAIL:', label); process.exitCode = 1; } else console.log('PASS:', label); }
 
-// The confirmation dialog: asked once per batch (inside startProcess),
-// not once per file, and its answer is stored where the per-file
-// processing code can read it.
-assert(src.includes("window.startProcess = async function(serviceId)"), 'startProcess is async (required to await the confirmation dialog)');
-const startProcessIdx = src.indexOf("window.startProcess = async function(serviceId)");
-const perFileLoopIdx = src.indexOf("if (browserBuild) {");
-const startProcessBody = src.slice(startProcessIdx, perFileLoopIdx);
-assert(startProcessBody.includes("showConfirm('Use Aspose?'"), 'Asks "Use Aspose?" via the existing showConfirm dialog, inside startProcess (once per batch)');
-assert(startProcessBody.includes('processState.translationUseAspose = useAspose'), 'Stores the user\'s choice on processState, readable later by the per-file processing code');
+// The old upfront confirmation dialog is gone.
+assert(!src.includes("showConfirm('Use Aspose?'"), 'The old upfront "Use Aspose?" confirmation dialog is completely removed');
+assert(!src.includes('processState.translationUseAspose'), 'No remaining references to the old per-batch processState flag');
 
-// Per-file branching: the SAME processState flag decides Aspose vs the
-// existing OCR-style pipeline, for EVERY file in the batch (not asked
-// again per file).
-assert(src.includes('if (processState.translationUseAspose) {'), 'Per-file processing branches on the SAME per-batch flag, not asking again per file');
+// The per-file decision: docx always -> Aspose branch; PDF -> real detection call.
+const decisionIdx = src.indexOf('let useAsposeForThisFile;');
+assert(decisionIdx !== -1, 'A per-file useAsposeForThisFile decision variable exists');
+const decisionBlock = src.slice(decisionIdx, decisionIdx + 2400);
+assert(decisionBlock.includes('if (file.isDocxUpload) {') && decisionBlock.includes('useAsposeForThisFile = true;'), 'A docx upload unconditionally routes into the Aspose branch');
+assert(decisionBlock.includes("fetch('/api/translation/detect-pdf-content'"), 'A PDF upload calls the new content-detection endpoint');
+assert(decisionBlock.includes('useAsposeForThisFile = !!detectData.recommendAspose'), 'The detection result (real table/image presence) drives the per-file decision for PDFs');
+assert(decisionBlock.includes('useAsposeForThisFile = true;') && /content check failed/i.test(decisionBlock), 'A failed detection call fails safe toward Aspose, not silently toward the lighter pipeline');
+
+// Per-file branching now uses the new local variable, not the old per-batch flag.
+assert(src.includes('if (useAsposeForThisFile) {'), 'Per-file processing branches on the new per-file decision');
 
 // The Aspose branch: all 3 steps present, in the right order, wired correctly.
-const asposeBranchStart = src.indexOf('if (processState.translationUseAspose) {');
-// The branch now has an INNER if/else (docx-upload vs PDF-upload, for
-// Step 1 specifically) nested inside it, so a naive "first } else {
-// after the start" would incorrectly find that inner boundary instead
-// of the true outer one - anchor on the Final Output download (the
-// last real action in the branch) and find the outer "} else {" AFTER
-// that, which is unambiguous regardless of how much nesting exists
-// earlier in the branch.
+const asposeBranchStart = src.indexOf('if (useAsposeForThisFile) {');
+// The branch has an INNER if/else (docx-upload vs PDF-upload, for Step
+// 1 specifically) nested inside it, so anchor on the Final Output
+// download (the last real action in the branch) and find the outer
+// "} else {" AFTER that, which is unambiguous regardless of nesting.
 const finalOutputDownloadIdx = src.indexOf("_downloadBlobImmediately(offlineBlob, baseName + ' Final Output.docx')", asposeBranchStart);
 const asposeBranchEnd = src.indexOf('} else {', finalOutputDownloadIdx);
 const asposeBranch = src.slice(asposeBranchStart, asposeBranchEnd);
@@ -78,18 +76,14 @@ assert(asposeBranch.includes("_downloadBlobImmediately(offlineBlob, baseName + '
 assert(asposeBranch.includes('if (file.isDocxUpload) {'), 'Aspose branch checks for a docx upload before deciding whether to call Aspose at all');
 assert(asposeBranch.includes('step1DocxBase64 = dataBase64'), 'A docx upload\'s own content is used directly as step 1\'s output - Aspose is skipped for it');
 
-// The non-Aspose ("No") branch: uses the EXISTING hybrid pipeline.
+// The non-Aspose branch: uses the EXISTING hybrid pipeline, DIRECTLY on
+// the original upload - no docx-to-pdf conversion, since a docx upload
+// never reaches this branch anymore.
 const nonAsposeBranch = src.slice(asposeBranchEnd, src.indexOf("file.progress = '65';", asposeBranchEnd) + 200);
-assert(nonAsposeBranch.includes('buildHybridDocxBlob(hybridInputBlob'), 'Non-Aspose branch: calls the existing vision-based hybrid pipeline');
+assert(nonAsposeBranch.includes('buildHybridDocxBlob(blob'), 'Non-Aspose branch: calls the existing vision-based hybrid pipeline directly on the original upload');
 assert(!nonAsposeBranch.includes('buildBoxBasedTranslatedDocxBlob('), 'Non-Aspose branch no longer calls the box-based pipeline');
 assert(!nonAsposeBranch.includes("fetch('/api/translation/aspose-convert'"), 'Non-Aspose branch does NOT call any Aspose endpoint');
-
-// Real reported edge case: a Word (.docx) upload in the "No" branch is
-// converted to a real PDF first (the hybrid pipeline needs real PDF
-// page images for its own vision-OCR extraction, same as OCR service),
-// THEN the existing pipeline runs on that PDF exactly as normal.
-assert(nonAsposeBranch.includes("fetch('/api/translation/docx-to-pdf'"), 'Non-Aspose branch converts a docx upload to PDF first, via the new endpoint');
-assert(nonAsposeBranch.includes('hybridInputBlob = new Blob'), 'The converted PDF bytes replace the hybrid pipeline\'s input for a docx upload');
+assert(!nonAsposeBranch.includes("fetch('/api/translation/docx-to-pdf'"), 'Non-Aspose branch no longer converts anything to PDF - a docx upload never reaches this branch');
 
 // The non-Aspose branch: 3 immediate downloads via onCheckpoint + a
 // direct Final Output download (no compatible reviewer for this
@@ -100,8 +94,8 @@ assert(nonAsposeBranch.includes("stage === 'ocr'") && nonAsposeBranch.includes("
 assert(nonAsposeBranch.includes("stage === 'translation'") && nonAsposeBranch.includes("baseName + ' Translation.doc'"), 'onCheckpoint downloads the Translation-stage document immediately when it fires');
 assert(nonAsposeBranch.includes("baseName + ' Final Output.doc'"), 'Non-Aspose branch also downloads a Final Output file, so both paths produce all 3 real files');
 
-// The old table/background routing is genuinely gone (replaced by the
-// explicit user confirmation dialog instead).
+// The old table/background routing (a DIFFERENT, earlier mechanism)
+// and the old process-aspose endpoint remain genuinely gone.
 assert(!src.includes("fetch('/api/translation/analyze-strategy'"), 'The old table/background analyze-strategy call is fully removed');
 assert(!src.includes("fetch('/api/translation/process-aspose'"), 'The old process-aspose (structure+translate in one call) is fully removed');
 

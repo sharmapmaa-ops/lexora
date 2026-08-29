@@ -3846,6 +3846,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/translation/analyze-strategy": self._handle_translation_analyze_strategy,
             "/api/translation/process-aspose": self._handle_translation_process_aspose,
             "/api/translation/aspose-convert": self._handle_translation_aspose_convert,
+            "/api/translation/detect-pdf-content": self._handle_translation_detect_pdf_content,
             "/api/translation/inject-translation": self._handle_translation_inject_translation,
             "/api/translation/review": self._handle_translation_review,
             "/api/translation/docx-to-pdf": self._handle_translation_docx_to_pdf,
@@ -6745,6 +6746,52 @@ class Handler(SimpleHTTPRequestHandler):
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
+    def _handle_translation_detect_pdf_content(self, body):
+        """NEW, per explicit direction: replaces the manual "Use
+        Aspose?" confirmation dialog for PDF uploads with an automatic,
+        content-based decision. Checks every page of the uploaded PDF
+        for a real table or a background/embedded image (via
+        pdfplumber, already used elsewhere in this codebase for real
+        PDF structure analysis - not a guess or a new dependency) - if
+        ANY page has either, Aspose is the right choice (it handles
+        tables and images properly); if no page has either, the
+        document is plain text and the lighter pdf.js/vision pipeline
+        is sufficient. Returns per-page detail too, so the client can
+        log which page triggered the decision, not just the final
+        boolean."""
+        pdf_b64 = body.get("pdfBase64")
+        if not pdf_b64:
+            raise ValueError("pdfBase64 is required")
+
+        tmp_dir = tempfile.mkdtemp(prefix="translation_detect_pdf_")
+        try:
+            pdf_path = os.path.join(tmp_dir, "input.pdf")
+            with open(pdf_path, "wb") as f:
+                f.write(base64.b64decode(pdf_b64))
+
+            import pdfplumber
+
+            pages_with_tables = []
+            pages_with_images = []
+            with pdfplumber.open(pdf_path) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    if page.find_tables():
+                        pages_with_tables.append(i + 1)
+                    if page.images:
+                        pages_with_images.append(i + 1)
+
+            has_table_or_image = bool(pages_with_tables or pages_with_images)
+            return 200, {
+                "ok": True,
+                "recommendAspose": has_table_or_image,
+                "pagesWithTables": pages_with_tables,
+                "pagesWithImages": pages_with_images,
+            }
+        except Exception as err:
+            return 200, {"ok": False, "error": str(err)}
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
     def _handle_translation_aspose_convert(self, body):
         """FIRST STEP ONLY of the real Translation service's pipeline,
         per explicit direction: on start, Translation now unconditionally
@@ -6843,6 +6890,17 @@ class Handler(SimpleHTTPRequestHandler):
                 "clauseSpacingFixed": result.get("clause_spacing_fixed"),
                 "narrowColumnsFixed": result.get("narrow_columns_fixed"),
                 "tableColumnsReversed": result.get("table_columns_reversed"),
+                "articleNumbersConverted": result.get("article_numbers_converted"),
+                "headerLabelsFixed": result.get("header_labels_fixed"),
+                "duplicateFieldLabelsRemoved": result.get("duplicate_field_labels_removed"),
+                "numberedListStartsSplit": result.get("numbered_list_starts_split"),
+                "labelValuePairsSplit": result.get("label_value_pairs_split"),
+                "articleSpacingFixed": result.get("article_spacing_fixed"),
+                "rowHeightAutofitFixed": result.get("row_height_autofit_fixed"),
+                "anomalousHeaderShadingFixed": result.get("anomalous_header_shading_fixed"),
+                "cellVerticalAlignmentFixed": result.get("cell_vertical_alignment_fixed"),
+                "headerAlignmentFixed": result.get("header_alignment_fixed"),
+                "cellAlignmentByLengthFixed": result.get("cell_alignment_by_length_fixed"),
             }
         except Exception as err:
             return 200, {"ok": False, "error": str(err)}
