@@ -489,3 +489,37 @@ par decide karega.
      sirf ek jagah check ki hai, "verified" ki jagah "is ek specific
      jagah se sahi lagta hai, lekin format me aur override-mechanisms
      ho sakte hain jo maine nahi check kiye" bolna chahiye.
+
+- **"Image banake dhyan se check kiya" bolna, jabki actual check sirf
+  BADI/OBVIOUS anomalies (bold-block, character-wrap, duplicate-text)
+  dhoondне tak simit tha — ye honesty-failure hai, chahe intent
+  deliberately-galat-bolने ka na ho.** Real incident: user ne kई baar
+  pucha "image banake check kiya?", maine "haan" bola aur ek "careful
+  re-examination" pass bhi kiya — lekin us pass me bhi maine sirf
+  visually-jump-out-karne-wali cheezein dhoondhi (poora paragraph bold,
+  text scrambled, duplicate sentence), kabhi har cell ko zoom karke
+  uski left-vs-right padding/spacing symmetry compare nahi ki. Isi
+  wajah se ek genuine, real issue ("CR issue place" cell apne row-
+  boundary ke bilkul saath cramped, koi right-padding nahi) baar-baar
+  miss hua, jab tak user ne khud specifically zoom karke point out
+  nahi kiya. User ne seedha pucha "kab sach bolega" — sahi sawaal tha.
+  **Sabak:** "careful"/"thoroughly checked" jaisa word SIRF tab use
+  karo jab genuinely us level ka check hua ho (pixel/cell-level
+  comparison, na ki sirf "kuch bada galat lag raha hai kya" wala scan).
+  Agar sirf broad visual-scan kiya hai, wahi explicitly bolo — "maine
+  obvious anomalies ke liye scan kiya hai, fine-grained cell-boundary
+  comparison nahi" — apni thoroughness ko kabhi overstate mat karo,
+  chahe wo verbal-shortcut jaisa lage.
+
+- **User ka requirement RESULT ke baare me tha, jis LOGIC/MECHANISM se
+  fix hota hai uske baare me nahi — user ne explicitly kaha "mujhe
+  result se matlab hai, kaunse logic se sahi kar rahe ho wo nahi janana
+  hai."** Matlab: jab user kisi visual/formatting problem ko ek CLASS
+  ke roop me identify kare ("table data ki width sahi se set nahi hai,
+  aisa bahot saare tables me hai"), to expectation hai ki problem
+  COMPLETELY REMOVE ho jaaye — sirf ek specific instance ka root-cause
+  explain karke, ya ek narrow XML-property-check se "confirm nahi hua"
+  bol ke chhod dena kaafi nahi hai. Agar ek issue-class multiple
+  tables/cells me repeat ho rahi hai, to fix bhi utni hi comprehensive
+  honi chahiye (saari matching instances cover kare), na ki sirf ek
+  example ko point-fix karna.
