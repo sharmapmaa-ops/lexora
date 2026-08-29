@@ -719,8 +719,17 @@ def _fix_merged_numbered_subclause(doc):
 
     body = doc.element.body
     children = list(body.iterchildren())
-    clause_at_start_pattern = re.compile(r"^\d+-\d+-\d+\s")
-    clause_mid_pattern = re.compile(r"\.\s+(\d+-\d+-\d+\s)")
+    # Real reported gap (found during a careful before/after image review
+    # of a real document): the original pattern only matched 3-segment
+    # clause codes (N-N-N, e.g. "13-1-5"), completely missing this same
+    # document's OWN 2-segment codes (N-N, e.g. "10-1"/"10-2") used for
+    # several Articles (6, 7, 10 confirmed real) - "10-1...contract.
+    # 10-2 Non-compliance..." was genuinely merged into one paragraph
+    # and this function reported 0 fixes on it. The (?:-\d+)? makes the
+    # third segment optional, matching BOTH real numbering schemes this
+    # document actually uses, not just the narrower one.
+    clause_at_start_pattern = re.compile(r"^\d+-\d+(?:-\d+)?\s")
+    clause_mid_pattern = re.compile(r"\.\s+(\d+-\d+(?:-\d+)?\s)")
 
     fixed = 0
     for child in children:
@@ -1410,17 +1419,36 @@ def _find_reference_margin_table(doc):
     margin REFERENCE for non-table text, per explicit direction: check
     the page's own width and the table's own width to derive the real
     left/right margin area non-table text should also respect, rather
-    than guessing or hardcoding a value. Looks for the first table
-    whose top-left cell's text looks like a real section-header label
-    (e.g. "Contract Data") - short, title-like text - since that's
-    reliably the FIRST substantive table in this kind of document, not
-    a stray one-off table elsewhere. Returns None if no such table is
-    found (caller falls back to a safe default rather than crashing)."""
+    than guessing or hardcoding a value.
+
+    REAL BUG FOUND (via a direct, real-document XML/table comparison
+    against a live-deployed pipeline's own output): the original
+    version just grabbed the FIRST table anywhere in the document with
+    a short first-cell label, assuming that was reliably the "Contract
+    Data" table. A real deployed document turned out to structure its
+    "Contract Data" section as plain paragraphs with tab stops, not a
+    table at all - so this function silently picked a completely
+    unrelated table ("Issuer:", the first genuinely short-labeled table
+    it found) as the margin reference, which would have produced a
+    wrong target margin for that whole document.
+
+    Fix: specifically look for a table whose first-cell text
+    SEMANTICALLY matches "Contract Data" (case-insensitive, tolerant of
+    a leading section number like "1 " and of double-spaced OCR
+    artifacts like "Contract  Data") - only a table that genuinely
+    looks like the intended reference is used. If no such table exists
+    anywhere in the document (confirmed real case above), returns None
+    outright - the caller's own documented fallback behavior (skip the
+    table-derived-margin fix entirely, or use the simpler right-only
+    reset) then correctly applies, rather than silently substituting an
+    unrelated table's numbers."""
+    pattern = re.compile(r"^\d*\s*contract\s+data\b", re.IGNORECASE)
     for t in doc.tables:
         if not t.rows or not t.rows[0].cells:
             continue
         first_cell_text = t.rows[0].cells[0].text.strip()
-        if first_cell_text and len(first_cell_text) < 40:
+        normalized = re.sub(r"\s+", " ", first_cell_text)
+        if pattern.match(normalized):
             return t
     return None
 
@@ -2917,6 +2945,150 @@ def _fix_ambiguous_table_width(doc):
     return fixed
 
 
+def _fix_within_cell_self_duplicated_label(doc):
+    """Item (CELL-TEXT-SELF-DUPLICATED-NO-SEPARATOR, real reported
+    issue, per a real user-provided screenshot) - confirmed real,
+    directly in a reported document's XML: several table header cells
+    carried their own label TEXT DUPLICATED, concatenated with no
+    separator at all - 'Rent ValueRent value', 'VATVAT', 'Total
+    ValueTotal value', 'Issue Date (AD)Issued Date(AD)', 'Due Date
+    (AD)Due Date(AD)', 'Issue Date (AH)Issued Date(AH)', 'Due Date
+    (AH)Due Date(AH)', 'Expiry DateExpiry Date' - 8 real, confirmed
+    instances found via a systematic whole-document scan (not scoped
+    to just the one example shown), each pair a near-identical repeat
+    of the same label (sometimes exact, sometimes differing only in
+    capitalization or a word like "Issue" vs "Issued").
+
+    Detects this by trying every reasonable split point in a cell's
+    text and measuring the similarity (difflib SequenceMatcher, on the
+    normalized - lowercased, punctuation/whitespace-stripped - form of
+    each half) between the two halves; the split with the highest
+    similarity above 0.7 is treated as the real self-duplication
+    boundary. A minimum half-length of 2 (after normalization) keeps
+    this from firing on trivially short/coincidental overlaps.
+
+    Once the split is found, keeps only ONE half (per real-example
+    precedent, the SECOND half is consistently the more complete,
+    properly-closed form when brackets are involved - e.g. h1="Issue
+    Date (AD" would leave an unbalanced "(", while h2="Issued
+    Date(AD)" is self-contained) - a light cleanup pass then strips
+    any leading stray closing-bracket/colon left over from an
+    imperfect split boundary (confirmed real: the highest-similarity
+    split for "Issue Date (AD)Issued Date(AD)" lands one character off
+    a "clean" word boundary, leaving h2=")Issued Date(AD)" with a
+    stray leading ")" that needs stripping)."""
+    from docx.oxml.ns import qn
+    import difflib
+
+    def _find_split(text, min_half=2):
+        best = None
+        n = len(text)
+        for split in range(min_half, n - min_half + 1):
+            h1, h2 = text[:split], text[split:]
+            norm1 = re.sub(r"[^a-z0-9]", "", h1.lower())
+            norm2 = re.sub(r"[^a-z0-9]", "", h2.lower())
+            if len(norm1) < min_half or len(norm2) < min_half:
+                continue
+            ratio = difflib.SequenceMatcher(None, norm1, norm2).ratio()
+            if ratio > 0.7 and (best is None or ratio > best[2]):
+                best = (h1, h2, ratio, split)
+        return best
+
+    def _clean(text):
+        text = text.strip()
+        # strip a leading stray closing-bracket/colon left by an
+        # imperfect split boundary (confirmed real case)
+        while text and text[0] in ")]}:":
+            text = text[1:].strip()
+        return text
+
+    fixed = 0
+    for tc in doc.element.body.iter(qn("w:tc")):
+        ts = tc.findall(".//" + qn("w:t"))
+        full_text = "".join(t.text or "" for t in ts)
+        if len(full_text.strip()) < 4:
+            continue
+        found = _find_split(full_text)
+        if not found:
+            continue
+        h1, h2, ratio, split = found
+        kept = _clean(h2) or _clean(h1)
+        if not kept or kept == full_text.strip():
+            continue
+        # write the cleaned, de-duplicated text into the FIRST real
+        # text-run, clear the rest - matches the same run-collapse
+        # pattern used elsewhere in this file for similar text fixes.
+        if not ts:
+            continue
+        ts[0].text = kept
+        for t in ts[1:]:
+            t.text = ""
+        fixed += 1
+    return fixed
+
+
+def _fix_cell_padding_asymmetry_within_row(doc):
+    """Item (CELL-CRAMPED-AGAINST-ROW-EDGE, real reported issue, per
+    an explicit user-provided real MS Word screenshot) - confirmed real:
+    a real document's "CR issue place" cell sat visually flush against
+    its row's right boundary, with no visible breathing room, while
+    every OTHER cell in that same row (CR date, 2016-10-05, CR issued
+    date) clearly showed padding around its text. A systematic,
+    whole-document scan (not just the one visually-flagged cell) found
+    47 real instances of this same pattern across many different
+    tables - a cell whose own w:tcMar/@right is drastically smaller
+    (under 30% of its row's own average) than its row-siblings',
+    producing exactly this "text touching the edge" visual symptom.
+
+    Per explicit direction ("problem completely remove karo, sirf ek
+    example nahi") - this is not scoped to the one reported cell. Fix:
+    for every table row, compute that row's OWN average right-padding
+    (w:tcMar/@right) across its real cells (skipping rows where the
+    row itself deliberately uses near-zero padding throughout, i.e.
+    average < 30 twips, since a uniformly-tight row is a real design
+    choice, not this bug) - any cell whose own padding falls under 30%
+    of that average gets reset to match the row's average, removing
+    the asymmetry rather than guessing an arbitrary fixed value."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        for tr_el in tbl_el.findall(qn("w:tr")):
+            cells = tr_el.findall(qn("w:tc"))
+            if len(cells) < 2:
+                continue
+            paddings = []
+            for tc in cells:
+                tcPr = tc.find(qn("w:tcPr"))
+                tcMar = tcPr.find(qn("w:tcMar")) if tcPr is not None else None
+                right_el = tcMar.find(qn("w:right")) if tcMar is not None else None
+                val = int(right_el.get(qn("w:w"))) if right_el is not None and right_el.get(qn("w:w")) else 0
+                paddings.append(val)
+            avg_pad = sum(paddings) / len(paddings)
+            if avg_pad < 30:
+                continue  # this whole row is uniformly tight by design - not this bug
+            target = round(avg_pad)
+            for tc, pad in zip(cells, paddings):
+                if pad >= avg_pad * 0.3:
+                    continue
+                tcPr = tc.find(qn("w:tcPr"))
+                if tcPr is None:
+                    continue
+                tcMar = tcPr.find(qn("w:tcMar"))
+                if tcMar is None:
+                    tcMar = OxmlElement("w:tcMar")
+                    tcPr.append(tcMar)
+                right_el = tcMar.find(qn("w:right"))
+                if right_el is None:
+                    right_el = OxmlElement("w:right")
+                    right_el.set(qn("w:type"), "dxa")
+                    tcMar.append(right_el)
+                right_el.set(qn("w:w"), str(target))
+                fixed += 1
+    return fixed
+
+
 def _fix_cell_width_vs_column_mismatch(doc):
     """Item (CELL-WIDTH-NOT-MATCHING-TABLE-COLUMN, real reported
     follow-up, minor/secondary finding from the same investigation as
@@ -3089,7 +3261,20 @@ def _fix_anomalous_header_shading_on_data_cell(doc):
     then for every LATER row (not row 0 itself), any cell carrying that
     SAME header-shading color has it reset to "auto" (no shading) -
     removing the leftover/mis-assigned header-color rather than
-    guessing what the "correct" row-shading should have been."""
+    guessing what the "correct" row-shading should have been.
+
+    REAL FOLLOW-UP GAP (found during a systematic, XML-driven re-check
+    across an entire document rather than only chasing visually-obvious
+    anomalies): the original version only checked w:tcPr/w:shd (the
+    CELL's own shading). Direct XML inspection of that SAME real
+    document found the actual "1928550.00" cell's own w:tcPr/w:shd was
+    correctly "auto" - the header-colored fill was instead on that
+    cell's PARAGRAPH (w:pPr/w:shd), a value this function never
+    checked, so it silently reported 0 fixes on a document that still
+    had 6 real instances of this exact bug. Now checks BOTH levels for
+    every data cell - w:tcPr/w:shd (cell) and w:pPr/w:shd (each
+    paragraph inside the cell) - resetting either to "auto" wherever it
+    matches the table's own header color."""
     from docx.oxml.ns import qn
 
     fixed = 0
@@ -3104,11 +3289,18 @@ def _fix_anomalous_header_shading_on_data_cell(doc):
         for row in rows[1:]:
             for tc in row.findall(qn("w:tc")):
                 tcPr = tc.find(qn("w:tcPr"))
-                shd = tcPr.find(qn("w:shd")) if tcPr is not None else None
-                if shd is not None and shd.get(qn("w:fill")) == header_fill:
-                    shd.set(qn("w:fill"), "auto")
-                    shd.set(qn("w:val"), "clear")
+                cell_shd = tcPr.find(qn("w:shd")) if tcPr is not None else None
+                if cell_shd is not None and cell_shd.get(qn("w:fill")) == header_fill:
+                    cell_shd.set(qn("w:fill"), "auto")
+                    cell_shd.set(qn("w:val"), "clear")
                     fixed += 1
+                for p in tc.findall(qn("w:p")):
+                    pPr = p.find(qn("w:pPr"))
+                    para_shd = pPr.find(qn("w:shd")) if pPr is not None else None
+                    if para_shd is not None and para_shd.get(qn("w:fill")) == header_fill:
+                        para_shd.set(qn("w:fill"), "auto")
+                        para_shd.set(qn("w:val"), "clear")
+                        fixed += 1
     return fixed
 
 
@@ -3813,6 +4005,74 @@ def _fix_oversized_cell_padding(doc):
             right.set(qn("w:w"), str(int(rv * scale)))
         fixed += 1
 
+    return fixed
+
+
+def _fix_negative_usable_width_from_paragraph_indent(doc):
+    """Item (CELL-PARAGRAPH-RIGHT-INDENT-EXCEEDS-CELL-WIDTH, real
+    reported issue - catastrophic character-by-character vertical text
+    wrap) - confirmed real, directly in a reported document's XML: one
+    cell had w:tcW=1136 twips, but its OWN paragraph carried
+    w:ind/@w:right=1677 twips - MORE than the cell's entire width.
+    Combined with the cell's own w:tcMar/@right=400, the real usable
+    width was 1136 - 400 - 1677 = -941 twips - genuinely NEGATIVE. Word
+    has no valid space to lay out even a single character at its normal
+    size within that width, so it falls back to breaking every single
+    character onto its own line - confirmed via a real render showing
+    "Brokerage Fee (Not included..." rendered as one letter per line
+    for the entire remaining page height.
+
+    A table-cell paragraph does not generally need its own right-indent
+    at all - unlike body/Article paragraphs (which use w:ind
+    deliberately, per the document's own real margin methodology), cell
+    content relies on the cell's own w:tcMar for padding. A large,
+    cell-width-exceeding right-indent here is a leftover/erroneous
+    artifact, not an intentional design choice - no OTHER cell in the
+    same real document showed anything close to this pattern.
+
+    Fix: for every table-cell paragraph, if that paragraph's own
+    w:ind/@right, combined with the cell's own w:tcW and w:tcMar,
+    would leave less than a minimal readable width (min_readable_twips,
+    default 200 - enough for a handful of characters, well below
+    what any real word needs), reset that paragraph's w:ind/@right to
+    0 - letting the cell's own tcMar handle real spacing instead."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for tc in doc.element.body.iter(qn("w:tc")):
+        tcPr = tc.find(qn("w:tcPr"))
+        if tcPr is None:
+            continue
+        tcW = tcPr.find(qn("w:tcW"))
+        if tcW is None or not tcW.get(qn("w:w")):
+            continue
+        try:
+            cell_width = int(tcW.get(qn("w:w")))
+        except ValueError:
+            continue
+        tcMar = tcPr.find(qn("w:tcMar"))
+        tcMar_right_el = tcMar.find(qn("w:right")) if tcMar is not None else None
+        tcMar_right = int(tcMar_right_el.get(qn("w:w"))) if tcMar_right_el is not None and tcMar_right_el.get(qn("w:w")) else 0
+        tcMar_left_el = tcMar.find(qn("w:left")) if tcMar is not None else None
+        tcMar_left = int(tcMar_left_el.get(qn("w:w"))) if tcMar_left_el is not None and tcMar_left_el.get(qn("w:w")) else 0
+
+        for p in tc.findall(qn("w:p")):
+            pPr = p.find(qn("w:pPr"))
+            if pPr is None:
+                continue
+            ind = pPr.find(qn("w:ind"))
+            if ind is None or not ind.get(qn("w:right")):
+                continue
+            try:
+                right_indent = int(ind.get(qn("w:right")))
+            except ValueError:
+                continue
+            if right_indent <= 0:
+                continue
+            usable = cell_width - tcMar_left - tcMar_right - right_indent
+            if usable < 200:
+                ind.set(qn("w:right"), "0")
+                fixed += 1
     return fixed
 
 
@@ -4703,6 +4963,18 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
     except Exception:
         pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
 
+    # Real reported issue, per an explicit user-provided screenshot -
+    # table header cells carrying their own label text duplicated with
+    # no separator ("Rent ValueRent value", "VATVAT" etc). Runs BEFORE
+    # the alignment/padding-cosmetic fixes below so those operate on
+    # the FINAL, cleaned-up text (a shorter, de-duplicated label may
+    # change which alignment/length bucket the cell falls into).
+    within_cell_duplicate_label_fixed = 0
+    try:
+        within_cell_duplicate_label_fixed = _fix_within_cell_self_duplicated_label(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
     # Runs AFTER the two structural splits above, so newly-created
     # paragraphs (the list-item split, the label/value split) also get
     # a real alignment decision, not just the paragraphs that existed
@@ -4713,7 +4985,29 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
     except Exception:
         pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
 
+    # Real reported issue, per an explicit user-provided real MS Word
+    # screenshot - a cell visually cramped against its own row's edge,
+    # with no breathing room, unlike its row-siblings. Confirmed via a
+    # comprehensive, whole-document scan this is not a one-off - 47
+    # real instances across many tables in the reported document.
+    cell_padding_asymmetry_fixed = 0
+    try:
+        cell_padding_asymmetry_fixed = _fix_cell_padding_asymmetry_within_row(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
     # Real reported issue 3 - runs LAST, after every other fix, since
+    # Real reported issue - catastrophic character-by-character
+    # vertical text wrap. Must run BEFORE _fix_narrow_column_word_wrap
+    # below, since a cell-paragraph's own poisonous right-indent (this
+    # fix's target) would otherwise distort that function's real-width
+    # measurements for the same cell.
+    negative_usable_width_fixed = 0
+    try:
+        negative_usable_width_fixed = _fix_negative_usable_width_from_paragraph_indent(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
     # it needs to measure the FINAL translated text's actual width
     # requirements (an English translation is often physically wider
     # than the Arabic source it replaced, which is the real root cause
@@ -4752,6 +5046,7 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
         "center_alignment_fixed": center_alignment_fixed,
         "continuation_paragraphs_merged": continuation_paragraphs_merged,
         "clause_spacing_fixed": clause_spacing_fixed,
+        "negative_usable_width_fixed": negative_usable_width_fixed,
         "narrow_columns_fixed": narrow_columns_fixed,
         "table_columns_reversed": table_columns_reversed,
         "article_numbers_converted": article_numbers_converted,
@@ -4765,6 +5060,8 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
         "cell_vertical_alignment_fixed": cell_vertical_alignment_fixed,
         "header_alignment_fixed": header_alignment_fixed,
         "cell_alignment_by_length_fixed": cell_alignment_by_length_fixed,
+        "cell_padding_asymmetry_fixed": cell_padding_asymmetry_fixed,
+        "within_cell_duplicate_label_fixed": within_cell_duplicate_label_fixed,
     }
 
 

@@ -6888,6 +6888,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "centerAlignmentFixed": result.get("center_alignment_fixed"),
                 "continuationParagraphsMerged": result.get("continuation_paragraphs_merged"),
                 "clauseSpacingFixed": result.get("clause_spacing_fixed"),
+                "negativeUsableWidthFixed": result.get("negative_usable_width_fixed"),
                 "narrowColumnsFixed": result.get("narrow_columns_fixed"),
                 "tableColumnsReversed": result.get("table_columns_reversed"),
                 "articleNumbersConverted": result.get("article_numbers_converted"),
@@ -6901,6 +6902,8 @@ class Handler(SimpleHTTPRequestHandler):
                 "cellVerticalAlignmentFixed": result.get("cell_vertical_alignment_fixed"),
                 "headerAlignmentFixed": result.get("header_alignment_fixed"),
                 "cellAlignmentByLengthFixed": result.get("cell_alignment_by_length_fixed"),
+                "cellPaddingAsymmetryFixed": result.get("cell_padding_asymmetry_fixed"),
+                "withinCellDuplicateLabelFixed": result.get("within_cell_duplicate_label_fixed"),
             }
         except Exception as err:
             return 200, {"ok": False, "error": str(err)}

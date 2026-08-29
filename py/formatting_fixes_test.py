@@ -109,6 +109,35 @@ def run():
     cell_ind_after = cell_p._p.find(qn("w:pPr")).find(qn("w:ind"))
     assert_(cell_ind_after.get(qn("w:right")) == "-999", "The table-cell paragraph's right-indent is NOT touched")
 
+    print("\n=== Test 2b (THE REAL REPORTED CASE): a document with an UNRELATED short-labeled table (no real Contract Data table at all) correctly returns None, not the wrong table ===")
+    doc2b = Document()
+    t2b_wrong = doc2b.add_table(rows=1, cols=1)
+    t2b_wrong.rows[0].cells[0].text = "Issuer:"  # the exact real false-match this bug produced
+    t2b_right = doc2b.add_table(rows=1, cols=1)
+    t2b_right.rows[0].cells[0].text = "Property Data"  # also a real, but unrelated, short-labeled table
+    found2b = asp._find_reference_margin_table(doc2b)
+    assert_(found2b is None, "No table matches 'Contract Data' - correctly returns None instead of the first unrelated short-labeled table")
+    left2b, right2b = asp._compute_table_derived_margins(doc2b)
+    assert_(left2b is None and right2b is None, "Margin computation correctly reports 'no reference available' rather than silently using the wrong table's numbers")
+
+    print("\n=== Test 2c: a real 'Contract Data' table IS found even with translation/OCR variance (leading number, double spaces) ===")
+    doc2c = Document()
+    t2c_wrong = doc2c.add_table(rows=1, cols=1)
+    t2c_wrong.rows[0].cells[0].text = "Issuer:"
+    t2c_right = doc2c.add_table(rows=1, cols=2)
+    t2c_right.rows[0].cells[0].text = "1  Contract  Data"  # real OCR-style variance: leading number + double spaces
+    grid2c = t2c_right._tbl.find(qn("w:tblGrid"))
+    for c, w in zip(grid2c.findall(qn("w:gridCol")), ["867", "8571"]):
+        c.set(qn("w:w"), w)
+    tblPr2c = t2c_right._tbl.find(qn("w:tblPr"))
+    tblInd2c = OxmlElement("w:tblInd")
+    tblInd2c.set(qn("w:w"), "867")
+    tblInd2c.set(qn("w:type"), "dxa")
+    tblPr2c.append(tblInd2c)
+    found2c = asp._find_reference_margin_table(doc2c)
+    assert_(found2c is not None, "The real Contract Data table (with real-world OCR variance) is correctly found")
+    assert_(found2c.rows[0].cells[0].text.strip() == "1  Contract  Data", "It's genuinely the Contract Data table, not the earlier unrelated 'Issuer:' one")
+
     print("\n=== Test 3: merged sub-clause split (issue 2) - the exact reported case ===")
     doc3 = Document()
     p3 = doc3.add_paragraph(
@@ -131,6 +160,23 @@ def run():
     doc4.add_paragraph("13-1-5 The Tenant and its employees shall not smoke in the corridors.")
     fixed4 = asp._fix_merged_numbered_subclause(doc4)
     assert_(fixed4 == 0, "Zero splits - these were already two separate, correctly-formed paragraphs")
+
+    print("\n=== Test 3b (THE REAL FOLLOW-UP GAP, found via a systematic re-check): a 2-segment clause code (N-N, not N-N-N) is also caught ===")
+    doc3b = Document()
+    p3b = doc3b.add_paragraph(
+        "10-1 This contract shall be effective from the date of its signing and shall be binding on both "
+        "parties, and shall be renewed according to what is stipulated in Article 3 of the parties' "
+        "obligations under this contract. 10-2 Non-compliance by one of the parties with any clause or "
+        "article of this contract does not affect the validity of its remaining provisions."
+    )
+    before_count3b = len(doc3b.paragraphs)
+    fixed3b = asp._fix_merged_numbered_subclause(doc3b)
+    assert_(fixed3b == 1, "Exactly 1 split (the original regex only matched N-N-N, missing this real N-N case)")
+    after_count3b = len(doc3b.paragraphs)
+    assert_(after_count3b == before_count3b + 1, "Paragraph count increased by exactly 1")
+    texts3b = [p.text for p in doc3b.paragraphs if p.text.strip()]
+    assert_(texts3b[0].startswith("10-1") and "10-2" not in texts3b[0], "First paragraph is ONLY clause 10-1")
+    assert_(texts3b[1].startswith("10-2"), "Second paragraph is clause 10-2, on its own")
 
     print("\n=== Test 5: full-width shading promotion (issue 3) - the exact reported case ===")
     doc5 = Document()

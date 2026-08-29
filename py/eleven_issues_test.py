@@ -169,6 +169,27 @@ def run():
     assert_(bad_shd.get(qn("w:fill")) == "auto", "Its shading is now 'auto' (no shading), not the header's dark color")
     assert_(hdr_shd.get(qn("w:fill")) == "666666", "The real header row's own shading is completely untouched")
 
+    print("\n=== Issue 8c (THE REAL FOLLOW-UP GAP, found via a systematic XML re-check, not just the visually-obvious case): PARAGRAPH-level shading (not cell-level) is also caught ===")
+    doc8c = Document()
+    t8c = doc8c.add_table(rows=2, cols=1)
+    hdr_shd_c = OxmlElement("w:shd")
+    hdr_shd_c.set(qn("w:fill"), "666666")
+    t8c.rows[0].cells[0]._tc.get_or_add_tcPr().append(hdr_shd_c)
+    t8c.rows[0].cells[0].text = "Header"
+    data_p = t8c.rows[1].cells[0].paragraphs[0]
+    data_p.text = "1928550.00"
+    # the real confirmed bug: the CELL's own tcPr/shd is correctly
+    # "auto" (untouched), but the PARAGRAPH inside carries the
+    # header's dark fill - the original version of this fix never
+    # checked here at all.
+    para_shd = OxmlElement("w:shd")
+    para_shd.set(qn("w:fill"), "666666")
+    data_p._p.get_or_add_pPr().append(para_shd)
+    fixed8c = asp._fix_anomalous_header_shading_on_data_cell(doc8c)
+    assert_(fixed8c == 1, "The paragraph-level anomalous shading was found and fixed")
+    assert_(para_shd.get(qn("w:fill")) == "auto", "The paragraph's shading is now 'auto'")
+    assert_(hdr_shd_c.get(qn("w:fill")) == "666666", "The real header's own shading is still completely untouched")
+
     print("\n=== Issue 4 (THE REAL REPORTED CASE): first numbered-list item split onto its own line ===")
     doc4 = Document()
     t4 = doc4.add_table(rows=1, cols=1)
