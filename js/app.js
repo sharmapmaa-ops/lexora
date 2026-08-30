@@ -9217,6 +9217,29 @@
                                             </details>
                                         </div>
                                         <img src="x" onerror="this.remove(); try { var _src = window.__ocrTextBoxXmlSource; var _chk = document.getElementById('ocrTextBoxXmlFixCheck'); var _disp = document.getElementById('ocrTextBoxXmlSourceDisplay'); var _hasFix = !!(_src && _src.indexOf('naturalWidthPt') !== -1 && _src.indexOf(\"'distribute'\") === -1); if (_chk) { _chk.textContent = _src ? (_hasFix ? 'HAAN, fix maujood hai' : 'NAHI - fix maujood NAHI hai is real function me') : 'textBoxXml khud NOT FOUND (bahut purana JS)'; _chk.style.color = _hasFix ? '#080' : '#b00'; } if (_disp) { _disp.textContent = _src || 'not available'; } } catch(e) {}" style="display:none;" alt="">
+
+                                        <div class="claude-debug-topic" style="margin-top:20px; padding-top:16px; border-top:2px solid #ddd;">
+                                            <h4>Topic 2: Translation-formatting Solution Lab (per issue, multiple selectable fixes)</h4>
+                                            <p class="ds-card-sub" style="margin:4px 0 12px;">
+                                                Har real-reported formatting issue (white-line, character-split,
+                                                table-overflow) ke liye yahan ek label + dropdown hai, jisme us
+                                                issue ke SAARE candidate solutions listed hain. Ek test .docx
+                                                upload karo, kisi bhi issue ke liye kisi bhi variant ko select
+                                                karke "Apply" dabao - sirf WAHI ek variant test-document pe
+                                                lagाya jayega (poori pipeline nahi), aur result turant download
+                                                ho jayega taaki real Word me khol ke dekh sako. Jo variant sahi
+                                                nikle, wahi confirm kar dena - baaki options is list se hata di
+                                                jaayengi.
+                                            </p>
+                                            <div style="margin-bottom:14px;">
+                                                <label style="font-weight:bold; display:block; margin-bottom:4px;">Test document (.docx)</label>
+                                                <input type="file" id="solutionLabFileInput" accept=".docx" style="margin-bottom:4px;">
+                                                <div id="solutionLabFileStatus" class="ds-card-sub" style="margin-top:2px;"></div>
+                                            </div>
+                                            <div id="solutionLabIssuesContainer">
+                                                <p class="ds-card-sub">Loading known issues\u2026</p>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -9314,6 +9337,7 @@
                 if (!strip) return;
                 strip.querySelectorAll('.svc-tab').forEach((x, i) => x.classList.toggle('is-active', i === index));
                 strip.querySelectorAll('.svc-pane').forEach((x, i) => x.classList.toggle('is-active', i === index));
+                if (index === 2) loadSolutionLabPanel();
                 if (index === 3) loadTranslationHealthPanel();
                 if (index === 4) loadAdminSendAmountUserList();
                 if (index === 7) loadAppIssuesLog();
@@ -9326,6 +9350,108 @@
             // specifically so "check the translation [tables]" has one
             // obvious place to look instead of three separate PostgreSQL
             // table switches.
+            // NEW, per explicit direction: "har issue ke label aur select
+            // box add karo solution ke liye, mujhe sabhi solution usi me
+            // dedo taki main one by one koi bhi option select karke check
+            // kar saku". Loads the known-issue registry from the server,
+            // renders a label + dropdown + Apply button per issue, and
+            // lets the admin upload one test .docx to try any variant
+            // against, downloading the result for real inspection (in
+            // real Word) before deciding which variant to keep.
+            let __solutionLabTestFile = null;
+
+            window.loadSolutionLabPanel = async function() {
+                const container = document.getElementById('solutionLabIssuesContainer');
+                if (!container) return;
+
+                const fileInput = document.getElementById('solutionLabFileInput');
+                const fileStatus = document.getElementById('solutionLabFileStatus');
+                if (fileInput && !fileInput._wired) {
+                    fileInput._wired = true;
+                    fileInput.addEventListener('change', function () {
+                        if (this.files && this.files[0]) {
+                            __solutionLabTestFile = this.files[0];
+                            if (fileStatus) fileStatus.textContent = `Selected: ${this.files[0].name}`;
+                        }
+                    });
+                }
+
+                if (container._loaded) return;  // only fetch the registry once per page-load
+                container.innerHTML = '<p class="ds-card-sub">Loading known issues\u2026</p>';
+                try {
+                    const fetcher = window.authFetch || window.fetch;
+                    const res = await fetcher('/api/admin/solution-lab/list');
+                    const data = await res.json();
+                    if (!data || !data.ok || !data.issues || data.issues.length === 0) {
+                        container.innerHTML = '<p class="ds-card-sub">No known issues registered yet.</p>';
+                        return;
+                    }
+                    container._loaded = true;
+                    container.innerHTML = data.issues.map(function (issue) {
+                        const options = issue.variants.map(function (v) {
+                            return `<option value="${v.variantId}">${v.label}</option>`;
+                        }).join('');
+                        return `
+                            <div class="solution-lab-issue" style="margin-bottom:16px; padding:12px; border:1px solid #eee; border-radius:6px;">
+                                <div style="font-weight:bold; margin-bottom:6px;">${issue.label}</div>
+                                <select id="solutionLabVariant_${issue.issueId}" style="width:100%; max-width:520px; padding:6px; margin-bottom:8px;">
+                                    ${options}
+                                </select>
+                                <br>
+                                <button type="button" class="btn-translate" style="padding:8px 16px; font-size:0.9em;" onclick="applySolutionLabVariant('${issue.issueId}')">Apply this variant</button>
+                                <span id="solutionLabResult_${issue.issueId}" style="margin-left:10px;"></span>
+                            </div>
+                        `;
+                    }).join('');
+                } catch (err) {
+                    container.innerHTML = `<p class="ds-card-sub" style="color:#b00;">Failed to load: ${err.message}</p>`;
+                }
+            };
+
+            window.applySolutionLabVariant = async function(issueId) {
+                const resultEl = document.getElementById(`solutionLabResult_${issueId}`);
+                const select = document.getElementById(`solutionLabVariant_${issueId}`);
+                if (!select) return;
+                const variantId = select.value;
+
+                if (!__solutionLabTestFile) {
+                    if (resultEl) { resultEl.textContent = 'Pehle ek test .docx upload karo.'; resultEl.style.color = '#b00'; }
+                    return;
+                }
+
+                if (resultEl) { resultEl.textContent = 'Applying\u2026'; resultEl.style.color = '#555'; }
+
+                try {
+                    const dataUrl = await readFileAsDataURL(__solutionLabTestFile);
+                    const docxBase64 = dataUrl.split(',')[1];
+                    const fetcher = window.authFetch || window.fetch;
+                    const res = await fetcher('/api/admin/solution-lab/apply', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ issueId: issueId, variantId: variantId, docxBase64: docxBase64 })
+                    });
+                    const data = await res.json();
+                    if (!data || !data.ok) {
+                        if (resultEl) { resultEl.textContent = `Error: ${(data && data.error) || 'unknown'}`; resultEl.style.color = '#b00'; }
+                        return;
+                    }
+
+                    const binary = atob(data.outputBase64);
+                    const bytes = new Uint8Array(binary.length);
+                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                    const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+                    const url = URL.createObjectURL(blob);
+                    const baseName = (__solutionLabTestFile.name || 'test').replace(/\.docx$/i, '');
+
+                    if (resultEl) {
+                        resultEl.innerHTML = `Fixed count: <b>${data.fixedCount}</b> \u2014 <a href="${url}" download="${baseName}_${issueId}_${variantId}.docx" style="color:#007bff;">Download result</a>`;
+                        resultEl.style.color = '#080';
+                    }
+                } catch (err) {
+                    if (resultEl) { resultEl.textContent = `Error: ${err.message}`; resultEl.style.color = '#b00'; }
+                }
+            };
+
             window.loadTranslationHealthPanel = async function() {
                 const panel = document.getElementById('translationHealthPanel');
                 if (!panel) return;

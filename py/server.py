@@ -3847,6 +3847,8 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/translation/process-aspose": self._handle_translation_process_aspose,
             "/api/translation/aspose-convert": self._handle_translation_aspose_convert,
             "/api/translation/detect-pdf-content": self._handle_translation_detect_pdf_content,
+            "/api/admin/solution-lab/list": self._handle_admin_solution_lab_list,
+            "/api/admin/solution-lab/apply": self._handle_admin_solution_lab_apply,
             "/api/translation/inject-translation": self._handle_translation_inject_translation,
             "/api/translation/review": self._handle_translation_review,
             "/api/translation/docx-to-pdf": self._handle_translation_docx_to_pdf,
@@ -6741,6 +6743,82 @@ class Handler(SimpleHTTPRequestHandler):
                 f.write(base64.b64decode(pdf_b64))
             analysis = ocr_router.analyze_pdf_for_ocr_strategy(pdf_path)
             return 200, {"ok": True, "analysis": analysis, "strategy": analysis["strategy"]}
+        except Exception as err:
+            return 200, {"ok": False, "error": str(err)}
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _handle_admin_solution_lab_list(self, body):
+        """NEW, per explicit direction: "admin panel-claude me mujhe har
+        issue ke label aur select box add karo solution ke liye, mujhe
+        sabhi solution usi me dedo taki main one by one koi bhi option
+        select karke check kar saku". Returns the registry of known
+        issues and their selectable solution-variants, so the admin
+        panel can render a label + dropdown per issue without hardcoding
+        the list client-side - the SAME registry the apply endpoint
+        below uses to actually run a selected variant."""
+        import aspose_test_pipeline as asp_test
+
+        entries = []
+        for issue_id, issue in asp_test.ADMIN_SOLUTION_LAB_REGISTRY.items():
+            entries.append({
+                "issueId": issue_id,
+                "label": issue["label"],
+                "variants": [
+                    {"variantId": vid, "label": v["label"]}
+                    for vid, v in issue["variants"].items()
+                ],
+            })
+        return 200, {"ok": True, "issues": entries}
+
+    def _handle_admin_solution_lab_apply(self, body):
+        """NEW, per explicit direction (see _handle_admin_solution_lab_list
+        above) - applies ONE selected solution-variant for ONE issue to
+        an uploaded test document, returning the fixed docx so the admin
+        can download and inspect the real result before deciding which
+        variant to keep. Deliberately applies ONLY the one selected
+        variant (not the whole pipeline), so what gets downloaded is a
+        clean, isolated test of that one change."""
+        import aspose_test_pipeline as asp_test
+
+        issue_id = body.get("issueId")
+        variant_id = body.get("variantId")
+        docx_b64 = body.get("docxBase64")
+        if not issue_id or not variant_id or not docx_b64:
+            raise ValueError("issueId, variantId, and docxBase64 are all required")
+
+        issue = asp_test.ADMIN_SOLUTION_LAB_REGISTRY.get(issue_id)
+        if not issue:
+            return 200, {"ok": False, "error": f"Unknown issueId: {issue_id}"}
+        variant = issue["variants"].get(variant_id)
+        if not variant:
+            return 200, {"ok": False, "error": f"Unknown variantId: {variant_id} for issue {issue_id}"}
+
+        fn_name = variant["fn"]
+        fn = getattr(asp_test, fn_name, None)
+        if fn is None:
+            return 200, {"ok": False, "error": f"Solution function {fn_name} not found"}
+
+        tmp_dir = tempfile.mkdtemp(prefix="admin_solution_lab_")
+        try:
+            input_path = os.path.join(tmp_dir, "input.docx")
+            with open(input_path, "wb") as f:
+                f.write(base64.b64decode(docx_b64))
+
+            from docx import Document as _Document
+            doc = _Document(input_path)
+            fixed_count = fn(doc)
+
+            output_path = os.path.join(tmp_dir, "output.docx")
+            doc.save(output_path)
+            with open(output_path, "rb") as f:
+                output_b64 = base64.b64encode(f.read()).decode()
+
+            return 200, {
+                "ok": True,
+                "fixedCount": fixed_count,
+                "outputBase64": output_b64,
+            }
         except Exception as err:
             return 200, {"ok": False, "error": str(err)}
         finally:

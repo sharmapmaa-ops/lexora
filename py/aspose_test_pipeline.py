@@ -2962,6 +2962,354 @@ def _fix_ambiguous_table_width(doc):
     return fixed
 
 
+def _fix_paragraph_shading_mismatch_within_cell_variant_b_merge(doc):
+    """SOLUTION VARIANT B for the white-line issue (admin-panel A/B-test
+    lab, per explicit direction: "har issue ke liye har ek possible
+    solution chahiye"). Instead of matching each paragraph's own shd to
+    the cell's fill (Variant A - the currently-shipped fix), this
+    variant MERGES every paragraph within a shaded cell into a SINGLE
+    paragraph, joining their text with a real line-break (<w:br/>)
+    instead of separate <w:p> elements. Since there is then only ONE
+    paragraph (one shd, one spacing-before value) for the whole cell,
+    there is no "seam" between two paragraph elements for a gap to
+    appear in at all - this sidesteps the open question of whether
+    real Word renders the inter-paragraph spacing-before region using
+    either paragraph's own shading, by removing the multi-paragraph
+    structure entirely.
+
+    Uses the FIRST paragraph's own run-formatting as the template for
+    the merged runs (keeping its w:pPr, including its own shd/jc/
+    spacing, as the single surviving paragraph's properties)."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from copy import deepcopy
+
+    fixed = 0
+    for tc in doc.element.body.iter(qn("w:tc")):
+        tcPr = tc.find(qn("w:tcPr"))
+        if tcPr is None:
+            continue
+        cell_shd = tcPr.find(qn("w:shd"))
+        if cell_shd is None:
+            continue
+        cell_fill = cell_shd.get(qn("w:fill"))
+        if not cell_fill or cell_fill in ("auto", "FFFFFF"):
+            continue
+        paras = tc.findall(qn("w:p"))
+        if len(paras) < 2:
+            continue
+        first_p = paras[0]
+        for later_p in paras[1:]:
+            later_runs = later_p.findall(qn("w:r"))
+            if later_runs:
+                br_run = OxmlElement("w:r")
+                br_run.append(OxmlElement("w:br"))
+                first_p.append(br_run)
+                for r in later_runs:
+                    later_p.remove(r)
+                    first_p.append(r)
+            tc.remove(later_p)
+        fixed += 1
+    return fixed
+
+
+def _fix_paragraph_shading_mismatch_within_cell_variant_c_zero_spacing(doc):
+    """SOLUTION VARIANT C for the white-line issue (admin-panel
+    A/B-test lab). Keeps paragraphs SEPARATE (unlike Variant B), and
+    also sets matching shading (like Variant A) - but ADDITIONALLY
+    zeroes out w:spacing/@before on every non-first paragraph within a
+    shaded cell. If real Word's white-gap comes specifically from the
+    "spacing before" region not being covered by shading regardless of
+    the shd value (a real, plausible OOXML rendering behavior this
+    variant is designed to test), collapsing that spacing to 0 removes
+    the room for a gap to appear, while Variant A alone (shading-match
+    only, no spacing change) does not."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    fixed = 0
+    for tc in doc.element.body.iter(qn("w:tc")):
+        tcPr = tc.find(qn("w:tcPr"))
+        if tcPr is None:
+            continue
+        cell_shd = tcPr.find(qn("w:shd"))
+        if cell_shd is None:
+            continue
+        cell_fill = cell_shd.get(qn("w:fill"))
+        if not cell_fill or cell_fill in ("auto", "FFFFFF"):
+            continue
+        paras = tc.findall(qn("w:p"))
+        for i, p in enumerate(paras):
+            pPr = p.find(qn("w:pPr"))
+            if pPr is None:
+                pPr = OxmlElement("w:pPr")
+                p.insert(0, pPr)
+            para_shd = pPr.find(qn("w:shd"))
+            if para_shd is None:
+                para_shd = OxmlElement("w:shd")
+                para_shd.set(qn("w:val"), "clear")
+                para_shd.set(qn("w:color"), "auto")
+                pPr.append(para_shd)
+            if para_shd.get(qn("w:fill")) != cell_fill:
+                para_shd.set(qn("w:fill"), cell_fill)
+                fixed += 1
+            if i > 0:
+                spacing = pPr.find(qn("w:spacing"))
+                if spacing is not None and spacing.get(qn("w:before")) not in (None, "0"):
+                    spacing.set(qn("w:before"), "0")
+                    fixed += 1
+    return fixed
+
+
+def _fix_negative_usable_width_variant_b_widen_cell(doc):
+    """SOLUTION VARIANT B for the character-split issue (admin-panel
+    A/B-test lab). Instead of resetting the paragraph's own poisonous
+    right-indent to 0 (Variant A - the currently-shipped fix, which
+    changes the INDENT), this variant leaves the indent untouched and
+    instead WIDENS the cell itself (w:tcW) just enough that, combined
+    with the existing indent and margins, at least a minimal readable
+    width remains - preserving the original visual indent/margin
+    intent while removing the negative-width condition a different
+    way. Widens the cell's own tblGrid column to match, so the table's
+    total width stays internally consistent."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for tc in doc.element.body.iter(qn("w:tc")):
+        tcPr = tc.find(qn("w:tcPr"))
+        if tcPr is None:
+            continue
+        tcW = tcPr.find(qn("w:tcW"))
+        if tcW is None or not tcW.get(qn("w:w")):
+            continue
+        try:
+            cell_width = int(tcW.get(qn("w:w")))
+        except ValueError:
+            continue
+        tcMar = tcPr.find(qn("w:tcMar"))
+        tcMar_right_el = tcMar.find(qn("w:right")) if tcMar is not None else None
+        tcMar_right = int(tcMar_right_el.get(qn("w:w"))) if tcMar_right_el is not None and tcMar_right_el.get(qn("w:w")) else 0
+
+        for p in tc.findall(qn("w:p")):
+            pPr = p.find(qn("w:pPr"))
+            if pPr is None:
+                continue
+            ind = pPr.find(qn("w:ind"))
+            if ind is None or not ind.get(qn("w:right")):
+                continue
+            try:
+                right_indent = int(ind.get(qn("w:right")))
+            except ValueError:
+                continue
+            if right_indent <= 0:
+                continue
+            usable = cell_width - tcMar_right - right_indent
+            if usable < 200:
+                needed_width = right_indent + tcMar_right + 200
+                extra = needed_width - cell_width
+                tcW.set(qn("w:w"), str(needed_width))
+                # keep the table's own grid column in sync so the
+                # table's total declared width stays consistent
+                tbl_el = tc.getparent().getparent()
+                row_cells = tc.getparent().findall(qn("w:tc"))
+                cell_index = row_cells.index(tc)
+                grid = tbl_el.find(qn("w:tblGrid"))
+                if grid is not None:
+                    grid_cols = grid.findall(qn("w:gridCol"))
+                    if cell_index < len(grid_cols):
+                        gc = grid_cols[cell_index]
+                        gc_w = int(gc.get(qn("w:w"))) if gc.get(qn("w:w")) else 0
+                        gc.set(qn("w:w"), str(gc_w + extra))
+                fixed += 1
+    return fixed
+
+
+def _fix_negative_usable_width_variant_c_strip_both_indents(doc):
+    """SOLUTION VARIANT C for the character-split issue (admin-panel
+    A/B-test lab). A simpler, more aggressive alternative to Variant A:
+    instead of only resetting w:ind/@right, this variant resets BOTH
+    w:ind/@left and w:ind/@right to 0 whenever the right-indent alone
+    would leave less than a minimal readable width - maximizing the
+    cell's own usable text area on both sides, in case a real document
+    ever has a poisonous LEFT indent combined with the right one that
+    Variant A's narrower, right-only reset would not fully resolve."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for tc in doc.element.body.iter(qn("w:tc")):
+        tcPr = tc.find(qn("w:tcPr"))
+        if tcPr is None:
+            continue
+        tcW = tcPr.find(qn("w:tcW"))
+        if tcW is None or not tcW.get(qn("w:w")):
+            continue
+        try:
+            cell_width = int(tcW.get(qn("w:w")))
+        except ValueError:
+            continue
+        tcMar = tcPr.find(qn("w:tcMar"))
+        tcMar_right_el = tcMar.find(qn("w:right")) if tcMar is not None else None
+        tcMar_left_el = tcMar.find(qn("w:left")) if tcMar is not None else None
+        tcMar_right = int(tcMar_right_el.get(qn("w:w"))) if tcMar_right_el is not None and tcMar_right_el.get(qn("w:w")) else 0
+        tcMar_left = int(tcMar_left_el.get(qn("w:w"))) if tcMar_left_el is not None and tcMar_left_el.get(qn("w:w")) else 0
+
+        for p in tc.findall(qn("w:p")):
+            pPr = p.find(qn("w:pPr"))
+            if pPr is None:
+                continue
+            ind = pPr.find(qn("w:ind"))
+            if ind is None or not ind.get(qn("w:right")):
+                continue
+            try:
+                right_indent = int(ind.get(qn("w:right")))
+            except ValueError:
+                continue
+            if right_indent <= 0:
+                continue
+            usable = cell_width - tcMar_left - tcMar_right - right_indent
+            if usable < 200:
+                ind.set(qn("w:right"), "0")
+                ind.set(qn("w:left"), "0")
+                fixed += 1
+    return fixed
+
+
+def _fix_row_level_table_indent_override_variant_b_remove(doc):
+    """SOLUTION VARIANT B for the table-overflow issue (admin-panel
+    A/B-test lab). Instead of resetting the row-level w:tblPrEx/
+    w:tblInd to MATCH the table-level value (Variant A - the
+    currently-shipped fix, which keeps a tblInd element present but
+    corrects its number), this variant REMOVES the w:tblInd element
+    from w:tblPrEx entirely wherever it's found - per OOXML semantics,
+    a row with no tblPrEx/tblInd override simply inherits the table's
+    own tblPr/tblInd directly, achieving the same visual result via a
+    structurally different mechanism (no override element at all,
+    rather than a corrected one)."""
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        for tr_el in tbl_el.findall(qn("w:tr")):
+            tblPrEx = tr_el.find(qn("w:tblPrEx"))
+            if tblPrEx is None:
+                continue
+            tblInd = tblPrEx.find(qn("w:tblInd"))
+            if tblInd is not None:
+                tblPrEx.remove(tblInd)
+                fixed += 1
+            if len(tblPrEx) == 0:
+                tr_el.remove(tblPrEx)
+    return fixed
+
+
+def _fix_row_level_table_indent_override_variant_c_page_margin_derived(doc):
+    """SOLUTION VARIANT C for the table-overflow issue (admin-panel
+    A/B-test lab). Rather than deriving the "correct" indent from a
+    "Contract Data"-style reference table (Variant A's approach, which
+    real testing showed fails outright on documents that don't have
+    that specific table at all - see _find_reference_margin_table's
+    own real reported gap), this variant computes a safe indent
+    DIRECTLY from the page's own real w:pgMar/w:left margin (via the
+    document's own sectPr) - independent of any specific table's own
+    content, so it works even on documents with a completely different
+    internal table structure. Sets BOTH the table-level w:tblInd AND
+    any row-level w:tblPrEx/w:tblInd to this same page-margin-derived
+    value, so the two levels can never disagree with each other."""
+    from docx.oxml.ns import qn
+
+    sections = doc.sections
+    if not sections:
+        return 0
+    left_margin = sections[0].left_margin
+    # A small, safe indent derived from the page's own margin - not
+    # from any specific reference table's own content.
+    safe_indent = max(0, min(left_margin // 2, 900)) if left_margin else 0
+
+    fixed = 0
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        tblPr = tbl_el.find(qn("w:tblPr"))
+        if tblPr is not None:
+            tblInd = tblPr.find(qn("w:tblInd"))
+            if tblInd is None:
+                from docx.oxml import OxmlElement
+                tblInd = OxmlElement("w:tblInd")
+                tblInd.set(qn("w:type"), "dxa")
+                tblPr.append(tblInd)
+            if tblInd.get(qn("w:w")) != str(safe_indent):
+                tblInd.set(qn("w:w"), str(safe_indent))
+                fixed += 1
+        for tr_el in tbl_el.findall(qn("w:tr")):
+            tblPrEx = tr_el.find(qn("w:tblPrEx"))
+            if tblPrEx is None:
+                continue
+            row_ind = tblPrEx.find(qn("w:tblInd"))
+            if row_ind is not None and row_ind.get(qn("w:w")) != str(safe_indent):
+                row_ind.set(qn("w:w"), str(safe_indent))
+                fixed += 1
+    return fixed
+
+
+# Registry mapping each admin-panel "issue" to its selectable solution
+# variants, per explicit direction: "har issue ke liye har ek possible
+# solution chahiye... mujhe sabhi solution usi me dedo taki me one by
+# one koi bhi option select karke check kar saku". Each entry's
+# function is called with just `doc` (and, for the reversal fix
+# elsewhere, a target_language - not part of this specific lab).
+ADMIN_SOLUTION_LAB_REGISTRY = {
+    "white_line_shaded_cell": {
+        "label": "White line in shaded header cells (e.g. \"Rent value\")",
+        "variants": {
+            "a_shading_match": {
+                "label": "Variant A (shipped): match every paragraph's own shading to the cell's fill",
+                "fn": "_fix_paragraph_shading_mismatch_within_cell",
+            },
+            "b_merge_paragraphs": {
+                "label": "Variant B: merge all paragraphs in the cell into one (line-breaks instead of separate paragraphs)",
+                "fn": "_fix_paragraph_shading_mismatch_within_cell_variant_b_merge",
+            },
+            "c_zero_spacing": {
+                "label": "Variant C: match shading AND zero the \"spacing before\" gap on later paragraphs",
+                "fn": "_fix_paragraph_shading_mismatch_within_cell_variant_c_zero_spacing",
+            },
+        },
+    },
+    "character_split_negative_width": {
+        "label": "Character-by-character vertical text wrap (negative usable cell width)",
+        "variants": {
+            "a_zero_right_indent": {
+                "label": "Variant A (shipped): reset the paragraph's own poisonous right-indent to 0",
+                "fn": "_fix_negative_usable_width_from_paragraph_indent",
+            },
+            "b_widen_cell": {
+                "label": "Variant B: keep the indent, widen the cell (and its table-grid column) instead",
+                "fn": "_fix_negative_usable_width_variant_b_widen_cell",
+            },
+            "c_strip_both_indents": {
+                "label": "Variant C: reset BOTH left and right indent to 0 (more aggressive than Variant A)",
+                "fn": "_fix_negative_usable_width_variant_c_strip_both_indents",
+            },
+        },
+    },
+    "table_overflow_row_level_override": {
+        "label": "Table shifted right / overflowing the page (row-level tblPrEx margin mismatch)",
+        "variants": {
+            "a_match_table_level": {
+                "label": "Variant A (shipped): reset the row-level override to match the table-level indent",
+                "fn": "_fix_row_level_table_indent_override",
+            },
+            "b_remove_override": {
+                "label": "Variant B: remove the row-level override element entirely (inherit from table-level)",
+                "fn": "_fix_row_level_table_indent_override_variant_b_remove",
+            },
+            "c_page_margin_derived": {
+                "label": "Variant C: derive a safe indent directly from the page's own margin (no reference table needed)",
+                "fn": "_fix_row_level_table_indent_override_variant_c_page_margin_derived",
+            },
+        },
+    },
+}
+
+
 def _fix_paragraph_shading_mismatch_within_cell(doc):
     """Item (WHITE-LINE-IN-SHADED-CELL, real reported issue, per a
     user-provided real MS Word screenshot with zoomed-in evidence) -
