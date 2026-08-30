@@ -523,3 +523,46 @@ par decide karega.
   tables/cells me repeat ho rahi hai, to fix bhi utni hi comprehensive
   honi chahiye (saari matching instances cover kare), na ki sirf ek
   example ko point-fix karna.
+
+- **MANDATORY VISUAL-REVIEW CHECKLIST — image-based document review me
+  bar-bar (kई alag turns me) ye 4 categories miss hui hain, jab tak user
+  ne khud unhe point out nahi kiya. Sirf "kya jump-out karta hai"
+  dhoondна kaafi nahi hai — har naye image-review pass me, HAR PAGE ke
+  liye, in 4 checks ko EXPLICITLY, systematically run karna hai, na ki
+  sirf tab jab kuch "obviously galat" dikhे:**
+
+  1. **Cross-element POSITION/ALIGNMENT comparison**: har table/heading
+     ka LEFT-EDGE, doosri similar tables/headings (SAME page pe) ke
+     LEFT-EDGE se pixel-compare karo. Real miss: "First Year/Second
+     Year/Third Year" table apni page ki "Payment Schedule" table se
+     ~225px right-shifted thi — genuinely obvious jab compare kiya, but
+     maine kabhi explicitly compare hi nahi kiya tha.
+  2. **Shading/fill ARTIFACTS ke liye zoom**: har header-row/shaded-cell
+     ko 2x-3x zoom karके dekho ki fill COLOR aur BOUNDARY clean hai ya
+     koi thin white-line/seam dikh rahi hai (mismatched paragraph-level
+     vs cell-level shading ka symptom). Real miss: "Rent value", "Total
+     value", "Issued Date(AD)" header-cells me white-line thi, "Serial
+     Number"/"VAT" me nahi — sirf normal-resolution scan se dikhी hi
+     nahi, zoom karne par turant confirm hui.
+  3. **TEXT OVERFLOW/TRUNCATION, chhote-scale bhi**: sirf catastrophic
+     character-by-character wrap hi nahi — koi bhi text jo cell/column/
+     page-boundary se KATA hua ho (ek word ka aakhri hissa missing,
+     jaisa "(Includes depos" jo "deposit)" hona chahiye tha) — ye bhi
+     ek real, flag-karne-laayak overflow hai.
+  4. **TABLE FRAGMENTATION check (XML se, HAR baar)**: jab ek document-
+     section (jaisa "9 Rental Units Data") visually EK cohesive block
+     lage, XML me check karo ki wo GENUINELY ek `<w:tbl>` hai ya MULTIPLE
+     `<w:tbl>` elements hain jo plain-paragraphs se separate hue hain.
+     Real miss: "Rental Units Data" 3 alag `<w:tbl>` thi ("Unit Type:
+     Office" aur "Special sign..." se separated), maine kabhi is
+     specific check ko systematically nahi chalाया jab tak user ne
+     explicitly nahi bola.
+
+  **Sabse important point jo user ne bola**: "galtiyo ko list karne ka
+  matlab wo galti dobara kabhi nahi honi chahiye" — sirf lesson likhна
+  kaafi nahi hai agar wahi CATEGORY ki galti (missed-visual-issue)
+  baar-baar hoती rahe. Isliye ye 4 checks ab EK MANDATORY, EXPLICIT
+  PRE-FLIGHT STEP hain — har naye image-based document-review turn ki
+  shuruaat me, in 4 categories ko HAR PAGE ke liye explicitly run karna
+  hai (visual scan ke ALAWA, na ki uski jagah), chahe kuch "obviously
+  galat" na bhi dikhे.
