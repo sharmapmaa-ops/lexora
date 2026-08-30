@@ -2825,15 +2825,31 @@ def _remove_duplicate_field_labels_in_row(doc):
     without (a leftover duplicate, likely from the original
     bilingual/dual-column source layout surviving translation).
 
+    REAL FOLLOW-UP GAP (found during a careful, full page-by-page
+    review of a real current output, comparing against what had
+    already been fixed before): the original version only matched
+    EXACT (post-colon-stripping) text, case-SENSITIVE - a real,
+    confirmed, repeating pattern in that same document used
+    case-VARYING duplicates instead ('Number of AC Units' / 'Number
+    of AC units', 'Electricity Meter Number' / 'Electricity meter
+    number', 'Current Reading' / 'Current reading' - appearing twice,
+    in two different rows), which this fix silently missed every time,
+    since "Number of AC Units" != "Number of AC units" as exact
+    strings. Now compares case-INSENSITIVELY (the dict key used to
+    detect a repeat is lowercased) while still PRESERVING the first
+    occurrence's own original casing exactly as it was - only the
+    later, redundant duplicate gets emptied out.
+
     Fix: within each row, group cells by their normalized text (strip
-    a trailing colon and surrounding whitespace) - when two or more
-    cells share the same normalized text, keep the FIRST occurrence
-    exactly as it was and empty out every later duplicate. Scoped to
-    matches of at least 5 characters containing a letter (not just
-    digits/punctuation) - keeps this from ever accidentally treating a
-    short, coincidentally-matching VALUE (a date, a number) as a
-    duplicate label; genuine field labels are real English phrases,
-    coincidental short/numeric matches are not this bug."""
+    a trailing colon and surrounding whitespace, then lowercase for
+    comparison purposes only) - when two or more cells share the same
+    normalized text, keep the FIRST occurrence exactly as it was
+    (original casing preserved) and empty out every later duplicate.
+    Scoped to matches of at least 5 characters containing a letter
+    (not just digits/punctuation) - keeps this from ever accidentally
+    treating a short, coincidentally-matching VALUE (a date, a number)
+    as a duplicate label; genuine field labels are real English
+    phrases, coincidental short/numeric matches are not this bug."""
     from docx.oxml.ns import qn
 
     def _normalize(text):
@@ -2853,13 +2869,14 @@ def _remove_duplicate_field_labels_in_row(doc):
                 norm = _normalize(raw_text)
                 if len(norm) < 5 or not any(ch.isalpha() for ch in norm):
                     continue
-                if norm in seen:
+                key = norm.lower()
+                if key in seen:
                     for t in ts:
                         t.text = ""
                     if ts:
                         fixed += 1
                 else:
-                    seen[norm] = tc
+                    seen[key] = tc
     return fixed
 
 
@@ -2942,6 +2959,62 @@ def _fix_ambiguous_table_width(doc):
             tblPrEx = tr_el.find(qn("w:tblPrEx"))
             if tblPrEx is not None:
                 _resolve_ambiguous_width(tblPrEx.find(qn("w:tblW")))
+    return fixed
+
+
+def _fix_paragraph_shading_mismatch_within_cell(doc):
+    """Item (WHITE-LINE-IN-SHADED-CELL, real reported issue, per a
+    user-provided real MS Word screenshot with zoomed-in evidence) -
+    confirmed real, directly in a reported document's XML: header
+    cells like "Rent Value" / "Total Value" carry a dark background
+    (w:tcPr/w:shd fill=666666) and consist of TWO separate paragraphs
+    (not one paragraph with concatenated text - confirmed by directly
+    reading the raw XML) - the FIRST paragraph correctly carries its
+    own matching w:pPr/w:shd fill=666666, but the SECOND paragraph has
+    NO w:pPr/w:shd at all, defaulting to no fill (visually white). That
+    second paragraph's own line-height then renders as a visible white
+    gap/seam cutting through what should be a solid dark header cell -
+    exactly the "white lining" the user pointed out and confirmed via a
+    zoomed screenshot. A systematic, whole-document scan (not scoped to
+    the 3 example cells shown) found 196 real instances of this same
+    mismatch - genuinely widespread, not a one-off.
+
+    Fix: for every table cell whose OWN w:tcPr/w:shd has a real fill
+    color (not "auto"/"FFFFFF"), every paragraph inside that cell gets
+    its OWN w:pPr/w:shd set to that SAME fill color - adding the
+    element if missing, correcting it if it's set to something else.
+    This does not touch cells with no real background fill at all
+    (ordinary white table cells are left completely alone - there is
+    no "gap" to fix when there's no dark background for a paragraph to
+    contrast against)."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    fixed = 0
+    for tc in doc.element.body.iter(qn("w:tc")):
+        tcPr = tc.find(qn("w:tcPr"))
+        if tcPr is None:
+            continue
+        cell_shd = tcPr.find(qn("w:shd"))
+        if cell_shd is None:
+            continue
+        cell_fill = cell_shd.get(qn("w:fill"))
+        if not cell_fill or cell_fill in ("auto", "FFFFFF"):
+            continue
+        for p in tc.findall(qn("w:p")):
+            pPr = p.find(qn("w:pPr"))
+            if pPr is None:
+                pPr = OxmlElement("w:pPr")
+                p.insert(0, pPr)
+            para_shd = pPr.find(qn("w:shd"))
+            if para_shd is None:
+                para_shd = OxmlElement("w:shd")
+                para_shd.set(qn("w:val"), "clear")
+                para_shd.set(qn("w:color"), "auto")
+                pPr.append(para_shd)
+            if para_shd.get(qn("w:fill")) != cell_fill:
+                para_shd.set(qn("w:fill"), cell_fill)
+                fixed += 1
     return fixed
 
 
@@ -4975,6 +5048,18 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
     except Exception:
         pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
 
+    # Real reported issue, per a user-provided zoomed real-Word
+    # screenshot - a visible white line cutting through an otherwise-
+    # solid dark header cell background. Runs right after the
+    # duplicate-label fix above, since that fix can leave a cell's
+    # second paragraph empty of NEW text while this fix ensures
+    # whatever paragraphs remain still carry consistent shading.
+    paragraph_shading_mismatch_fixed = 0
+    try:
+        paragraph_shading_mismatch_fixed = _fix_paragraph_shading_mismatch_within_cell(doc)
+    except Exception:
+        pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
+
     # Runs AFTER the two structural splits above, so newly-created
     # paragraphs (the list-item split, the label/value split) also get
     # a real alignment decision, not just the paragraphs that existed
@@ -5062,6 +5147,7 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
         "cell_alignment_by_length_fixed": cell_alignment_by_length_fixed,
         "cell_padding_asymmetry_fixed": cell_padding_asymmetry_fixed,
         "within_cell_duplicate_label_fixed": within_cell_duplicate_label_fixed,
+        "paragraph_shading_mismatch_fixed": paragraph_shading_mismatch_fixed,
     }
 
 

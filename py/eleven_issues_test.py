@@ -136,6 +136,26 @@ def run():
     fixed7b = asp._remove_duplicate_field_labels_in_row(doc7b)
     assert_(fixed7b == 0, "Zero removals - short numeric matches are never treated as duplicate labels")
 
+    print("\n=== Issue 7 follow-up (THE REAL REPORTED GAP, found during a careful full page-by-page review of a real current output): case-VARYING duplicate labels are now caught ===")
+    doc7c = Document()
+    t7c = doc7c.add_table(rows=1, cols=3)
+    t7c.rows[0].cells[0].text = "Electricity Meter Number"
+    t7c.rows[0].cells[1].text = "KFM2020560004195"
+    t7c.rows[0].cells[2].text = "Electricity meter number"
+    fixed7c = asp._remove_duplicate_field_labels_in_row(doc7c)
+    assert_(fixed7c == 1, "The case-varying duplicate is now caught (the original exact-match-only version missed this)")
+    assert_(t7c.rows[0].cells[0].text == "Electricity Meter Number", "The first occurrence keeps its own original casing exactly as it was")
+    assert_(t7c.rows[0].cells[2].text == "", "The later, case-varying duplicate is emptied")
+    assert_(t7c.rows[0].cells[1].text == "KFM2020560004195", "The value cell in between is completely unaffected")
+
+    print("\n=== Issue 7 follow-up: two genuinely DIFFERENT labels that merely share some words are never treated as duplicates ===")
+    doc7d = Document()
+    t7d = doc7d.add_table(rows=1, cols=2)
+    t7d.rows[0].cells[0].text = "Annual Electricity Fee"
+    t7d.rows[0].cells[1].text = "Annual Gas Fee"
+    fixed7d = asp._remove_duplicate_field_labels_in_row(doc7d)
+    assert_(fixed7d == 0, "Zero removals - these are genuinely different labels, not a case-variant of the same one")
+
     print("\n=== Issue 8a: Article heading spacing normalized to the document's own real dominant value ===")
     if os.path.exists(REAL_DOCX):
         doc8 = Document(REAL_DOCX)

@@ -6904,6 +6904,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "cellAlignmentByLengthFixed": result.get("cell_alignment_by_length_fixed"),
                 "cellPaddingAsymmetryFixed": result.get("cell_padding_asymmetry_fixed"),
                 "withinCellDuplicateLabelFixed": result.get("within_cell_duplicate_label_fixed"),
+                "paragraphShadingMismatchFixed": result.get("paragraph_shading_mismatch_fixed"),
             }
         except Exception as err:
             return 200, {"ok": False, "error": str(err)}
