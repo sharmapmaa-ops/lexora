@@ -2068,13 +2068,33 @@ def _rebuild_table_from_ocr_structure(output_doc, output_table, ocr_table, targe
 
     # Step 4 + 5: per-cell background from OCR (position/order-mapped),
     # text+run-formatting from output_table (matched by position).
+    #
+    # REAL BUG FOUND (via a real end-to-end test on the actual OCR
+    # source document, wiring this into the real pipeline for the
+    # first time): 2 of 32 real tables have a LAST row with FEWER
+    # physical cells than the nominal column count (row 0's own cell
+    # count) - no w:gridSpan present, just genuinely fewer <w:tc>
+    # elements for that one row (an Aspose-conversion quirk, not a
+    # malformed document) - indexing ocr_row_cells[ocr_col_idx]
+    # crashed outright ("tuple index out of range") the first time
+    # this ran against real, varied tables instead of just the one
+    # (regular, 9-column-every-row) table used during isolated
+    # testing. Both access points below now fall back to that row's
+    # OWN LAST cell when the nominal index would be out of range for
+    # THIS specific row (a reasonable interpretation for a shorter
+    # trailing row - it's usually one wider "notes"-style cell) -
+    # rather than crashing the whole table's rebuild over one
+    # irregular row.
     for r_idx in range(ocr_row_count):
         ocr_row_cells = ocr_rows[r_idx].cells
         output_row_cells = output_rows[r_idx].cells if r_idx < len(output_rows) else []
         new_row_cells = new_table.rows[r_idx].cells
         for new_col_pos, ocr_col_idx in enumerate(col_order):
             new_cell = new_row_cells[new_col_pos]
-            ocr_cell = ocr_row_cells[ocr_col_idx]
+            if not ocr_row_cells:
+                continue
+            safe_ocr_idx = ocr_col_idx if ocr_col_idx < len(ocr_row_cells) else len(ocr_row_cells) - 1
+            ocr_cell = ocr_row_cells[safe_ocr_idx]
             bg_fill = _cell_bg_fill(ocr_cell)
             if bg_fill:
                 tcPr = new_cell._tc.get_or_add_tcPr()
@@ -2083,8 +2103,9 @@ def _rebuild_table_from_ocr_structure(output_doc, output_table, ocr_table, targe
                 shd.set(qn("w:color"), "auto")
                 shd.set(qn("w:fill"), bg_fill)
                 tcPr.append(shd)
-            if new_col_pos < output_col_count and new_col_pos < len(output_row_cells):
-                src_cell = output_row_cells[new_col_pos]
+            if output_row_cells and new_col_pos < output_col_count:
+                safe_output_idx = new_col_pos if new_col_pos < len(output_row_cells) else len(output_row_cells) - 1
+                src_cell = output_row_cells[safe_output_idx]
                 new_cell.text = ""
                 new_para = new_cell.paragraphs[0]
                 # new_cell.text = "" leaves a stray EMPTY <w:r/> behind on
@@ -5499,11 +5520,26 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
     itself and not dependent on every future caller remembering to load
     and pass one."""
     from docx import Document
+    from docx.table import Table
 
     if llm_config is None:
         llm_config = le.load_llm_config()
 
     doc = Document(docx_path)
+
+    # Item (TABLE-REBUILD-WIRED-IN, real reported requirement: "agar
+    # koi chiz bina wire kiye bheju to wo kis kaam ki hogi" - a
+    # function that exists but is never called does nothing real for
+    # the actual pipeline, no matter how well-tested in isolation).
+    # A snapshot of every table's OWN raw XML is taken here, BEFORE
+    # translation touches anything - this IS the genuine pre-
+    # translation/pre-patch ("OCR") structure _rebuild_table_from_ocr_
+    # structure needs as its structure-source, with no need for a
+    # SEPARATE uploaded OCR file at all: this same function already
+    # receives the Step-1 (Aspose) docx as its own input, before any
+    # translation or formatting pass has touched it.
+    from copy import deepcopy
+    pre_translation_table_snapshots = [deepcopy(t._tbl) for t in doc.tables]
 
     (translated_count, skipped_count, failed_batches, total_batches,
      llm_calls_by_provider, translation_request_response_log) = _translate_docx_segments_in_place(doc, target_language, llm_config)
@@ -5702,6 +5738,38 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
     except Exception:
         pass  # non-fatal - the translated document still ships even if this cosmetic pass fails
 
+    # Item (TABLE-REBUILD-WIRED-IN) - runs LAST, using the snapshot
+    # taken at the very top of this function (genuine pre-translation
+    # structure) as the structure-source, and the now-fully-processed
+    # `doc` (translated + every fix above already applied) as the
+    # content-source, per _rebuild_table_from_ocr_structure's own
+    # documented process. Each table is rebuilt independently, in its
+    # OWN try/except, so a real failure on any ONE table (a genuine
+    # structural mismatch between its pre-translation snapshot and its
+    # current, patched form) leaves that ONE table exactly as the
+    # patch-based fixes above already left it, rather than blocking
+    # every other table or the document as a whole. current_tables is
+    # captured ONCE, as real python-docx Table objects (each bound to
+    # its own specific w:tbl element) before this loop starts, since
+    # _rebuild_table_from_ocr_structure replaces a table's element
+    # in-place - re-querying doc.tables mid-loop would see the
+    # already-rebuilt elements and misalign the remaining snapshot
+    # indices.
+    tables_rebuilt = 0
+    tables_rebuild_failed = 0
+    current_tables = list(doc.tables)
+    for idx, current_table in enumerate(current_tables):
+        if idx >= len(pre_translation_table_snapshots):
+            continue
+        try:
+            snapshot_table = Table(pre_translation_table_snapshots[idx], current_table._parent)
+            result = _rebuild_table_from_ocr_structure(doc, current_table, snapshot_table, target_language)
+            if result.get("rebuilt"):
+                tables_rebuilt += 1
+        except Exception as err:  # noqa: BLE001
+            tables_rebuild_failed += 1
+            print(f"[table-rebuild] table {idx} kept its existing (patch-based) form, rebuild skipped: {err}")
+
     doc.save(output_path)
     return {
         "output_path": output_path,
@@ -5722,6 +5790,8 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
         "negative_usable_width_fixed": negative_usable_width_fixed,
         "narrow_columns_fixed": narrow_columns_fixed,
         "table_columns_reversed": table_columns_reversed,
+        "tables_rebuilt": tables_rebuilt,
+        "tables_rebuild_failed": tables_rebuild_failed,
         "article_numbers_converted": article_numbers_converted,
         "header_labels_fixed": header_labels_fixed,
         "duplicate_field_labels_removed": duplicate_field_labels_removed,
