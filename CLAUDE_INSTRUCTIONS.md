@@ -606,3 +606,31 @@ par decide karega.
   Rebuild-approach me empty rows/columns cleanup, alignment-by-length,
   wrap, vertical-align — sab AAKHIR me, ek CLEAN structure ke upar
   apply hote hain, na ki ek already-uncertain structure ke upar.
+
+- **"BINA WIRE KIYE bheja gaya code ZERO VALUE hai" — user ne isse
+  direct, sahi criticism ke roop me bataya.** Ek turn me maine
+  `_rebuild_table_from_ocr_structure` banाई, extensively test kiya
+  (14 checks), aur ek professional process-document + flowchart bhi
+  banаके deliver kiya — lekin function ko REAL PIPELINE
+  (`translate_existing_docx`) me kabhi CALL nahi kiya. Matlab jab
+  user ne translation-service chalाई, un files me rebuild ka koi
+  asar hi nahi tha — chahे function apne aap me kितnа bhi "working"
+  ho. **"Maine ise banаya aur test kiya" ≠ "maine ise deliver kiya"
+  — jab tak wo REAL, actual-chalne-wali pipeline ka hissa na ho, wo
+  user ke liye kaam ki hi nahi hai.**
+
+  Jab wire karke genuinely test kiya (poori `translate_existing_docx`
+  ko real document pe end-to-end chalाके), **2 genuine crashes mile**
+  jo standalone-testing me kabhi nahi pakड़e gaye the (ek regular table
+  pe hi test kiya tha) — ek irregular row (gridSpan ke bina bhi kam
+  cells) ne "tuple index out of range" diya 2/32 tables me. Ye confirm
+  karta hai: **standalone/isolated testing, chahे kितnа bhi thorough
+  lage, REAL end-to-end wiring ke bina kabhi "done" nahi maanना
+  chahiye** — asli integration hi asli edge-cases saamне laाती hai.
+
+  **Sabak**: koi bhi naya function/fix banाने ke baad, agla sawaal
+  hamesha ye hona chahiye — *"kya ye ab REAL pipeline me chal raha
+  hai, jab user apna normal workflow (translation-service start)
+  chalााए?"* Agar jawab "nahi, abhi sirf standalone-tested hai" hai,
+  to kaam **abhi complete nahi hua hai**, chahе documentation/testing
+  kितnа bhi polished lage.
