@@ -6961,6 +6961,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "segmentsTranslated": result.get("segments_translated"),
                 "segmentsSkipped": result.get("segments_skipped"),
                 "translationProviders": result.get("translation_providers"),
+                "translationRequestResponseLog": result.get("translation_request_response_log"),
                 "rightIndentFixed": result.get("right_indent_fixed"),
                 "shadingPromoted": result.get("shading_promoted"),
                 "centerAlignmentFixed": result.get("center_alignment_fixed"),

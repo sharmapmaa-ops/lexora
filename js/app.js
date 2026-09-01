@@ -2991,6 +2991,36 @@
                                     if (!injectData || !injectData.ok) {
                                         throw new Error((injectData && injectData.error) || 'Translation injection failed.');
                                     }
+
+                                    // Item (JSON-PAYLOAD-DOWNLOAD, real reported
+                                    // requirement): "jab hum openrouter ko json
+                                    // bhejte hain, sabse pehle json download honi
+                                    // chahiye, fir jab translation ka data mile
+                                    // to wo bhi sabse pehle download ho jana
+                                    // chahiye" - the server collects the exact
+                                    // outgoing request-JSON and incoming
+                                    // response-JSON for EVERY translation batch
+                                    // (translationRequestResponseLog); each pair
+                                    // downloads here, request before its own
+                                    // response, in the same order the batches
+                                    // were actually sent - this is real
+                                    // request/response bookkeeping the user can
+                                    // directly inspect, not a reconstruction.
+                                    if (Array.isArray(injectData.translationRequestResponseLog)) {
+                                        injectData.translationRequestResponseLog.forEach(function (entry, idx) {
+                                            const batchNum = idx + 1;
+                                            if (entry.request) {
+                                                const reqBlob = new Blob([entry.request], { type: 'application/json' });
+                                                _downloadBlobImmediately(reqBlob, `${baseName} Translation-Batch${batchNum}-Request.json`);
+                                            }
+                                            if (entry.response) {
+                                                const respBlob = new Blob([entry.response], { type: 'application/json' });
+                                                _downloadBlobImmediately(respBlob, `${baseName} Translation-Batch${batchNum}-Response.json`);
+                                            }
+                                        });
+                                        addActivity('translation', `${fl}System > ${injectData.translationRequestResponseLog.length} translation-batch JSON request/response pair(s) downloaded`, 'Info');
+                                    }
+
                                     const injectBinary = atob(injectData.outputBase64);
                                     const injectBytes = new Uint8Array(injectBinary.length);
                                     for (let bi = 0; bi < injectBinary.length; bi++) injectBytes[bi] = injectBinary.charCodeAt(bi);

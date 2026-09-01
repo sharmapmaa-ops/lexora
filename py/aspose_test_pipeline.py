@@ -1958,6 +1958,245 @@ def _split_label_value_pairs_within_cell(doc):
     return fixed
 
 
+def _rebuild_table_from_ocr_structure(output_doc, output_table, ocr_table, target_language):
+    """SOLUTION VARIANT D for table-structure issues (admin-panel
+    A/B-test lab), per an explicit, exact user-provided manual
+    methodology - a fundamentally DIFFERENT strategy from every other
+    fix in this file: instead of detecting and patching ONE broken
+    property on the EXISTING (possibly still-uncertain) table
+    structure, this REBUILDS the table from scratch, sourcing
+    structure and content from whichever of the two available
+    documents is more reliable for THAT specific aspect:
+      - STRUCTURE (row count, column count, each cell's own
+        background color) comes from the OCR (Step-1, pre-translation)
+        table - the structure Aspose originally produced, before
+        translation-injection's own paragraph/cell manipulation had
+        any chance to introduce the row-level tblPrEx mismatches,
+        multi-paragraph shading gaps, etc. this whole file spends most
+        of its real fixes patching.
+      - CONTENT (the actual translated words, with their own run
+        formatting - bold, font, size - but NOT their background,
+        which comes from the OCR side instead per the step above)
+        comes from output_table - the already-translated table, whose
+        WORDS are correct even where its STRUCTURE may not be.
+
+    Real reported process, followed in this exact order:
+      1. Read the page's own real left/right margins (this doc's
+         sections[0]) - the table's own final width and position are
+         computed DIRECTLY from these, not inherited/derived from any
+         other table's own properties (the real, repeated root cause
+         of _find_reference_margin_table's own reported fragility).
+      2. Read the OCR table's real row/column count.
+      3. Build a brand-new table with that exact row/column count,
+         width = content width (page width minus both margins),
+         explicitly indented to start right at the left margin.
+      4. Populate each new cell's background from the OCR table's
+         SAME-POSITION cell (after applying the same RTL-source-
+         reversal _reverse_table_column_order already applies
+         elsewhere in this file, so an RTL-source table's columns
+         land in the correct final LTR order here too).
+      5. Populate each new cell's TEXT (full run-formatting preserved,
+         background deliberately excluded) from output_table's
+         same-position cell - matched by position, not by re-deriving
+         translated text a second time.
+      6. Remove the OLD output_table from the document entirely,
+         insert the freshly-built one in its place.
+      7. Clean-up pass: autofit columns, delete any row with no real
+         text at all, delete any column with no real text at all,
+         wrap all cell text, re-set the table's own width to the
+         content-width one more time (a final safety pass, matching
+         the real reported process), then apply the SAME
+         alignment-by-length and vertical-center rules already used
+         elsewhere in this file.
+
+    Real, honest scope note: cell-by-cell POSITION matching between
+    the OCR table and output_table assumes both have the SAME real
+    cell count in the SAME row-groupings (true whenever output_table
+    is a translated version of the exact same OCR table, which is the
+    only case this function is meant to be used for) - it does not
+    attempt to reconcile two structurally DIFFERENT tables."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from copy import deepcopy
+
+    sections = output_doc.sections
+    left_margin = sections[0].left_margin.twips if sections else 0
+    right_margin = sections[0].right_margin.twips if sections else 0
+    page_width = sections[0].page_width.twips if sections else 0
+    content_width = max(0, page_width - left_margin - right_margin) if page_width else 0
+
+    ocr_rows = ocr_table.rows
+    ocr_row_count = len(ocr_rows)
+    ocr_col_count = len(ocr_rows[0].cells) if ocr_row_count else 0
+    if ocr_row_count == 0 or ocr_col_count == 0:
+        return {"rebuilt": False, "reason": "OCR table has no real rows/columns to rebuild from"}
+
+    want_rtl = _is_rtl_language(target_language)
+    col_order = list(range(ocr_col_count)) if want_rtl else list(reversed(range(ocr_col_count)))
+
+    output_rows = output_table.rows
+    output_col_count = len(output_rows[0].cells) if len(output_rows) else 0
+
+    # Step 1-3: brand-new table, explicit dimensions/width/position.
+    new_table = output_doc.add_table(rows=ocr_row_count, cols=ocr_col_count)
+    new_tbl = new_table._tbl
+    tblPr = new_tbl.find(qn("w:tblPr"))
+    tblW = tblPr.find(qn("w:tblW"))
+    if tblW is None:
+        tblW = OxmlElement("w:tblW")
+        tblPr.append(tblW)
+    tblW.set(qn("w:type"), "dxa")
+    tblW.set(qn("w:w"), str(content_width))
+    tblInd = tblPr.find(qn("w:tblInd"))
+    if tblInd is None:
+        tblInd = OxmlElement("w:tblInd")
+        tblPr.append(tblInd)
+    tblInd.set(qn("w:type"), "dxa")
+    tblInd.set(qn("w:w"), "0")  # starts right at the left margin - no further offset
+    grid = new_tbl.find(qn("w:tblGrid"))
+    col_width = content_width // ocr_col_count if ocr_col_count else 0
+    for gc in grid.findall(qn("w:gridCol")):
+        gc.set(qn("w:w"), str(col_width))
+
+    def _cell_text_and_runs(cell):
+        return cell.text, [r for p in cell.paragraphs for r in p.runs]
+
+    def _cell_bg_fill(cell):
+        tcPr = cell._tc.find(qn("w:tcPr"))
+        shd = tcPr.find(qn("w:shd")) if tcPr is not None else None
+        return shd.get(qn("w:fill")) if shd is not None else None
+
+    # Step 4 + 5: per-cell background from OCR (position/order-mapped),
+    # text+run-formatting from output_table (matched by position).
+    for r_idx in range(ocr_row_count):
+        ocr_row_cells = ocr_rows[r_idx].cells
+        output_row_cells = output_rows[r_idx].cells if r_idx < len(output_rows) else []
+        new_row_cells = new_table.rows[r_idx].cells
+        for new_col_pos, ocr_col_idx in enumerate(col_order):
+            new_cell = new_row_cells[new_col_pos]
+            ocr_cell = ocr_row_cells[ocr_col_idx]
+            bg_fill = _cell_bg_fill(ocr_cell)
+            if bg_fill:
+                tcPr = new_cell._tc.get_or_add_tcPr()
+                shd = OxmlElement("w:shd")
+                shd.set(qn("w:val"), "clear")
+                shd.set(qn("w:color"), "auto")
+                shd.set(qn("w:fill"), bg_fill)
+                tcPr.append(shd)
+            if new_col_pos < output_col_count and new_col_pos < len(output_row_cells):
+                src_cell = output_row_cells[new_col_pos]
+                new_cell.text = ""
+                new_para = new_cell.paragraphs[0]
+                # new_cell.text = "" leaves a stray EMPTY <w:r/> behind on
+                # the surviving paragraph (a real, confirmed python-docx
+                # artifact) - inspecting new_para.runs/.text to decide
+                # "has this paragraph already been used" is unreliable
+                # because of that stray run, so an explicit flag is used
+                # instead of re-inspecting paragraph state.
+                for r in list(new_para.runs):
+                    r._element.getparent().remove(r._element)
+                first_para_used = False
+                for src_para in src_cell.paragraphs:
+                    if first_para_used:
+                        new_para = new_cell.add_paragraph()
+                    first_para_used = True
+                    for src_run in src_para.runs:
+                        new_run = new_para.add_run(src_run.text)
+                        new_run.bold = src_run.bold
+                        new_run.italic = src_run.italic
+                        new_run.underline = src_run.underline
+                        if src_run.font.size:
+                            new_run.font.size = src_run.font.size
+                        if src_run.font.name:
+                            new_run.font.name = src_run.font.name
+
+    # Step 6: remove the OLD table, put the new one in its exact place.
+    old_tbl = output_table._tbl
+    old_tbl.addprevious(new_tbl)
+    old_tbl.getparent().remove(old_tbl)
+
+    # Step 7: clean-up pass on the freshly-built table.
+    empty_rows_removed = 0
+    for tr in list(new_tbl.findall(qn("w:tr"))):
+        cells_text = "".join(t.text or "" for t in tr.findall(".//" + qn("w:t")))
+        if not cells_text.strip():
+            new_tbl.remove(tr)
+            empty_rows_removed += 1
+
+    empty_cols_removed = 0
+    remaining_rows = new_tbl.findall(qn("w:tr"))
+    if remaining_rows:
+        col_count_now = len(remaining_rows[0].findall(qn("w:tc")))
+        cols_with_content = set()
+        for tr in remaining_rows:
+            for ci, tc in enumerate(tr.findall(qn("w:tc"))):
+                text = "".join(t.text or "" for t in tc.findall(".//" + qn("w:t")))
+                if text.strip():
+                    cols_with_content.add(ci)
+        for ci in reversed(range(col_count_now)):
+            if ci not in cols_with_content:
+                for tr in remaining_rows:
+                    tcs = tr.findall(qn("w:tc"))
+                    if ci < len(tcs):
+                        tr.remove(tcs[ci])
+                grid_cols = grid.findall(qn("w:gridCol"))
+                if ci < len(grid_cols):
+                    grid.remove(grid_cols[ci])
+                empty_cols_removed += 1
+
+    for tc in new_tbl.iter(qn("w:tc")):
+        tcPr = tc.find(qn("w:tcPr"))
+        if tcPr is None:
+            tcPr = OxmlElement("w:tcPr")
+            tc.insert(0, tcPr)
+        noWrap = tcPr.find(qn("w:noWrap"))
+        if noWrap is not None:
+            tcPr.remove(noWrap)
+
+    tblW.set(qn("w:w"), str(content_width))  # final safety re-set, per the real reported process
+
+    # Docstring step 7's final rules - short cell text centered, longer
+    # text left-aligned, whole table vertically centered - reusing the
+    # SAME two functions already used elsewhere in this file, scoped to
+    # just the rebuilt table's own rows (not run against the whole
+    # document, since only this ONE table was just rebuilt).
+    for tr in new_tbl.findall(qn("w:tr")):
+        for tc in tr.findall(qn("w:tc")):
+            tcPr = tc.find(qn("w:tcPr"))
+            if tcPr is None:
+                tcPr = OxmlElement("w:tcPr")
+                tc.insert(0, tcPr)
+            vAlign = tcPr.find(qn("w:vAlign"))
+            if vAlign is None:
+                vAlign = OxmlElement("w:vAlign")
+                tcPr.append(vAlign)
+            vAlign.set(qn("w:val"), "center")
+            ts = tc.findall(".//" + qn("w:t"))
+            text = "".join(t.text or "" for t in ts).strip()
+            if not text:
+                continue
+            target_jc = "center" if len(text) <= 50 else "left"
+            for p in tc.findall(qn("w:p")):
+                pPr = p.find(qn("w:pPr"))
+                if pPr is None:
+                    pPr = OxmlElement("w:pPr")
+                    p.insert(0, pPr)
+                jc = pPr.find(qn("w:jc"))
+                if jc is None:
+                    jc = OxmlElement("w:jc")
+                    pPr.append(jc)
+                jc.set(qn("w:val"), target_jc)
+
+    return {
+        "rebuilt": True,
+        "row_count": ocr_row_count,
+        "col_count": ocr_col_count,
+        "empty_rows_removed": empty_rows_removed,
+        "empty_cols_removed": empty_cols_removed,
+        "content_width": content_width,
+    }
+
+
 def _fix_table_cell_alignment_by_length(doc, length_threshold=50):
     """Item (TABLE-CELL-ALIGNMENT-SHORT-VS-LONG, real reported rule -
     "table me agar short text he to wo cell me center me ayega lekin
@@ -5267,7 +5506,7 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
     doc = Document(docx_path)
 
     (translated_count, skipped_count, failed_batches, total_batches,
-     llm_calls_by_provider) = _translate_docx_segments_in_place(doc, target_language, llm_config)
+     llm_calls_by_provider, translation_request_response_log) = _translate_docx_segments_in_place(doc, target_language, llm_config)
 
     # Real reported issues 1, 2, 3, 4 - confirmed real formatting bugs
     # that only matter/are checkable once the FINAL translated text is
@@ -5474,6 +5713,7 @@ def translate_existing_docx(docx_path, target_language, output_path, llm_config=
         "translation_batches_total": total_batches,
         "translation_providers": sorted(llm_calls_by_provider.keys()),
         "llm_calls_by_provider": llm_calls_by_provider,
+        "translation_request_response_log": translation_request_response_log,
         "right_indent_fixed": right_indent_fixed,
         "shading_promoted": shading_promoted,
         "center_alignment_fixed": center_alignment_fixed,
@@ -5603,8 +5843,19 @@ def _translate_docx_segments_in_place(doc, target_language, llm_config):
     # while llm_calls_by_provider counts only the provider that actually
     # SUCCEEDED for each batch (a failed batch's provider, if any was
     # tried internally, isn't visible to us here).
+    # Item (JSON-PAYLOAD-DOWNLOAD, real reported requirement): the exact
+    # outgoing request-JSON and incoming response-JSON for EVERY batch
+    # are collected here and returned to the caller, so the client can
+    # trigger an immediate browser download of each - the OUTGOING
+    # payload right before it's sent, and the INCOMING payload right
+    # after it comes back - matching the same "download immediately at
+    # each real stage" pattern already used for the OCR/Translation/
+    # Final-Output document downloads elsewhere in this pipeline.
+    request_response_log = []
     for batch in batches:
         user_content = json.dumps([{"id": sid, "text": text} for sid, _para, text in batch], ensure_ascii=False)
+        batch_log_entry = {"request": user_content, "response": None}
+        request_response_log.append(batch_log_entry)
         try:
             content, provider = le._call_chat_completion_with_failover(
                 llm_config, system_prompt, user_content, max_tokens=12000
@@ -5616,6 +5867,7 @@ def _translate_docx_segments_in_place(doc, target_language, llm_config):
             cleaned = content.strip()
             if cleaned.startswith("```"):
                 cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned.strip())
+            batch_log_entry["response"] = cleaned
             parsed = json.loads(cleaned)
             for item in parsed:
                 translated_by_id[item["id"]] = item["text"]
@@ -5632,7 +5884,7 @@ def _translate_docx_segments_in_place(doc, target_language, llm_config):
         else:
             skipped_count += 1  # left in source language - batch failed or id missing from response
 
-    return translated_count, skipped_count, failed_batches, len(batches), dict(llm_calls_by_provider)
+    return translated_count, skipped_count, failed_batches, len(batches), dict(llm_calls_by_provider), request_response_log
 
 
 def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, llm_config=None):
@@ -5718,7 +5970,7 @@ def rebuild_docx_with_translated_text(pdf_path, target_language, output_path, ll
         pass  # non-fatal - test pipeline still produces its output even if this cosmetic pass fails
 
     llm_config = llm_config if llm_config is not None else le.load_llm_config()
-    translated_count, skipped_count, failed_batches, llm_calls_total, llm_calls_by_provider = (
+    translated_count, skipped_count, failed_batches, llm_calls_total, llm_calls_by_provider, _request_response_log = (
         _translate_docx_segments_in_place(doc, target_language, llm_config)
     )
 
