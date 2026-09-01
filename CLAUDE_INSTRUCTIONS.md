@@ -566,3 +566,43 @@ par decide karega.
   shuruaat me, in 4 categories ko HAR PAGE ke liye explicitly run karna
   hai (visual scan ke ALAWA, na ki uski jagah), chahe kuch "obviously
   galat" na bhi dikhे.
+
+- **BADA ARCHITECTURAL LESSON — "PATCH the existing structure" vs
+  "REBUILD from clean sources", user ne apna manual process example
+  deke sikhाया**: user ne khud ek table manually fix kiya — Aspose
+  Step-1 (OCR) se row/column-count aur PER-CELL BACKGROUND nikala,
+  page-margins se table-width/position DIRECTLY compute kiya, purani
+  broken table ko COMPLETELY DELETE karके, ek FRESH table banाई un
+  exact dimensions ke saath, phir SAVED translated-output se sirf
+  WORDS (content) copy kiye har cell me — matlab: **structure ek
+  RELIABLE source se (OCR, jo abhi translation-injection se corrupt
+  nahi hua), content doosre source se (translated output) — dono ko
+  ALAG-ALAG, apni sabse-reliable jagah se liya, na ki EK (already
+  compromised) source se sab kuch nikalने ki koshish ki.**
+
+  **Ye EXACTLY samझाता hai maine is poore session me baar-baar kyu
+  galtiya repeat ki**: maine hamesha "detect specific broken property
+  → PATCH usी property" approach use kiya (jaisा `tblPrEx/tblInd`
+  mismatch fix karo, ya paragraph/shd mismatch fix karo) — ye assume
+  karta hai ki BAAKI structure reliable hai, sirf EK property galat
+  hai. Lekin jab structure khud (row-level tblPrEx overrides jo baar-
+  baar reappear hote hain, multi-paragraph gaps jinki asli wajah pata
+  nahi, deployment-state jo verify nahi ho pa raha) itni uncertain ho
+  chuki ho ki main confidently bata hi nahi sakता "sirf YE ek property
+  galat hai" — tab PATCHING kaam nahi karता, chahe individual patch
+  apni jagah pe test karke sahi lage. White-line fix "worse" ho gaई
+  (zyada tables me) — ye EXACTLY is symptom ka signal tha: main ek
+  UNRELIABLE foundation pe patch laga raha tha.
+
+  **Sabak, aage ke liye**: jab koi issue-class REPEATEDLY wapas aa
+  raha ho (2+ baar, alag-alag patch-attempts ke bawजूद), ya jab
+  structure itself (na ki sirf ek property) corrupt lage — us waqt
+  "find aur patch ONE broken property" ki jagah socho: **"kya is
+  poore element (table/cell/section) ko RELIABLE sources se REBUILD
+  karna behtar hoगा — structure ek clean/pre-corruption source se,
+  content doosre reliable source se, explicitly/deterministically sab
+  properties set karके (margin se width, OCR se background, count se
+  rows/columns) — na ki inherited/derived values pe depend karके?"**
+  Rebuild-approach me empty rows/columns cleanup, alignment-by-length,
+  wrap, vertical-align — sab AAKHIR me, ek CLEAN structure ke upar
+  apply hote hain, na ki ek already-uncertain structure ke upar.
