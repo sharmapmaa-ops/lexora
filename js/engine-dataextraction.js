@@ -4307,6 +4307,9 @@ Entries that share the same "paragraph_id" belong to the same paragraph. If you 
 IMPORTANT — DO NOT WORRY ABOUT LINE-FITTING OR BOX WIDTHS:
 Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabel}, at whatever length that naturally takes - do not artificially shorten or pad it, and do not try to match the line-count or per-line length of the source. Exactly how the translated text gets fitted back into the page's layout is handled entirely outside of this step; your only job is an accurate, natural, complete translation of each entry's full content.
 
+IMPORTANT — FORMATTING MARKUP (only applies when present in the source text):
+Some entries' text may contain <b></b> (bold), <i></i> (italic), <u></u> (underline) tags around specific words or phrases. In your translated_text, wrap the CORRESPONDING translated words with the SAME tags - same meaning, not necessarily the same word order or word count. Do not add tags where the source had none, and do not drop tags that were present. If an entry's text has no such tags, ignore this rule entirely.
+
 RULES
 - Never add or remove blocks. Every input id must appear exactly once in your output, in the same order. No translated content may be lost, and no translated content may appear twice under different ids.
 - Never translate the "id", "page", "paragraph_id" values themselves — only the text.
@@ -5568,10 +5571,2328 @@ ${JSON.stringify(texts)}`;
   // Kept as a namespaced OBJECT (not flat window.X = Y) so that
   // loading all 5 copies on the same page can never let one
   // service's copy silently overwrite another's.
-  window.__dataExtractionEngine = {
+      // ============================================================
+    // NEW pdf.js text-layer translation pipeline, per explicit
+    // direction: replaces the old vision/OCR-based Hybrid pipeline
+    // for the Document Translation service. No OCR here (Lexora's
+    // separate OCR service covers scanned documents) - this extracts
+    // text, vectors (rects/borders), and images directly from the
+    // PDF's own content stream, and reuses v14TranslateAllPages
+    // (below) for the actual translation call, so the domain-expert
+    // glossary and reviewer-agent behavior stay shared with every
+    // other engine in this file rather than being duplicated.
+    // ============================================================
+
+  function makePositionId(prefix, left, top, w, h) {
+    return prefix + '_' + Math.round(left) + 'x' + Math.round(top) + '_' + Math.round(w) + 'x' + Math.round(h);
+  }
+
+  function extractFillRectsSimple(ops, pageH, scale) {
+    const OPS = pdfjsLib.OPS;
+    function toHex(r, g, b) {
+      if (r <= 1 && g <= 1 && b <= 1) { r *= 255; g *= 255; b *= 255; }
+      return [r, g, b].map(function(v) {
+        return Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+      }).join('').toUpperCase();
+    }
+    function multiply(m1, m2) {
+      return [
+        m1[0]*m2[0]+m1[1]*m2[2], m1[0]*m2[1]+m1[1]*m2[3],
+        m1[2]*m2[0]+m1[3]*m2[2], m1[2]*m2[1]+m1[3]*m2[3],
+        m1[4]*m2[0]+m1[5]*m2[2]+m2[4], m1[4]*m2[1]+m1[5]*m2[3]+m2[5]
+      ];
+    }
+    let ctm = [1,0,0,1,0,0];
+    const stack = [];
+    let fillColor = '000000';
+    let minMax = null;
+    const rects = [];
+    for (let i = 0; i < ops.fnArray.length; i++) {
+      const fn = ops.fnArray[i];
+      const args = ops.argsArray[i] || [];
+      if (fn === OPS.save) stack.push(ctm.slice());
+      else if (fn === OPS.restore) { if (stack.length) ctm = stack.pop(); }
+      else if (fn === OPS.transform) ctm = multiply(args, ctm);
+      else if (fn === OPS.setFillRGBColor && args.length >= 3) fillColor = toHex(args[0], args[1], args[2]);
+      else if (fn === OPS.setFillGray && args.length >= 1) fillColor = toHex(args[0], args[0], args[0]);
+      else if (fn === OPS.setFillCMYKColor && args.length >= 4) {
+        const c = args[0], m = args[1], y = args[2], k = args[3];
+        fillColor = toHex((1-c)*(1-k), (1-m)*(1-k), (1-y)*(1-k));
+      } else if (fn === OPS.constructPath && args && args[0] && args[1]) {
+        const opTypes = args[0], coords = args[1];
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        let curX = 0, curY = 0, j = 0;
+        function mark(px, py) {
+          if (px < minX) minX = px; if (px > maxX) maxX = px;
+          if (py < minY) minY = py; if (py > maxY) maxY = py;
+        }
+        for (let oi = 0; oi < opTypes.length; oi++) {
+          const op = opTypes[oi];
+          if (op === OPS.rectangle) {
+            const x = coords[j++], y = coords[j++], w = coords[j++], h = coords[j++];
+            mark(x, y); mark(x + w, y + h); curX = x; curY = y;
+          } else if (op === OPS.moveTo || op === OPS.lineTo) {
+            curX = coords[j++]; curY = coords[j++]; mark(curX, curY);
+          } else if (op === OPS.curveTo) {
+            mark(coords[j], coords[j+1]); mark(coords[j+2], coords[j+3]); mark(coords[j+4], coords[j+5]);
+            curX = coords[j+4]; curY = coords[j+5]; j += 6;
+          } else if (op === OPS.curveTo2) {
+            mark(curX, curY); mark(coords[j], coords[j+1]); mark(coords[j+2], coords[j+3]);
+            curX = coords[j+2]; curY = coords[j+3]; j += 4;
+          } else if (op === OPS.curveTo3) {
+            mark(curX, curY); mark(coords[j], coords[j+1]); mark(coords[j+2], coords[j+3]);
+            curX = coords[j+2]; curY = coords[j+3]; j += 4;
+          }
+        }
+        if (minX <= maxX && minY <= maxY) minMax = [minX, maxX, minY, maxY];
+      } else if (fn === OPS.fill || fn === OPS.eoFill) {
+        if (minMax) {
+          const minX = minMax[0], maxX = minMax[1], minY = minMax[2], maxY = minMax[3];
+          const a = ctm[0], b = ctm[1], c = ctm[2], d = ctm[3], e = ctm[4], f = ctm[5];
+          const corners = [[minX,minY],[maxX,minY],[minX,maxY],[maxX,maxY]].map(function(xy) {
+            return [a*xy[0]+c*xy[1]+e, b*xy[0]+d*xy[1]+f];
+          });
+          const xs = corners.map(function(p) { return p[0]; });
+          const ys = corners.map(function(p) { return p[1]; });
+          const w = Math.max.apply(null, xs) - Math.min.apply(null, xs);
+          const h = Math.max.apply(null, ys) - Math.min.apply(null, ys);
+          if (w > 0.5 && h > 0.5) {
+            rects.push({
+              x: Math.min.apply(null, xs) * scale,
+              yTop: (pageH - Math.max.apply(null, ys)) * scale,
+              w: w * scale, h: h * scale, color: fillColor
+            });
+          }
+        }
+        minMax = null;
+      }
+    }
+    return rects;
+  }
+
+  function isNearWhite(hex) {
+    const m = /^([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    if (!m) return false;
+    const r = parseInt(m[1], 16), g = parseInt(m[2], 16), b = parseInt(m[3], 16);
+    return Math.sqrt(Math.pow(255-r,2) + Math.pow(255-g,2) + Math.pow(255-b,2)) < 25;
+  }
+
+  function rgbTripleToHex(r, g, b) {
+    if (r <= 1 && g <= 1 && b <= 1) { r *= 255; g *= 255; b *= 255; }
+    return [r, g, b].map(function (v) {
+      return Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+    }).join('').toUpperCase();
+  }
+
+  function pixelToHex(r, g, b) {
+    return [r, g, b].map(function (v) { return Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0'); }).join('').toUpperCase();
+  }
+
+  function sampleTextColorFromPixels(imgData, width, height, cx, cy, halfW, halfH) {
+    function colorCounts(x0, y0, x1, y1) {
+      const counts = new Map();
+      x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0));
+      x1 = Math.min(width - 1, Math.ceil(x1)); y1 = Math.min(height - 1, Math.ceil(y1));
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const idx = (y * width + x) * 4;
+          const key = imgData[idx] + ',' + imgData[idx + 1] + ',' + imgData[idx + 2];
+          counts.set(key, (counts.get(key) || 0) + 1);
+        }
+      }
+      return counts;
+    }
+    const inner = colorCounts(cx - halfW, cy - halfH, cx + halfW, cy + halfH);
+    const outer = colorCounts(cx - halfW * 2.5, cy - halfH * 2.5, cx + halfW * 2.5, cy + halfH * 2.5);
+    let bgKey = null, bgCount = -1;
+    outer.forEach(function (c, k) { if (c > bgCount) { bgCount = c; bgKey = k; } });
+    const bgParts = (bgKey || '255,255,255').split(',').map(Number);
+    function distFromBg(k) {
+      const p = k.split(',').map(Number);
+      return Math.sqrt(Math.pow(p[0] - bgParts[0], 2) + Math.pow(p[1] - bgParts[1], 2) + Math.pow(p[2] - bgParts[2], 2));
+    }
+    // Prefer the color farthest from the background (genuine ink), requiring
+    // at least 2 pixels to ignore single-pixel noise; fall back to any
+    // non-background occurrence if nothing meets that bar.
+    let best = null, bestDist = -1;
+    inner.forEach(function (c, k) {
+      if (k === bgKey || c < 2) return;
+      const d = distFromBg(k);
+      if (d > bestDist) { bestDist = d; best = k; }
+    });
+    if (!best) {
+      inner.forEach(function (c, k) {
+        if (k === bgKey) return;
+        const d = distFromBg(k);
+        if (d > bestDist) { bestDist = d; best = k; }
+      });
+    }
+    if (!best) best = bgKey;
+    if (!best) return '000000';
+    const parts = best.split(',').map(Number);
+    return pixelToHex(parts[0], parts[1], parts[2]);
+  }
+
+  function classifyFontBoldItalic(fontObj) {
+    if (!fontObj) return { bold: false, italic: false };
+    const name = (fontObj.name || '') + '';
+    const bold = !!fontObj.bold || /bold|black|heavy/i.test(name);
+    const italic = !!fontObj.italic || /italic|oblique/i.test(name);
+    return { bold: bold, italic: italic };
+  }
+
+  async function extractTextItemsSimple(page, scale, pageH, ops, pageImgData, pageImgWidth, pageImgHeight, colorSampleRatio) {
+    const textContent = await page.getTextContent();
+    const ratio = colorSampleRatio || 1;
+    const styleByFontName = {};
+    const items = [];
+    textContent.items.forEach(function(item) {
+      if (!item.str || !item.str.trim()) return;
+      const visible = item.str.replace(/[\s\u200B-\u200F\u202A-\u202E\uFEFF]/g, '');
+      if (visible.length === 0) return;
+      const tr = item.transform;
+      const pdfX = tr[4] * scale;
+      const pdfY = tr[5] * scale;
+      const fontSize = (item.height ? item.height * scale : Math.hypot(tr[2], tr[3]) * scale) || 10;
+      const yTop = pageH - pdfY - fontSize;
+      const itemWidth = (item.width ? item.width * scale : fontSize * 0.6);
+      let style = styleByFontName[item.fontName];
+      if (style === undefined) {
+        let fontObj = null;
+        try { fontObj = page.commonObjs.get(item.fontName); } catch (e) { fontObj = null; }
+        style = classifyFontBoldItalic(fontObj);
+        styleByFontName[item.fontName] = style;
+      }
+      let color = '000000';
+      if (pageImgData) {
+        const cx = (pdfX + itemWidth / 2) * ratio;
+        const cy = ((pageH - pdfY) - fontSize * 0.35) * ratio;
+        const halfW = Math.max(4, itemWidth / 2) * ratio;
+        const halfH = Math.max(4, fontSize * 0.4) * ratio;
+        color = sampleTextColorFromPixels(pageImgData, pageImgWidth, pageImgHeight, cx, cy, halfW, halfH);
+      }
+      items.push({
+        x: pdfX, yTop: yTop, width: itemWidth, fontSize: fontSize, str: item.str,
+        color: color,
+        bold: style.bold, italic: style.italic
+      });
+    });
+    return items;
+  }
+
+  function dominantFormat(entries, textOf) {
+    const counts = new Map();
+    entries.forEach(function (e) {
+      const key = (e.color || '000000') + '|' + (e.bold ? '1' : '0') + '|' + (e.italic ? '1' : '0') + '|' + (e.underline ? '1' : '0');
+      const weight = Math.max(1, ((textOf(e) || '') + '').length);
+      counts.set(key, (counts.get(key) || 0) + weight);
+    });
+    let best = null, bestCount = -1;
+    counts.forEach(function (count, key) { if (count > bestCount) { bestCount = count; best = key; } });
+    if (!best) return { color: '000000', bold: false, italic: false, underline: false };
+    const parts = best.split('|');
+    return { color: parts[0], bold: parts[1] === '1', italic: parts[2] === '1', underline: parts[3] === '1' };
+  }
+
+  function hasVisibleText(items, mode) {
+    return items.some(function(it) {
+      let visible;
+      if (mode && mode.indexOf('C') >= 0) {
+        visible = (it.str || '').replace(/[\s\u200B-\u200F\u202A-\u202E\uFEFF]/g, '');
+      } else {
+        visible = (it.str || '').replace(/[\s\u200B-\u200F\u202A-\u202E\uFEFF\u064B-\u065F\u0670]/g, '');
+      }
+      return visible.length > 0;
+    });
+  }
+
+  function groupItemsIntoLines(items) {
+    const lines = [];
+    items.forEach(function(item) {
+      const tol = Math.max(3, item.fontSize * 0.5);
+      let line = lines.find(function(ln) { return Math.abs(ln.yTop - item.yTop) <= tol; });
+      if (!line) { line = { yTop: item.yTop, items: [] }; lines.push(line); }
+      line.items.push(item);
+      line.yTop = Math.min(line.yTop, item.yTop);
+    });
+    lines.forEach(function(ln) {
+      ln.left = Math.min.apply(null, ln.items.map(function(it) { return it.x; }));
+      ln.right = Math.max.apply(null, ln.items.map(function(it) { return it.x + it.width; }));
+      ln.maxFontSize = Math.max.apply(null, ln.items.map(function(it) { return it.fontSize; }));
+      ln.items.sort(function(a, b) { return a.x - b.x; });
+    });
+    return lines;
+  }
+
+  function scriptOf(str) {
+    if (/[a-zA-Z]/.test(str)) return 'latin';
+    if (/[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str)) return 'arabic';
+    return 'neutral';
+  }
+
+  function scriptOfChar(ch) { return scriptOf(ch); }
+
+  function classifyDirection(text) {
+    let arabicCount = 0, latinCount = 0;
+    for (const ch of text) {
+      const s = scriptOfChar(ch);
+      if (s === 'arabic') arabicCount++;
+      else if (s === 'latin') latinCount++;
+    }
+    return arabicCount > latinCount ? 'rtl' : 'ltr';
+  }
+
+  function reconstructLogicalText(items, direction, fontSize) {
+    if (items.length === 0) return '';
+    const sorted = items.slice().sort(function (a, b) {
+      return direction === 'rtl' ? b.x - a.x : a.x - b.x;
+    });
+    const boundaryThreshold = Math.max(0.5, fontSize * 0.15);
+    let text = sorted[0].str;
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = sorted[i - 1], cur = sorted[i];
+      const gap = direction === 'rtl' ? prev.x - (cur.x + cur.width) : cur.x - (prev.x + prev.width);
+      const combined = text + cur.str;
+      const looksLikeEmailOrUrl = /[@]|^www\.|\.(com|org|net|gov|edu|io|co)/i.test(combined) ||
+                                   /[@]|^www\./i.test(text) || /[@]|^www\./i.test(cur.str);
+      if (gap > boundaryThreshold && !looksLikeEmailOrUrl && !/\s$/.test(text) && !/^\s/.test(cur.str)) {
+        text += ' ';
+      }
+      text += cur.str;
+    }
+    return text;
+  }
+
+  function reconstructLogicalTextWithMarkup(items, direction, fontSize) {
+    if (items.length === 0) return '';
+    const sorted = items.slice().sort(function (a, b) {
+      return direction === 'rtl' ? b.x - a.x : a.x - b.x;
+    });
+    const boundaryThreshold = Math.max(0.5, fontSize * 0.15);
+    function openTags(st) { return (st.bold ? '<b>' : '') + (st.italic ? '<i>' : '') + (st.underline ? '<u>' : ''); }
+    function closeTags(st) { return (st.underline ? '</u>' : '') + (st.italic ? '</i>' : '') + (st.bold ? '</b>' : ''); }
+    let text = '';
+    let cur = { bold: false, italic: false, underline: false };
+    let plainSoFar = '';
+    for (let i = 0; i < sorted.length; i++) {
+      const it = sorted[i];
+      const st = { bold: !!it.bold, italic: !!it.italic, underline: !!it.underline };
+      if (i > 0) {
+        const prev = sorted[i - 1];
+        const gap = direction === 'rtl' ? prev.x - (it.x + it.width) : it.x - (prev.x + prev.width);
+        const combined = plainSoFar + it.str;
+        const looksLikeEmailOrUrl = /[@]|^www\.|\.(com|org|net|gov|edu|io|co)/i.test(combined) ||
+                                     /[@]|^www\./i.test(plainSoFar) || /[@]|^www\./i.test(it.str);
+        if (gap > boundaryThreshold && !looksLikeEmailOrUrl && !/\s$/.test(plainSoFar) && !/^\s/.test(it.str)) {
+          text += ' '; plainSoFar += ' ';
+        }
+      }
+      if (st.bold !== cur.bold || st.italic !== cur.italic || st.underline !== cur.underline) {
+        text += closeTags(cur);
+        text += openTags(st);
+        cur = st;
+      }
+      text += it.str;
+      plainSoFar += it.str;
+    }
+    text += closeTags(cur);
+    return text;
+  }
+
+  function parseMarkupSpans(text) {
+    const spans = [];
+    let bold = false, italic = false, underline = false;
+    let lastIndex = 0;
+    const tagRe = /<\/?[biu]>/gi;
+    let m;
+    function flush(endIndex) {
+      if (endIndex > lastIndex) {
+        spans.push({ text: text.slice(lastIndex, endIndex), bold: bold, italic: italic, underline: underline });
+      }
+      lastIndex = endIndex;
+    }
+    while ((m = tagRe.exec(text))) {
+      flush(m.index);
+      const tag = m[0].toLowerCase();
+      if (tag === '<b>') bold = true;
+      else if (tag === '</b>') bold = false;
+      else if (tag === '<i>') italic = true;
+      else if (tag === '</i>') italic = false;
+      else if (tag === '<u>') underline = true;
+      else if (tag === '</u>') underline = false;
+      lastIndex = tagRe.lastIndex;
+    }
+    flush(text.length);
+    if (spans.length === 0) spans.push({ text: text, bold: false, italic: false, underline: false });
+    return spans;
+  }
+
+  function buildStyledSpansFromMarkup(text, groupFormat) {
+    const parsed = parseMarkupSpans(insertListLineBreaksIntoText(text));
+    const hasAnyTag = parsed.some(function (sp) { return sp.bold || sp.italic || sp.underline; });
+    return parsed.map(function (sp) {
+      return {
+        text: sp.text,
+        color: groupFormat.color,
+        bold: hasAnyTag ? sp.bold : groupFormat.bold,
+        italic: hasAnyTag ? sp.italic : groupFormat.italic,
+        underline: hasAnyTag ? sp.underline : false
+      };
+    });
+  }
+
+  function escapeXml(str) {
+    return String(str).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c];
+    });
+  }
+
+  function docxMultiplyCtm(m1, m2) {
+    return [
+      m1[0]*m2[0]+m1[1]*m2[2], m1[0]*m2[1]+m1[1]*m2[3],
+      m1[2]*m2[0]+m1[3]*m2[2], m1[2]*m2[1]+m1[3]*m2[3],
+      m1[4]*m2[0]+m1[5]*m2[2]+m2[4], m1[4]*m2[1]+m1[5]*m2[3]+m2[5]
+    ];
+  }
+
+  function docxImageObjToPngBase64(imgObj) {
+    const width = imgObj.width, height = imgObj.height, kind = imgObj.kind, data = imgObj.data;
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    const imgData = ctx.createImageData(width, height);
+    const out = imgData.data;
+    if (kind === 3) {
+      out.set(data);
+    } else if (kind === 2) {
+      for (let i = 0, j = 0; i < data.length; i += 3, j += 4) {
+        out[j] = data[i]; out[j+1] = data[i+1]; out[j+2] = data[i+2]; out[j+3] = 255;
+      }
+    } else if (kind === 1) {
+      const bytesPerRow = Math.ceil(width / 8);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const byte = data[y * bytesPerRow + (x >> 3)];
+          const bit = (byte >> (7 - (x & 7))) & 1;
+          const v = bit ? 255 : 0;
+          const j = (y * width + x) * 4;
+          out[j] = v; out[j+1] = v; out[j+2] = v; out[j+3] = 255;
+        }
+      }
+    } else {
+      out.fill(255);
+    }
+    ctx.putImageData(imgData, 0, 0);
+    return canvas.toDataURL('image/png').split(',')[1];
+  }
+
+  async function extractPageImagesForDocx(page, renderScale, pageHPt) {
+    const viewport = page.getViewport({ scale: renderScale });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.ceil(viewport.width));
+    canvas.height = Math.max(1, Math.ceil(viewport.height));
+    const ctx = canvas.getContext('2d');
+    const images = [];
+    const origDrawImage = ctx.drawImage.bind(ctx);
+    ctx.drawImage = function (source) {
+      const rest = Array.prototype.slice.call(arguments, 1);
+      try {
+        const t = ctx.getTransform();
+        const sw = source.width || source.naturalWidth || 1, sh = source.height || source.naturalHeight || 1;
+        let dx, dy, dw, dh;
+        if (rest.length >= 8) { dx = rest[4]; dy = rest[5]; dw = rest[6]; dh = rest[7]; }
+        else if (rest.length >= 4) { dx = rest[0]; dy = rest[1]; dw = rest[2]; dh = rest[3]; }
+        else { dx = rest[0]; dy = rest[1]; dw = sw; dh = sh; }
+        const pts = [[dx, dy], [dx + dw, dy], [dx, dy + dh], [dx + dw, dy + dh]].map(function (p) {
+          return { x: t.a * p[0] + t.c * p[1] + t.e, y: t.b * p[0] + t.d * p[1] + t.f };
+        });
+        const xs = pts.map(function (p) { return p.x; }), ys = pts.map(function (p) { return p.y; });
+        const x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys);
+        const x1 = Math.max.apply(null, xs), y1 = Math.max.apply(null, ys);
+        if ((x1 - x0) > 0.3 && (y1 - y0) > 0.3) {
+          const tmp = document.createElement('canvas');
+          tmp.width = Math.max(1, Math.round(sw)); tmp.height = Math.max(1, Math.round(sh));
+          tmp.getContext('2d').drawImage(source, 0, 0, tmp.width, tmp.height);
+          const base64 = tmp.toDataURL('image/png').split(',')[1];
+          images.push({
+            x: x0 / renderScale, yTop: y0 / renderScale,
+            w: (x1 - x0) / renderScale, h: (y1 - y0) / renderScale, base64: base64
+          });
+        }
+      } catch (e) { /* capture failure for this one paint — still perform the real draw below */ }
+      return origDrawImage.apply(ctx, [source].concat(rest));
+    };
+    await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+    return images;
+  }
+
+  function extractPageVectorsForDocx(ops, pageHPt) {
+    const OPS = pdfjsLib.OPS;
+    function toHex(r, g, b) {
+      if (r <= 1 && g <= 1 && b <= 1) { r *= 255; g *= 255; b *= 255; }
+      return [r, g, b].map(function (v) { return Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0'); }).join('').toUpperCase();
+    }
+    // Intersects two device-space rects; returns null if they don't overlap.
+    function intersectRects(a, b) {
+      if (!a) return b; if (!b) return a;
+      const minX = Math.max(a.minX, b.minX), maxX = Math.min(a.maxX, b.maxX);
+      const minY = Math.max(a.minY, b.minY), maxY = Math.min(a.maxY, b.maxY);
+      if (maxX <= minX || maxY <= minY) return { minX: 0, maxX: 0, minY: 0, maxY: 0 };
+      return { minX: minX, maxX: maxX, minY: minY, maxY: maxY };
+    }
+    let ctm = [1,0,0,1,0,0];
+    let clipRect = null; // null = unclipped (no active clip path)
+    const stack = [];
+    let fillColor = '000000', strokeColor = '000000';
+    let curPath = null;
+    const simpleRects = [];
+    const complexPaths = [];
+
+    for (let i = 0; i < ops.fnArray.length; i++) {
+      const fn = ops.fnArray[i], args = ops.argsArray[i] || [];
+      if (fn === OPS.save) stack.push({ ctm: ctm.slice(), clip: clipRect });
+      else if (fn === OPS.restore) { if (stack.length) { const s = stack.pop(); ctm = s.ctm; clipRect = s.clip; } }
+      else if (fn === OPS.transform) ctm = docxMultiplyCtm(args, ctm);
+      else if (fn === OPS.setFillRGBColor && args.length >= 3) fillColor = toHex(args[0], args[1], args[2]);
+      else if (fn === OPS.setFillGray && args.length >= 1) fillColor = toHex(args[0], args[0], args[0]);
+      else if (fn === OPS.setFillCMYKColor && args.length >= 4) {
+        const c = args[0], m = args[1], y = args[2], k = args[3];
+        fillColor = toHex((1 - c) * (1 - k), (1 - m) * (1 - k), (1 - y) * (1 - k));
+      } else if (fn === OPS.setStrokeRGBColor && args.length >= 3) strokeColor = toHex(args[0], args[1], args[2]);
+      else if (fn === OPS.setStrokeGray && args.length >= 1) strokeColor = toHex(args[0], args[0], args[0]);
+      else if (fn === OPS.clip || fn === OPS.eoClip) {
+        if (curPath && Number.isFinite(curPath.minX)) {
+          const c = curPath.ctm;
+          const x0 = c[0]*curPath.minX + c[2]*curPath.minY + c[4], y0 = c[1]*curPath.minX + c[3]*curPath.minY + c[5];
+          const x1 = c[0]*curPath.maxX + c[2]*curPath.maxY + c[4], y1 = c[1]*curPath.maxX + c[3]*curPath.maxY + c[5];
+          const newClip = { minX: Math.min(x0, x1), maxX: Math.max(x0, x1), minY: Math.min(y0, y1), maxY: Math.max(y0, y1) };
+          clipRect = intersectRects(clipRect, newClip);
+        }
+      } else if (fn === OPS.constructPath && args && args[0] && args[1]) {
+        const opTypes = args[0], coords = args[1];
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        let j = 0, rectCount = 0, hasCurve = false;
+        const linePoints = [];
+        function mark(px, py) { if (px < minX) minX = px; if (px > maxX) maxX = px; if (py < minY) minY = py; if (py > maxY) maxY = py; }
+        for (let oi = 0; oi < opTypes.length; oi++) {
+          const op = opTypes[oi];
+          if (op === OPS.rectangle) { rectCount++; const x = coords[j++], y = coords[j++], w = coords[j++], h = coords[j++]; mark(x, y); mark(x + w, y + h); }
+          else if (op === OPS.moveTo || op === OPS.lineTo) { const x = coords[j++], y = coords[j++]; mark(x, y); linePoints.push([x, y]); }
+          else if (op === OPS.curveTo) { hasCurve = true; mark(coords[j], coords[j+1]); mark(coords[j+2], coords[j+3]); mark(coords[j+4], coords[j+5]); j += 6; }
+          else if (op === OPS.curveTo2 || op === OPS.curveTo3) { hasCurve = true; mark(coords[j], coords[j+1]); mark(coords[j+2], coords[j+3]); j += 4; }
+        }
+        const isAxisAlignedCtm = Math.abs(ctm[1]) < 1e-6 && Math.abs(ctm[2]) < 1e-6;
+        // Case A: exactly one `re` primitive and nothing else — unambiguously
+        // one rectangle. Case B: no rectangle primitive at all, and EVERY
+        // visited point lies exactly at one of the bbox's 4 corners (all 4
+        // corners visited) — this is strictly the perimeter of one rectangle,
+        // not just "no diagonal segments" (which an L-shape or staircase would
+        // also satisfy while NOT being a rectangle — treating those as a rect
+        // would wrongly fill in their notches). Case C: a single straight-line
+        // stroke (just 2 points, one segment) — trivially a thin rect/line,
+        // can't "visit 4 corners" because a line only has 2 endpoints.
+        let isPerimeterRect = false;
+        if (rectCount === 0 && linePoints.length >= 4 && linePoints.length <= 6 && Number.isFinite(minX)) {
+          const tol = Math.max(1e-3, (maxX - minX) * 1e-4, (maxY - minY) * 1e-4);
+          const corners = new Set();
+          isPerimeterRect = linePoints.every(function (p) {
+            const isLeft = Math.abs(p[0] - minX) <= tol, isRight = Math.abs(p[0] - maxX) <= tol;
+            const isTop = Math.abs(p[1] - minY) <= tol, isBottom = Math.abs(p[1] - maxY) <= tol;
+            if (!((isLeft || isRight) && (isTop || isBottom))) return false;
+            corners.add((isLeft ? 'L' : 'R') + (isTop ? 'T' : 'B'));
+            return true;
+          }) && corners.size === 4;
+        }
+        const isSingleLine = rectCount === 0 && linePoints.length === 2;
+        const isSimpleRect = !hasCurve && isAxisAlignedCtm && ((rectCount === 1 && opTypes.length === 1) || isPerimeterRect || isSingleLine);
+        curPath = { minX: minX, maxX: maxX, minY: minY, maxY: maxY, isSimpleRect: isSimpleRect, hasCurve: hasCurve, ctm: ctm.slice(), clip: clipRect };
+      } else if (fn === OPS.fill || fn === OPS.eoFill || fn === OPS.stroke || fn === OPS.closeStroke || fn === OPS.fillStroke || fn === OPS.eoFillStroke) {
+        if (!curPath || !Number.isFinite(curPath.minX)) continue;
+        const isStrokeOnly = (fn === OPS.stroke || fn === OPS.closeStroke);
+        const c = curPath.ctm;
+        const x0 = c[0]*curPath.minX + c[2]*curPath.minY + c[4], y0 = c[1]*curPath.minX + c[3]*curPath.minY + c[5];
+        const x1 = c[0]*curPath.maxX + c[2]*curPath.maxY + c[4], y1 = c[1]*curPath.maxX + c[3]*curPath.maxY + c[5];
+        let px = Math.min(x0, x1), py = Math.min(y0, y1);
+        let pw = Math.max(0.4, Math.abs(x1 - x0)), ph = Math.max(0.4, Math.abs(y1 - y0));
+        // Clip to whatever clip path was active when this shape was drawn —
+        // a shape entirely outside its clip is invisible in the real PDF and
+        // must not be exported at all; a partially-clipped one is truncated
+        // to just its visible portion.
+        if (curPath.clip) {
+          const clipped = intersectRects({ minX: px, maxX: px + pw, minY: py, maxY: py + ph }, curPath.clip);
+          if (clipped.maxX - clipped.minX < 0.4 || clipped.maxY - clipped.minY < 0.4) continue;
+          px = clipped.minX; py = clipped.minY;
+          pw = Math.max(0.4, clipped.maxX - clipped.minX); ph = Math.max(0.4, clipped.maxY - clipped.minY);
+        }
+        if (pw < 0.4 && ph < 0.4) continue;
+        const shapeColor = isStrokeOnly ? strokeColor : fillColor;
+        if (!isStrokeOnly && isNearWhite(shapeColor)) continue;
+        if (curPath.isSimpleRect) {
+          if (isStrokeOnly && pw > 2.5 && ph > 2.5) {
+            // A genuinely 2D stroked rectangle (a cell/row border drawn as one
+            // rectangle-stroke, not already a thin line) — draw its 4 edges,
+            // not a solid fill of the whole area.
+            const bw = 0.75;
+            const boxTop = pageHPt - (py + ph), boxLeft = px;
+            simpleRects.push({ x: boxLeft, yTop: boxTop, w: pw, h: bw, color: shapeColor });
+            simpleRects.push({ x: boxLeft, yTop: boxTop + ph - bw, w: pw, h: bw, color: shapeColor });
+            simpleRects.push({ x: boxLeft, yTop: boxTop, w: bw, h: ph, color: shapeColor });
+            simpleRects.push({ x: boxLeft + pw - bw, yTop: boxTop, w: bw, h: ph, color: shapeColor });
+          } else {
+            simpleRects.push({ x: px, yTop: pageHPt - (py + ph), w: pw, h: ph, color: shapeColor });
+          }
+        } else {
+          complexPaths.push({ x: px, yTop: pageHPt - (py + ph), w: pw, h: ph });
+        }
+      }
+    }
+    return { simpleRects: simpleRects, complexPaths: complexPaths };
+  }
+
+  function docxModeColorInRect(data, canvasWidth, canvasHeight, x0, y0, x1, y1) {
+    const counts = new Map();
+    x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0));
+    x1 = Math.min(canvasWidth - 1, Math.ceil(x1)); y1 = Math.min(canvasHeight - 1, Math.ceil(y1));
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const idx = (y * canvasWidth + x) * 4;
+        const key = data[idx] + ',' + data[idx + 1] + ',' + data[idx + 2];
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+    }
+    let best = null, bestCount = -1;
+    counts.forEach(function (c, k) { if (c > bestCount) { bestCount = c; best = k; } });
+    return best;
+  }
+
+  async function renderComplexPathCrop(page, textItems, boxPt, renderScale) {
+    const padX = Math.min(15, Math.max(2, boxPt.w * 0.15));
+    const padY = Math.min(15, Math.max(2, boxPt.h * 0.15));
+    const cropXPt = boxPt.x - padX, cropYPt = boxPt.yTop - padY;
+    const cropWPt = boxPt.w + padX * 2, cropHPt = boxPt.h + padY * 2;
+    const viewport = page.getViewport({ scale: renderScale });
+    const fullCanvas = document.createElement('canvas');
+    fullCanvas.width = Math.ceil(viewport.width); fullCanvas.height = Math.ceil(viewport.height);
+    const fullCtx = fullCanvas.getContext('2d');
+    await page.render({ canvasContext: fullCtx, viewport: viewport }).promise;
+
+    const cropX = Math.max(0, Math.floor(cropXPt * renderScale));
+    const cropY = Math.max(0, Math.floor(cropYPt * renderScale));
+    const cropW = Math.min(fullCanvas.width - cropX, Math.ceil(cropWPt * renderScale));
+    const cropH = Math.min(fullCanvas.height - cropY, Math.ceil(cropHPt * renderScale));
+    if (cropW <= 0 || cropH <= 0) return null;
+
+    const cropCanvas = document.createElement('canvas');
+    cropCanvas.width = cropW; cropCanvas.height = cropH;
+    const cropCtx = cropCanvas.getContext('2d');
+    cropCtx.drawImage(fullCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+    // wash any text that overlaps this crop
+    const origImgData = cropCtx.getImageData(0, 0, cropW, cropH);
+    const origData = origImgData.data;
+    textItems.forEach(function (item) {
+      const ix = item.x * renderScale - cropX, iyTop = item.yTop * renderScale - cropY;
+      const iw = item.width * renderScale, ih = item.fontSize * 1.3 * renderScale;
+      if (ix + iw < 0 || iyTop + ih < 0 || ix > cropW || iyTop > cropH) return;
+      const padX = iw * 0.3 + 3, padY = ih * 0.5 + 3;
+      const bg = docxModeColorInRect(origData, cropW, cropH, ix - padX, iyTop - padY, ix + iw + padX, iyTop + ih + padY);
+      if (bg) { cropCtx.fillStyle = 'rgb(' + bg + ')'; cropCtx.fillRect(ix, iyTop, iw, ih); }
+    });
+
+    return { x: cropXPt, yTop: cropYPt, w: cropWPt, h: cropHPt, base64: cropCanvas.toDataURL('image/png').split(',')[1] };
+  }
+
+  function buildDocxImageShapeXml(id, x, yTop, w, h, rId, zIndex) {
+    return '<w:r><w:pict><v:shape id="' + id + '" style="position:absolute;left:' + x.toFixed(2) + 'pt;top:' + yTop.toFixed(2) + 'pt;width:' + Math.max(0.1, w).toFixed(2) + 'pt;height:' + Math.max(0.1, h).toFixed(2) + 'pt;mso-position-horizontal-relative:page;mso-position-vertical-relative:page;z-index:' + zIndex + '">' +
+      '<v:imagedata r:id="' + rId + '" o:title=""/></v:shape></w:pict></w:r>';
+  }
+
+  function buildDocxRectShapeXml(id, x, yTop, w, h, colorHex, zIndex) {
+    return '<w:r><w:pict><v:rect id="' + id + '" style="position:absolute;left:' + x.toFixed(2) + 'pt;top:' + yTop.toFixed(2) + 'pt;width:' + Math.max(0.1, w).toFixed(2) + 'pt;height:' + Math.max(0.1, h).toFixed(2) + 'pt;mso-position-horizontal-relative:page;mso-position-vertical-relative:page;z-index:' + zIndex + '" fillcolor="#' + colorHex + '" stroked="f"/></w:pict></w:r>';
+  }
+
+  function buildDocxTextShapeXml(id, x, yTop, w, h, spans, fontSize, direction, align, zIndex) {
+    if (!spans || spans.length === 0) return '';
+    const combinedText = spans.map(function (s) { return s.text; }).join('');
+    if (!combinedText || !combinedText.trim()) return '';
+    const jc = align || (direction === 'rtl' ? 'right' : 'left');
+    const halfPoints = Math.max(2, Math.round((fontSize || 10) * 2));
+    const runsXml = spans.map(function (s) {
+      if (!s.text) return '';
+      const rPr = '' +
+        (s.bold ? '<w:b/><w:bCs/>' : '') +
+        (s.italic ? '<w:i/><w:iCs/>' : '') +
+        (s.underline ? '<w:u w:val="single"/>' : '') +
+        (direction === 'rtl' ? '<w:rtl/>' : '') +
+        '<w:sz w:val="' + halfPoints + '"/><w:szCs w:val="' + halfPoints + '"/>' +
+        '<w:color w:val="' + (s.color || '000000') + '"/>';
+      const pieces = s.text.split('\n');
+      const body = pieces.map(function (piece, i) {
+        const t = piece ? '<w:t xml:space="preserve">' + escapeXml(piece) + '</w:t>' : '';
+        return (i > 0 ? '<w:br/>' : '') + t;
+      }).join('');
+      return '<w:r><w:rPr>' + rPr + '</w:rPr>' + body + '</w:r>';
+    }).join('');
+    const pPr = '<w:jc w:val="' + jc + '"/><w:spacing w:after="0" w:before="0" w:line="240" w:lineRule="auto"/>' + (direction === 'rtl' ? '<w:bidi/>' : '');
+    return '<w:r><w:pict><v:shape id="' + id + '" style="position:absolute;left:' + x.toFixed(2) + 'pt;top:' + yTop.toFixed(2) + 'pt;width:' + Math.max(4, w).toFixed(2) + 'pt;height:' + Math.max(4, h).toFixed(2) + 'pt;mso-position-horizontal-relative:page;mso-position-vertical-relative:page;mso-fit-shape-to-text:t;z-index:' + zIndex + '" filled="f" stroked="f">' +
+      '<v:textbox inset="0,0,0,0" style="mso-fit-shape-to-text:t"><w:txbxContent><w:p><w:pPr>' + pPr + '</w:pPr>' + runsXml + '</w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r>';
+  }
+
+  function estimateDocxTextHeight(text, fontSizePt, boxWidthPt, minHeightPt) {
+    const avgCharWidthPt = Math.max(1, fontSizePt * 0.55);
+    const charsPerLine = Math.max(1, Math.floor(boxWidthPt / avgCharWidthPt));
+    const lines = Math.max(1, Math.ceil((text || '').length / charsPerLine));
+    return Math.max(minHeightPt, lines * fontSizePt * 1.3);
+  }
+
+  function computeAutoShrinkFontSize(text, initialFontSizePt, boxWidthPt, boxHeightPt) {
+    let fontSize = initialFontSizePt;
+    const minFontSize = Math.max(5, initialFontSizePt * 0.5);
+    for (let i = 0; i < 20 && fontSize > minFontSize; i++) {
+      const estH = estimateDocxTextHeight(text, fontSize, boxWidthPt, 0);
+      if (estH <= boxHeightPt * 1.1) break;
+      fontSize = Math.max(minFontSize, fontSize - 0.5);
+    }
+    return fontSize;
+  }
+
+  function docxAlignmentToJc(alignment) {
+    if (alignment === 'center') return 'center';
+    if (alignment === 'justify') return 'both';
+    if (alignment === 'right') return 'right';
+    return 'left';
+  }
+
+  function computeFittedFontSizeRealSpans(spans, wPt, hPt, initialFontSizePt, fontForChar) {
+    if (!spans || spans.length === 0 || !fontForChar) return initialFontSizePt;
+    const richChars = richCharsFromTranslatedParagraphs([spans]);
+    if (richChars.length === 0) return initialFontSizePt;
+    const minFontSize = Math.max(5, initialFontSizePt * 0.4);
+    const fit = fitTextToBoxRich(
+      richChars,
+      function (fontSizeRaw) { return function (rc) { return fontForChar(rc.ch, rc.bold, rc.italic).widthOfTextAtSize(rc.ch, fontSizeRaw); }; },
+      Math.max(4, wPt), Math.max(4, hPt), initialFontSizePt,
+      { minFontSize: minFontSize, shrinkFactor: 0.97, lineHeightMultiplier: 1.2 }
+    );
+    return fit.fontSize;
+  }
+
+  function computeFittedFontSizeReal(text, format, wPt, hPt, initialFontSizePt, fontForChar) {
+    if (!text || !text.trim() || !fontForChar) return initialFontSizePt;
+    const richChars = richCharsFromTranslatedParagraphs([
+      [{ text: text, color: format.color, bold: format.bold, italic: format.italic }]
+    ]);
+    const minFontSize = Math.max(5, initialFontSizePt * 0.4);
+    const fit = fitTextToBoxRich(
+      richChars,
+      function (fontSizeRaw) { return function (rc) { return fontForChar(rc.ch, rc.bold, rc.italic).widthOfTextAtSize(rc.ch, fontSizeRaw); }; },
+      Math.max(4, wPt), Math.max(4, hPt), initialFontSizePt,
+      { minFontSize: minFontSize, shrinkFactor: 0.97, lineHeightMultiplier: 1.2 }
+    );
+    return fit.fontSize;
+  }
+
+  function looksLikelyUntranslated(translatedText, targetLanguage) {
+    const arabicTargetRe = /arabic|urdu|persian|farsi|pashto/i;
+    if (arabicTargetRe.test(targetLanguage || '')) return false;
+    const stripped = (translatedText || '').replace(/<\/?[biu]>/gi, '');
+    if (!stripped.trim()) return false;
+    const arabicCount = (stripped.match(/[\u0600-\u06FF]/g) || []).length;
+    if (arabicCount === 0) return false;
+    return (arabicCount / stripped.length) > 0.3;
+  }
+
+  function insertListLineBreaksIntoText(text) {
+    const markerRe = /(?:^|[\s\n])(\d{1,3}|[a-zA-Z])[.\)]\s+/g;
+    const matches = [];
+    let m;
+    while ((m = markerRe.exec(text))) {
+      const raw = m[1];
+      const isNum = /^\d+$/.test(raw);
+      const val = isNum ? parseInt(raw, 10) : raw.toLowerCase().charCodeAt(0) - 96;
+      const markerStart = m.index + m[0].indexOf(raw);
+      matches.push({ markerStart: markerStart, val: val, isNum: isNum });
+    }
+    if (matches.length < 2) return text;
+    const breakBefore = new Set();
+    let runStart = 0;
+    for (let i = 1; i <= matches.length; i++) {
+      const prev = matches[i - 1];
+      const cur = matches[i];
+      const continues = cur && cur.isNum === prev.isNum && cur.val === prev.val + 1;
+      if (!continues) {
+        if (i - runStart >= 2) { for (let j = runStart; j < i; j++) breakBefore.add(matches[j].markerStart); }
+        runStart = i;
+      }
+    }
+    if (breakBefore.size === 0) return text;
+    const positions = Array.from(breakBefore).sort(function (a, b) { return a - b; });
+    let result = '', last = 0;
+    positions.forEach(function (pos) {
+      result += text.slice(last, pos).replace(/[\s\n]+$/, '') + '\n';
+      last = pos;
+    });
+    result += text.slice(last);
+    return result;
+  }
+
+  function docxRectsOverlap(a, b) {
+    const ax1 = a.x + a.w, ay1 = a.yTop + a.h, bx1 = b.x + b.w, by1 = b.yTop + b.h;
+    const ox = Math.min(ax1, bx1) - Math.max(a.x, b.x);
+    const oy = Math.min(ay1, by1) - Math.max(a.yTop, b.yTop);
+    if (ox <= 0 || oy <= 0) return 0;
+    const areaA = Math.max(1, a.w * a.h);
+    return (ox * oy) / areaA;
+  }
+
+  function buildDocxTextPlacements(pageRegions, responseByRegionId, pd, fontForChar) {
+    const groupPlacements = [];
+    const fallbackCandidates = [];
+
+    pageRegions.forEach(function (region) {
+      if (!region.blue_boxes || region.blue_boxes.length === 0) return;
+      const blueById = new Map();
+      region.blue_boxes.forEach(function (b) { blueById.set(b.id, b); });
+      const groups = responseByRegionId.get(region.region_id) || [];
+      const coveredIds = new Set();
+      groups.forEach(function (group) {
+        const boxes = (group.source_box_ids || []).map(function (id) { return blueById.get(id); }).filter(Boolean);
+        if (boxes.length === 0) return;
+        boxes.forEach(function (b) { coveredIds.add(b.id); });
+        const left = Math.min.apply(null, boxes.map(function (b) { return b.left; }));
+        const right = Math.max.apply(null, boxes.map(function (b) { return b.right; }));
+        const top = Math.min.apply(null, boxes.map(function (b) { return b.yTop; }));
+        const bottom = Math.max.apply(null, boxes.map(function (b) { return b.yTop + b.height; }));
+        const fmt = dominantFormat(boxes, function (b) { return b.text; });
+        // fontSize/geometry are stored in the internal detection-scale units
+        // (same as left/right/yTop) — must go through pd.sx/pd.sy exactly like
+        // position does, or the font renders at the wrong (scaled) size.
+        const fontSizeRaw = Math.max.apply(null, boxes.map(function (b) { return b.fontSize || 10; }));
+        const fontSizePt = fontSizeRaw * pd.sy;
+        const text = group.translated_text || group.source_text || '';
+        // Direction (character shaping/reading order) must reflect the
+        // TRANSLATED text actually being shown, not the source box's own
+        // script — translating Arabic to English changes which way the text
+        // itself reads. Alignment (left/right/center/justify), on the other
+        // hand, is a layout decision the SOURCE document made (e.g. a centered
+        // heading) and is captured from the source geometry so it carries over.
+        const direction = classifyDirection(text) === 'rtl' ? 'rtl' : 'ltr';
+        const sourceDirection = boxes[0].direction || 'ltr';
+        const alignment = detectGroupAlignment(boxes, left, right, sourceDirection, region.region_type);
+
+        const naturalWidths = boxes.map(function (b) { return (b.naturalRight != null ? b.naturalRight : b.right) - (b.naturalLeft != null ? b.naturalLeft : b.left); });
+        const minNW = Math.min.apply(null, naturalWidths), maxNW = Math.max.apply(null, naturalWidths);
+        const isShaped = boxes.length >= 2 && maxNW > 0 && (maxNW / Math.max(1, minNW)) > 1.25;
+
+        if (isShaped && fontForChar) {
+          const sortedBoxes = boxes.slice().sort(function (a, b) { return a.yTop - b.yTop; });
+          const slots = sortedBoxes.map(function (b) {
+            const nl = (b.naturalLeft != null ? b.naturalLeft : b.left);
+            const nr = (b.naturalRight != null ? b.naturalRight : b.right);
+            return { xPt: nl * pd.sx, wPt: (nr - nl) * pd.sx, hPt: b.height * pd.sy };
+          });
+          const styledSpans = buildStyledSpansFromMarkup(text, fmt);
+          const totalHPt = slots.reduce(function (s, sl) { return s + sl.hPt; }, 0);
+          const maxWPt = Math.max.apply(null, slots.map(function (sl) { return sl.wPt; }));
+          const fittedSize = computeFittedFontSizeRealSpans(styledSpans, maxWPt, totalHPt, fontSizeRaw * pd.sy, fontForChar);
+          const richChars = richCharsFromTranslatedParagraphs([styledSpans]);
+          const measureFn = function (rc) { return fontForChar(rc.ch, rc.bold, rc.italic).widthOfTextAtSize(rc.ch, fittedSize); };
+          const wrappedLines = wrapLogicalStringRichMultiWidth(richChars, measureFn, function (lineIdx) {
+            return slots[Math.min(lineIdx, slots.length - 1)].wPt;
+          });
+          // If the translation needs far more lines than the original had
+          // slots for (every original line was short/narrow, so the per-line
+          // width budget is tiny), stacking the overflow below the last slot
+          // has no height limit and can run into the next paragraph — fall
+          // through to the normal single-box path instead, which has font
+          // auto-shrink to stay contained.
+          if (wrappedLines.length <= slots.length + 3 && wrappedLines.length <= slots.length * 1.5) {
+            let curYTop = sortedBoxes[0].yTop * pd.sy;
+            wrappedLines.forEach(function (lineChars, idx) {
+              const slot = slots[Math.min(idx, slots.length - 1)];
+              const lineSpans = richCharsLineToSpans(lineChars);
+              if (lineSpans.length === 0) { curYTop += slot.hPt; return; }
+              groupPlacements.push({
+                x: slot.xPt, yTop: curYTop, w: slot.wPt, h: slot.hPt,
+                spans: lineSpans, fontSize: fittedSize,
+                direction: direction, align: docxAlignmentToJc(direction === 'rtl' ? 'right' : 'left')
+              });
+              curYTop += slot.hPt;
+            });
+            return;
+          }
+        }
+        // For left/right-aligned (non-centered, non-justified) text, the box
+        // should run from the text's own natural starting edge to the
+        // region's far border — not the full region width on both sides,
+        // which made every line in a region equally wide regardless of where
+        // its text actually began, and could visually shift/misalign it.
+        let boxLeft = left, boxRight = right;
+        if (alignment === 'left' || alignment === 'right') {
+          const naturalLeft = Math.min.apply(null, boxes.map(function (b) { return (b.naturalLeft != null ? b.naturalLeft : b.left); }));
+          const naturalRight = Math.max.apply(null, boxes.map(function (b) { return (b.naturalRight != null ? b.naturalRight : b.right); }));
+          if (sourceDirection === 'rtl') { boxRight = naturalRight; }
+          else { boxLeft = naturalLeft; }
+        }
+        const xPt = boxLeft * pd.sx, yTopPt = top * pd.sy, wPt = (boxRight - boxLeft) * pd.sx, hPt = (bottom - top) * pd.sy;
+        const styledSpans = buildStyledSpansFromMarkup(text, fmt);
+        const fittedFontSizePt = computeFittedFontSizeRealSpans(styledSpans, wPt, hPt, fontSizePt, fontForChar);
+        groupPlacements.push({
+          x: xPt, yTop: yTopPt, w: wPt, h: hPt,
+          spans: styledSpans, fontSize: fittedFontSizePt,
+          direction: direction, align: docxAlignmentToJc(alignment)
+        });
+      });
+      region.blue_boxes.forEach(function (b) {
+        if (coveredIds.has(b.id)) return;
+        if (!b.text || !b.text.trim()) return;
+        const bDirection = b.direction || 'ltr';
+        const naturalLeft = (b.naturalLeft != null ? b.naturalLeft : b.left);
+        const naturalRight = (b.naturalRight != null ? b.naturalRight : b.right);
+        const boxLeft = bDirection === 'rtl' ? b.left : naturalLeft;
+        const boxRight = bDirection === 'rtl' ? naturalRight : b.right;
+        const wPt = (boxRight - boxLeft) * pd.sx, hPt = b.height * pd.sy;
+        const fontSizePt = (b.fontSize || 10) * pd.sy;
+        const fallbackSpans = [{ text: b.text, color: b.color, bold: b.bold, italic: b.italic, underline: b.underline }];
+        fallbackCandidates.push({
+          x: boxLeft * pd.sx, yTop: b.yTop * pd.sy, w: wPt, h: hPt,
+          spans: fallbackSpans, fontSize: computeFittedFontSizeRealSpans(fallbackSpans, wPt, hPt, fontSizePt, fontForChar),
+          direction: bDirection, align: bDirection === 'rtl' ? 'right' : 'left'
+        });
+      });
+    });
+
+    // A fallback (untranslated/original) box that substantially overlaps a
+    // translated group's box would just duplicate/clutter that same area —
+    // skip it rather than render two texts on top of each other.
+    const placements = groupPlacements.slice();
+    fallbackCandidates.forEach(function (fc) {
+      const overlapsGroup = groupPlacements.some(function (gp) { return docxRectsOverlap(fc, gp) > 0.3; });
+      if (!overlapsGroup) placements.push(fc);
+    });
+    return placements;
+  }
+
+  async function buildTranslatedDocxV2(pdfDoc, pageData, pageNumbers, responseByRegionId, onLog, fontForChar) {
+    const zip = new JSZip();
+    const relEntries = [];
+    const mediaFiles = {};
+    let rIdCounter = 1;
+    let bodyXml = '';
+    let maxWidthPt = 0, maxHeightPt = 0;
+
+    for (let idx = 0; idx < pageNumbers.length; idx++) {
+      const pageNum = pageNumbers[idx];
+      const pd = pageData.get(pageNum);
+      if (!pd) continue;
+      onLog('Page ' + pageNum + ': extracting images, vectors, text...');
+      const page = await pdfDoc.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 1 });
+      const pageWPt = viewport.width, pageHPt = viewport.height;
+      maxWidthPt = Math.max(maxWidthPt, pageWPt);
+      maxHeightPt = Math.max(maxHeightPt, pageHPt);
+      const ops = await page.getOperatorList();
+
+      const images = await extractPageImagesForDocx(page, 2, pageHPt);
+      const { simpleRects, complexPaths } = extractPageVectorsForDocx(ops, pageHPt);
+
+      const textContentForCrop = await page.getTextContent();
+      const cropTextItems = textContentForCrop.items.filter(function (it) { return it.str && it.str.trim(); }).map(function (it) {
+        const tr = it.transform;
+        const fontSize = (it.height ? it.height : Math.hypot(tr[2], tr[3])) || 10;
+        return { x: tr[4], yTop: pageHPt - tr[5] - fontSize, width: (it.width || fontSize * 0.6), fontSize: fontSize };
+      });
+
+      let z = 1;
+      let pageXml = '';
+      for (const cp of complexPaths) {
+        const crop = await renderComplexPathCrop(page, cropTextItems, cp, 2);
+        if (!crop) continue;
+        const fname = 'media/p' + pageNum + '_crop' + (z) + '.png';
+        mediaFiles[fname] = crop.base64;
+        const rId = 'rIdImg' + (rIdCounter++);
+        relEntries.push({ id: rId, target: fname });
+        pageXml += buildDocxImageShapeXml('crop' + pageNum + '_' + z, crop.x, crop.yTop, crop.w, crop.h, rId, z);
+        z++;
+      }
+      simpleRects.forEach(function (r) {
+        pageXml += buildDocxRectShapeXml('rect' + pageNum + '_' + z, r.x, r.yTop, r.w, r.h, r.color, z);
+        z++;
+      });
+      for (const im of images) {
+        const fname = 'media/p' + pageNum + '_img' + (z) + '.png';
+        mediaFiles[fname] = im.base64;
+        const rId = 'rIdImg' + (rIdCounter++);
+        relEntries.push({ id: rId, target: fname });
+        pageXml += buildDocxImageShapeXml('img' + pageNum + '_' + z, im.x, im.yTop, im.w, im.h, rId, z);
+        z++;
+      }
+      const placements = buildDocxTextPlacements(pd.pageRegions, responseByRegionId, pd, fontForChar);
+      placements.forEach(function (p) {
+        pageXml += buildDocxTextShapeXml('txt' + pageNum + '_' + z, p.x, p.yTop, p.w, p.h, p.spans, p.fontSize, p.direction, p.align, z + 1000);
+        z++;
+      });
+
+      bodyXml += '<w:p>' + pageXml + '</w:p>';
+      if (idx < pageNumbers.length - 1) bodyXml += '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
+    }
+
+    const widthTwips = Math.max(1, Math.round(maxWidthPt * 20));
+    const heightTwips = Math.max(1, Math.round(maxHeightPt * 20));
+
+    const documentXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<w:document xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w10="urn:schemas-microsoft-com:office:word">' +
+      '<w:body>' + bodyXml +
+      '<w:sectPr><w:pgSz w:w="' + widthTwips + '" w:h="' + heightTwips + '"/><w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/></w:sectPr>' +
+      '</w:body></w:document>';
+
+    const contentTypesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+      '<Default Extension="png" ContentType="image/png"/>' +
+      '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+      '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
+      '<Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>' +
+      '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>' +
+      '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>' +
+      '</Types>';
+
+    const rootRelsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+      '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>' +
+      '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>' +
+      '</Relationships>';
+
+    let docRelsInner = '<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+      '<Relationship Id="rIdSettings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>';
+    relEntries.forEach(function (r) {
+      docRelsInner += '<Relationship Id="' + r.id + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="' + r.target + '"/>';
+    });
+    const docRelsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + docRelsInner + '</Relationships>';
+
+    const stylesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+      '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="20"/></w:rPr></w:rPrDefault></w:docDefaults>' +
+      '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>' +
+      '</w:styles>';
+
+    const settingsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>';
+
+    const coreXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Translated Document</dc:title></cp:coreProperties>';
+
+    const appXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>PDF Region Translator</Application></Properties>';
+
+    zip.file('[Content_Types].xml', contentTypesXml);
+    zip.file('_rels/.rels', rootRelsXml);
+    zip.file('docProps/core.xml', coreXml);
+    zip.file('docProps/app.xml', appXml);
+    zip.file('word/document.xml', documentXml);
+    zip.file('word/styles.xml', stylesXml);
+    zip.file('word/settings.xml', settingsXml);
+    zip.file('word/_rels/document.xml.rels', docRelsXml);
+    Object.keys(mediaFiles).forEach(function (fname) {
+      zip.file('word/' + fname, mediaFiles[fname], { base64: true });
+    });
+
+    return zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  }
+
+  function detectLanguageSimple(text) {
+    const arabicCount = (text.match(/[\u0600-\u06FF]/g) || []).length;
+    const latinCount = (text.match(/[a-zA-Z]/g) || []).length;
+    const devanagariCount = (text.match(/[\u0900-\u097F]/g) || []).length;
+    const chineseCount = (text.match(/[\u4E00-\u9FFF]/g) || []).length;
+    const total = arabicCount + latinCount + devanagariCount + chineseCount;
+    if (total === 0) return 'unknown';
+    const maxCount = Math.max(arabicCount, latinCount, devanagariCount, chineseCount);
+    if (maxCount / total > 0.9) {
+      // Latin script alone is deliberately NOT treated as "English" here — it is
+      // shared by many languages (Italian, French, Spanish, German, ...), so
+      // guessing 'en' from script alone would wrongly skip translation for any
+      // non-English Latin-script source whenever the target happens to be
+      // English. Only scripts that map to one realistic target are pre-skipped;
+      // for everything else the translation model's own rule (R10: "if already
+      // in <targetLanguage>, return UNCHANGED") decides, since it actually
+      // understands language, not just script.
+      if (arabicCount === maxCount) return 'ar';
+      if (devanagariCount === maxCount) return 'hi';
+      if (chineseCount === maxCount) return 'zh';
+    }
+    return 'mixed';
+  }
+
+  function detectAlignment(naturalLeft, naturalRight, boxLeft, boxRight, fallbackDirection) {
+    const leftMargin = naturalLeft - boxLeft;
+    const rightMargin = boxRight - naturalRight;
+    const boxWidth = boxRight - boxLeft;
+    const tolerance = Math.max(3, boxWidth * 0.04);
+    const leftSmall = leftMargin <= tolerance;
+    const rightSmall = rightMargin <= tolerance;
+    if (leftSmall && rightSmall) return fallbackDirection === 'rtl' ? 'right' : 'left';
+    if (Math.abs(leftMargin - rightMargin) <= tolerance) return 'center';
+    return leftMargin < rightMargin ? 'left' : 'right';
+  }
+
+  function detectGroupAlignment(groupBlueBoxes, areaLeft, areaRight, direction, regionType) {
+    const boxWidth = areaRight - areaLeft;
+    const tol = Math.max(3, boxWidth * 0.04);
+    if (groupBlueBoxes.length >= 2) {
+      const sorted = groupBlueBoxes.slice().sort(function (a, b) { return a.yTop - b.yTop; });
+      const nonLast = sorted.slice(0, -1);
+      const isJustified = nonLast.length > 0 && nonLast.every(function (b) {
+        const nl = (b.naturalLeft != null) ? b.naturalLeft : b.left;
+        const nr = (b.naturalRight != null) ? b.naturalRight : b.right;
+        return (nl - areaLeft) <= tol && (areaRight - nr) <= tol;
+      });
+      if (isJustified) return 'justify';
+    }
+    const naturalLeft = Math.min.apply(null, groupBlueBoxes.map(function (b) { return (b.naturalLeft != null) ? b.naturalLeft : b.left; }));
+    const naturalRight = Math.max.apply(null, groupBlueBoxes.map(function (b) { return (b.naturalRight != null) ? b.naturalRight : b.right; }));
+    if (regionType === 'green') {
+      const leftMargin = naturalLeft - areaLeft, rightMargin = areaRight - naturalRight;
+      if (Math.abs(leftMargin - rightMargin) <= tol) return 'center';
+      return direction === 'rtl' ? 'right' : 'left';
+    }
+    return detectAlignment(naturalLeft, naturalRight, areaLeft, areaRight, direction);
+  }
+
+  function boxesTouch(a, b, tol) {
+    const hGap = Math.max(a.x - (b.x + b.w), b.x - (a.x + a.w));
+    const vGap = Math.max(a.yTop - (b.yTop + b.h), b.yTop - (a.yTop + a.h));
+    return hGap <= tol && vGap <= tol;
+  }
+
+  function findRoot(parent, a) {
+    while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; }
+    return a;
+  }
+
+  function unionRoots(parent, a, b) {
+    const ra = findRoot(parent, a), rb = findRoot(parent, b);
+    if (ra !== rb) parent[ra] = rb;
+  }
+
+  function computeGroupBounds(rects, parent) {
+    const bounds = {};
+    rects.forEach(function(r, k) {
+      const root = findRoot(parent, k);
+      if (!bounds[root]) bounds[root] = { left: r.x, right: r.x + r.w, top: r.yTop, bottom: r.yTop + r.h };
+      else {
+        bounds[root].left = Math.min(bounds[root].left, r.x);
+        bounds[root].right = Math.max(bounds[root].right, r.x + r.w);
+        bounds[root].top = Math.min(bounds[root].top, r.yTop);
+        bounds[root].bottom = Math.max(bounds[root].bottom, r.yTop + r.h);
+      }
+    });
+    return Object.keys(bounds).map(function(k) { return bounds[k]; });
+  }
+
+  function buildBlocks(lines, rects) {
+    const STRUCTURAL_MIN_DIM = 15;
+    const structural = rects.filter(function(r) { return Math.max(r.w, r.h) > STRUCTURAL_MIN_DIM; });
+    const sn = structural.length;
+    const sParent = new Array(sn);
+    for (let k = 0; k < sn; k++) sParent[k] = k;
+    const sTol = 3;
+    for (let a = 0; a < sn; a++) {
+      for (let b = a + 1; b < sn; b++) {
+        if (boxesTouch(structural[a], structural[b], sTol)) unionRoots(sParent, a, b);
+      }
+    }
+    const parentGroups = computeGroupBounds(structural, sParent);
+    const sorted = lines.slice().sort(function(a, b) { return a.yTop - b.yTop; });
+    const blocks = [];
+    let current = null;
+    sorted.forEach(function(line) {
+      const covered = parentGroups.some(function(g) {
+        const yOverlap = line.yTop >= g.top - 2 && line.yTop <= g.bottom + 2;
+        if (!yOverlap) return false;
+        return line.left <= g.right && line.right >= g.left;
+      });
+      if (covered) { if (current) { blocks.push(current); current = null; } return; }
+      if (current) {
+        const prevLine = current[current.length - 1];
+        const prevBottom = prevLine.yTop + prevLine.maxFontSize * 1.2;
+        const gap = line.yTop - prevBottom;
+        if (gap > 80) { blocks.push(current); current = [line]; }
+        else current.push(line);
+      } else current = [line];
+    });
+    if (current) blocks.push(current);
+    return blocks;
+  }
+
+  function findContainingBounds(lineYTop, rowH, groupBoundsList, tol) {
+    let above = null, below = null;
+    groupBoundsList.forEach(function(g) {
+      const gapAbove = lineYTop - g.bottom;
+      if (gapAbove >= -2 && gapAbove <= tol) { if (!above || g.bottom > above.bottom) above = g; }
+      const gapBelow = g.top - (lineYTop + rowH);
+      if (gapBelow >= -2 && gapBelow <= tol) { if (!below || g.top < below.top) below = g; }
+    });
+    if (!above && !below) return null;
+    const cands = [above, below].filter(Boolean);
+    return {
+      left: Math.min.apply(null, cands.map(function(g) { return g.left; })),
+      right: Math.max.apply(null, cands.map(function(g) { return g.right; }))
+    };
+  }
+
+  function detectTableCells(rects, textItems) {
+    const thinH = rects.filter(function(r) { return r.h < 5 && r.w > 20; });
+    const thinV = rects.filter(function(r) { return r.w < 5 && r.h > 20; });
+
+    const yPositions = [];
+    thinH.forEach(function(line) {
+      if (!yPositions.some(function(y) { return Math.abs(y - line.yTop) < 3; })) {
+        yPositions.push(line.yTop);
+      }
+    });
+    yPositions.sort(function(a, b) { return a - b; });
+
+    const xPositions = [];
+    thinV.forEach(function(line) {
+      if (!xPositions.some(function(x) { return Math.abs(x - line.x) < 3; })) {
+        xPositions.push(line.x);
+      }
+    });
+    xPositions.sort(function(a, b) { return a - b; });
+
+    const cells = [];
+    for (let yi = 0; yi < yPositions.length - 1; yi++) {
+      for (let xi = 0; xi < xPositions.length - 1; xi++) {
+        const cell = {
+          left: xPositions[xi],
+          top: yPositions[yi],
+          w: xPositions[xi + 1] - xPositions[xi],
+          h: yPositions[yi + 1] - yPositions[yi]
+        };
+        const cellText = textItems.filter(function(it) {
+          const itCenterX = it.x + it.width / 2;
+          const itCenterY = it.yTop + (it.fontSize * 1.2) / 2;
+          return itCenterX >= cell.left && itCenterX <= cell.left + cell.w
+              && itCenterY >= cell.top && itCenterY <= cell.top + cell.h;
+        });
+        if (cellText.length > 0) {
+          cell.textItems = cellText;
+          cells.push(cell);
+        }
+      }
+    }
+    return cells;
+  }
+
+  function tokenizeForWrap(text) {
+    const tokens = [];
+    let i = 0;
+    while (i < text.length) {
+      if (text[i] === '\n') { tokens.push({ type: 'break', text: '\n' }); i++; continue; }
+      const isSpace = /\s/.test(text[i]);
+      let j = i + 1;
+      while (j < text.length && text[j] !== '\n' && /\s/.test(text[j]) === isSpace) j++;
+      tokens.push({ type: isSpace ? 'space' : 'word', text: text.slice(i, j) });
+      i = j;
+    }
+    return tokens;
+  }
+
+  function wrapLogicalString(text, measureFn, maxWidth) {
+    const tokens = tokenizeForWrap(text);
+    const lines = [];
+    let current = '';
+    let currentWidth = 0;
+    function widthOf(str) { let w = 0; for (const ch of str) w += measureFn(ch); return w; }
+    function pushLine() { lines.push(current.replace(/\s+$/, '')); current = ''; currentWidth = 0; }
+    for (const tok of tokens) {
+      if (tok.type === 'break') { pushLine(); continue; }
+      const tokWidth = widthOf(tok.text);
+      if (tok.type === 'space') {
+        if (currentWidth + tokWidth <= maxWidth) { current += tok.text; currentWidth += tokWidth; }
+        continue;
+      }
+      if (currentWidth + tokWidth <= maxWidth) { current += tok.text; currentWidth += tokWidth; continue; }
+      if (current.length > 0) pushLine();
+      current = tok.text;
+      currentWidth = tokWidth;
+    }
+    if (current.length > 0) pushLine();
+    return lines.length ? lines : [''];
+  }
+
+  function richCharsFromTranslatedParagraphs(paragraphs) {
+    const out = [];
+    paragraphs.forEach(function(spans, idx) {
+      if (idx > 0) out.push({ ch: '\n', color: (spans[0] && spans[0].color) || '000000', bold: !!(spans[0] && spans[0].bold), italic: !!(spans[0] && spans[0].italic), underline: !!(spans[0] && spans[0].underline) });
+      spans.forEach(function(s) {
+        for (const ch of s.text) out.push({ ch: ch, color: s.color, bold: s.bold, italic: s.italic, underline: s.underline });
+      });
+    });
+    return out;
+  }
+
+  function tokenizeForWrapRich(richChars) {
+    const tokens = [];
+    let i = 0;
+    while (i < richChars.length) {
+      if (richChars[i].ch === '\n') { tokens.push({ type: 'break', chars: [richChars[i]] }); i++; continue; }
+      const isSpace = /\s/.test(richChars[i].ch);
+      let j = i + 1;
+      while (j < richChars.length && richChars[j].ch !== '\n' && /\s/.test(richChars[j].ch) === isSpace) j++;
+      tokens.push({ type: isSpace ? 'space' : 'word', chars: richChars.slice(i, j) });
+      i = j;
+    }
+    return tokens;
+  }
+
+  function wrapLogicalStringRich(richChars, measureFn, maxWidth) {
+    const tokens = tokenizeForWrapRich(richChars);
+    const lines = [];
+    let current = [];
+    let currentWidth = 0;
+    function widthOf(chars) { let w = 0; for (const rc of chars) w += measureFn(rc); return w; }
+    function trimTrailingSpace(chars) {
+      let end = chars.length;
+      while (end > 0 && /\s/.test(chars[end - 1].ch)) end--;
+      return chars.slice(0, end);
+    }
+    function pushLine() { lines.push(trimTrailingSpace(current)); current = []; currentWidth = 0; }
+    for (const tok of tokens) {
+      if (tok.type === 'break') { pushLine(); continue; }
+      const tokWidth = widthOf(tok.chars);
+      if (tok.type === 'space') {
+        if (currentWidth + tokWidth <= maxWidth) { current = current.concat(tok.chars); currentWidth += tokWidth; }
+        continue;
+      }
+      if (currentWidth + tokWidth <= maxWidth) { current = current.concat(tok.chars); currentWidth += tokWidth; continue; }
+      if (current.length > 0) pushLine();
+      current = tok.chars.slice();
+      currentWidth = tokWidth;
+    }
+    if (current.length > 0) pushLine();
+    return lines.length ? lines : [[]];
+  }
+
+  function wrapLogicalStringRichMultiWidth(richChars, measureFn, widthForLineFn) {
+    const tokens = tokenizeForWrapRich(richChars);
+    const lines = [];
+    let current = [];
+    let currentWidth = 0;
+    function widthOf(chars) { let w = 0; for (const rc of chars) w += measureFn(rc); return w; }
+    function trimTrailingSpace(chars) {
+      let end = chars.length;
+      while (end > 0 && /\s/.test(chars[end - 1].ch)) end--;
+      return chars.slice(0, end);
+    }
+    function pushLine() { lines.push(trimTrailingSpace(current)); current = []; currentWidth = 0; }
+    for (const tok of tokens) {
+      const maxWidth = widthForLineFn(lines.length);
+      if (tok.type === 'break') { pushLine(); continue; }
+      const tokWidth = widthOf(tok.chars);
+      if (tok.type === 'space') {
+        if (currentWidth + tokWidth <= maxWidth) { current = current.concat(tok.chars); currentWidth += tokWidth; }
+        continue;
+      }
+      if (currentWidth + tokWidth <= maxWidth) { current = current.concat(tok.chars); currentWidth += tokWidth; continue; }
+      if (current.length > 0) pushLine();
+      current = tok.chars.slice();
+      currentWidth = tokWidth;
+    }
+    if (current.length > 0) pushLine();
+    return lines.length ? lines : [[]];
+  }
+
+  function richCharsLineToSpans(lineChars) {
+    const spans = [];
+    lineChars.forEach(function (rc) {
+      const last = spans[spans.length - 1];
+      if (last && last.color === rc.color && last.bold === !!rc.bold && last.italic === !!rc.italic && last.underline === !!rc.underline) {
+        last.text += rc.ch;
+      } else {
+        spans.push({ text: rc.ch, color: rc.color, bold: !!rc.bold, italic: !!rc.italic, underline: !!rc.underline });
+      }
+    });
+    return spans;
+  }
+
+  function fitTextToBoxRich(richChars, measureFactory, boxWidth, boxHeight, originalFontSize, opts) {
+    opts = opts || {};
+    const minFontSize = opts.minFontSize || Math.max(4, originalFontSize * 0.4);
+    const shrinkFactor = opts.shrinkFactor || 0.9;
+    const lineHeightMultiplier = opts.lineHeightMultiplier || 1.2;
+    let fontSize = originalFontSize;
+    let lines, lineHeight, neededHeight, measure;
+    while (true) {
+      measure = measureFactory(fontSize);
+      lines = wrapLogicalStringRich(richChars, measure, boxWidth);
+      lineHeight = fontSize * lineHeightMultiplier;
+      neededHeight = lines.length * lineHeight;
+      if (neededHeight <= boxHeight || fontSize <= minFontSize) break;
+      fontSize = Math.max(minFontSize, fontSize * shrinkFactor);
+    }
+    let maxLineWidth = 0;
+    lines.forEach(function(line) {
+      let w = 0;
+      for (const rc of line) w += measure(rc);
+      if (w > maxLineWidth) maxLineWidth = w;
+    });
+    return { fontSize: fontSize, lines: lines, lineHeight: lineHeight, neededHeight: neededHeight, maxLineWidth: maxLineWidth };
+  }
+
+  function hexToRgbTriple(hex) {
+    const m = /^([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    if (!m) return [0, 0, 0];
+    return [parseInt(m[1], 16) / 255, parseInt(m[2], 16) / 255, parseInt(m[3], 16) / 255];
+  }
+
+  function findGapSplits(items) {
+    const gaps = [];
+    for (let i = 1; i < items.length; i++) {
+      const prevRight = items[i-1].x + items[i-1].width;
+      gaps.push(items[i].x - prevRight);
+    }
+    if (gaps.length === 0) return [];
+    const sorted = gaps.slice().sort(function(a, b) { return a - b; });
+    const normalCount = Math.max(1, Math.ceil(sorted.length * 0.6));
+    let normalMax = 0;
+    for (let i = 0; i < normalCount; i++) normalMax = Math.max(normalMax, sorted[i]);
+    const threshold = Math.max(20, normalMax * 4);
+    const splitSet = {};
+    gaps.forEach(function(g, i) { if (g > threshold) splitSet[i] = true; });
+    if (Object.keys(splitSet).length > 0) {
+      const boundaries = [-1].concat(Object.keys(splitSet).map(Number).sort(function(a,b){return a-b;})).concat([items.length - 1]);
+      for (let b = 0; b < boundaries.length - 1; b++) {
+        const segStart = boundaries[b] + 1;
+        const segEnd = boundaries[b + 1];
+        let lastScript = null;
+        for (let i = segStart; i <= segEnd; i++) {
+          const s = scriptOf(items[i].str || '');
+          if (s !== 'neutral') {
+            if (lastScript && lastScript !== s && i > segStart) splitSet[i - 1] = true;
+            lastScript = s;
+          }
+        }
+      }
+    }
+    return Object.keys(splitSet).map(Number).sort(function(a,b){return a-b;});
+  }
+
+  function buildRowSegments(line, splitIdx) {
+    const segments = [];
+    let start = 0;
+    splitIdx.forEach(function(i) {
+      segments.push(line.items.slice(start, i + 1));
+      start = i + 1;
+    });
+    segments.push(line.items.slice(start));
+    return segments.map(function(segItems) {
+      return {
+        left: Math.min.apply(null, segItems.map(function(it) { return it.x; })),
+        right: Math.max.apply(null, segItems.map(function(it) { return it.x + it.width; }))
+      };
+    });
+  }
+
+  function computeOwnedTextItems(textItems, regionBox, fixMode) {
+    if (fixMode === 'D' || fixMode === 'DC') {
+      return textItems.filter(function(it) {
+        const itCenterX = it.x + it.width / 2;
+        const itCenterY = it.yTop + (it.fontSize * 1.2) / 2;
+        return itCenterX >= regionBox.left && itCenterX <= regionBox.left + regionBox.w
+            && itCenterY >= regionBox.top && itCenterY <= regionBox.top + regionBox.h;
+      });
+    } else if (fixMode.indexOf('B') >= 0) {
+      return textItems.filter(function(it) {
+        const itCenterX = it.x + it.width / 2;
+        return itCenterX >= regionBox.left - 5 && itCenterX <= regionBox.left + regionBox.w + 5;
+      });
+    } else if (fixMode.indexOf('A') >= 0) {
+      return textItems.filter(function(it) {
+        const itCenterX = it.x + it.width / 2;
+        const yOverlap = it.yTop < regionBox.top + regionBox.h + 15 && (it.yTop + it.fontSize * 1.2) > regionBox.top - 15;
+        const xOverlap = itCenterX >= regionBox.left - 10 && itCenterX <= regionBox.left + regionBox.w + 10;
+        return yOverlap && xOverlap;
+      });
+    } else {
+      return textItems.filter(function(it) {
+        const itCenter = it.x + it.width / 2;
+        const yOverlap = it.yTop < regionBox.top + regionBox.h + 2 && (it.yTop + it.fontSize * 1.2) > regionBox.top - 2;
+        return yOverlap && itCenter >= regionBox.left - 1 && itCenter <= regionBox.left + regionBox.w + 1;
+      });
+    }
+  }
+
+  function addBlueBoxesToRegion(targetPage, region, textItems, sx, sy, ph, rgb, fixMode, consumedItems, boxMode) {
+    const regionBox = region.region_box;
+    let owned = computeOwnedTextItems(textItems, regionBox, fixMode);
+    owned = owned.filter(function(it) { return !consumedItems.has(it); });
+    owned.forEach(function(it) { consumedItems.add(it); });
+    if (owned.length === 0) return;
+
+    // Sort top-to-bottom so blue_boxes are numbered/sent in correct reading order —
+    // text extraction order in the PDF content stream is not guaranteed to match
+    // visual order, and OpenRouter's paragraph grouping depends on this order.
+    const bls = groupItemsIntoLines(owned).sort(function (a, b) { return a.yTop - b.yTop; });
+    const direction = classifyDirection(owned.map(function(it) { return it.str; }).join(''));
+
+    let blueIdx = 0;
+    bls.forEach(function (bl) {
+      if (!hasVisibleText(bl.items, fixMode)) return;
+      blueIdx++;
+      const lineTop = bl.yTop;
+      const lineHeight = Math.max(4, (bl.maxFontSize || 10) * 1.2);
+      // Only draw blue border if boxMode === 'with'
+      if (boxMode === 'with') {
+        targetPage.drawRectangle({
+          x: regionBox.left * sx,
+          y: ph - (lineTop + lineHeight) * sy,
+          width: regionBox.w * sx,
+          height: lineHeight * sy,
+          borderColor: rgb(0, 0, 1), borderWidth: 0.6
+        });
+      }
+      const lineFormat = dominantFormat(bl.items, function (it) { return it.str; });
+      region.blue_boxes.push({
+        id: makePositionId(region.region_id + '_BLUE', bl.left, lineTop, bl.right - bl.left, lineHeight),
+        yTop: lineTop,
+        height: lineHeight,
+        left: regionBox.left,
+        right: regionBox.left + regionBox.w,
+        naturalLeft: bl.left,
+        naturalRight: bl.right,
+        text: reconstructLogicalText(bl.items, direction, bl.maxFontSize || 10),
+        markupText: reconstructLogicalTextWithMarkup(bl.items, direction, bl.maxFontSize || 10),
+        fontSize: bl.maxFontSize || 10,
+        direction: direction,
+        color: lineFormat.color,
+        bold: lineFormat.bold,
+        italic: lineFormat.italic,
+        underline: lineFormat.underline
+      });
+    });
+  }
+
+  function tokenizePdfContentStream(bytes) {
+    const tokens = [];
+    let i = 0;
+    const n = bytes.length;
+    function isWS(c) { return c===0||c===9||c===10||c===12||c===13||c===32; }
+    function isDelim(c) { return c===40||c===41||c===60||c===62||c===91||c===93||c===123||c===125||c===47||c===37; }
+    function bytesToAscii(arr) { let s = ''; for (let k = 0; k < arr.length; k++) s += String.fromCharCode(arr[k]); return s; }
+    while (i < n) {
+      const c = bytes[i];
+      if (isWS(c)) { i++; continue; }
+      if (c === 37) { while (i < n && bytes[i] !== 10 && bytes[i] !== 13) i++; continue; }
+      if (c === 40) {
+        let depth = 1; i++; const buf = [];
+        while (i < n && depth > 0) {
+          const ch = bytes[i];
+          if (ch === 92) {
+            i++; const esc = bytes[i];
+            const map = { 110: 10, 114: 13, 116: 9, 98: 8, 102: 12, 40: 40, 41: 41, 92: 92 };
+            if (esc >= 48 && esc <= 55) {
+              let oct = '';
+              for (let k = 0; k < 3 && i < n && bytes[i] >= 48 && bytes[i] <= 55; k++) { oct += String.fromCharCode(bytes[i]); i++; }
+              buf.push(parseInt(oct, 8) & 0xFF); continue;
+            } else if (map[esc] !== undefined) { buf.push(map[esc]); i++; }
+            else if (esc === 10 || esc === 13) { i++; if (esc === 13 && bytes[i] === 10) i++; }
+            else { buf.push(esc); i++; }
+            continue;
+          }
+          if (ch === 40) { depth++; buf.push(ch); i++; continue; }
+          if (ch === 41) { depth--; i++; if (depth > 0) buf.push(ch); continue; }
+          buf.push(ch); i++;
+        }
+        tokens.push({ type: 'string', bytes: buf });
+        continue;
+      }
+      if (c === 60) {
+        if (bytes[i + 1] === 60) { tokens.push({ type: 'dictStart' }); i += 2; continue; }
+        i++; let hex = '';
+        while (i < n && bytes[i] !== 62) { const ch = bytes[i]; if (!isWS(ch)) hex += String.fromCharCode(ch); i++; }
+        i++;
+        if (hex.length % 2 === 1) hex += '0';
+        const buf = [];
+        for (let k = 0; k < hex.length; k += 2) buf.push(parseInt(hex.substr(k, 2), 16));
+        tokens.push({ type: 'string', bytes: buf });
+        continue;
+      }
+      if (c === 62) { if (bytes[i + 1] === 62) { tokens.push({ type: 'dictEnd' }); i += 2; continue; } i++; continue; }
+      if (c === 91) { tokens.push({ type: 'arrayStart' }); i++; continue; }
+      if (c === 93) { tokens.push({ type: 'arrayEnd' }); i++; continue; }
+      if (c === 47) {
+        i++; let name = '';
+        while (i < n && !isWS(bytes[i]) && !isDelim(bytes[i])) { name += String.fromCharCode(bytes[i]); i++; }
+        tokens.push({ type: 'name', value: name });
+        continue;
+      }
+      if ((c >= 48 && c <= 57) || c === 43 || c === 45 || c === 46) {
+        let start = i; i++;
+        while (i < n && ((bytes[i] >= 48 && bytes[i] <= 57) || bytes[i] === 46 || bytes[i] === 43 || bytes[i] === 45)) i++;
+        tokens.push({ type: 'number', value: parseFloat(bytesToAscii(bytes.slice(start, i))) });
+        continue;
+      }
+      if (c === 123 || c === 125) { i++; continue; }
+      let start = i;
+      while (i < n && !isWS(bytes[i]) && !isDelim(bytes[i])) i++;
+      if (i === start) { i++; continue; }
+      tokens.push({ type: 'op', value: bytesToAscii(bytes.slice(start, i)) });
+    }
+    return tokens;
+  }
+
+  function groupOperands(tokens) {
+    const stream = [];
+    let i = 0;
+    function readValue() {
+      const tok = tokens[i];
+      if (tok.type === 'arrayStart') {
+        i++;
+        const items = [];
+        while (i < tokens.length && tokens[i].type !== 'arrayEnd') items.push(readValue());
+        i++;
+        return { type: 'array', items: items };
+      }
+      i++;
+      return tok;
+    }
+    while (i < tokens.length) {
+      if (tokens[i].type === 'op') { stream.push(tokens[i]); i++; }
+      else stream.push(readValue());
+    }
+    return stream;
+  }
+
+  function parseToUnicodeCMap(text) {
+    const map = new Map();
+    const bfCharRe = /beginbfchar([\s\S]*?)endbfchar/g;
+    let m;
+    while ((m = bfCharRe.exec(text))) {
+      const pairRe = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g;
+      let p;
+      while ((p = pairRe.exec(m[1]))) {
+        const src = parseInt(p[1], 16);
+        const dstHex = p[2];
+        let dst = '';
+        for (let k = 0; k < dstHex.length; k += 4) dst += String.fromCharCode(parseInt(dstHex.slice(k, k + 4), 16));
+        map.set(src, dst);
+      }
+    }
+    const bfRangeRe = /beginbfrange([\s\S]*?)endbfrange/g;
+    while ((m = bfRangeRe.exec(text))) {
+      const tripleRe = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g;
+      let t;
+      while ((t = tripleRe.exec(m[1]))) {
+        const lo = parseInt(t[1], 16), hi = parseInt(t[2], 16), dstStart = parseInt(t[3], 16);
+        for (let code = lo; code <= hi && code - lo < 10000; code++) map.set(code, String.fromCharCode(dstStart + (code - lo)));
+      }
+    }
+    return map;
+  }
+
+  function decodePdfStringBytes(strTok, toUnicodeMap) {
+    const bytes = strTok.bytes;
+    if (toUnicodeMap) {
+      let out = '';
+      for (let i = 0; i + 1 < bytes.length; i += 2) {
+        const code = (bytes[i] << 8) | bytes[i + 1];
+        out += toUnicodeMap.has(code) ? toUnicodeMap.get(code) : '';
+      }
+      return out;
+    }
+    let out = '';
+    for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+    return out;
+  }
+
+  function computeApToPageTransform(bbox, matrix, rect) {
+    const m = matrix || [1, 0, 0, 1, 0, 0];
+    function apply(x, y) { return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]]; }
+    const corners = [apply(bbox[0], bbox[1]), apply(bbox[2], bbox[1]), apply(bbox[2], bbox[3]), apply(bbox[0], bbox[3])];
+    const txMinX = Math.min.apply(null, corners.map(function (c) { return c[0]; }));
+    const txMaxX = Math.max.apply(null, corners.map(function (c) { return c[0]; }));
+    const txMinY = Math.min.apply(null, corners.map(function (c) { return c[1]; }));
+    const txMaxY = Math.max.apply(null, corners.map(function (c) { return c[1]; }));
+    const rectMinX = Math.min(rect[0], rect[2]), rectMaxX = Math.max(rect[0], rect[2]);
+    const rectMinY = Math.min(rect[1], rect[3]), rectMaxY = Math.max(rect[1], rect[3]);
+    const sx = (txMaxX - txMinX) > 1e-6 ? (rectMaxX - rectMinX) / (txMaxX - txMinX) : 1;
+    const sy = (txMaxY - txMinY) > 1e-6 ? (rectMaxY - rectMinY) / (txMaxY - txMinY) : 1;
+    const A = [sx, 0, 0, sy, rectMinX - txMinX * sx, rectMinY - txMinY * sy];
+    return docxMultiplyCtm(m, A);
+  }
+
+  function walkAppearanceStreamText(pdfLibCtx, streamObj, textOut, depth) {
+    const PDFName = PDFLib.PDFName, PDFRef = PDFLib.PDFRef, decodePDFRawStream = PDFLib.decodePDFRawStream;
+    if (depth > 8 || !streamObj || !streamObj.dict) return;
+    function lookup(ref) { return ref instanceof PDFRef ? pdfLibCtx.lookup(ref) : ref; }
+    const dict = streamObj.dict;
+    const resources = lookup(dict.get(PDFName.of('Resources')));
+    let contentBytes;
+    try { contentBytes = decodePDFRawStream(streamObj).decode(); } catch (e) { return; }
+    const tokens = tokenizePdfContentStream(contentBytes);
+    const ops = groupOperands(tokens);
+
+    let fontDict = null, toUnicodeMap = null, fontSize = 0;
+    let tm = [1, 0, 0, 1, 0, 0];
+    let stack = [];
+    function getFont(name) {
+      if (!resources) return null;
+      const fonts = lookup(resources.get(PDFName.of('Font')));
+      if (!fonts) return null;
+      return lookup(fonts.get(PDFName.of(name)));
+    }
+    function getToUnicode(fdict) {
+      if (!fdict) return null;
+      const tuRef = fdict.get(PDFName.of('ToUnicode'));
+      if (!tuRef) return null;
+      const tuStream = lookup(tuRef);
+      let tuBytes;
+      try { tuBytes = decodePDFRawStream(tuStream).decode(); } catch (e) { return null; }
+      let text = '';
+      for (let i = 0; i < tuBytes.length; i++) text += String.fromCharCode(tuBytes[i]);
+      return parseToUnicodeCMap(text);
+    }
+    function getXObject(name) {
+      if (!resources) return null;
+      const xo = lookup(resources.get(PDFName.of('XObject')));
+      if (!xo) return null;
+      return lookup(xo.get(PDFName.of(name)));
+    }
+
+    for (const item of ops) {
+      if (item.type === 'op') {
+        if (item.value === 'Tf') {
+          const nameOperand = stack[stack.length - 2];
+          fontSize = stack[stack.length - 1] ? stack[stack.length - 1].value : 0;
+          if (nameOperand && nameOperand.type === 'name') {
+            fontDict = getFont(nameOperand.value);
+            toUnicodeMap = getToUnicode(fontDict);
+          }
+        } else if (item.value === 'Tm') {
+          const vals = stack.slice(-6).map(function (t) { return t.value; });
+          if (vals.length === 6) tm = vals;
+        } else if (item.value === 'Td' || item.value === 'TD') {
+          const tx = stack[stack.length - 2] ? stack[stack.length - 2].value : 0;
+          const ty = stack[stack.length - 1] ? stack[stack.length - 1].value : 0;
+          tm = [tm[0], tm[1], tm[2], tm[3], tm[0] * tx + tm[2] * ty + tm[4], tm[1] * tx + tm[3] * ty + tm[5]];
+        } else if (item.value === 'Tj') {
+          const s = stack[stack.length - 1];
+          if (s && s.type === 'string') textOut.push({ str: decodePdfStringBytes(s, toUnicodeMap), tm: tm.slice(), size: fontSize });
+        } else if (item.value === 'TJ') {
+          const arr = stack[stack.length - 1];
+          if (arr && arr.type === 'array') {
+            for (const el of arr.items) {
+              if (el.type === 'string') textOut.push({ str: decodePdfStringBytes(el, toUnicodeMap), tm: tm.slice(), size: fontSize });
+            }
+          }
+        } else if (item.value === 'Do') {
+          const nameOperand = stack[stack.length - 1];
+          if (nameOperand && nameOperand.type === 'name') {
+            const xobj = getXObject(nameOperand.value);
+            if (xobj && xobj.dict && xobj.dict.get(PDFName.of('Subtype')) === PDFName.of('Form')) {
+              walkAppearanceStreamText(pdfLibCtx, xobj, textOut, depth + 1);
+            }
+          }
+        }
+        stack = [];
+      } else {
+        stack.push(item);
+      }
+    }
+  }
+
+  function extractAnnotationTextItems(pdfLibDoc, pageIndex) {
+    const PDFName = PDFLib.PDFName, PDFRef = PDFLib.PDFRef;
+    const ctx = pdfLibDoc.context;
+    function lookup(ref) { return ref instanceof PDFRef ? ctx.lookup(ref) : ref; }
+    const page = pdfLibDoc.getPage(pageIndex);
+    const annotsRef = page.node.get(PDFName.of('Annots'));
+    if (!annotsRef) return [];
+    const annotsArray = lookup(annotsRef);
+    if (!annotsArray || typeof annotsArray.size !== 'function') return [];
+    const results = [];
+    for (let i = 0; i < annotsArray.size(); i++) {
+      try {
+        const annotDict = lookup(annotsArray.get(i));
+        const rectArr = lookup(annotDict.get(PDFName.of('Rect')));
+        if (!rectArr) continue;
+        const rect = rectArr.asArray().map(function (n) { return n.asNumber(); });
+        const apRef = annotDict.get(PDFName.of('AP'));
+        if (!apRef) continue;
+        const ap = lookup(apRef);
+        const nRef = ap.get(PDFName.of('N'));
+        if (!nRef) continue;
+        const nStream = lookup(nRef);
+        if (!nStream || !nStream.dict) continue;
+        const bboxArr = lookup(nStream.dict.get(PDFName.of('BBox')));
+        const bbox = bboxArr ? bboxArr.asArray().map(function (n) { return n.asNumber(); }) : [0, 0, rect[2] - rect[0], rect[3] - rect[1]];
+        const matrixArr = lookup(nStream.dict.get(PDFName.of('Matrix')));
+        const matrix = matrixArr ? matrixArr.asArray().map(function (n) { return n.asNumber(); }) : null;
+        const transform = computeApToPageTransform(bbox, matrix, rect);
+
+        const fragments = [];
+        walkAppearanceStreamText(ctx, nStream, fragments, 0);
+        if (fragments.length === 0) continue;
+
+        // Group fragments sharing a text-matrix Y (same line, split across a
+        // TJ array or multiple Tj calls at the same Tm) and join with spaces.
+        const lineTol = 0.5;
+        const lines = [];
+        fragments.forEach(function (f) {
+          let line = lines.find(function (l) { return Math.abs(l.y - f.tm[5]) <= lineTol; });
+          if (!line) { line = { y: f.tm[5], parts: [] }; lines.push(line); }
+          line.parts.push({ x: f.tm[4], str: f.str, size: f.size });
+        });
+        lines.sort(function (a, b) { return b.y - a.y; });
+        lines.forEach(function (line) {
+          line.parts.sort(function (a, b) { return a.x - b.x; });
+          const text = line.parts.map(function (p) { return p.str; }).join(' ').replace(/\s+/g, ' ').trim();
+          if (!text) return;
+          const maxSize = Math.max.apply(null, line.parts.map(function (p) { return p.size || 8; }));
+          const leftX = line.parts[0].x;
+          // Transform this line's local (x, y) and (x, y+size) into page space
+          // to get both its position and an approximate page-space font size.
+          const p0 = [transform[0] * leftX + transform[2] * line.y + transform[4], transform[1] * leftX + transform[3] * line.y + transform[5]];
+          const p1 = [transform[0] * leftX + transform[2] * (line.y + maxSize) + transform[4], transform[1] * leftX + transform[3] * (line.y + maxSize) + transform[5]];
+          const pageFontSize = Math.max(4, Math.abs(p1[1] - p0[1]));
+          results.push({ text: text, xPt: p0[0], yPt: p0[1], fontSizePt: pageFontSize, rect: rect });
+        });
+      } catch (e) { /* skip a malformed annotation rather than fail the whole page */ }
+    }
+    return results;
+  }
+
+  async function buildBasePdf(arrayBuffer, opts) {
+    opts = opts || {};
+    const downloadBase = opts.downloadBase !== false;
+    const baseFileName = opts.baseFileName || 'base.pdf';
+    const fixMode = opts.fixMode || 'D';
+    const boxMode = opts.boxMode || boxModeSelect.value || 'with';
+
+    log.textContent += `Blue border fix mode: ${fixMode}\n`;
+    log.textContent += `Output mode: ${boxMode === 'with' ? 'With Box' : 'Without Box'}\n`;
+
+    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer.slice(0) });
+    const pdf = await loadingTask.promise;
+    const { PDFDocument, rgb, StandardFonts } = PDFLib;
+    const pdfDoc = await PDFDocument.load(arrayBuffer);
+    const pages = pdfDoc.getPages();
+
+    pdfDoc.registerFontkit(fontkit);
+    const helvFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    let amiriFont = helvFont;
+    let helvBoldFont = helvFont;
+    let amiriBoldFont = helvFont;
+    let helvObliqueFont = helvFont;
+    let helvBoldObliqueFont = helvFont;
+    let amiriItalicFont = helvFont;
+    let amiriBoldItalicFont = helvFont;
+    try {
+      const amiriBytes = await fetch(AMIRI_FONT_URL).then(function(r) { return r.arrayBuffer(); });
+      amiriFont = await pdfDoc.embedFont(amiriBytes, { subset: false });
+    } catch (fontErr) { console.warn('Amiri font fetch/embed failed:', fontErr); }
+    try {
+      helvBoldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    } catch (fontErr) { console.warn('Helvetica-Bold embed failed:', fontErr); }
+    try {
+      helvObliqueFont = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
+    } catch (fontErr) { console.warn('Helvetica-Oblique embed failed:', fontErr); helvObliqueFont = helvFont; }
+    try {
+      helvBoldObliqueFont = await pdfDoc.embedFont(StandardFonts.HelveticaBoldOblique);
+    } catch (fontErr) { console.warn('Helvetica-BoldOblique embed failed:', fontErr); helvBoldObliqueFont = helvBoldFont; }
+    try {
+      const amiriBoldBytes = await fetch(AMIRI_BOLD_FONT_URL).then(function(r) { return r.arrayBuffer(); });
+      amiriBoldFont = await pdfDoc.embedFont(amiriBoldBytes, { subset: false });
+    } catch (fontErr) { console.warn('Amiri-Bold fetch/embed failed:', fontErr); amiriBoldFont = amiriFont; }
+    try {
+      const amiriItalicBytes = await fetch(AMIRI_ITALIC_FONT_URL).then(function(r) { return r.arrayBuffer(); });
+      amiriItalicFont = await pdfDoc.embedFont(amiriItalicBytes, { subset: false });
+    } catch (fontErr) { console.warn('Amiri-Italic fetch/embed failed:', fontErr); amiriItalicFont = amiriFont; }
+    try {
+      const amiriBoldItalicBytes = await fetch(AMIRI_BOLDITALIC_FONT_URL).then(function(r) { return r.arrayBuffer(); });
+      amiriBoldItalicFont = await pdfDoc.embedFont(amiriBoldItalicBytes, { subset: false });
+    } catch (fontErr) { console.warn('Amiri-BoldItalic fetch/embed failed:', fontErr); amiriBoldItalicFont = amiriBoldFont; }
+    function fontForChar(ch, bold, italic) {
+      const isArabic = scriptOfChar(ch) === 'arabic';
+      if (isArabic) {
+        if (bold && italic) return amiriBoldItalicFont;
+        if (bold) return amiriBoldFont;
+        if (italic) return amiriItalicFont;
+        return amiriFont;
+      }
+      if (bold && italic) return helvBoldObliqueFont;
+      if (bold) return helvBoldFont;
+      if (italic) return helvObliqueFont;
+      return helvFont;
+    }
+
+    const scale = 1.5;
+    const pageData = new Map();
+    let totalBoxes = 0;
+
+    // PASS 1: Red + table cell borders
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const viewport = page.getViewport({ scale: scale });
+      const targetPage = pages[pageNum - 1];
+      const { width: pw, height: ph } = targetPage.getSize();
+      const sx = pw / viewport.width, sy = ph / viewport.height;
+      const ops = await page.getOperatorList();
+      const pageH = viewport.height;
+
+      // Render the page once (at a higher, independent resolution) to sample
+      // real pixel colors for text — see sampleTextColorFromPixels. The
+      // operator-list approach guessed the wrong color whenever a font resource
+      // was reused for different colors in a draw order that didn't match
+      // reading order (seen on some tables). A higher render scale than the
+      // 1.5x geometry scale matters here too: at 1.5x, thin table-number
+      // strokes are mostly anti-aliased edge pixels with very few solid-color
+      // pixels, so "most common color" voting could pick a blended shade
+      // instead of the true color; rendering at 3x gives enough solid pixels
+      // per glyph for that voting to be reliable.
+      const colorSampleScale = 3;
+      let pageImgData = null, pageImgWidth = 0, pageImgHeight = 0, colorSampleRatio = 1;
+      try {
+        const sampleViewport = page.getViewport({ scale: colorSampleScale });
+        const renderCanvas = document.createElement('canvas');
+        renderCanvas.width = Math.ceil(sampleViewport.width);
+        renderCanvas.height = Math.ceil(sampleViewport.height);
+        const renderCtx = renderCanvas.getContext('2d');
+        await page.render({ canvasContext: renderCtx, viewport: sampleViewport }).promise;
+        pageImgWidth = renderCanvas.width;
+        pageImgHeight = renderCanvas.height;
+        pageImgData = renderCtx.getImageData(0, 0, pageImgWidth, pageImgHeight).data;
+        colorSampleRatio = colorSampleScale / scale;
+      } catch (renderErr) {
+        console.warn('Page render for color sampling failed, falling back to black text:', renderErr);
+        pageImgData = null;
+      }
+
+      const rectsRaw = extractFillRectsSimple(ops, pageH / scale, scale).filter(function(r) { return !isNearWhite(r.color); });
+      const seenRectKeys = new Set();
+      const rects = rectsRaw.filter(function(r) {
+        if (!Number.isFinite(r.x) || !Number.isFinite(r.yTop) || !Number.isFinite(r.w) || !Number.isFinite(r.h)) return false;
+        if (r.w <= 0 || r.h <= 0) return false;
+        const key = r.x.toFixed(2) + '_' + r.yTop.toFixed(2) + '_' + r.w.toFixed(2) + '_' + r.h.toFixed(2) + '_' + r.color;
+        if (seenRectKeys.has(key)) return false;
+        seenRectKeys.add(key);
+        return true;
+      });
+
+      const textItems = await extractTextItemsSimple(page, scale, pageH, ops, pageImgData, pageImgWidth, pageImgHeight, colorSampleRatio);
+      (function detectUnderlines(items, allRects) {
+        const thinRects = allRects.filter(function (r) { return r.h <= 3 && r.w >= 2; });
+        if (thinRects.length === 0) return;
+        items.forEach(function (it) {
+          const itemBottom = it.yTop + it.fontSize;
+          const tolY = Math.max(2, it.fontSize * 0.3);
+          const found = thinRects.some(function (r) {
+            const withinY = Math.abs(r.yTop - itemBottom) <= tolY;
+            const overlapsX = !(r.x + r.w < it.x + it.width * 0.2 || r.x > it.x + it.width * 0.8);
+            return withinY && overlapsX;
+          });
+          if (found) it.underline = true;
+        });
+      })(textItems, rectsRaw);
+      const lines = groupItemsIntoLines(textItems);
+
+      const lefts = lines.map(function(l) { return l.left; }).concat(rects.map(function(r) { return r.x; }));
+      const rights = lines.map(function(l) { return l.right; }).concat(rects.map(function(r) { return r.x + r.w; }));
+      let contentLeft = 0, contentRight = viewport.width;
+      if (lefts.length > 0) { contentLeft = Math.min.apply(null, lefts); contentRight = Math.max.apply(null, rights); }
+
+      const n = rects.length;
+      const parent = new Array(n);
+      for (let k = 0; k < n; k++) parent[k] = k;
+      for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) if (boxesTouch(rects[a], rects[b], 3)) unionRoots(parent, a, b);
+      const groupBoundsList = computeGroupBounds(rects, parent);
+
+      const pageRegions = [];
+
+      // ===== PASS 1a: RED boxes + thin lines =====
+      rects.forEach(function(r) {
+        const isThinLine = (r.h < 5 || r.w < 5);
+      
+        if (isThinLine) {
+          if (boxMode === 'with') {
+            targetPage.drawRectangle({
+              x: r.x * sx, y: ph - (r.yTop + r.h) * sy, width: r.w * sx, height: r.h * sy,
+              borderColor: rgb(0.8, 0, 0), borderWidth: 0.6
+            });
+          }
+          totalBoxes++;
+          return;
+        }
+      
+        if (boxMode === 'with') {
+          targetPage.drawRectangle({
+            x: r.x * sx, y: ph - (r.yTop + r.h) * sy, width: r.w * sx, height: r.h * sy,
+            borderColor: rgb(0.8, 0, 0), borderWidth: 0.6
+          });
+        }
+        totalBoxes++;
+        pageRegions.push({
+          region_id: makePositionId('P' + pageNum + '_RED', r.x, r.yTop, r.w, r.h),
+          region_type: 'red',
+          region_box: { left: r.x, top: r.yTop, w: r.w, h: r.h },
+          blue_boxes: []
+        });
+      });
+
+      // ===== PASS 1b: TABLE CELLS =====
+      const tableCells = detectTableCells(rects, textItems);
+      tableCells.forEach(function(cell) {
+        if (boxMode === 'with') {
+          targetPage.drawRectangle({
+            x: cell.left * sx,
+            y: ph - (cell.top + cell.h) * sy,
+            width: cell.w * sx,
+            height: cell.h * sy,
+            borderColor: rgb(0.8, 0, 0),
+            borderWidth: 0.6
+          });
+        }
+        totalBoxes++;
+        pageRegions.push({
+          region_id: makePositionId('P' + pageNum + '_CELL', cell.left, cell.top, cell.w, cell.h),
+          region_type: 'red',
+          region_box: { left: cell.left, top: cell.top, w: cell.w, h: cell.h },
+          blue_boxes: [],
+          _isTableCell: true
+        });
+      });
+
+      // ===== PASS 2: GREEN boxes =====
+      const blocksForBase = buildBlocks(lines, rects);
+      blocksForBase.forEach(function(block) {
+        const allItems = [];
+        block.forEach(function(l) { allItems.push.apply(allItems, l.items); });
+        if (allItems.length < 2) return;
+        allItems.sort(function(a, b) { return a.x - b.x; });
+
+        const splitIdx = (block.length > 10) ? [] : findGapSplits(allItems);
+        const rowTop = Math.min.apply(null, block.map(function(l) { return l.yTop; }));
+        const rowBottom = Math.max.apply(null, block.map(function(l) { return l.yTop + l.maxFontSize * 1.2; }));
+        const rowH = rowBottom - rowTop;
+        const blockMaxFont = Math.max.apply(null, block.map(function(l) { return l.maxFontSize; }));
+        const containerTol = Math.max(15, blockMaxFont * 2);
+        const container = findContainingBounds(rowTop, rowH, groupBoundsList, containerTol);
+        const rowLeft = container ? container.left : contentLeft;
+        const rowRight = container ? container.right : contentRight;
+
+        if (splitIdx.length === 0) {
+          if (boxMode === 'with') {
+            targetPage.drawRectangle({
+              x: rowLeft * sx, y: ph - rowBottom * sy, width: (rowRight - rowLeft) * sx, height: rowH * sy,
+              borderColor: rgb(0, 0.5, 0), borderWidth: 0.6
+            });
+          }
+          totalBoxes++;
+          pageRegions.push({
+            region_id: makePositionId('P' + pageNum + '_REG', rowLeft, rowTop, rowRight - rowLeft, rowH),
+            region_type: 'green',
+            region_box: { left: rowLeft, top: rowTop, w: rowRight - rowLeft, h: rowH },
+            blue_boxes: []
+          });
+          return;
+        }
+
+        const segments = buildRowSegments({ items: allItems }, splitIdx);
+        for (let s = 0; s < segments.length; s++) {
+          const left = (s === 0) ? rowLeft : (segments[s-1].right + segments[s].left) / 2;
+          const right = (s === segments.length - 1) ? rowRight : (segments[s].right + segments[s+1].left) / 2;
+          const segItems = allItems.filter(function(it) { return it.x + it.width/2 >= left && it.x + it.width/2 <= right; });
+          if (segItems.length === 0) continue;
+          if (boxMode === 'with') {
+            targetPage.drawRectangle({
+              x: left * sx, y: ph - rowBottom * sy, width: (right - left) * sx, height: rowH * sy,
+              borderColor: rgb(0, 0.5, 0), borderWidth: 0.6
+            });
+          }
+          totalBoxes++;
+          pageRegions.push({
+            region_id: makePositionId('P' + pageNum + '_REG', left, rowTop, right - left, rowH),
+            region_type: 'green',
+            region_box: { left: left, top: rowTop, w: right - left, h: rowH },
+            blue_boxes: []
+          });
+        }
+      });
+
+      // Text-bearing annotations (digital-signature blocks, FreeText notes,
+      // filled form fields, etc.) live outside the page's own content stream,
+      // so the normal text-extraction passes above never see them. Capture
+      // each one as its own small region using its own rect, so its text
+      // flows into translation like anything else on the page.
+      try {
+        const annotationLines = extractAnnotationTextItems(pdfDoc, pageNum - 1);
+        annotationLines.forEach(function (item) {
+          const annText = (item.text || '').trim();
+          if (!annText) return;
+          const rx0 = Math.min(item.rect[0], item.rect[2]) * scale;
+          const rx1 = Math.max(item.rect[0], item.rect[2]) * scale;
+          const annLeft = rx0, annRight = rx1;
+          if (!(annRight > annLeft)) return;
+          const annFontSizeRaw = (item.fontSizePt || 8) * scale;
+          const annHeight = Math.max(1, annFontSizeRaw * 1.3);
+          const annYPagePt = item.yPt * scale;
+          const annYTop = pageH - annYPagePt - annFontSizeRaw;
+          if (!Number.isFinite(annYTop)) return;
+          const annDirection = classifyDirection(annText);
+          const regionId = makePositionId('P' + pageNum + '_ANNOT', annLeft, annYTop, annRight - annLeft, annHeight);
+          pageRegions.push({
+            region_id: regionId,
+            region_type: 'annotation',
+            region_box: { left: annLeft, top: annYTop, w: annRight - annLeft, h: annHeight },
+            blue_boxes: [{
+              id: regionId + '_BLUE_0',
+              yTop: annYTop, height: annHeight, left: annLeft, right: annRight,
+              naturalLeft: annLeft, naturalRight: annRight,
+              text: annText, markupText: annText, fontSize: Math.max(6, annFontSizeRaw), direction: annDirection,
+              color: '000000', bold: false, italic: false, underline: false
+            }]
+          });
+        });
+      } catch (annotErr) { console.warn('Annotation capture failed for page', pageNum, annotErr); }
+
+      pageData.set(pageNum, { targetPage, sx, sy, ph, rects, textItems, pageRegions });
+    }
+
+    // PASS 3: Blue boxes
+    log.textContent += `\nPass 3: Adding blue boxes to all regions...\n`;
+    let totalBlueBoxes = 0;
+    for (const [pageNum, pd] of pageData) {
+      const redRegions = pd.pageRegions
+        .filter(function(r) { return r.region_type === 'red'; })
+        .sort(function(a, b) { return a.region_box.top - b.region_box.top; });
+      const greenRegions = pd.pageRegions.filter(function(r) { return r.region_type === 'green'; });
+      const consumedItems = new Set();
+
+      redRegions.forEach(function(region) {
+        addBlueBoxesToRegion(pd.targetPage, region, pd.textItems, pd.sx, pd.sy, pd.ph, rgb, fixMode, consumedItems, boxMode);
+      });
+      greenRegions.forEach(function(region) {
+        addBlueBoxesToRegion(pd.targetPage, region, pd.textItems, pd.sx, pd.sy, pd.ph, rgb, fixMode, consumedItems, boxMode);
+      });
+
+      const pageBlueCount = pd.pageRegions.reduce(function(a, r) { return a + r.blue_boxes.length; }, 0);
+      totalBlueBoxes += pageBlueCount;
+      log.textContent += `Page ${pageNum}: ${pageBlueCount} blue boxes\n`;
+    }
+    log.textContent += `Total blue boxes: ${totalBlueBoxes}\n`;
+
+    if (downloadBase) {
+      const baseBytes = await pdfDoc.save();
+      const blob = new Blob([baseBytes], { type: 'application/pdf' });
+      addDownloadLink(blob, baseFileName, baseFileName);
+      log.textContent += `\n✅ Base PDF ready: ${baseFileName}\n`;
+    }
+
+    return { pdfDoc, pageData, totalBoxes, fontForChar };
+  }
+
+  function isLikelyAbbreviation(text) {
+    const trimmed = text.trim();
+    if (trimmed.length === 0 || trimmed.length > 20) return false;
+    if (/^([A-Za-z]\.){2,}$/.test(trimmed)) return true;
+    if (/^[A-Z]{2,5}$/.test(trimmed)) return true;
+    if (/^[A-Za-z]+\/[a-z]+$/.test(trimmed)) return true;
+    if (/^[A-Z][a-z]+\.$/.test(trimmed) && trimmed.length <= 6) return true;
+    return false;
+  }
+
+  function detectRepeatedPhrase(text) {
+    const words = text.split(/\s+/).filter(Boolean);
+    const maxLen = Math.min(6, Math.floor(words.length / 2));
+    for (let len = maxLen; len >= 2; len--) {
+      const seen = new Map();
+      for (let i = 0; i + len <= words.length; i++) {
+        const phrase = words.slice(i, i + len).join(' ');
+        seen.set(phrase, (seen.get(phrase) || 0) + 1);
+      }
+      let best = null;
+      seen.forEach(function(count, phrase) {
+        if (count >= 2 && (!best || count > best.count)) best = { phrase: phrase, count: count };
+      });
+      if (best) return best;
+    }
+    return null;
+  }
+
+  function parsePageRange(rangeStr, totalPages) {
+    const all = [];
+    for (let i = 1; i <= totalPages; i++) all.push(i);
+    if (!rangeStr || !rangeStr.trim()) return all;
+    const out = new Set();
+    const parts = rangeStr.split(',');
+    for (const rawPart of parts) {
+      const part = rawPart.trim();
+      if (!part) continue;
+      const m = /^(\d+)\s*-\s*(\d+)$/.exec(part);
+      if (m) {
+        let start = parseInt(m[1], 10), end = parseInt(m[2], 10);
+        if (start > end) { const t = start; start = end; end = t; }
+        for (let p = start; p <= end; p++) { if (p >= 1 && p <= totalPages) out.add(p); }
+      } else if (/^\d+$/.test(part)) {
+        const p = parseInt(part, 10);
+        if (p >= 1 && p <= totalPages) out.add(p);
+      }
+    }
+    return Array.from(out).sort(function(a, b) { return a - b; });
+  }
+
+  // ---- NEW, per explicit direction: pdf.js text-layer translation pipeline ----
+  // Replaces the old vision/OCR-based Hybrid pipeline (buildHybridDocxBlob)
+  // for the Document Translation service entirely - per explicit direction,
+  // Lexora's separate OCR service already covers scanned documents, so this
+  // pipeline assumes (and requires) a real text layer and extracts text,
+  // vectors (rects/lines/borders), and images DIRECTLY from the PDF's own
+  // content stream - genuinely "hybrid" in the sense that it captures text
+  // alongside real embedded images/graphics, not vision-model-guessed ones.
+  //
+  // Reuses every piece of the already-tested detection/rendering pipeline
+  // above (buildBasePdf, extractPageVectorsForDocx, buildTranslatedDocxV2,
+  // etc.) UNCHANGED. The only new integration point is translation itself:
+  // instead of this pipeline's own OpenRouter-calling code, it calls the
+  // EXISTING v14TranslateAllPages - which already carries the domain-expert
+  // glossary (TRANSLATION_DOMAIN_EXPERTS + auto-expanding dynamic domains),
+  // the learned-corrections rules table, and the reviewer-agent pass. This
+  // is the same shared call every other engine in this file already uses,
+  // so glossary/agent behavior (and any future improvement to either) stays
+  // in ONE place rather than being duplicated a second time here.
+  async function buildPdfjsTranslatedDocxBlob(file, opts, logFn) {
+    if (typeof logFn === 'function') _log = logFn;
+    opts = opts || {};
+    const model = opts.model || (window.COMPANY_INFO && window.COMPANY_INFO.textExtractionModel) || 'google/gemini-2.5-flash';
+    const targetLang = opts.targetLang || 'original';
+    const keepOriginal = !targetLang || String(targetLang).toLowerCase() === 'original';
+    if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js failed to load');
+    if (typeof JSZip === 'undefined') throw new Error('JSZip failed to load');
+    if (typeof PDFLib === 'undefined') throw new Error('pdf-lib failed to load');
+
+    const buf = await file.arrayBuffer();
+
+    // Safety check, per explicit direction (no OCR here - a genuinely
+    // scanned/image-only PDF has no text layer for this pipeline to
+    // extract and belongs in the separate OCR service instead).
+    const probeDoc = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
+    let sampleItems = 0;
+    for (let sp = 1; sp <= Math.min(2, probeDoc.numPages); sp++) {
+      const tc0 = await (await probeDoc.getPage(sp)).getTextContent();
+      sampleItems += tc0.items.filter(function (it) { return it.str && it.str.trim(); }).length;
+    }
+    if (sampleItems < 3) {
+      throw new Error('This PDF looks scanned/image-based (no real text layer) — use the OCR service for scanned documents instead.');
+    }
+
+    log('Detecting regions and layout...');
+    const base = await buildBasePdf(buf, { downloadBase: false, boxMode: 'without' });
+    const pageData = base.pageData;
+    const fontForChar = base.fontForChar;
+    const pdfJsDoc = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
+    const pageNumbers = Array.from(pageData.keys()).sort(function (a, b) { return a - b; });
+
+    let responseByRegionId = new Map();
+
+    if (!keepOriginal) {
+      const allRegions = [];
+      for (const pageNum of pageNumbers) {
+        const pd = pageData.get(pageNum);
+        if (!pd) continue;
+        pd.pageRegions.forEach(function (r) {
+          if (r.blue_boxes.length > 0) { r._pageNum = pageNum; allRegions.push(r); }
+        });
+      }
+      log('Total ' + allRegions.length + ' region(s) with text.');
+
+      // One "paragraph_id" per multi-line flowing-text region (region_type
+      // 'green') so v14TranslateAllPages's own paragraph-aware translation
+      // and reviewer treat those lines as one paragraph - the same
+      // treatment every other caller of v14TranslateAllPages already gets.
+      // Single-line/table-cell regions ('red') get no paragraph_id,
+      // translated as standalone entries (they're independent fields, not
+      // parts of a flowing paragraph).
+      const blocks = [];
+      const boxIdToBlockId = {};   // our own globally-unique box.id -> v14 block id
+      let counter = 0;
+      allRegions.forEach(function (region) {
+        const pd = pageData.get(region._pageNum);
+        const isParagraph = region.region_type === 'green' && region.blue_boxes.length > 1;
+        region.blue_boxes.forEach(function (box) {
+          if (!box.text || !box.text.trim()) return;
+          counter++;
+          const id = 'ln' + counter;
+          blocks.push({
+            id: id,
+            page: region._pageNum,
+            paragraph_id: isParagraph ? region.region_id : undefined,
+            reading_order: counter,
+            text: box.markupText || box.text,
+            language: 'unknown',
+            direction: box.direction || 'ltr',
+            width: (box.right - box.left) * pd.sx * 96 / 72,
+            font_size_px: (box.fontSize || 10) * pd.sy * 96 / 72,
+            style: box.bold ? 'bold' : ''
+          });
+          boxIdToBlockId[box.id] = id;
+        });
+      });
+
+      if (blocks.length > 0) {
+        log('Translating ' + blocks.length + ' line(s) to ' + targetLang + ' (domain glossary + reviewer agent)...');
+        const translationResult = await v14TranslateAllPages(model, blocks, targetLang, true);
+        const translatedById = {};
+        (translationResult.translations || []).forEach(function (t) { translatedById[t.id] = t.translated_text; });
+
+        // Rebuild OUR OWN responseByRegionId shape (region_id -> groups of
+        // {group_order, source_box_ids, translated_text}) from v14's result,
+        // respecting the same paragraph merge decided above, so
+        // buildTranslatedDocxV2 sees exactly the shape it always has -
+        // v14's own paragraph-merged result comes back as id = 'para_' +
+        // paragraph_id (the WHOLE paragraph's translated text); a
+        // non-merged block comes back under its own block id.
+        const byRegion = new Map();
+        allRegions.forEach(function (region) {
+          const isParagraph = region.region_type === 'green' && region.blue_boxes.length > 1;
+          if (isParagraph) {
+            const translated = translatedById['para_' + region.region_id];
+            if (translated == null) return;
+            byRegion.set(region.region_id, [{
+              group_order: 0,
+              source_box_ids: region.blue_boxes.map(function (b) { return b.id; }),
+              translated_text: translated
+            }]);
+          } else {
+            const groups = [];
+            region.blue_boxes.forEach(function (box, idx) {
+              const blockId = boxIdToBlockId[box.id];
+              const translated = blockId ? translatedById[blockId] : null;
+              if (translated == null) return;
+              groups.push({ group_order: idx, source_box_ids: [box.id], translated_text: translated });
+            });
+            if (groups.length) byRegion.set(region.region_id, groups);
+          }
+        });
+        responseByRegionId = byRegion;
+      }
+    }
+
+    log('Building translated Word document...');
+    const blob = await buildTranslatedDocxV2(pdfJsDoc, pageData, pageNumbers, responseByRegionId, log, fontForChar);
+    return blob;
+  }
+
+
+
+window.__dataExtractionEngine = {
     buildHybridDocxBlob: buildHybridDocxBlob,
     buildOfflineDocxBlob: buildOfflineDocxBlob,
     buildBoxBasedTranslatedDocxBlob: buildBoxBasedTranslatedDocxBlob,
+    buildPdfjsTranslatedDocxBlob: buildPdfjsTranslatedDocxBlob,
     setVisionAuthToken: setVisionAuthToken,
     setVisionStopCheck: setStopCheck,
     setPipelineEventHandler: setPipelineEventHandler,

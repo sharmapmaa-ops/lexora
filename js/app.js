@@ -2869,255 +2869,51 @@
                                     refreshServicePage('translation');
                                 };
 
-                                let step1DocxBase64 = null;  // only meaningful on the Aspose path
                                 let reviewIssues = [];
 
-                                // NEW, per explicit direction, replacing the old
-                                // single upfront "Use Aspose?" confirmation dialog
-                                // with a PER-FILE, content-based decision:
-                                //   - a Word (.docx) upload ALWAYS routes into the
-                                //     "Aspose" branch below - which, for a docx
-                                //     upload specifically, skips the actual Aspose
-                                //     call entirely and goes straight to Step 2+3
-                                //     (confirmed via a real reported case: routing
-                                //     a Word-sourced document through the vision/OCR
-                                //     hybrid pipeline instead badly mangled its
-                                //     paragraph structure - bolding everything into
-                                //     one run and scrambling clause order - because
-                                //     that pipeline re-extracts structure from a
-                                //     rendered PDF image, destroying structure a
-                                //     real docx already has correctly).
-                                //   - a PDF upload is analyzed automatically (real
-                                //     table/image detection via pdfplumber,
-                                //     server-side) - Aspose is used only when a real
-                                //     table or image is actually found on some page;
-                                //     otherwise the lighter pdf.js/vision pipeline
-                                //     runs, matching the user's own stated rule.
-                                let useAsposeForThisFile;
+                                // NEW, per explicit direction: Aspose is no longer used
+                                // for Document Translation at all. Every upload runs
+                                // through the SAME pdf.js text-layer pipeline
+                                // (buildPdfjsTranslatedDocxBlob, js/engine-translation.js)
+                                // - it extracts text, vectors, and images directly from
+                                // a real PDF's own content stream (no OCR/vision model -
+                                // Lexora's separate OCR service already covers scanned
+                                // documents) and translates via v14TranslateAllPages, so
+                                // it gets the same domain-expert glossary and
+                                // reviewer-agent pass every other engine call already
+                                // has. A Word (.docx) upload is converted to a real PDF
+                                // first (server-side, LibreOffice, via the existing
+                                // /api/translation/docx-to-pdf endpoint - the same
+                                // conversion already used elsewhere in this file), then
+                                // fed into the pipeline exactly like a native PDF upload.
+                                let pdfFileForPipeline = blob;
                                 if (file.isDocxUpload) {
-                                    useAsposeForThisFile = true;
-                                } else {
-                                    addActivity('translation', `${fl}System > Checking for tables/images to decide processing method`, 'Info');
-                                    try {
-                                        const detectResp = await fetch('/api/translation/detect-pdf-content', {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
-                                            body: JSON.stringify({ pdfBase64: dataBase64 })
-                                        });
-                                        const detectData = await detectResp.json();
-                                        if (detectData && detectData.ok) {
-                                            useAsposeForThisFile = !!detectData.recommendAspose;
-                                            const why = detectData.recommendAspose
-                                                ? `table(s) on page(s) [${detectData.pagesWithTables.join(', ')}], image(s) on page(s) [${detectData.pagesWithImages.join(', ')}]`
-                                                : 'no tables or images found on any page';
-                                            addActivity('translation', `${fl}System > ${useAsposeForThisFile ? 'Using Aspose' : 'Using pdf.js text-layer pipeline'} (${why})`, 'Info');
-                                        } else {
-                                            // detection failed - fail safe toward Aspose
-                                            // (the more capable path) rather than risk
-                                            // silently mishandling a table/image page.
-                                            useAsposeForThisFile = true;
-                                            addActivity('translation', `${fl}System > Content check failed, defaulting to Aspose`, 'Info');
-                                        }
-                                    } catch (err) {
-                                        useAsposeForThisFile = true;
-                                        addActivity('translation', `${fl}System > Content check failed, defaulting to Aspose`, 'Info');
+                                    addActivity('translation', `${fl}System > Converting Word document to PDF`, 'Info');
+                                    const toPdfResp = await fetch('/api/translation/docx-to-pdf', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
+                                        body: JSON.stringify({ fileName: file.name, docxBase64: dataBase64 })
+                                    });
+                                    const toPdfData = await toPdfResp.json();
+                                    if (!toPdfData || !toPdfData.ok) {
+                                        throw new Error((toPdfData && toPdfData.error) || 'Word-to-PDF conversion failed.');
                                     }
+                                    const pdfBinary = atob(toPdfData.pdfBase64);
+                                    const pdfBytes = new Uint8Array(pdfBinary.length);
+                                    for (let bi = 0; bi < pdfBinary.length; bi++) pdfBytes[bi] = pdfBinary.charCodeAt(bi);
+                                    pdfFileForPipeline = new Blob([pdfBytes], { type: 'application/pdf' });
+                                    addActivity('translation', `${fl}System > Word document converted to PDF`, 'Info');
+                                    refreshServicePage('translation');
                                 }
+
+                                offlineBlob = await window.__translationEngine.buildPdfjsTranslatedDocxBlob(pdfFileForPipeline, {
+                                    targetLang: targetLanguage
+                                }, onLog);
+
+                                _downloadBlobImmediately(offlineBlob, baseName + ' Final Output.docx');
+                                addActivity('translation', `${fl}System > Final Output file downloaded`, 'Info');
+                                file.progress = '80';
                                 refreshServicePage('translation');
-
-                                if (useAsposeForThisFile) {
-                                    actualStrategyUsed = 'aspose';
-                                    if (file.isDocxUpload) {
-                                        // NEW, per explicit direction: the uploaded file is
-                                        // ALREADY a Word document (e.g. from an earlier
-                                        // OCR/Aspose run, or any other source) - there is no
-                                        // PDF here for Aspose to convert, so Step 1 is
-                                        // skipped entirely and the uploaded docx is used
-                                        // directly as if it WERE step 1's own output.
-                                        addActivity('translation', `${fl}System > Word document uploaded - skipping Aspose conversion (already in structured format)`, 'Info');
-                                        step1DocxBase64 = dataBase64;
-                                        offlineBlob = blob;
-                                    } else {
-                                        // STEP 1: send the PDF to Aspose and get back the
-                                        // converted Word document - structure-only conversion
-                                        // (aspose_test_pipeline.run_structure_only_test), no
-                                        // translation happening yet.
-                                        addActivity('translation', `${fl}System > Sending PDF to Aspose for conversion`, 'Info');
-                                        const asposeResp = await fetch('/api/translation/aspose-convert', {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
-                                            body: JSON.stringify({ fileName: file.name, pdfBase64: dataBase64 })
-                                        });
-                                        const asposeData = await asposeResp.json();
-                                        if (!asposeData || !asposeData.ok) {
-                                            if (asposeData && asposeData.asposeNotConfigured) {
-                                                throw new Error('Aspose is not configured on this server yet: ' + asposeData.error);
-                                            }
-                                            throw new Error((asposeData && asposeData.error) || 'Aspose conversion failed.');
-                                        }
-                                        const binary = atob(asposeData.outputBase64);
-                                        const bytes = new Uint8Array(binary.length);
-                                        for (let bi = 0; bi < binary.length; bi++) bytes[bi] = binary.charCodeAt(bi);
-                                        offlineBlob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-                                        step1DocxBase64 = await new Promise((resolve, reject) => {
-                                            const reader = new FileReader();
-                                            reader.onload = () => resolve(reader.result.split(',')[1]);
-                                            reader.onerror = reject;
-                                            reader.readAsDataURL(offlineBlob);
-                                        });
-                                    }
-                                    file.progress = '50';
-                                    refreshServicePage('translation');
-
-                                    // Immediate download #1 (OCR stage), per explicit
-                                    // direction: the moment this stage's document is
-                                    // ready, download it right away - don't wait for
-                                    // translation/review to finish.
-                                    _downloadBlobImmediately(offlineBlob, baseName + ' OCR.docx');
-                                    addActivity('translation', `${fl}System > OCR file downloaded`, 'Info');
-
-                                    // STEP 2: inject the actual translation into the step-1
-                                    // Aspose-converted docx. Deliberately does NOT do
-                                    // RTL/LTR direction fixing (table column order, margin
-                                    // mirroring) yet - excluded per direction, to be wired
-                                    // in only later as its own step.
-                                    addActivity('translation', `${fl}System > Injecting translation`, 'Info');
-                                    const injectResp = await fetch('/api/translation/inject-translation', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
-                                        body: JSON.stringify({ fileName: file.name, docxBase64: step1DocxBase64, targetLanguage: targetLanguage })
-                                    });
-                                    const injectData = await injectResp.json();
-                                    if (!injectData || !injectData.ok) {
-                                        throw new Error((injectData && injectData.error) || 'Translation injection failed.');
-                                    }
-
-                                    // Item (JSON-PAYLOAD-DOWNLOAD, real reported
-                                    // requirement): "jab hum openrouter ko json
-                                    // bhejte hain, sabse pehle json download honi
-                                    // chahiye, fir jab translation ka data mile
-                                    // to wo bhi sabse pehle download ho jana
-                                    // chahiye" - the server collects the exact
-                                    // outgoing request-JSON and incoming
-                                    // response-JSON for EVERY translation batch
-                                    // (translationRequestResponseLog); each pair
-                                    // downloads here, request before its own
-                                    // response, in the same order the batches
-                                    // were actually sent - this is real
-                                    // request/response bookkeeping the user can
-                                    // directly inspect, not a reconstruction.
-                                    if (Array.isArray(injectData.translationRequestResponseLog)) {
-                                        injectData.translationRequestResponseLog.forEach(function (entry, idx) {
-                                            const batchNum = idx + 1;
-                                            if (entry.request) {
-                                                const reqBlob = new Blob([entry.request], { type: 'application/json' });
-                                                _downloadBlobImmediately(reqBlob, `${baseName} Translation-Batch${batchNum}-Request.json`);
-                                            }
-                                            if (entry.response) {
-                                                const respBlob = new Blob([entry.response], { type: 'application/json' });
-                                                _downloadBlobImmediately(respBlob, `${baseName} Translation-Batch${batchNum}-Response.json`);
-                                            }
-                                        });
-                                        addActivity('translation', `${fl}System > ${injectData.translationRequestResponseLog.length} translation-batch JSON request/response pair(s) downloaded`, 'Info');
-                                    }
-
-                                    const injectBinary = atob(injectData.outputBase64);
-                                    const injectBytes = new Uint8Array(injectBinary.length);
-                                    for (let bi = 0; bi < injectBinary.length; bi++) injectBytes[bi] = injectBinary.charCodeAt(bi);
-                                    offlineBlob = new Blob([injectBytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-                                    addActivity('translation',
-                                        `${fl}System > Translation injected - ${injectData.segmentsTranslated || 0} segment(s) translated, ${injectData.segmentsSkipped || 0} skipped`, 'Info');
-                                    file.progress = '65';
-                                    refreshServicePage('translation');
-
-                                    // Immediate download #2 (Translation stage).
-                                    _downloadBlobImmediately(offlineBlob, baseName + ' Translation.docx');
-                                    addActivity('translation', `${fl}System > Translation file downloaded`, 'Info');
-
-                                    // STEP 3: document reviewer. Takes BOTH the original
-                                    // (step 1's untranslated) docx and the translated
-                                    // (step 2's) docx, identifies every line/object, finds
-                                    // real issues (formatting, style, background,
-                                    // ordering, LTR/RTL direction) versus the original,
-                                    // builds a full issue+solution list, and applies every
-                                    // fix.
-                                    addActivity('translation', `${fl}System > Reviewing translated document`, 'Info');
-                                    const translatedDocxBase64 = await new Promise((resolve, reject) => {
-                                        const reader = new FileReader();
-                                        reader.onload = () => resolve(reader.result.split(',')[1]);
-                                        reader.onerror = reject;
-                                        reader.readAsDataURL(offlineBlob);
-                                    });
-                                    const reviewResp = await fetch('/api/translation/review', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (AUTH_TOKEN || '') },
-                                        body: JSON.stringify({ fileName: file.name, originalDocxBase64: step1DocxBase64, translatedDocxBase64: translatedDocxBase64, targetLanguage: targetLanguage })
-                                    });
-                                    const reviewData = await reviewResp.json();
-                                    if (!reviewData || !reviewData.ok) {
-                                        throw new Error((reviewData && reviewData.error) || 'Document review failed.');
-                                    }
-                                    const reviewBinary = atob(reviewData.outputBase64);
-                                    const reviewBytes = new Uint8Array(reviewBinary.length);
-                                    for (let bi = 0; bi < reviewBinary.length; bi++) reviewBytes[bi] = reviewBinary.charCodeAt(bi);
-                                    offlineBlob = new Blob([reviewBytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-                                    reviewIssues = reviewData.issues || [];
-                                    addActivity('translation',
-                                        `${fl}System > Review complete - ${reviewData.issueCount || 0} issue(s) found and fixed`, 'Info');
-                                    reviewIssues.forEach(function (iss) {
-                                        addActivity('translation', `${fl}Review > ${iss.location} > ${iss.issue} > Fix: ${iss.solution}`, 'Info');
-                                    });
-
-                                    // Immediate download #3 (Final Output stage).
-                                    _downloadBlobImmediately(offlineBlob, baseName + ' Final Output.docx');
-                                    addActivity('translation', `${fl}System > Final Output file downloaded`, 'Info');
-                                } else {
-                                    // "No Aspose" branch, per explicit direction: the
-                                    // EXISTING vision-based hybrid pipeline
-                                    // (buildHybridDocxBlob) - now reached only for a
-                                    // PDF upload with no real table/image detected
-                                    // (see the automatic per-file decision above). A
-                                    // Word (.docx) upload NEVER reaches this branch -
-                                    // useAsposeForThisFile is unconditionally true for
-                                    // one, routing it into the Aspose branch above,
-                                    // which skips the actual Aspose call for it and
-                                    // goes straight to Step 2+3 instead. onCheckpoint
-                                    // fires ('ocr', blob) the moment OCR/extraction
-                                    // finishes (BEFORE translation) and ('translation',
-                                    // blob) right after translation finishes - each
-                                    // downloaded immediately, not just once at the end.
-                                    if (window.__translationEngine && window.__translationEngine.setVisionAuthToken) window.__translationEngine.setVisionAuthToken(AUTH_TOKEN || '');
-                                    if (window.__translationEngine && window.__translationEngine.setVisionStopCheck) window.__translationEngine.setVisionStopCheck(function () { return processState.stopped; });
-                                    if (window.__translationEngine && window.__translationEngine.setPipelineEventHandler) window.__translationEngine.setPipelineEventHandler(onEvent);
-                                    if (window.__translationEngine && window.__translationEngine.resetPipelineApiCounters) window.__translationEngine.resetPipelineApiCounters();
-                                    offlineBlob = await window.__translationEngine.buildHybridDocxBlob(blob, {
-                                        withImage: withImageOpt,
-                                        targetLang: targetLanguage,
-                                        onCheckpoint: function (stage, ckBlob) {
-                                            if (stage === 'ocr') {
-                                                _downloadBlobImmediately(ckBlob, baseName + ' OCR.doc');
-                                                addActivity('translation', `${fl}System > OCR file downloaded`, 'Info');
-                                            } else if (stage === 'translation') {
-                                                _downloadBlobImmediately(ckBlob, baseName + ' Translation.doc');
-                                                addActivity('translation', `${fl}System > Translation file downloaded`, 'Info');
-                                            }
-                                        }
-                                    }, onLog);
-                                    actualStrategyUsed = 'vision_ocr_fallback';
-
-                                    // Final Output stage for this path: no separate
-                                    // document-reviewer pass exists yet for this pipeline's
-                                    // output format (MHT/HTML-based, not a real OOXML docx
-                                    // - the Python reviewer built for the Aspose path can't
-                                    // open it) - Final Output is the same translated
-                                    // document as the Translation stage for now, still
-                                    // downloaded as its own file so this path also produces
-                                    // all 3 real files.
-                                    _downloadBlobImmediately(offlineBlob, baseName + ' Final Output.doc');
-                                    addActivity('translation', `${fl}System > Final Output file downloaded`, 'Info');
-                                    file.progress = '65';
-                                    refreshServicePage('translation');
-                                }
 
                                 // No per-page event stream from any of these server-side
                                 // steps (one request/response each) and no page-count
