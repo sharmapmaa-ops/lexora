@@ -80,10 +80,13 @@
         <button class="menu-toggle" id="menuToggle" onclick="toggleMenu()">☰</button>
     </div>
 
-    <!-- ===== CENTER CONTENT ===== -->
+    <!-- ===== CENTER CONTENT (Phase 4d: each top-level section is its own
+         real HTML file, loaded here - loadContent() sets this iframe's
+         src instead of injecting innerHTML directly) ===== -->
     <div class="center-content" id="centerContent">
         <div class="content-area" id="contentArea">
-            <div id="contentBody"></div>
+            <div id="contentAreaError" style="display:none;"></div>
+            <iframe id="contentFrame" title="Lexora section content" style="width:100%;height:100%;border:0;display:block;background:transparent;"></iframe>
         </div>
     </div>
 

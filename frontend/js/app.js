@@ -10767,6 +10767,27 @@
                     return;
                 }
 
+                const ACTION_TO_SECTION = {
+                    'Profile': 'profile',
+                    'Admin': 'admin',
+                    'AdminOverview': 'admin-overview',
+                    'API Documentation': 'api-documentation',
+                    'Support': 'support',
+                    'Notification': 'notification'
+                };
+
+                if (window.self === window.top) {
+                    // Parent shell: same iframe-navigation loadContent
+                    // already handles for the main menu - these
+                    // user-dropdown items are just more top-level
+                    // sections, each with their own file.
+                    const sectionId = ACTION_TO_SECTION[action];
+                    if (sectionId) loadContent(sectionId, null);
+                    document.querySelectorAll('.menu-item > a').forEach(el => el.classList.remove('active'));
+                    document.querySelectorAll('.sub-menu li a').forEach(el => el.classList.remove('active'));
+                    return;
+                }
+
                 // Item - the breadcrumb title used to be built from the
                 // plain `action` string alone (no icon), even though
                 // MENU_CONFIG.profileMenu already has a proper "emoji +
@@ -11841,6 +11862,36 @@
             };
 
             function loadContent(parentId, subId) {
+                // Phase 4d: index.html (the top-level shell) no longer
+                // renders section content itself - each top-level
+                // MENU_CONFIG section is its own real HTML file, loaded
+                // into #contentFrame. A call made FROM the shell just
+                // points the iframe at the right file (with the sub-item,
+                // if any, passed through the query string so that file
+                // can render straight into it on load); a call made from
+                // WITHIN a section file (sub-navigation inside Services,
+                // e.g. switching between Translation/OCR) behaves exactly
+                // as before, rendering into that file's own #contentBody -
+                // it never reaches this branch.
+                if (window.self === window.top) {
+                    const frame = document.getElementById('contentFrame');
+                    if (frame) {
+                        const target = parentId + '.html' + (subId ? ('?sub=' + encodeURIComponent(subId)) : '');
+                        // Avoid a pointless reload if we're already showing
+                        // this exact section (e.g. re-clicking the active
+                        // menu item).
+                        const current = frame.getAttribute('data-lexora-target');
+                        if (current !== target) {
+                            frame.setAttribute('data-lexora-target', target);
+                            frame.src = target;
+                        }
+                    }
+                    activeItemId = parentId;
+                    activeSubItemId = subId || null;
+                    renderMenu();
+                    return;
+                }
+
                 // If we're navigating AWAY from an in-progress/active
                 // translation view to anywhere else, tear it down first.
                 if (activeSubItemId === 'translation' && subId !== 'translation') {
@@ -14469,6 +14520,32 @@
                     MAINTENANCE_INFO = await mRes.json();
                 } catch (e) { /* fail open - if the check itself fails, don't lock everyone out */ }
 
+                if (window.self !== window.top) {
+                    // Section file: no login/OAuth/magic-link screens live
+                    // here, and the shell (index.html) already verified
+                    // the session before ever loading us - just do a
+                    // quick local check (covers a direct/refreshed load
+                    // of this file's own URL) and either proceed or send
+                    // the WHOLE tab back to the shell to re-authenticate.
+                    const savedUserId = localStorage.getItem(AUTH_SESSION_KEY);
+                    const savedToken = localStorage.getItem(AUTH_TOKEN_KEY);
+                    if (!savedUserId || !savedToken) {
+                        window.top.location.href = 'index.html';
+                        return;
+                    }
+                    AUTH_TOKEN = savedToken;
+                    window.__lexoraAuthToken = savedToken;
+                    try {
+                        const res = await authFetch('/api/auth/me');
+                        if (!res.ok) throw new Error('session invalid');
+                        CURRENT_USER_ID = savedUserId;
+                    } catch (e) {
+                        window.top.location.href = 'index.html';
+                        return;
+                    }
+                    return initializeApp();
+                }
+
                 try {
                     const catalogRows = await fetchJSON('/api/data/services-catalog');
                     const catalogMap = {};
@@ -14515,8 +14592,6 @@
                 showAuthScreen();
             }
             window.retryInitializeApp = function() {
-                document.getElementById('contentBody').innerHTML =
-                    '<div class="content-section" style="text-align:center;padding:40px 0;color:rgba(0,0,0,0.5);">Retrying…</div>';
                 initializeApp();
             };
 
@@ -14652,13 +14727,41 @@
             }
 
             async function initializeApp() {
+                if (window.self !== window.top) {
+                    // Section file inside the content iframe: the shell
+                    // already handled auth/maintenance/Terms gating
+                    // before ever setting our src, so skip straight to
+                    // loading the data our own rendering needs.
+                    try {
+                        await loadAppData();
+                        await loadUserDirectory();
+                    } catch (err) {
+                        console.error('Failed to load application data:', err);
+                        const body = document.getElementById('contentBody');
+                        if (body) {
+                            body.innerHTML =
+                                '<div class="content-section"><h3>⚠️ Unable to load data</h3>' +
+                                '<p>' + escapeHtml((err && err.message) || 'The server could not be reached.') + '</p>' +
+                                '<button class="submit-btn" onclick="location.reload()">🔄 Retry</button></div>';
+                        }
+                        return;
+                    }
+                    setupUserProfile();
+                    _revealAppAfterInit();
+                    return;
+                }
+
                 try {
                     await loadAppData();
                     await loadUserDirectory();
                 } catch (err) {
                     console.error('Failed to load application data:', err);
                     document.getElementById('appShell').style.display = '';
-                    document.getElementById('contentBody').innerHTML =
+                    const frame = document.getElementById('contentFrame');
+                    if (frame) frame.style.display = 'none';
+                    const errBox = document.getElementById('contentAreaError');
+                    errBox.style.display = '';
+                    errBox.innerHTML =
                         '<div class="content-section"><h3>⚠️ Unable to load data</h3>' +
                         '<p>' + escapeHtml((err && err.message) || 'The server could not be reached.') + '</p>' +
                         '<p style="color:rgba(0,0,0,0.55);font-size:0.85rem;">This is usually a brief, one-off ' +
@@ -14666,6 +14769,12 @@
                         'if it keeps happening, check that the server (and its database, if configured) is reachable.</p>' +
                         '<button class="submit-btn" onclick="retryInitializeApp()">🔄 Retry</button></div>';
                     return;
+                }
+                {
+                    const frame = document.getElementById('contentFrame');
+                    if (frame) frame.style.display = '';
+                    const errBox = document.getElementById('contentAreaError');
+                    if (errBox) errBox.style.display = 'none';
                 }
 
                 setupUserProfile();
@@ -14687,6 +14796,19 @@
             }
 
             function _revealAppAfterInit() {
+                if (window.self !== window.top) {
+                    // Section file: no shell chrome to reveal here - just
+                    // render this page's own section. window.__lexoraSectionId
+                    // is set by this file's own small bootstrap <script>
+                    // (see the per-section .html files) to say which
+                    // MENU_CONFIG section this file represents.
+                    const targetSection = window.__lexoraSectionId;
+                    const targetSub = new URLSearchParams(window.location.search).get('sub');
+                    if (targetSection) loadContent(targetSection, targetSub);
+                    checkForActiveTranslationJobs();
+                    return;
+                }
+
                 // Real company/user name is in place now - safe to reveal
                 // the shell (see boot()/completeLogin() notes).
                 document.getElementById('appShell').style.display = '';
