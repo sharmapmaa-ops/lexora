@@ -1,1 +1,0 @@
-Transcribe ALL readable text from this bank statement page exactly as written, preserving reading order, row alignment and line breaks. Return the transcription only.
