@@ -7764,6 +7764,40 @@ ${JSON.stringify(texts)}`;
   // is the same shared call every other engine in this file already uses,
   // so glossary/agent behavior (and any future improvement to either) stays
   // in ONE place rather than being duplicated a second time here.
+  // Detects paragraph boundaries WITHIN a flowing-text region (a 'green'
+  // region can span multiple actual paragraphs - e.g. a title, an intro
+  // sentence, and several lettered/numbered clauses, all grouped into ONE
+  // region purely by column-alignment/proximity). Treating the WHOLE
+  // region as a single paragraph would tell v14TranslateAllPages to merge
+  // and translate all of it as ONE block, collapsing the original
+  // page's layout into one oversized shape. A new paragraph starts at a
+  // large vertical gap from the previous line, or at a line that visibly
+  // begins a new legal clause (a lettered/numbered marker like "A.",
+  // "1.", "a)").
+  function splitRegionIntoParagraphs(blueBoxes) {
+    const sorted = blueBoxes.slice().sort(function (a, b) { return a.yTop - b.yTop; });
+    const clauseMarkerRe = /^\s*(?:[A-Za-z]|\d{1,2})[.)]\s+\S/;
+    const paragraphs = [];
+    let current = [];
+    for (let i = 0; i < sorted.length; i++) {
+      const box = sorted[i];
+      if (current.length > 0) {
+        const prev = current[current.length - 1];
+        const gap = box.yTop - (prev.yTop + prev.height);
+        const avgHeight = (prev.height + box.height) / 2 || 1;
+        const bigGap = gap > avgHeight * 0.6;
+        const looksLikeNewClause = clauseMarkerRe.test(box.text || '');
+        if (bigGap || looksLikeNewClause) {
+          paragraphs.push(current);
+          current = [];
+        }
+      }
+      current.push(box);
+    }
+    if (current.length) paragraphs.push(current);
+    return paragraphs;
+  }
+
   async function buildPdfjsTranslatedDocxBlob(file, opts, logFn) {
     if (typeof logFn === 'function') _log = logFn;
     opts = opts || {};
@@ -7809,36 +7843,44 @@ ${JSON.stringify(texts)}`;
       }
       log('Total ' + allRegions.length + ' region(s) with text.');
 
-      // One "paragraph_id" per multi-line flowing-text region (region_type
-      // 'green') so v14TranslateAllPages's own paragraph-aware translation
-      // and reviewer treat those lines as one paragraph - the same
-      // treatment every other caller of v14TranslateAllPages already gets.
-      // Single-line/table-cell regions ('red') get no paragraph_id,
-      // translated as standalone entries (they're independent fields, not
-      // parts of a flowing paragraph).
+      // A paragraph_id per REAL paragraph within a flowing-text region
+      // (region_type 'green'), not per whole region - see
+      // splitRegionIntoParagraphs above. Single-line/table-cell regions
+      // ('red') get no paragraph_id, translated as standalone entries
+      // (they're independent fields, not parts of a flowing paragraph).
       const blocks = [];
       const boxIdToBlockId = {};   // our own globally-unique box.id -> v14 block id
+      const regionParagraphs = new Map();  // region_id -> array of {paraId, boxes}
       let counter = 0;
       allRegions.forEach(function (region) {
         const pd = pageData.get(region._pageNum);
-        const isParagraph = region.region_type === 'green' && region.blue_boxes.length > 1;
-        region.blue_boxes.forEach(function (box) {
-          if (!box.text || !box.text.trim()) return;
-          counter++;
-          const id = 'ln' + counter;
-          blocks.push({
-            id: id,
-            page: region._pageNum,
-            paragraph_id: isParagraph ? region.region_id : undefined,
-            reading_order: counter,
-            text: box.markupText || box.text,
-            language: 'unknown',
-            direction: box.direction || 'ltr',
-            width: (box.right - box.left) * pd.sx * 96 / 72,
-            font_size_px: (box.fontSize || 10) * pd.sy * 96 / 72,
-            style: box.bold ? 'bold' : ''
+        const isFlowing = region.region_type === 'green' && region.blue_boxes.length > 1;
+        const paraGroups = isFlowing
+          ? splitRegionIntoParagraphs(region.blue_boxes).map(function (boxes, idx) {
+              return { paraId: boxes.length > 1 ? (region.region_id + '_p' + idx) : null, boxes: boxes };
+            })
+          : region.blue_boxes.map(function (box) { return { paraId: null, boxes: [box] }; });
+        regionParagraphs.set(region.region_id, paraGroups);
+
+        paraGroups.forEach(function (pg) {
+          pg.boxes.forEach(function (box) {
+            if (!box.text || !box.text.trim()) return;
+            counter++;
+            const id = 'ln' + counter;
+            blocks.push({
+              id: id,
+              page: region._pageNum,
+              paragraph_id: pg.paraId || undefined,
+              reading_order: counter,
+              text: box.markupText || box.text,
+              language: 'unknown',
+              direction: box.direction || 'ltr',
+              width: (box.right - box.left) * pd.sx * 96 / 72,
+              font_size_px: (box.fontSize || 10) * pd.sy * 96 / 72,
+              style: box.bold ? 'bold' : ''
+            });
+            boxIdToBlockId[box.id] = id;
           });
-          boxIdToBlockId[box.id] = id;
         });
       });
 
@@ -7849,33 +7891,30 @@ ${JSON.stringify(texts)}`;
         (translationResult.translations || []).forEach(function (t) { translatedById[t.id] = t.translated_text; });
 
         // Rebuild OUR OWN responseByRegionId shape (region_id -> groups of
-        // {group_order, source_box_ids, translated_text}) from v14's result,
-        // respecting the same paragraph merge decided above, so
-        // buildTranslatedDocxV2 sees exactly the shape it always has -
-        // v14's own paragraph-merged result comes back as id = 'para_' +
-        // paragraph_id (the WHOLE paragraph's translated text); a
-        // non-merged block comes back under its own block id.
+        // {group_order, source_box_ids, translated_text}) from v14's
+        // result, one group per REAL paragraph decided above - v14's own
+        // paragraph-merged result comes back as id = 'para_' + paragraph_id
+        // (the WHOLE paragraph's translated text); a non-merged block
+        // comes back under its own block id.
         const byRegion = new Map();
         allRegions.forEach(function (region) {
-          const isParagraph = region.region_type === 'green' && region.blue_boxes.length > 1;
-          if (isParagraph) {
-            const translated = translatedById['para_' + region.region_id];
-            if (translated == null) return;
-            byRegion.set(region.region_id, [{
-              group_order: 0,
-              source_box_ids: region.blue_boxes.map(function (b) { return b.id; }),
-              translated_text: translated
-            }]);
-          } else {
-            const groups = [];
-            region.blue_boxes.forEach(function (box, idx) {
-              const blockId = boxIdToBlockId[box.id];
-              const translated = blockId ? translatedById[blockId] : null;
+          const paraGroups = regionParagraphs.get(region.region_id) || [];
+          const groups = [];
+          paraGroups.forEach(function (pg, idx) {
+            if (pg.paraId) {
+              const translated = translatedById['para_' + pg.paraId];
               if (translated == null) return;
-              groups.push({ group_order: idx, source_box_ids: [box.id], translated_text: translated });
-            });
-            if (groups.length) byRegion.set(region.region_id, groups);
-          }
+              groups.push({ group_order: idx, source_box_ids: pg.boxes.map(function (b) { return b.id; }), translated_text: translated });
+            } else {
+              pg.boxes.forEach(function (box) {
+                const blockId = boxIdToBlockId[box.id];
+                const translated = blockId ? translatedById[blockId] : null;
+                if (translated == null) return;
+                groups.push({ group_order: idx, source_box_ids: [box.id], translated_text: translated });
+              });
+            }
+          });
+          if (groups.length) byRegion.set(region.region_id, groups);
         });
         responseByRegionId = byRegion;
       }
@@ -7886,9 +7925,7 @@ ${JSON.stringify(texts)}`;
     return blob;
   }
 
-
-
-window.__dataExtractionEngine = {
+  window.__dataExtractionEngine = {
     buildHybridDocxBlob: buildHybridDocxBlob,
     buildOfflineDocxBlob: buildOfflineDocxBlob,
     buildBoxBasedTranslatedDocxBlob: buildBoxBasedTranslatedDocxBlob,
