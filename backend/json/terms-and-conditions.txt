@@ -1,0 +1,45 @@
+LEXORA AI SOLUTIONS — TERMS & CONDITIONS
+
+Last updated: [add date here]
+
+1. ACCEPTANCE OF TERMS
+By accessing or using Lexora AI Solutions ("the Platform"), you agree to be
+bound by these Terms & Conditions. If you do not agree, do not use the
+Platform.
+
+2. USE OF THE SERVICE
+The Platform provides document intelligence services, including but not
+limited to document translation, OCR, data extraction, and related tools.
+You agree to use these services only for lawful purposes and in accordance
+with these Terms.
+
+3. ACCOUNT RESPONSIBILITY
+You are responsible for maintaining the confidentiality of your account
+credentials and for all activity that occurs under your account.
+
+4. DATA & DOCUMENTS
+Documents you upload are processed to provide the requested service. You
+are responsible for ensuring you have the necessary rights to upload and
+process any document you submit.
+
+5. PAYMENTS & PLANS
+Fees, plans, and wallet balances are governed by the pricing and plan terms
+shown within the Platform at the time of purchase.
+
+6. LIMITATION OF LIABILITY
+The Platform is provided "as is" without warranties of any kind. Lexora AI
+Solutions is not liable for indirect, incidental, or consequential damages
+arising from use of the Platform.
+
+7. CHANGES TO THESE TERMS
+These Terms may be updated from time to time. Continued use of the Platform
+after changes are posted constitutes acceptance of the revised Terms.
+
+8. CONTACT
+For questions about these Terms, please use the Contact Us section within
+the Platform.
+
+---
+(This is placeholder text. Replace the content of this file at any time —
+backend/json/terms-and-conditions.txt — with your actual Terms & Conditions;
+the popup shown to users always reflects this file's current content.)

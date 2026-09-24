@@ -1,0 +1,7 @@
+{
+    "success": { "title": "✅ Success", "buttons": ["OK"], "blocking": false },
+    "warning": { "title": "⚠️ Warning", "buttons": ["OK"], "blocking": false },
+    "error": { "title": "❌ Error", "buttons": ["OK"], "blocking": false },
+    "confirm": { "title": "❓ Confirm", "buttons": ["Yes", "No"], "blocking": true },
+    "info": { "title": "ℹ️ Information", "buttons": ["OK"], "blocking": false }
+}

@@ -1,0 +1,4 @@
+Rewrite the following text so it reads more naturally and conversationally - vary sentence length and structure, avoid repetitive or overly formal AI-sounding phrasing, but keep the same meaning, facts, and length roughly the same. Return only the rewritten text, no preamble or explanation.
+
+TEXT:
+{input}
