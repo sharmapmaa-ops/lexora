@@ -1,0 +1,3978 @@
+/* =====================================================================
+   LEXORA DESIGN SYSTEM  (loaded last, so it re-skins everything above)
+
+   Ye file poore app ka look mockups ke hisab se set karti hai. Purana
+   look har card par "border: 2px solid blue" + transparent background
+   tha; ab sab kuch white cards + soft shadow + ek hi blue palette par
+   hai. Markup ko haath nahi lagaya - sirf styling override hai, isliye
+   koi bhi page ka behaviour nahi badalta.
+
+   Sab tokens neeche :root me hain. Brand colour badalna ho to sirf
+   --ds-blue badlo, poora app follow karega.
+   ===================================================================== */
+:root {
+    --ds-navy:        #0b1533;
+    --ds-blue:        #1257f5;
+    --ds-blue-dark:   #0b3fd4;
+    --ds-blue-deep:   #0a3aa8;
+    --ds-blue-soft:   #e9f0fe;
+    --ds-ink:         #33425c;
+    --ds-muted:       #64748b;
+    --ds-line:        #e5ecf7;
+    --ds-page:        #f4f7fd;
+    --ds-card:        #ffffff;
+    --ds-green:       #17915c;
+    --ds-red:         #dc2f38;
+    --ds-amber:       #e08a00;
+    --ds-radius:      14px;
+    --ds-radius-sm:   9px;
+    --ds-shadow:      0 1px 3px rgba(11,21,51,.06), 0 8px 24px rgba(11,21,51,.05);
+    --ds-shadow-sm:   0 1px 2px rgba(11,21,51,.06);
+    --ds-nav:         linear-gradient(100deg, #0a3aa8 0%, #1049c9 48%, #1257f5 100%);
+}
+
+body {
+    background: var(--ds-page);
+    color: var(--ds-ink);
+    font-family: 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', sans-serif;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* ============================ TOP NAV ============================ */
+.top-menu-bar {
+    background: var(--ds-nav);
+    padding: 0 26px;
+    min-height: 62px;
+    gap: 18px;
+    box-shadow: 0 2px 14px rgba(10, 58, 168, .22);
+    border-bottom: none;
+    flex-wrap: nowrap;
+}
+
+.company-logo {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,.55);
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(0,0,0,.16);
+}
+
+.company-logo img { object-fit: contain; padding: 2px; }
+
+.company-name {
+    font-size: 1.22rem;
+    font-weight: 800;
+    letter-spacing: 1.3px;
+    text-transform: uppercase;
+}
+
+.company-name .separator { color: rgba(255,255,255,.32); margin: 0 10px; font-weight: 400; }
+.current-menu-name       { font-size: .82rem; color: rgba(255,255,255,.62); }
+.current-menu-name span  { color: #fff; font-weight: 600; }
+
+/* The current-section label moved to the top of each section's own
+   content area (.section-breadcrumb-bar) instead of sitting next to
+   the logo in the header - hide the old header copy (and its leading
+   separator) rather than showing it twice. */
+#currentMenuLabel, #separator { display: none; }
+
+.section-breadcrumb-bar {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--ds-navy, #0b1330);
+    padding: 2px 0 12px;
+    margin-bottom: 4px;
+    /* Item 13 - title stays left, the per-service "💰 Rate / Est. total"
+       line (when present) sits pinned to the right of it, not stacked
+       underneath or run on immediately after the title text. */
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.breadcrumb-title-text { flex-shrink: 0; }
+
+.file-list-charge-estimate:empty { display: none; }
+
+/* Nav sits in the middle, the user chip is pinned right - matches the
+   mockups, and works without touching the existing markup. */
+.menu-wrapper { flex: 1; display: flex; align-items: center; justify-content: flex-start; }
+.menu         { margin: 0 auto; gap: 4px; flex-wrap: nowrap; }
+
+.menu-item > a {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 9px 15px;
+    border-radius: 9px;
+    font-size: .92rem;
+    font-weight: 600;
+    color: rgba(255,255,255,.9);
+    white-space: nowrap;
+}
+
+.menu-item > a:hover        { background: rgba(255,255,255,.13); color: #fff; }
+.menu-item.active > a,
+.menu-item > a.active       { background: rgba(255,255,255,.18); color: #fff; box-shadow: inset 0 0 0 1px rgba(255,255,255,.22); }
+
+.user-profile {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 10px 5px 6px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background .15s;
+}
+
+.user-profile:hover { background: rgba(255,255,255,.12); }
+.user-name          { color: #fff; font-weight: 600; font-size: .92rem; display: none; }
+
+.user-avatar {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: linear-gradient(140deg, #4a90f7, #0b48e0);
+    border: 2px solid rgba(255,255,255,.6);
+    color: #fff;
+    font-weight: 700;
+    font-size: .84rem;
+    display: flex; align-items: center; justify-content: center;
+}
+
+.user-dropdown-arrow { color: rgba(255,255,255,.75); font-size: .6rem; }
+
+.notification-badge {
+    background: #e8433f;
+    border: 2px solid #1049c9;
+    color: #fff;
+    font-weight: 700;
+    font-size: .62rem;
+    min-width: 18px; height: 18px;
+    border-radius: 999px;
+    display: flex; align-items: center; justify-content: center;
+}
+
+/* ========================== PAGE CANVAS ========================== */
+.center-content { padding: 0 30px 24px; background: var(--ds-page); }
+.content-area   { padding: 0 0 10px; }
+
+/* Page header + breadcrumb, injected by updateContent() in app.js. */
+.page-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    flex-wrap: wrap;
+    padding: 22px 0 18px;
+}
+
+.page-head-title {
+    font-size: 1.72rem;
+    font-weight: 800;
+    color: var(--ds-navy);
+    letter-spacing: -.4px;
+    margin: 0;
+}
+
+.page-head-sub {
+    font-size: .88rem;
+    color: var(--ds-muted);
+    margin: 5px 0 0;
+}
+
+.page-crumb {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 10px;
+    padding: 9px 15px;
+    font-size: .83rem;
+    color: var(--ds-muted);
+    box-shadow: var(--ds-shadow-sm);
+    white-space: nowrap;
+}
+
+.page-crumb a       { color: var(--ds-blue); text-decoration: none; cursor: pointer; font-weight: 500; }
+.page-crumb a:hover { text-decoration: underline; }
+.page-crumb .sep    { color: #b9c4d6; }
+.page-crumb .cur    { color: var(--ds-navy); font-weight: 700; }
+.page-crumb svg     { width: 14px; height: 14px; color: var(--ds-muted); }
+
+/* ============================= CARDS ============================= */
+.service-card,
+.file-list-card,
+.activity-log-card,
+.payment-card,
+.history-card,
+.dash-card,
+.plan-card,
+.balance-card,
+.balance-add-card,
+.balance-pay-panel,
+.plan-history-card,
+.api-key-card,
+.content-section,
+.admin-files-card,
+.support-log-card,
+.support-contact-card,
+.company-details-card,
+.company-map-card,
+.stat-card,
+.tool-card {
+    background: var(--ds-card);
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+}
+
+.service-card,
+.file-list-card,
+.activity-log-card,
+.payment-card,
+.history-card,
+.plan-history-card,
+.api-key-card,
+.admin-files-card,
+.content-section { padding: 20px 22px; }
+
+/* Card titles get the blue glyph tile from the mockups. The tile is drawn
+   from the emoji the markup already has, so no markup change is needed. */
+.service-card > h3,
+.file-list-card h3,
+.activity-log-card .log-header h3,
+.payment-card > h3,
+.history-card > h3,
+.plan-history-card > h3,
+.api-key-card > h3,
+.admin-files-header h3,
+.support-log-header-row h3 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1.06rem;
+    font-weight: 700;
+    color: var(--ds-navy);
+    margin-bottom: 16px;
+}
+
+.service-card > h3::first-letter,
+.file-list-card h3::first-letter,
+.activity-log-card .log-header h3::first-letter,
+.payment-card > h3::first-letter,
+.history-card > h3::first-letter,
+.plan-history-card > h3::first-letter,
+.api-key-card > h3::first-letter,
+.admin-files-header h3::first-letter,
+.support-log-header-row h3::first-letter {
+    font-size: 1rem;
+    background: var(--ds-blue-soft);
+    border-radius: var(--ds-radius-sm);
+    padding: 8px 9px;
+    margin-right: 4px;
+    line-height: 1;
+}
+
+/* ---- dashboard tiles ---- */
+.dashboard-grid { gap: 16px; }
+
+.dash-card {
+    padding: 20px;
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.dash-card-icon {
+    width: 44px; height: 44px;
+    border-radius: 11px;
+    background: var(--ds-blue-soft);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.25rem;
+    margin-bottom: 8px;
+}
+
+.dash-card-value { font-size: 1.5rem; font-weight: 800; color: var(--ds-navy); }
+.dash-card-label { font-size: .8rem; color: var(--ds-muted); text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+/* ---- balance tiles ---- */
+.balance-card { padding: 20px 22px; text-align: left; }
+.balance-card .balance-number { font-size: 1.6rem; font-weight: 800; color: var(--ds-navy); }
+.balance-card .balance-number.credit { color: var(--ds-green); }
+.balance-card .balance-number.debit  { color: var(--ds-red); }
+.balance-card .balance-label { font-size: .8rem; color: var(--ds-muted); text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+/* ---- plan cards ---- */
+.plan-card { padding: 24px 22px; }
+.plan-card.featured { border-color: var(--ds-blue); box-shadow: 0 10px 30px rgba(18,87,245,.16); }
+.plan-name  { font-size: 1.12rem; font-weight: 700; color: var(--ds-navy); }
+.plan-price { font-size: 2.1rem; font-weight: 800; color: var(--ds-navy); }
+.plan-price span { font-size: .84rem; font-weight: 500; color: var(--ds-muted); }
+.plan-features li { color: var(--ds-ink); font-size: .88rem; }
+
+.plan-badge {
+    background: var(--ds-blue);
+    color: #fff;
+    border-radius: 999px;
+    font-size: .72rem;
+    font-weight: 700;
+    padding: 5px 14px;
+}
+
+/* ============================ TABLES ============================ */
+.history-table,
+.file-table,
+.admin-json-table,
+.support-log-table,
+.admin-table { border-collapse: separate; border-spacing: 0; }
+
+.history-table thead th,
+.file-table thead th,
+.admin-json-table thead th,
+.support-log-table thead th,
+.admin-table thead th {
+    background: #f7f9fd;
+    color: var(--ds-muted);
+    font-size: .78rem;
+    font-weight: 700;
+    letter-spacing: .2px;
+    text-align: left;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--ds-line);
+    border-top: 1px solid var(--ds-line);
+}
+
+.history-table tbody td,
+.file-table tbody td,
+.admin-json-table tbody td,
+.support-log-table tbody td,
+.admin-table tbody td {
+    padding: 13px 14px;
+    font-size: .86rem;
+    color: var(--ds-ink);
+    border-bottom: 1px solid var(--ds-line);
+}
+
+.history-table tbody tr:hover,
+.file-table tbody tr:hover,
+.support-log-table tbody tr:hover { background: #f9fbff; }
+
+.history-table .credit { color: var(--ds-green); font-weight: 700; }
+.history-table .debit  { color: var(--ds-red);   font-weight: 700; }
+
+/* ---- summary strip under Payment History ---- */
+.history-summary {
+    display: flex;
+    gap: 0;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+    padding: 20px 10px;
+    margin-top: 18px;
+}
+
+.history-summary .summary-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 0 24px;
+    border-right: 1px solid var(--ds-line);
+}
+
+.history-summary .summary-item:last-child { border-right: none; }
+.history-summary .summary-label { font-size: .82rem; color: var(--ds-muted); }
+.history-summary .summary-value { font-size: 1.45rem; font-weight: 800; color: var(--ds-blue); }
+.history-summary .credit-value  { color: var(--ds-green); }
+.history-summary .debit-value   { color: var(--ds-red); }
+
+/* ============================ CONTROLS =========================== */
+input[type="text"], input[type="email"], input[type="password"],
+input[type="number"], input[type="date"], select, textarea {
+    font-family: inherit;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    background: #fff;
+    color: var(--ds-navy);
+    font-size: .88rem;
+    padding: 10px 13px;
+    transition: border-color .15s, box-shadow .15s;
+}
+
+input:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: var(--ds-blue);
+    box-shadow: 0 0 0 3px rgba(18,87,245,.12);
+}
+
+label { color: var(--ds-muted); font-size: .82rem; font-weight: 500; }
+
+.add-btn, .submit-btn, .plan-cta-btn, .filter-btn, .process-btn,
+.api-action-btn, .admin-btn, .default-btn, .remove-btn,
+.admin-modal-save, .admin-modal-cancel, .select-btn {
+    font-family: inherit;
+    font-weight: 600;
+    font-size: .86rem;
+    border-radius: var(--ds-radius-sm);
+    padding: 10px 16px;
+    cursor: pointer;
+    transition: .15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.add-btn, .submit-btn, .plan-cta-btn, .admin-modal-save {
+    background: linear-gradient(135deg, #2f7bf6 0%, #0b48e0 100%);
+    color: #fff;
+    border: none;
+    box-shadow: 0 4px 12px rgba(18,87,245,.26);
+}
+
+.add-btn:hover, .submit-btn:hover, .plan-cta-btn:hover, .admin-modal-save:hover { filter: brightness(1.07); }
+.plan-cta-btn:disabled { filter: none; opacity: .95; cursor: default; }
+
+.filter-btn, .api-action-btn, .admin-btn, .default-btn, .admin-modal-cancel, .select-btn {
+    background: #fff;
+    color: var(--ds-blue);
+    border: 1px solid rgba(18,87,245,.32);
+}
+
+.filter-btn:hover, .api-action-btn:hover, .admin-btn:hover,
+.default-btn:hover, .select-btn:hover { background: rgba(18,87,245,.06); }
+
+.filter-btn.download-btn, .api-action-btn.save-btn {
+    color: var(--ds-green);
+    border-color: rgba(23,145,92,.35);
+}
+
+.filter-btn.delete-btn, .api-action-btn.revoke-btn, .remove-btn {
+    background: #fff;
+    color: var(--ds-red);
+    border: 1px solid rgba(220,47,56,.32);
+}
+
+.filter-btn.reset-btn { color: var(--ds-muted); border-color: var(--ds-line); }
+
+.process-btn.start-btn { background: #fff; color: var(--ds-green); border: 1px solid rgba(23,145,92,.4); }
+.process-btn.stop-btn,
+.process-btn.clear-btn { background: #fff; color: var(--ds-red); border: 1px solid rgba(220,47,56,.32); }
+
+/* ---- drop zone ---- */
+.drop-zone {
+    border: 2px dashed rgba(18,87,245,.3);
+    border-radius: 12px;
+    background: #fbfcff;
+    padding: 30px 20px;
+}
+
+.drop-zone:hover { border-color: var(--ds-blue); background: #f6f9ff; }
+.drop-text { font-weight: 700; color: var(--ds-navy); font-size: 1rem; }
+.drop-sub  { color: var(--ds-muted); font-size: .82rem; }
+
+/* ---- empty states ---- */
+.file-table tbody tr td[colspan],
+.admin-json-table tbody tr td[colspan] {
+    color: var(--ds-muted);
+    font-size: .88rem;
+    padding: 34px 14px;
+    text-align: center;
+}
+
+/* ============================= FOOTER ============================ */
+.footer {
+    background: var(--ds-nav);
+    color: rgba(255,255,255,.8);
+    font-size: .8rem;
+    padding: 14px 20px;
+    border-top: none;
+}
+
+.footer span { color: rgba(255,255,255,.9); }
+
+#footerSocial a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px; height: 30px;
+    border-radius: 8px;
+    background: rgba(255,255,255,.14);
+    color: #fff;
+    transition: background .15s, transform .15s;
+}
+
+#footerSocial a:hover { background: rgba(255,255,255,.26); transform: translateY(-2px); }
+
+/* =========================== RESPONSIVE ========================== */
+@media (max-width: 1150px) {
+    .top-menu-bar { flex-wrap: wrap; padding: 8px 16px; }
+    .menu { margin: 0; }
+    .center-content { padding: 0 16px 20px; }
+    .page-head-title { font-size: 1.45rem; }
+}
+
+@media (max-width: 760px) {
+    .history-summary { flex-direction: column; gap: 14px; }
+    .history-summary .summary-item { border-right: none; padding: 0 18px; }
+    .page-head { padding: 16px 0 14px; }
+}
+
+/* =====================================================================
+   ROUND 2 FIXES - screenshots se mile issues
+   (top margin, andar ke scrollbars, logo, alignment, symbols, balance page)
+   ===================================================================== */
+
+/* ---- typography: mockups Inter jaisi geometric sans use karte hain ---- */
+body, input, select, textarea, button {
+    font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', sans-serif;
+}
+
+/* ---- card top margin: content nav se chipka hua tha ---- */
+.center-content { padding-top: 20px; }
+.content-area   { padding-top: 0; }
+
+/* ---- nav: logo, icons, user chip order ---- */
+.company-logo {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    background: #fff;
+    box-shadow: 0 2px 10px rgba(0,0,0,.2);
+}
+
+.company-logo img { padding: 3px; object-fit: contain; }
+
+.menu-icon { width: 17px; height: 17px; flex-shrink: 0; }
+.menu-item > a .arrow { font-size: .55rem; opacity: .8; margin-left: 2px; }
+
+/* Mockup me avatar pehle aata hai, phir naam - markup badle bina order se. */
+.user-profile          { padding: 4px 12px 4px 5px; }
+.user-profile .user-avatar        { order: 1; }
+.user-profile .user-name          { order: 2; }
+.user-profile .user-dropdown-arrow{ order: 3; }
+.user-avatar { position: relative; overflow: visible; }
+.notification-badge { z-index: 2; }
+.notification-badge { position: absolute; top: -5px; right: -5px; }
+
+/* Active item mockup me amber hai, taaki blue nav par alag dikhe. */
+.menu-item.active > a,
+.menu-item > a.active {
+    background: rgba(255,255,255,.16);
+    color: #ffd66b;
+    box-shadow: inset 0 0 0 1px rgba(255,214,107,.45);
+}
+
+/* ---- INNER SCROLLBARS ----
+   .file-list-card aur .activity-log-card par fixed height (280/320px) thi.
+   Design system ne padding badha di to content bahar chala gaya aur har
+   card ke andar apna scrollbar aa gaya. Ab cards content ke hisab se
+   grow karte hain; sirf lambi tables ke andar scroll rehta hai.
+   Item 12/14/15 - .history-card hata diya is list se: uska table-card
+   ka base rule (style.css) hamesha se 450px fixed tha, lekin yahi
+   auto-height rule same specificity + baad me load hone ki wajah se
+   use jeet raha tha (Payment History jaisa koi bhi PLAIN .history-card,
+   binaa kisi extra distinguishing class ke, silently auto-height ban
+   gaya tha) - .support-log-card/.dash-txn-card/.notif-card jaise
+   compound-class cards already apni khud ki higher-specificity fixed-
+   height rule se bach rahe the, sirf plain .history-card affected tha. */
+.service-col > .service-card,
+.service-col > .file-list-card,
+.service-col > .activity-log-section > .activity-log-card,
+.file-list-card,
+.activity-log-card,
+.payment-card { height: auto; }
+
+.profile-danger-card {
+    margin-top: 18px;
+    border: 1px solid rgba(179, 38, 30, 0.3);
+    background: rgba(179, 38, 30, 0.03);
+}
+.profile-danger-card h3 { color: #b3261e; }
+.profile-danger-btn {
+    background: #b3261e !important;
+    border-color: #b3261e !important;
+    color: #fff !important;
+}
+.profile-danger-btn:hover { background: #921f19 !important; }
+
+.service-col > .service-card > .card-body,
+.service-col > .file-list-card > .card-body,
+.service-card > .card-body,
+.file-list-card > .card-body,
+.activity-log-card > .card-body { overflow: visible; min-height: 0; }
+
+.file-list-card, .activity-log-card { min-height: 250px; }
+.file-table-scroll { max-height: 260px; }
+.activity-list { height: auto; max-height: 240px; }
+
+/* ---- tables ko card ke andar hi rakho ----
+   "PROGRESSACTION" isliye jud gaya tha ki columns card se chaude the. */
+.file-table-wrapper { overflow-x: auto; }
+
+.file-table { table-layout: fixed; width: 100%; }
+
+.file-table th,
+.file-table td {
+    padding: 10px 8px;
+    font-size: .78rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.history-table { table-layout: auto; width: 100%; }
+/* th/td font-size/padding consolidated to ONE place - see the single
+   .history-table th, .history-table td rule further down this file
+   (search ROUND 13). This used to ALSO be declared right here with
+   different values (11px 10px/.82rem vs the other rule's 8px 9px/
+   .79rem) - two conflicting declarations for the exact same selector,
+   silently resolved by whichever was later in the file. */
+
+/* ---- shared card header (icon tile + title + subtitle) ---- */
+.ds-card-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 18px;
+}
+
+.ds-card-icon {
+    width: 40px; height: 40px;
+    border-radius: 11px;
+    background: var(--ds-blue-soft);
+    color: var(--ds-blue);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+.ds-card-icon svg { width: 20px; height: 20px; }
+.ds-card-head h3  { font-size: 1.08rem; font-weight: 700; color: var(--ds-navy); margin: 0; }
+.ds-card-sub      { font-size: .82rem; color: var(--ds-muted); margin: 3px 0 0; }
+
+/* ===================== ADD BALANCE (new mockup) ===================== */
+.balance-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.balance-grid .balance-card {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas: "icon num trend" "icon label trend";
+    column-gap: 16px;
+    align-items: center;
+    padding: 18px 22px;
+}
+
+.balance-grid .balance-card::before,
+.balance-grid .balance-card::after {
+    content: '';
+    background-repeat: no-repeat;
+    background-position: center;
+}
+
+.balance-grid .balance-card::before {
+    grid-area: icon;
+    width: 52px; height: 52px;
+    border-radius: 50%;
+    background-size: 24px 24px;
+}
+
+.balance-grid .balance-card::after {
+    grid-area: trend;
+    width: 26px; height: 26px;
+    background-size: 22px 22px;
+    opacity: .85;
+}
+
+.balance-grid .balance-card .balance-number { grid-area: num; font-size: 1.55rem; font-weight: 800; }
+.balance-grid .balance-card .balance-label {
+    grid-area: label;
+    font-size: .72rem;
+    font-weight: 600;
+    letter-spacing: .7px;
+    text-transform: uppercase;
+    color: var(--ds-muted);
+}
+
+/* credit */
+.balance-grid .balance-card:nth-child(1) { background: #f3fbf7; border-color: #c4e7d5; }
+.balance-grid .balance-card:nth-child(1)::before {
+    background-color: #dcf3e7;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2317915c' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7.5A2.5 2.5 0 0 1 5.5 5H18a2 2 0 0 1 2 2v1'/%3E%3Crect x='3' y='7.5' width='18' height='12' rx='2.5'/%3E%3Ccircle cx='16.5' cy='13.5' r='1.2'/%3E%3C/svg%3E");
+}
+.balance-grid .balance-card:nth-child(1)::after {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2317915c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 17 10 10l4 4 7-7'/%3E%3Cpath d='M16 6h5v5'/%3E%3C/svg%3E");
+}
+
+/* debit */
+.balance-grid .balance-card:nth-child(2) { background: #fef5f5; border-color: #f3d0d0; }
+.balance-grid .balance-card:nth-child(2)::before {
+    background-color: #fbdede;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23dc2f38' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7.5A2.5 2.5 0 0 1 5.5 5H18a2 2 0 0 1 2 2v1'/%3E%3Crect x='3' y='7.5' width='18' height='12' rx='2.5'/%3E%3Ccircle cx='16.5' cy='13.5' r='1.2'/%3E%3C/svg%3E");
+}
+.balance-grid .balance-card:nth-child(2)::after {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23dc2f38' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7l7 7 4-4 7 7'/%3E%3Cpath d='M16 18h5v-5'/%3E%3C/svg%3E");
+}
+
+/* balance */
+.balance-grid .balance-card:nth-child(3) { background: #f4f8ff; border-color: #c9dcfa; }
+.balance-grid .balance-card:nth-child(3)::before {
+    background-color: #dbe8fe;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231257f5' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 9.5 12 4l9 5.5'/%3E%3Cpath d='M5 10.5v8M9.5 10.5v8M14.5 10.5v8M19 10.5v8M3 20h18'/%3E%3C/svg%3E");
+}
+.balance-grid .balance-card:nth-child(3)::after {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231257f5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3.5 13.9 9l5.6 1.9-5.6 2L12 18.5 10.1 13l-5.6-2L10.1 9z'/%3E%3C/svg%3E");
+}
+
+.balance-grid .balance-card:nth-child(1) .balance-number { color: var(--ds-green); }
+.balance-grid .balance-card:nth-child(2) .balance-number { color: var(--ds-red); }
+.balance-grid .balance-card:nth-child(3) .balance-number { color: var(--ds-blue); }
+
+/* ---- the two-up top-up row ---- */
+.balance-topup-layout { margin-top: 18px; gap: 20px; }
+.balance-add-card, .balance-pay-panel { padding: 22px 24px; }
+.balance-add-card .form-group label { display: block; margin-bottom: 6px; font-weight: 600; color: var(--ds-ink); }
+.balance-add-card .form-group input { width: 100%; padding: 12px 14px; font-size: .92rem; }
+
+/* Item 1,3 - these two need to win over the generic rule above
+   (design-system.css loads last, so this is the rule that actually
+   applies) - Amount gets tighter padding/font-size so its placeholder
+   never clips at 120px, and the Add button sizes to its own content
+   instead of stretching. */
+.balance-form-row .balance-amount-group input { padding: 12px 8px 12px 12px; font-size: .88rem; }
+.balance-form-row .balance-add-submit { width: auto; flex: 0 0 auto; padding-left: 24px; padding-right: 24px; }
+
+.balance-quick-row { gap: 10px; margin: 0 0 16px; }
+
+.balance-quick-chip {
+    padding: 9px 18px;
+    border-radius: 999px;
+    border: 1px solid rgba(18,87,245,.25);
+    background: #f5f8ff;
+    color: var(--ds-blue);
+    font-size: .84rem;
+    font-weight: 600;
+}
+
+.balance-quick-chip.is-active {
+    background: var(--ds-blue);
+    border-color: var(--ds-blue);
+    color: #fff;
+    box-shadow: 0 4px 12px rgba(18,87,245,.3);
+}
+
+.balance-add-submit {
+    justify-content: center;
+    padding: 14px 18px;
+    font-size: .98rem;
+    margin-top: 4px;
+    white-space: nowrap;
+}
+
+.balance-approval-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 16px 0 0;
+    padding: 13px 15px;
+    border-radius: var(--ds-radius-sm);
+    background: #eef4ff;
+    border: 1px solid #d6e4fd;
+    color: var(--ds-blue);
+    font-size: .83rem;
+    line-height: 1.45;
+}
+
+.balance-approval-note svg { width: 17px; height: 17px; flex-shrink: 0; margin-top: 1px; }
+
+.balance-perks {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 18px;
+    padding-top: 18px;
+    border-top: 1px solid var(--ds-line);
+}
+
+.balance-perk {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 3px;
+}
+
+.balance-perk-icon {
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    background: var(--ds-blue-soft);
+    color: var(--ds-blue);
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 4px;
+}
+
+.balance-perk-icon svg { width: 18px; height: 18px; }
+.balance-perk b    { font-size: .82rem; color: var(--ds-navy); }
+.balance-perk span { font-size: .72rem; color: var(--ds-muted); line-height: 1.3; }
+
+/* ---- checkout panel header ---- */
+.balance-pay-panel { border: 1px solid rgba(18,87,245,.28); }
+
+.pay-panel-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 0 16px;
+    border-bottom: 1px solid var(--ds-line);
+}
+
+.pay-panel-headings { flex: 1; min-width: 0; }
+.pay-panel-title { font-size: 1.08rem; font-weight: 700; color: var(--ds-navy); }
+.pay-panel-sub   { font-size: .8rem; color: var(--ds-muted); margin-top: 2px; }
+.pay-panel-amount { font-size: 1.45rem; font-weight: 800; color: var(--ds-blue); }
+
+.pay-panel-body { border-radius: var(--ds-radius-sm); overflow: hidden; margin-top: 14px; }
+
+@media (max-width: 1150px) {
+    .balance-grid   { grid-template-columns: 1fr; }
+    .balance-perks  { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 16px; }
+}
+
+/* =====================================================================
+   NEW LOGO
+   lexora-logo.png me wordmark already hai, isliye uske bagal me alag se
+   "Lexora" likhna repeat ho jata tha. Text hide, logo wide, aur login
+   ke baad wala round frame hata diya.
+   ===================================================================== */
+.company-logo {
+    width: auto;
+    height: 40px;
+    min-width: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    overflow: visible;
+}
+
+.company-logo img { height: 100%; width: auto; padding: 0; object-fit: contain; }
+
+/* Sirf naam ka text hide karna hai, "|" separator rehna chahiye. */
+.company-name { font-size: 0; letter-spacing: 0; }
+.company-name .separator { font-size: 1.1rem; font-weight: 300; margin: 0 12px 0 14px; }
+
+.auth-topbar-name { display: none; }
+.auth-topbar-logo { width: auto; height: 3.6em; }
+
+/* ========================= DASHBOARD =========================
+   Mockup order: welcome | plan | wallet  /  today's transactions  /
+   4 stat tiles. Poora ek screen me aana chahiye, isliye .dash-page ek
+   flex column hai jisme sirf transactions card grow karta hai. */
+.dash-page {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-height: 0;
+}
+
+/* ---- 1. welcome block (koi card nahi) ---- */
+.dash-top {
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: 14px;
+    align-items: stretch;
+}
+
+.dash-welcome {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 2px 4px;
+}
+
+.dash-welcome-eyebrow { font-size: .8rem; font-weight: 600; color: var(--ds-navy); margin: 0; }
+
+.dash-welcome-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1.7rem;
+    font-weight: 800;
+    letter-spacing: -.5px;
+    color: var(--ds-navy);
+    margin: 2px 0 6px;
+}
+
+.dash-wave { font-size: 1.3rem; }
+.dash-welcome-sub { font-size: .76rem; color: var(--ds-muted); margin: 0; }
+
+/* ---- 2 & 3. plan / wallet hero cards ---- */
+.dash-hero-card {
+    position: relative;
+    display: flex;
+    gap: 12px;
+    padding: 15px 90px 15px 17px;
+    border-radius: 14px;
+    border: 1px solid;
+    overflow: hidden;
+}
+
+.dash-hero-plan   { background: linear-gradient(120deg, #f2f7ff, #e6eeff); border-color: #d5e4fd; }
+.dash-hero-wallet { background: linear-gradient(120deg, #f2fdf7, #e8f8ef); border-color: #c9ead9; }
+
+.dash-hero-icon {
+    width: 40px; height: 40px;
+    border-radius: 11px;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+    flex-shrink: 0;
+}
+
+.dash-hero-icon svg { width: 20px; height: 20px; }
+.dash-hero-plan   .dash-hero-icon { background: #2563eb; }
+.dash-hero-wallet .dash-hero-icon { background: #16a34a; }
+
+.dash-hero-body  { min-width: 0; }
+.dash-hero-label { font-size: .76rem; color: var(--ds-muted); }
+.dash-hero-value { font-size: 1.05rem; font-weight: 800; margin: 1px 0 9px; white-space: nowrap; }
+.dash-hero-plan   .dash-hero-value { color: #1d4ed8; }
+.dash-hero-wallet .dash-hero-value { color: #15803d; }
+
+.dash-hero-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #fff;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: .74rem;
+    font-weight: 600;
+    padding: 6px 12px;
+    cursor: pointer;
+    transition: .15s;
+}
+
+.dash-hero-plan   .dash-hero-btn { border: 1px solid #c7dafc; color: #1d4ed8; }
+.dash-hero-wallet .dash-hero-btn { border: 1px solid #bde5cf; color: #15803d; }
+.dash-hero-btn:hover { filter: brightness(.97); }
+
+.dash-hero-art {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 66px;
+    height: auto;
+    pointer-events: none;
+}
+
+/* ---- 4. today's transactions ---- */
+/* Item: height/display/flex-direction all come from the shared
+   .history-card base rule now (style.css) - every one of these report-
+   style cards carries that class already, so there is no need for a
+   second, separately-maintained copy of the same height here (that
+   duplication, across this file AND style.css, is exactly what caused
+   the height/header bugs earlier - one card's height got updated and
+   the others didn't, or a breakpoint got missed in one of the copies).
+   Only the padding actually differs for this one card, so that's all
+   that's left here. */
+.dash-txn-card {
+    padding: 15px 17px;
+}
+
+.dash-txn-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-shrink: 0; }
+.dash-txn-head .ds-card-icon { width: 36px; height: 36px; }
+.dash-txn-head .ds-card-icon svg { width: 18px; height: 18px; }
+.dash-txn-head h3 { flex: 1; margin: 0; font-size: .98rem; font-weight: 700; color: var(--ds-navy); }
+
+.dash-view-all {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 8px;
+    color: var(--ds-blue);
+    font-family: inherit;
+    font-size: .75rem;
+    font-weight: 600;
+    padding: 7px 12px;
+    cursor: pointer;
+}
+
+.dash-view-all:hover { background: rgba(18,87,245,.05); }
+
+.dash-txn-card > .card-body {
+    border: 1px solid var(--ds-line);
+    border-radius: 10px;
+    overflow: hidden;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Header aur body alag tables hain, isliye fixed layout - warna dono ke
+   columns align nahi hote. */
+.today-table { table-layout: fixed; width: 100%; }
+/* th/td font-size/padding come from the shared .history-table th/td
+   rule now (ROUND 13) - this used to have its own separate, smaller
+   values here, which is exactly why Today's Transactions' table text
+   looked different-sized from Payment History/Notification's despite
+   all three sharing the same .history-table base class. */
+/* height/flex/overflow come from the shared .report-table-scroll class
+   on this same element now (see ROUND 12). */
+
+.dash-empty-cell { text-align: center; padding: 16px 10px; }
+.dash-empty-art  { width: 54px; height: 42px; display: block; margin: 0 auto 6px; }
+.dash-empty-title{ display: block; font-weight: 700; color: var(--ds-navy); font-size: .85rem; }
+.dash-empty-sub  { display: block; font-size: .73rem; color: var(--ds-muted); margin-top: 2px; }
+
+/* ---- 5. stat tiles ---- */
+.dashboard-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+
+.dash-card {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    text-align: left;
+}
+
+.dash-card-icon {
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+    flex-shrink: 0;
+    margin-bottom: 0;
+    font-size: 1rem;
+}
+
+.dash-card-icon svg { width: 19px; height: 19px; }
+.dash-icon-blue   { background: #2563eb; }
+.dash-icon-green  { background: #16a34a; }
+.dash-icon-purple { background: #7c3aed; }
+.dash-icon-amber  { background: #ea9010; }
+
+.dash-card-text  { min-width: 0; }
+.dash-card-value { font-size: 1.15rem; font-weight: 800; color: var(--ds-navy); line-height: 1.15; }
+.dash-card-label { font-size: .77rem; font-weight: 600; color: var(--ds-navy); text-transform: none; letter-spacing: 0; }
+.dash-card-sub   { font-size: .67rem; color: var(--ds-muted); margin-top: 1px; line-height: 1.25; }
+
+@media (max-width: 1150px) {
+    .dash-top { grid-template-columns: 1fr; }
+    .dashboard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Transactions card ko bachi hui height le leni chahiye, warna bade
+   screens par neeche khali jagah reh jati thi. 154px = nav + footer +
+   center-content ka padding; min-height hai isliye content zyada ho to
+   card khud badh jata hai. */
+.dash-page { min-height: calc(100vh - 160px); }
+
+/* =====================================================================
+   PLANS & OFFERS  (mockup ke hisab se)
+   ===================================================================== */
+.plans-head { margin-bottom: 16px; }
+.plans-head h2 { font-size: 1.12rem; font-weight: 800; color: var(--ds-navy); margin: 0; }
+.plans-head p  { font-size: .78rem; color: var(--ds-muted); margin: 3px 0 0; }
+
+.plans-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 18px;
+    align-items: stretch;
+}
+
+.plan-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    padding: 24px 22px 22px;
+    overflow: visible;
+}
+
+/* Tier colours - ek jagah se poore card ka accent chalta hai. */
+.plan-card.is-free     { --tier: #0d9488; --tier-soft: #d8f1ec; }
+.plan-card.is-standard { --tier: #ea8c00; --tier-soft: #fdefd2; }
+.plan-card.is-pro      { --tier: #1d4ed8; --tier-soft: #dbe8fe; }
+
+.plan-card.featured {
+    /* Border ki jagah inset ring: 2px border teeno cards ki height 1px
+       shift kar deta tha, jisse buttons ek line me nahi rehte the. */
+    border-color: var(--tier);
+    box-shadow: inset 0 0 0 1px var(--tier), 0 10px 30px rgba(29, 78, 216, .14);
+}
+
+.plan-badge {
+    position: absolute;
+    top: -13px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--tier);
+    color: #fff;
+    border-radius: 999px;
+    font-size: .7rem;
+    font-weight: 700;
+    padding: 5px 15px;
+    white-space: nowrap;
+    box-shadow: 0 4px 12px rgba(29, 78, 216, .3);
+}
+
+.plan-free-tag {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    background: var(--tier);
+    color: #fff;
+    border-radius: 6px;
+    font-size: .62rem;
+    font-weight: 800;
+    letter-spacing: .6px;
+    padding: 3px 8px;
+}
+
+.plan-icon {
+    width: 42px; height: 42px;
+    border-radius: 11px;
+    background: var(--tier-soft);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.15rem;
+    margin-bottom: 10px;
+}
+
+.plan-name  { font-size: 1.08rem; font-weight: 700; color: var(--tier); }
+.plan-price { font-size: 2rem; font-weight: 800; color: var(--ds-navy); margin: 4px 0 16px; }
+.plan-price span { font-size: .78rem; font-weight: 500; color: var(--ds-muted); margin-left: 3px; }
+
+.plan-features {
+    list-style: none;
+    padding: 16px 0 0;
+    margin: 0 0 18px;
+    border-top: 1px solid var(--ds-line);
+    flex: 1;
+}
+
+.plan-features li {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    font-size: .84rem;
+    color: var(--ds-ink);
+    padding: 5px 0;
+}
+
+.plan-tick { width: 16px; height: 16px; color: #16a34a; flex-shrink: 0; margin-top: 2px; }
+
+.plan-cta-btn {
+    width: 100%;
+    justify-content: center;
+    padding: 12px;
+    font-size: .88rem;
+    font-weight: 700;
+    background: var(--ds-navy);
+    color: #fff;
+    border: 1px solid var(--ds-navy);
+    box-shadow: none;
+}
+
+.plan-cta-btn:hover { background: var(--ds-navy); filter: brightness(1.15); }
+
+/* Jo plan chal raha hai uska button greyed-out/disabled dikhta hai. */
+.plan-cta-btn.is-current,
+.plan-cta-btn:disabled {
+    background: #eef0f4;
+    border-color: #e2e5ec;
+    color: #97a0b3;
+    opacity: 1;
+    cursor: default;
+}
+
+.plan-cta-btn.is-current:hover,
+.plan-cta-btn:disabled:hover { background: #eef0f4; filter: none; }
+
+/* ---- plan history ---- */
+.plan-history-card { margin-top: 20px; }
+.plan-history-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.plan-history-head .ds-card-icon { width: 36px; height: 36px; }
+.plan-history-head .ds-card-icon svg { width: 18px; height: 18px; }
+.plan-history-head h3 { flex: 1; margin: 0; font-size: 1rem; font-weight: 700; color: var(--ds-navy); }
+
+.plan-history-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 8px;
+    color: var(--ds-blue);
+    font-family: inherit;
+    font-size: .76rem;
+    font-weight: 600;
+    padding: 8px 13px;
+    cursor: pointer;
+}
+
+.plan-history-btn svg { width: 15px; height: 15px; }
+.plan-history-btn:hover { background: rgba(18,87,245,.05); }
+
+.plan-history-table-wrap { border: 1px solid var(--ds-line); border-radius: 10px; overflow: hidden; }
+
+/* Mockup me is table ka header dark navy hai, baaki tables ka light. */
+.plan-history-table thead th {
+    background: #1e3a8a;
+    color: #fff;
+    border-top: none;
+    border-bottom: none;
+    font-size: .75rem;
+}
+
+.plan-empty-cell  { text-align: center; padding: 22px 10px; }
+.plan-empty-art   { width: 40px; height: 46px; display: block; margin: 0 auto 8px; }
+.plan-empty-title { display: block; font-weight: 700; color: var(--ds-navy); font-size: .85rem; }
+.plan-empty-sub   { display: block; font-size: .74rem; color: var(--ds-muted); margin-top: 2px; }
+
+/* =====================================================================
+   PAYMENT HISTORY
+   ===================================================================== */
+.history-filter-bar { align-items: flex-end; gap: 12px; margin-bottom: 16px; }
+.history-filter-bar .filter-group { display: flex; flex-direction: column; gap: 5px; }
+.history-filter-bar .filter-group label { font-size: .76rem; color: var(--ds-muted); font-weight: 500; }
+.history-filter-bar .filter-group input { padding: 9px 12px; font-size: .83rem; }
+.filter-group-search input { min-width: 210px; }
+.filter-bar-spacer { flex: 1; }
+
+.filter-btn svg, .plan-cta-btn svg { width: 15px; height: 15px; }
+.filter-btn { padding: 10px 15px; }
+
+.filter-btn.is-primary {
+    background: linear-gradient(135deg, #2f7bf6 0%, #0b48e0 100%);
+    color: #fff;
+    border: none;
+    box-shadow: 0 4px 12px rgba(18,87,245,.26);
+}
+
+.filter-btn.is-primary:hover { filter: brightness(1.07); background: linear-gradient(135deg, #2f7bf6 0%, #0b48e0 100%); }
+.filter-btn.reset-btn { color: var(--ds-ink); border-color: var(--ds-line); }
+.filter-btn.raise-issue-btn { color: var(--ds-blue); border-color: rgba(18,87,245,.32); }
+
+.payment-history-table td.credit { color: #15803d; }
+.payment-history-table td.debit  { color: #dc2626; }
+
+.payment-history-table thead th {
+    /* background/color/font-weight match the shared .history-table
+       thead th rule's values now (design-system.css line ~335) - these
+       used to be their own different values (#eef2fa/#46557a here vs
+       #f7f9fd/var(--ds-muted) there), a real visible colour mismatch
+       between Payment History/Today's Transactions' headers and
+       Notification/Support's. white-space/overflow/text-overflow stay
+       overridden here - those genuinely ARE reclaimed on purpose (see
+       below), not accidental duplication like the colours were. */
+    background: #f7f9fd;
+    color: var(--ds-muted);
+    font-weight: 700;
+    padding: 10px 14px;
+    height: 42px;
+    vertical-align: middle;
+    /* Reclaimed from style.css's generic ".history-table thead th" -
+       that rule shares this exact selector specificity, so without
+       re-declaring these properties here they'd silently keep
+       truncating every header (that's what was cutting "Download"
+       down to "D..."). */
+    white-space: nowrap;
+    overflow: visible;
+    text-overflow: clip;
+}
+.payment-history-table { table-layout: fixed; width: 100%; }
+
+/* Item 1 (autofit) - the fixed per-column px widths that used to live
+   here are gone - autofitSplitTableColumns() (app.js) now measures each
+   column's real content (header label + every visible row's value,
+   across BOTH the header and body <table>) and sets matching explicit
+   widths on both at render time, so a column is never wider or
+   narrower than what its own data actually needs. Leaving the old
+   guesses here would just fight that measurement (JS inline styles do
+   win over these either way, but a stale, wrong set of numbers sitting
+   here is misleading and easy to accidentally re-introduce a mismatch
+   from in a future edit). */
+
+/* Item 6 (old req) - the header and body are separate <table>
+   elements (so the header can stay put while only the body scrolls
+   vertically) - JS (wireSplitTableScrollSync) keeps them in sync
+   horizontally too: the body wrapper is the one that actually
+   scrolls, and the header wrapper's scrollLeft gets forced to match
+   on every scroll event. A pure-CSS "shared outer container" approach
+   was tried here before and didn't reliably keep them aligned, so
+   don't reintroduate overflow-x:auto on the outer wrapper below. */
+.payment-history-scroll-outer,
+.today-table-scroll-outer {
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+}
+
+.history-table-header-wrapper {
+    overflow-x: hidden;
+    /* This must never shrink - when the body table below it fights it
+       for space inside an overflow:hidden flex column (exactly what
+       just happened when the body's height became a fixed !important
+       value instead of flex:1's "whatever's left"), a flex child with
+       no flex-shrink:0 can get squeezed toward 0 height instead of the
+       overflow simply clipping the body - which is what made the
+       header row disappear instead of just the table scrolling. */
+    flex-shrink: 0;
+    /* Item 16 - the sibling body wrapper below (.report-table-scroll)
+       gets a vertical scrollbar whenever it has enough rows, which eats
+       into ITS available width and shifts every column left slightly
+       compared to this header (which never has a scrollbar of its own)
+       - the classic split header/body table misalignment. Reserving
+       the same width here, always, keeps both tables' columns lined up
+       whether or not the body actually needs to scroll on any given
+       page. */
+    padding-right: 16px;
+    box-sizing: border-box;
+}
+
+.payment-history-scroll-outer .history-table-wrapper,
+.today-table-scroll-outer .history-table-wrapper {
+    overflow-x: auto;
+}
+
+/* Item 9,10 - compact rows, everything in a row vertically centered -
+   now applied to every report-style card's table (not just Payment
+   History/Today's Transactions, which happen to also carry the
+   .payment-history-table class for their column-width rules) so the
+   row height/padding genuinely matches across Support and Notification
+   too, instead of them silently falling back to a taller, differently-
+   padded generic rule elsewhere in this file just because they don't
+   carry that particular class. overflow/text-overflow are reclaimed
+   here for the same reason as the header rule above - style.css's
+   generic ".history-table tbody td" shares this selector's specificity
+   and was forcing overflow:hidden + ellipsis onto every column that
+   didn't already have its own more-specific override, which is what
+   was truncating Date/Time/Status/Balance/User ID even though their
+   columns were wide enough. */
+.payment-history-table tbody td,
+.support-log-table tbody td,
+.notif-table tbody td,
+.admin-json-table tbody td {
+    padding: 8px 14px;
+    font-size: .79rem;
+    vertical-align: middle;
+    height: 40px;
+    white-space: nowrap;
+    overflow: visible;
+    text-overflow: clip;
+}
+
+/* Item 2,3,5,6,7 - Date, Time, Status and Balance always show in
+   full (their columns are sized generously enough above that this
+   never needs to fall back to ellipsis). */
+.payment-history-table td:nth-child(3),
+.payment-history-table td:nth-child(4),
+.payment-history-table td:nth-child(9),
+.payment-history-table td:nth-child(10) {
+    white-space: nowrap;
+}
+
+/* Item 8 - Description wraps onto a second line instead of being
+   truncated, but never breaks the table layout. */
+.payment-history-table td:nth-child(7) {
+    white-space: normal;
+    word-break: break-word;
+    line-height: 1.35;
+}
+
+/* Item 4 - Transaction ID shows in full now that its column is wide
+   enough; ellipsis is kept only as the genuine last-resort fallback
+   for a still-narrower custom viewport. */
+.payment-history-table td:nth-child(6) {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Item 7 - User ID: full value when it fits, otherwise ellipsis
+   (its column is wide enough in practice to show it in full). */
+.payment-history-table td:nth-child(11) {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Item 11 - premium hover effect: light grey background, smooth
+   150-200ms transition. */
+.payment-history-table tbody tr {
+    transition: background-color 180ms ease;
+}
+.payment-history-table tbody tr:hover {
+    background-color: #f4f4f6;
+}
+
+/* Item 16 - Download icon: centered, consistent size/color, clear
+   hover feedback, pointer cursor. */
+.txn-download-cell { text-align: center; }
+.txn-download-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #1257f5;
+    cursor: pointer;
+    transition: color 150ms ease, transform 150ms ease;
+}
+.txn-download-icon:hover {
+    color: #0b3fc4;
+    transform: translateY(-1px);
+}
+
+/* Item 15 - responsive: the table's min-width (above) means it never
+   actually shrinks below its functional column widths - narrow
+   viewports scroll horizontally (.payment-history-scroll-outer)
+   instead, so there's no percentage-based override needed here
+   anymore. (A percentage override at this breakpoint would risk the
+   same header/body table mismatch that fixed-pixel widths avoid.) */
+
+/* status pills */
+.txn-status-pill {
+    display: inline-block;
+    vertical-align: middle;
+    border-radius: 999px;
+    font-size: .7rem;
+    font-weight: 600;
+    padding: 3px 11px;
+    white-space: nowrap;
+}
+
+.txn-status-pill.success   { background: #dcf5e6; color: #15803d; }
+.txn-status-pill.pending   { background: #fdf0d5; color: #a76b00; }
+.txn-status-pill.cancelled { background: #eceff5; color: #5b6a86; }
+.txn-status-pill.failed    { background: #fbdede; color: #b91c1c; }
+
+.txn-type-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: .78rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.txn-type-badge svg { flex-shrink: 0; }
+.txn-type-badge.credit { color: #15803d; }
+.txn-type-badge.debit  { color: #dc2626; }
+
+/* ---- pagination footer ---- */
+/* Item 2 - was justify-content:space-between (spread count/page-size/
+   controls across the full width); Notification's own pager
+   (.notif-footer-pager) instead keeps those three tight together and
+   pinned to the right - matching that exactly here too. */
+.history-pager {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding-top: 14px;
+    margin-top: 12px;
+    border-top: 1px solid var(--ds-line);
+    flex-shrink: 0;
+}
+
+.pager-count    { font-size: .78rem; color: var(--ds-muted); }
+.pager-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+.pager-select {
+    padding: 7px 10px;
+    font-size: .78rem;
+    border-radius: 8px;
+    margin-right: 8px;
+}
+
+.pager-btn {
+    min-width: 32px;
+    height: 32px;
+    padding: 0 8px;
+    border-radius: 8px;
+    border: 1px solid var(--ds-line);
+    background: #fff;
+    color: var(--ds-ink);
+    font-family: inherit;
+    font-size: .8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: .15s;
+}
+
+.pager-btn:hover:not(:disabled) { border-color: var(--ds-blue); color: var(--ds-blue); }
+.pager-btn:disabled { opacity: .4; cursor: default; }
+
+.pager-btn.is-current {
+    background: var(--ds-blue);
+    border-color: var(--ds-blue);
+    color: #fff;
+}
+
+.pager-gap { padding: 0 4px; color: var(--ds-muted); font-size: .8rem; }
+
+/* ---- summary card (alag card, table ke neeche) ---- */
+.history-summary { margin-top: 18px; padding: 22px 10px; }
+
+.history-summary .summary-item {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-areas: "icon label" "icon value";
+    column-gap: 16px;
+    align-items: center;
+}
+
+.summary-icon {
+    grid-area: icon;
+    width: 52px; height: 52px;
+    border-radius: 13px;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 24px 24px;
+}
+
+.history-summary .summary-label { grid-area: label; font-size: .8rem; color: var(--ds-muted); }
+.history-summary .summary-value { grid-area: value; font-size: 1.5rem; }
+
+.summary-icon-credit {
+    background-color: #dcf3e7;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2317915c' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7.5A2.5 2.5 0 0 1 5.5 5H18a2 2 0 0 1 2 2v1'/%3E%3Crect x='3' y='7.5' width='18' height='12' rx='2.5'/%3E%3Ccircle cx='16.5' cy='13.5' r='1.2'/%3E%3C/svg%3E");
+}
+
+.summary-icon-debit {
+    background-color: #fbdede;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23dc2f38' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8'/%3E%3Cpath d='m17 8 4 4-4 4M21 12h-9'/%3E%3C/svg%3E");
+}
+
+.summary-icon-balance {
+    background-color: #dbe8fe;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231257f5' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.5' y='5' width='19' height='14' rx='2.5'/%3E%3Cpath d='M2.5 10h19'/%3E%3C/svg%3E");
+}
+
+/* =====================================================================
+   BALANCE - stat card ka text center (mockup jaisa) + left accent
+   ===================================================================== */
+.balance-grid .balance-card {
+    grid-template-areas: "icon num trend" "icon label trend";
+    text-align: center;
+    border-left-width: 4px;
+}
+
+.balance-grid .balance-card:nth-child(1) { border-left-color: #17915c; }
+.balance-grid .balance-card:nth-child(2) { border-left-color: #dc2f38; }
+.balance-grid .balance-card:nth-child(3) { border-left-color: #1257f5; }
+
+@media (max-width: 1150px) {
+    .plans-grid { grid-template-columns: 1fr; }
+    .history-summary { flex-direction: column; gap: 18px; }
+}
+
+/* =====================================================================
+   CARD HEADER ICON TILE (global) - emoji ki jagah filled blue SVG.
+   upgradeCardHeaders() app.js me har page render par lagta hai.
+   ===================================================================== */
+.ds-card-icon.is-filled { background: var(--ds-blue); color: #fff; }
+
+h3 .ds-card-icon { width: 34px; height: 34px; border-radius: 9px; margin-right: 10px; }
+h3 .ds-card-icon svg { width: 17px; height: 17px; }
+
+.service-card > h3, .file-list-card h3, .activity-log-card .log-header h3,
+.payment-card > h3, .history-card > h3, .api-key-card > h3 {
+    display: flex;
+    align-items: center;
+}
+
+/* Purana ::first-letter tile ab zaroorat nahi - icon asli element hai. */
+.service-card > h3::first-letter, .file-list-card h3::first-letter,
+.activity-log-card .log-header h3::first-letter, .payment-card > h3::first-letter,
+.history-card > h3::first-letter, .plan-history-card > h3::first-letter,
+.api-key-card > h3::first-letter, .admin-files-header h3::first-letter,
+.support-log-header-row h3::first-letter {
+    background: none; padding: 0; margin-right: 0; font-size: inherit;
+}
+
+/* ===================== NOTIFICATIONS ===================== */
+.notif-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-shrink: 0; }
+.notif-head h3 { margin: 0; font-size: 1.06rem; font-weight: 700; color: var(--ds-navy); }
+
+.notif-count {
+    background: var(--ds-blue);
+    color: #fff;
+    border-radius: 999px;
+    font-size: .7rem;
+    font-weight: 700;
+    min-width: 22px;
+    padding: 3px 8px;
+    text-align: center;
+}
+
+.notif-mark-all {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: #fff;
+    border: 1px solid rgba(18,87,245,.32);
+    border-radius: 9px;
+    color: var(--ds-blue);
+    font-family: inherit;
+    font-size: .8rem;
+    font-weight: 600;
+    padding: 9px 14px;
+    cursor: pointer;
+}
+
+.notif-mark-all svg { width: 16px; height: 16px; }
+.notif-mark-all:hover { background: rgba(18,87,245,.05); }
+
+/* Item - was relying on the default overflow:visible, which just spills
+   the table past the card's edge instead of scrolling once the now-
+   strictly-autofit columns (including "Notification", which can be a
+   full sentence) add up wider than the card. */
+.notif-table-scroll-outer {
+    overflow-x: auto;
+}
+
+.notif-tabs {
+    display: flex;
+    gap: 26px;
+    border-bottom: 1px solid var(--ds-line);
+    margin-bottom: 14px;
+}
+
+.notif-tab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--ds-muted);
+    font-family: inherit;
+    font-size: .87rem;
+    font-weight: 600;
+    padding: 9px 2px;
+    margin-bottom: -1px;
+    cursor: pointer;
+}
+
+.notif-tab.is-active { background: none; color: var(--ds-blue); border-bottom-color: var(--ds-blue); }
+.notif-tab:hover     { color: var(--ds-blue); }
+
+/* Card is a fixed height (.history-card, style.css - the single shared
+   source for every report-style card's height now) but its flex
+   children default to min-height:auto, which lets a tall content run
+   (e.g. the "All" tab with more rows than "Read"/"Unread") push past
+   that height instead of scrolling inside it - min-height:0 is what
+   actually makes the overflow-y:auto on .history-table-wrapper take
+   effect, so the card stays the same height no matter which of the 3
+   tabs is selected. */
+.notif-card .card-body { min-height: 0; }
+/* .notif-card .history-table-wrapper's min-height:0 now comes from the
+   shared .report-table-scroll class on that same element (ROUND 12). */
+
+/* Item - dead code: this table's width/layout are fully JS-owned now
+   (autofitSplitTableColumns, app.js, sets inline styles per render -
+   inline always beats a class rule regardless of what it says), so
+   this class-level table-layout:fixed/width:100% was never actually
+   winning, just sitting here as a second, confusing "source of truth"
+   for a decision JS already makes. */
+.notif-table td { vertical-align: middle; }
+
+.notif-row { display: flex; align-items: flex-start; gap: 13px; }
+
+.notif-row-icon {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+.notif-row-icon svg { width: 18px; height: 18px; }
+.notif-row-icon.is-key   { background: #dbe8fe; color: #1257f5; }
+.notif-row-icon.is-money { background: #dcf3e7; color: #17915c; }
+.notif-row-icon.is-doc   { background: #e7edfb; color: #3b5fa8; }
+
+.notif-row-text { min-width: 0; }
+
+.notif-row-text .notification-desc-link {
+    display: block;
+    font-size: .88rem;
+    font-weight: 700;
+    color: var(--ds-navy);
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.notif-row-text .notification-desc-link:hover { color: var(--ds-blue); }
+.notif-row-detail { display: block; font-size: .78rem; color: var(--ds-muted); margin-top: 2px; line-height: 1.4; }
+
+.notif-when { display: flex; align-items: flex-start; gap: 9px; }
+
+.notif-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--ds-blue);
+    margin-top: 5px;
+    flex-shrink: 0;
+    /* Item - was only ever used inside a flex row before (where width/
+       height on a span works regardless of its own display value); now
+       also sits plainly next to the Date text with no flex wrapper
+       (Date/Time are separate columns, notification-icon and the "X
+       minutes ago" line are gone), so it needs its own inline-block to
+       actually render as a small circle instead of collapsing to
+       nothing the way width/height do on a plain inline span. */
+    display: inline-block;
+    vertical-align: middle;
+    margin-top: 0;
+    margin-right: 6px;
+}
+
+.notif-dot.is-read { background: #c6d0e0; }
+.notif-date { display: block; font-size: .82rem; font-weight: 600; color: var(--ds-navy); }
+.notif-ago  { display: block; font-size: .74rem; color: var(--ds-muted); margin-top: 2px; }
+
+.notif-menu-cell { text-align: right; }
+
+.notif-menu-btn {
+    background: none;
+    border: none;
+    color: var(--ds-muted);
+    font-size: 1.15rem;
+    line-height: 1;
+    padding: 4px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.notif-menu-btn:hover { background: #f1f5fb; color: var(--ds-navy); }
+
+.notif-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding-top: 16px;
+    margin-top: 4px;
+}
+
+.notif-footer-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.notif-footer-pager   { display: flex; align-items: center; gap: 14px; }
+.notif-btn-read   { color: var(--ds-green); border-color: rgba(23,145,92,.35); }
+.notif-btn-unread { color: var(--ds-blue);  border-color: rgba(18,87,245,.32); }
+
+/* ===================== SERVICE PAGES ===================== */
+.drop-zone {
+    border: 2px dashed rgba(18,87,245,.35);
+    background: #fbfcff;
+    padding: 22px 20px 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+}
+
+.drop-art  { width: 118px; height: 76px; }
+.drop-text { font-size: 1rem; font-weight: 700; color: var(--ds-navy); }
+.drop-sub  { font-size: .8rem; color: var(--ds-muted); }
+
+.drop-browse-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 10px 18px;
+    border: none;
+    border-radius: 9px;
+    background: linear-gradient(135deg, #2f7bf6 0%, #0b48e0 100%);
+    color: #fff;
+    font-family: inherit;
+    font-size: .86rem;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(18,87,245,.26);
+}
+
+.drop-browse-btn svg { width: 16px; height: 16px; }
+.file-count-text { font-size: .75rem; color: var(--ds-blue); font-weight: 600; margin-top: 6px; }
+
+.drop-meta { text-align: center; font-size: .76rem; color: var(--ds-muted); margin-top: 10px; }
+.drop-meta b { color: var(--ds-blue); }
+
+/* Setup labels mockup me uppercase hain. */
+.setup-group > label,
+.setup-group label:not([style]) {
+    display: block;
+    font-size: .72rem;
+    font-weight: 600;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    color: var(--ds-muted);
+    margin-bottom: 6px;
+}
+
+.file-table thead th { text-transform: uppercase; letter-spacing: .4px; color: var(--ds-muted); }
+
+.process-btn.start-btn, .process-btn.stop-btn, .process-btn.clear-btn { padding: 10px 16px; border-radius: 9px; }
+
+/* ---- shared bottom feature strip (services + profile) ---- */
+.service-perks {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+    padding: 18px 8px;
+    margin-top: 18px;
+}
+
+.profile-perks { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+.service-perk {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 0 20px;
+    border-right: 1px solid var(--ds-line);
+}
+
+.service-perk:last-child { border-right: none; }
+
+.service-perk-icon {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: var(--ds-blue-soft);
+    color: var(--ds-blue);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+.service-perk-icon svg { width: 19px; height: 19px; }
+.service-perk b    { display: block; font-size: .84rem; color: var(--ds-navy); }
+.service-perk span { display: block; font-size: .73rem; color: var(--ds-muted); line-height: 1.35; margin-top: 2px; }
+
+/* ===================== PROFILE ===================== */
+.profile-photo-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-size: 3.4rem;
+    color: #9dc0f5;
+    min-height: 210px;
+}
+
+.profile-photo-placeholder div { font-size: .84rem; color: var(--ds-muted); }
+.submit-btn { padding: 11px 20px; }
+
+/* ===================== API DOCUMENTATION ===================== */
+.api-key-card + .api-key-card,
+.api-key-card ~ .content-section { margin-top: 18px; }
+
+.api-action-btn { padding: 10px 16px; }
+.api-action-btn.save-btn   { color: var(--ds-green); border-color: rgba(23,145,92,.35); }
+.api-action-btn.revoke-btn { color: var(--ds-red);   border-color: rgba(220,47,56,.32); }
+
+@media (max-width: 1150px) {
+    .service-perks, .profile-perks { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 18px; }
+    .service-perk { border-right: none; }
+    .notif-footer { flex-direction: column; align-items: flex-start; }
+}
+
+/* =====================================================================
+   ROUND 4
+   ===================================================================== */
+
+/* ---- 4. logo ke peeche kahin background nahi ---- */
+/* Logo image ke peeche kabhi colour nahi. Nav ka white rounded box
+   alag cheez hai - deep blue par logo ka navy wordmark warna gayab ho
+   jata hai (aapke Contact Us / Support mockups me bhi white box hai). */
+.auth-brand-logo, .auth-topbar-logo,
+.company-logo img, .profile-photo-preview.is-logo {
+    background: transparent !important;
+    box-shadow: none;
+}
+
+/* ---- 5. nav + footer ab login page wala light background ----
+   Pehle dono dark blue the. Ek hi gradient token se dono chalte hain,
+   to wapas dark karna ho to sirf --ds-nav badalna hai. */
+:root {
+    --ds-nav: linear-gradient(160deg, #eaf2fe 0%, #e3edfe 55%, #dbe8fe 100%);
+    --ds-page: #eef4fe;
+}
+
+.top-menu-bar {
+    box-shadow: 0 1px 0 rgba(18,87,245,.12), 0 4px 18px rgba(11,21,51,.05);
+    border-bottom: 1px solid rgba(18,87,245,.12);
+}
+
+.company-name, .auth-topbar-name { color: var(--ds-navy); }
+.company-name .separator { color: rgba(11,21,51,.25); }
+.current-menu-name       { color: var(--ds-muted); }
+.current-menu-name span  { color: var(--ds-navy); }
+
+.menu-item > a { color: var(--ds-ink); }
+.menu-item > a:hover { background: rgba(18,87,245,.09); color: var(--ds-blue); }
+
+.menu-item.active > a,
+.menu-item > a.active {
+    background: rgba(18,87,245,.11);
+    color: var(--ds-blue);
+    box-shadow: inset 0 0 0 1px rgba(18,87,245,.28);
+}
+
+.user-profile:hover { background: rgba(18,87,245,.09); }
+.user-name { color: var(--ds-navy); }
+.user-dropdown-arrow { color: var(--ds-muted); }
+.notification-badge { border-color: #eaf2fe; }
+
+.footer { color: var(--ds-muted); border-top: 1px solid rgba(18,87,245,.12); }
+.footer span { color: var(--ds-navy); }
+
+#footerSocial a { background: rgba(18,87,245,.10); color: var(--ds-blue); }
+#footerSocial a:hover { background: rgba(18,87,245,.2); }
+
+/* ---- 1 + 2. login page ---- */
+.auth-brand-logo {
+    display: block;
+    width: auto;
+    max-width: 100%;
+    height: 5.2em;
+    object-fit: contain;
+    object-position: left center;
+    margin: 0 0 0.35em -0.35em;
+}
+
+.auth-copyright {
+    text-align: center;
+    font-size: 0.92em;
+    color: var(--lx-muted);
+    margin-top: 0.9em;
+}
+
+/* ---- 8. API DOCUMENTATION ---- */
+.api-top-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 18px;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.api-notice {
+    display: flex;
+    gap: 12px;
+    background: #eef4ff;
+    border: 1px solid #d6e4fd;
+    border-radius: var(--ds-radius-sm);
+    padding: 14px 16px;
+}
+
+.api-notice-icon {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: var(--ds-blue);
+    color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+.api-notice-icon svg { width: 17px; height: 17px; }
+.api-notice b    { display: block; font-size: .85rem; color: var(--ds-navy); }
+.api-notice span { display: block; font-size: .78rem; color: var(--ds-muted); margin-top: 2px; }
+
+.api-key-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.api-action-btn svg { width: 15px; height: 15px; }
+
+.api-action-btn.generate-btn {
+    background: linear-gradient(135deg, #2f7bf6 0%, #0b48e0 100%);
+    color: #fff;
+    border: none;
+    box-shadow: 0 4px 12px rgba(18,87,245,.26);
+}
+
+.api-key-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 20px;
+    margin-bottom: 20px;
+}
+
+.api-label { font-size: .84rem; font-weight: 700; color: var(--ds-navy); margin-bottom: 8px; }
+.api-label-spaced { margin-top: 4px; }
+
+.api-key-box {
+    background: #f7f9fd;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    padding: 12px 14px;
+    font-size: .84rem;
+    color: var(--ds-navy);
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    overflow-x: auto;
+}
+
+.api-details { border: 1px solid var(--ds-line); border-radius: var(--ds-radius-sm); overflow: hidden; }
+
+.api-detail-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 11px 14px;
+    font-size: .82rem;
+    border-bottom: 1px solid var(--ds-line);
+}
+
+.api-detail-row:last-child { border-bottom: none; }
+.api-detail-row span:first-child { color: var(--ds-muted); }
+.api-detail-row b { color: var(--ds-navy); font-weight: 600; }
+
+.api-prev-wrap { border: 1px solid var(--ds-line); border-radius: var(--ds-radius-sm); overflow: hidden; }
+.api-prev-key   { font-family: 'SFMono-Regular', Consolas, monospace; font-size: .78rem; }
+.api-prev-empty { text-align: center; color: var(--ds-muted); padding: 22px 10px; }
+
+/* ---- Services API Reference ---- */
+.api-ref-card { margin-top: 20px; }
+
+.api-ref-layout {
+    display: grid;
+    grid-template-columns: 265px minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+}
+
+.api-ref-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    overflow: hidden;
+}
+
+.api-ref-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #fff;
+    border: none;
+    border-bottom: 1px solid var(--ds-line);
+    color: var(--ds-ink);
+    font-family: inherit;
+    font-size: .85rem;
+    font-weight: 500;
+    text-align: left;
+    padding: 13px 14px;
+    cursor: pointer;
+    transition: .15s;
+}
+
+.api-ref-nav-item:last-child { border-bottom: none; }
+.api-ref-nav-item svg { width: 16px; height: 16px; color: var(--ds-blue); flex-shrink: 0; }
+.api-ref-nav-item span { flex: 1; }
+.api-ref-nav-item em { font-style: normal; color: #b9c4d6; }
+.api-ref-nav-item:hover { background: #f5f8ff; }
+
+.api-ref-nav-item.is-active {
+    background: var(--ds-blue);
+    color: #fff;
+    font-weight: 600;
+}
+
+.api-ref-nav-item.is-active svg,
+.api-ref-nav-item.is-active em { color: #fff; }
+
+.api-ref-panel {
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    padding: 16px 18px 18px;
+}
+
+.api-endpoint-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+.api-method,
+.api-method.get,
+.api-method.post {
+    /* style.css me .api-method.get already hai (0,2,0), isliye yahan bhi
+       compound selector chahiye - warna wo jeet jaata hai. */
+    background: #1e3a8a;
+    color: #fff;
+    border-radius: 6px;
+    font-size: .72rem;
+    font-weight: 800;
+    letter-spacing: .5px;
+    padding: 5px 10px;
+}
+
+.api-endpoint-path {
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: .88rem;
+    color: var(--ds-navy);
+}
+
+.api-try-btn {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: #fff;
+    border: 1px solid rgba(18,87,245,.32);
+    border-radius: 8px;
+    color: var(--ds-blue);
+    font-family: inherit;
+    font-size: .78rem;
+    font-weight: 600;
+    padding: 7px 13px;
+    cursor: pointer;
+}
+
+.api-try-btn svg { width: 13px; height: 13px; fill: currentColor; }
+.api-try-btn:hover { background: rgba(18,87,245,.06); }
+.api-endpoint-desc { font-size: .82rem; color: var(--ds-muted); margin: 8px 0 0; }
+
+.api-tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--ds-line); margin: 14px 0 0; }
+
+.api-tab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--ds-muted);
+    font-family: inherit;
+    font-size: .83rem;
+    font-weight: 600;
+    padding: 9px 2px;
+    margin-bottom: -1px;
+    cursor: pointer;
+}
+
+.api-tab.is-active { color: var(--ds-blue); border-bottom-color: var(--ds-blue); }
+.api-tab:hover     { color: var(--ds-blue); }
+
+.api-code {
+    position: relative;
+    margin-top: 14px;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    background: #fbfcff;
+    overflow: hidden;
+}
+
+.api-code-bar {
+    position: absolute;
+    top: 8px; right: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    z-index: 1;
+}
+
+.api-code-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 6px;
+    color: var(--ds-muted);
+    font-family: inherit;
+    font-size: .72rem;
+    font-weight: 600;
+    padding: 5px 9px;
+    cursor: pointer;
+}
+
+.api-code-btn svg { width: 13px; height: 13px; }
+.api-code-btn:hover { color: var(--ds-blue); border-color: var(--ds-blue); }
+
+.api-code-fmt {
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 6px;
+    color: var(--ds-muted);
+    font-size: .72rem;
+    font-weight: 600;
+    padding: 5px 9px;
+}
+
+.api-code-body {
+    margin: 0;
+    padding: 14px 14px 14px 0;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: .8rem;
+    line-height: 1.65;
+    color: var(--ds-navy);
+    overflow-x: auto;
+    white-space: pre;
+}
+
+.api-code-line { display: block; }
+
+.api-code-no {
+    display: inline-block;
+    width: 42px;
+    padding-right: 14px;
+    text-align: right;
+    color: #b0bcd0;
+    user-select: none;
+}
+
+.tok-key { color: #b45309; }
+.tok-str { color: #15803d; }
+.tok-num { color: #1d4ed8; }
+.tok-lit { color: #7c3aed; }
+
+@media (max-width: 1150px) {
+    .api-top-row, .api-key-grid, .api-ref-layout { grid-template-columns: 1fr; }
+    .api-try-btn { margin-left: 0; }
+}
+
+/* =====================================================================
+   ROUND 5
+   ===================================================================== */
+
+/* ---- 1 + 5. sirf top/bottom gradient; center wapas neutral ----
+   Light nav par logo aur text dono halke pad rahe the. Ab nav/footer par
+   deep blue gradient (words guaranteed readable, white par 12:1 se zyada
+   contrast) aur center content wapas apne halke background par. */
+:root {
+    --ds-nav: linear-gradient(120deg, #0b2a72 0%, #123f9e 45%, #1552c8 100%);
+    --ds-page: #f4f7fd;
+}
+
+.top-menu-bar {
+    border-bottom: none;
+    box-shadow: 0 2px 14px rgba(10, 58, 168, .22);
+}
+
+.company-name, .user-name { color: #fff; }
+.company-name .separator  { color: rgba(255,255,255,.3); }
+.current-menu-name        { color: rgba(255,255,255,.7); }
+.current-menu-name span   { color: #fff; }
+
+.menu-item > a { color: rgba(255,255,255,.92); }
+.menu-item > a:hover { background: rgba(255,255,255,.14); color: #fff; }
+
+.menu-item.active > a,
+.menu-item > a.active {
+    background: rgba(255,255,255,.16);
+    color: #ffd66b;
+    box-shadow: inset 0 0 0 1px rgba(255,214,107,.5);
+}
+
+.user-profile:hover { background: rgba(255,255,255,.13); }
+.user-dropdown-arrow { color: rgba(255,255,255,.78); }
+.notification-badge { border-color: #123f9e; }
+
+/* Logo ko safed rounded box, taaki deep blue par gayab na ho. */
+.company-logo {
+    background: #fff;
+    border-radius: 10px;
+    padding: 4px 8px;
+    height: 44px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.18);
+}
+
+.footer { color: rgba(255,255,255,.82); border-top: none; }
+.footer span { color: #fff; }
+#footerSocial a { background: rgba(255,255,255,.15); color: #fff; }
+#footerSocial a:hover { background: rgba(255,255,255,.28); }
+
+/* ---- 11. copyright left, social right corner ---- */
+.footer-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    flex-wrap: wrap;
+    max-width: 1560px;
+    margin: 0 auto;
+}
+
+#footerSocial { display: inline-flex; gap: 10px; }
+
+.footer-share-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    box-sizing: border-box;
+    border-radius: 50%;
+    border: 1px solid rgba(18,87,245,.25);
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    transition: 0.15s;
+    flex-shrink: 0;
+}
+.footer-share-btn svg { width: 11px; height: 11px; }
+.footer-share-btn:hover { background: rgba(18,87,245,.08); border-color: #1257f5; color: #1257f5; }
+
+/* ---- Card-based services (no file upload) get an illustrative left
+   panel next to their card, so the page doesn't look like a bare form. ---- */
+.service-split-layout {
+    display: grid;
+    grid-template-columns: minmax(260px, 390px) 1fr;
+    gap: 20px;
+    align-items: stretch;
+}
+
+.service-split-layout .service-card {
+    height: 450px;
+    overflow-y: auto;
+}
+
+.service-visual-panel {
+    position: relative;
+    border-radius: 14px;
+    overflow: hidden;
+    background: linear-gradient(160deg, #1257f5 0%, #0b1533 100%);
+    height: 450px;
+}
+
+.service-visual-img {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: auto;
+    max-width: none;
+    /* Height always fills the panel exactly (image scales proportionally
+       to match it - never distorted). Width is never force-stretched -
+       whatever width results from that height, if it's wider than the
+       panel, the parent's overflow:hidden simply clips the right side,
+       so the LEFT part of the image is what's always visible. */
+}
+
+.service-visual-icon {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 4.2rem;
+    line-height: 1;
+    filter: drop-shadow(0 6px 14px rgba(0,0,0,0.25));
+}
+
+/* Shown only as a fallback - see the onerror handler on .service-visual-img,
+   which adds this class when Pictures/service-images/<slug>.* doesn't
+   exist yet for that particular service. */
+.service-visual-panel.is-fallback .service-visual-icon { display: flex; }
+
+@media (max-width: 820px) {
+    .service-split-layout { grid-template-columns: 1fr; }
+    .service-split-layout .service-card { height: auto; }
+    .service-visual-panel { height: 200px; }
+    .service-visual-icon { font-size: 2.6rem; }
+}
+
+/* ---- Footer Share modal ("Show Us Some Love") ---- */
+.share-modal-icons {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.share-modal-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: 1px solid var(--ds-line);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(0,0,0,0.55);
+    transition: 0.15s;
+}
+
+.share-modal-icon:hover { border-color: currentColor; transform: translateY(-2px); }
+.share-modal-icon.is-whatsapp:hover { color: #25d366; }
+.share-modal-icon.is-instagram:hover { color: #e1306c; }
+.share-modal-icon.is-twitter:hover { color: #1d9bf0; }
+.share-modal-icon.is-facebook:hover { color: #1877f2; }
+.share-modal-icon.is-linkedin:hover { color: #0a66c2; }
+.share-modal-icon.is-telegram:hover { color: #0088cc; }
+.share-modal-icon.is-snapchat:hover { color: #fffc00; }
+
+.share-modal-link-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border: 1px solid var(--ds-line);
+    border-radius: 10px;
+    padding: 10px 14px;
+}
+
+.share-modal-link-text {
+    font-size: 0.86rem;
+    color: var(--ds-ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.share-modal-link-row a {
+    flex-shrink: 0;
+    font-size: 0.86rem;
+    font-weight: 700;
+    color: #1257f5;
+    cursor: pointer;
+}
+
+/* ---- 7. login ka apna bottom bar, menu jaisa ---- */
+.auth-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.2em;
+    flex-wrap: wrap;
+    margin-top: 1.2em;
+    padding: 0.9em 1.2em;
+    border-radius: 0.9em;
+    background: linear-gradient(120deg, #0b2a72 0%, #123f9e 45%, #1552c8 100%);
+    color: rgba(255,255,255,.85);
+    font-size: 0.92em;
+}
+
+.auth-footer-social { display: inline-flex; gap: 0.7em; align-items: center; }
+
+.auth-footer-social a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.1em; height: 2.1em;
+    border-radius: 0.5em;
+    background: rgba(255,255,255,.16);
+    color: #fff;
+}
+
+.auth-footer-social a:hover { background: rgba(255,255,255,.3); }
+
+/* ---- 2. chaaro service cards ki height hamesha ek jaisi ---- */
+.service-page-grid { align-items: stretch; }
+
+.service-col {
+    display: grid;
+    grid-template-rows: 1fr 1fr;
+    gap: 14px;
+    align-content: stretch;
+}
+
+.service-col > .service-card,
+.service-col > .file-list-card,
+.service-col > .activity-log-section,
+.service-col > .activity-log-section > .activity-log-card {
+    height: 100%;
+    margin-top: 0;
+    min-height: 300px;
+}
+
+.service-col > .service-card > .card-body,
+.service-col > .file-list-card > .card-body,
+.service-col > .activity-log-section > .activity-log-card > .card-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+}
+
+/* ---- 9. payment history: summary upar ---- */
+.history-summary { margin-top: 0; margin-bottom: 18px; }
+
+/* ---- 10. API card ---- */
+.api-key-grid { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+.api-key-row-inline { display: flex; gap: 10px; align-items: stretch; }
+.api-key-row-inline .api-key-box { flex: 1; }
+.api-key-text  { font-family: 'SFMono-Regular', Consolas, monospace; letter-spacing: 1px; }
+.api-key-saved { font-size: .7rem; color: #17915c; font-weight: 600; margin-left: 8px; }
+
+.api-eye-btn {
+    width: 46px;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    background: #fff;
+    color: var(--ds-muted);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+}
+
+.api-eye-btn svg { width: 18px; height: 18px; }
+.api-eye-btn:hover, .api-eye-btn.is-on { color: var(--ds-blue); border-color: var(--ds-blue); }
+
+/* Reference card ki height fix - lambi JSON andar scroll hoti hai. */
+.api-ref-layout { height: 420px; }
+.api-ref-nav    { height: 100%; overflow-y: auto; }
+.api-ref-panel  { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.api-code       { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.api-code-body  { flex: 1; min-height: 0; overflow: auto; }
+
+.api-ref-nav-item.is-empty span { color: var(--ds-muted); }
+.api-ref-nav-item.is-empty.is-active span { color: #fff; }
+
+.api-ref-empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    text-align: center;
+}
+
+.api-ref-empty svg   { width: 42px; height: 48px; }
+.api-ref-empty b     { color: var(--ds-navy); font-size: .92rem; }
+.api-ref-empty span  { color: var(--ds-muted); font-size: .8rem; }
+
+@media (max-width: 1150px) {
+    .api-key-grid  { grid-template-columns: 1fr; align-items: stretch; }
+    .api-ref-layout { height: auto; }
+    .api-ref-nav, .api-ref-panel { height: auto; }
+    .service-col { grid-template-rows: auto auto; }
+}
+
+/* =====================================================================
+   ROUND 6
+   ===================================================================== */
+
+/* ---- 3. chaaro service cards = center screen ki 40% height ----
+   160px = nav + footer + center-content ka padding. Do rows x 40% = 80%,
+   bacha 20% neeche wali perks strip ke liye. */
+.service-page-grid { --svc-card-h: calc((100vh - 160px) * 0.4); }
+
+.service-col > .service-card,
+.service-col > .file-list-card,
+.service-col > .activity-log-section,
+.service-col > .activity-log-section > .activity-log-card {
+    height: var(--svc-card-h);
+    min-height: 250px;
+}
+
+.service-col { grid-template-rows: var(--svc-card-h) var(--svc-card-h); }
+
+/* ---- 2. drop zone har service me bilkul ek jaisa ---- */
+.service-card .drop-zone,
+.file-list-card .drop-zone {
+    border: 2px dashed rgba(18,87,245,.35);
+    background: #fbfcff;
+    border-radius: 12px;
+    padding: 18px 16px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    text-align: center;
+}
+
+.drop-zone .drop-icon { display: none; }
+.drop-zone .drop-art  { width: 104px; height: 68px; }
+.drop-zone .drop-text { font-size: .98rem; font-weight: 700; color: var(--ds-navy); }
+.drop-zone .drop-sub  { font-size: .78rem; color: var(--ds-muted); }
+
+/* ===================== SUPPORT ===================== */
+.support-log-header-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+
+.support-head { margin-bottom: 0; }
+
+.support-back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: #fff;
+    border: 1px solid rgba(18,87,245,.32);
+    border-radius: 9px;
+    color: var(--ds-blue);
+    font-family: inherit;
+    font-size: .82rem;
+    font-weight: 600;
+    padding: 9px 15px;
+    cursor: pointer;
+}
+
+.support-back-btn svg { width: 16px; height: 16px; }
+.support-back-btn:hover { background: rgba(18,87,245,.06); }
+
+/* ===================== CONTACT US ===================== */
+.contact-page { display: flex; flex-direction: column; gap: 18px; }
+
+.contact-hero {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 24px;
+    align-items: center;
+}
+
+.contact-hero-copy h2 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1.85rem;
+    font-weight: 800;
+    color: var(--ds-navy);
+    letter-spacing: -.5px;
+    margin: 0 0 6px;
+}
+
+.contact-hero-copy > p { font-size: .88rem; color: var(--ds-muted); margin: 0 0 18px; }
+
+.contact-channels {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.contact-channel {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 16px;
+    border-radius: var(--ds-radius);
+    border: 1px solid var(--ds-line);
+    background: #fff;
+    box-shadow: var(--ds-shadow-sm);
+}
+
+.contact-channel.is-chat { background: #f2f7ff; border-color: #d5e4fd; }
+.contact-channel.is-wa   { background: #f2fdf7; border-color: #c9ead9; }
+.contact-channel.is-mail { background: #f7f4ff; border-color: #ddd3fb; }
+
+.contact-channel-icon {
+    width: 40px; height: 40px;
+    border-radius: 11px;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+    margin-bottom: 6px;
+}
+
+.contact-channel-icon svg { width: 20px; height: 20px; }
+.contact-channel.is-chat .contact-channel-icon { background: #2563eb; }
+.contact-channel.is-wa   .contact-channel-icon { background: #16a34a; }
+.contact-channel.is-mail .contact-channel-icon { background: #7c3aed; }
+
+.contact-channel b    { font-size: .92rem; color: var(--ds-navy); }
+.contact-channel span { font-size: .76rem; color: var(--ds-muted); }
+
+.contact-channel button {
+    align-self: flex-start;
+    margin-top: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border: none;
+    border-radius: 999px;
+    color: #fff;
+    font-family: inherit;
+    font-size: .78rem;
+    font-weight: 600;
+    padding: 8px 15px;
+    cursor: pointer;
+}
+
+.contact-channel.is-chat button { background: #2563eb; }
+.contact-channel.is-wa   button { background: #16a34a; }
+.contact-channel.is-mail button { background: #7c3aed; }
+.contact-channel button:disabled { background: #b9c4d6; cursor: default; }
+.contact-channel button em { font-style: normal; }
+
+.contact-hero-art { width: 100%; height: auto; max-height: 40vh; }
+
+/* ---- company details ---- */
+.contact-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    gap: 18px;
+    align-items: start;
+}
+
+.company-details-card, .company-map-card, .contact-faq-card {
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+    padding: 20px 22px;
+}
+
+.contact-right { display: flex; flex-direction: column; gap: 18px; }
+
+.contact-row {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--ds-line);
+}
+
+.contact-row:last-of-type { border-bottom: none; }
+
+.contact-row-icon {
+    width: 38px; height: 38px;
+    border-radius: 10px;
+    background: var(--ds-blue-soft);
+    color: var(--ds-blue);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+.contact-row-icon svg { width: 18px; height: 18px; }
+.contact-row-text  { flex: 1; min-width: 0; }
+.contact-row-label { display: block; font-size: .74rem; color: var(--ds-muted); }
+.contact-row-value { display: block; font-size: .88rem; font-weight: 600; color: var(--ds-navy); word-break: break-word; }
+.contact-row-value.is-link { color: var(--ds-blue); text-decoration: none; }
+.contact-row-value.is-link:hover { text-decoration: underline; }
+
+.contact-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 8px;
+    color: var(--ds-muted);
+    font-family: inherit;
+    font-size: .75rem;
+    font-weight: 600;
+    padding: 7px 11px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.contact-copy-btn svg { width: 14px; height: 14px; }
+.contact-copy-btn:hover { color: var(--ds-blue); border-color: var(--ds-blue); }
+.contact-copy-btn.is-done { color: var(--ds-green); border-color: var(--ds-green); }
+
+.contact-follow {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding-top: 16px;
+    margin-top: 6px;
+    border-top: 1px solid var(--ds-line);
+}
+
+.contact-follow > span { font-size: .78rem; color: var(--ds-muted); }
+
+/* ---- map ---- */
+.contact-map-wrap { position: relative; border-radius: var(--ds-radius-sm); overflow: hidden; }
+.contact-map-fallback-image { display: flex; align-items: center; justify-content: center; background: var(--ds-light-grey, #f5f6f8); }
+.contact-map-fallback-image img { width: 100%; height: 100%; object-fit: cover; }
+.contact-map-wrap iframe { width: 100%; height: 240px; border: 0; display: block; }
+
+.contact-map-link {
+    position: absolute;
+    right: 12px; bottom: 12px;
+    background: var(--ds-blue);
+    color: #fff;
+    border-radius: 8px;
+    font-size: .76rem;
+    font-weight: 600;
+    padding: 8px 14px;
+    text-decoration: none;
+    box-shadow: 0 4px 12px rgba(18,87,245,.3);
+}
+
+/* ---- FAQ ---- */
+.contact-faq-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+.contact-faq {
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    overflow: hidden;
+}
+
+.contact-faq summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 11px 14px;
+    font-size: .84rem;
+    font-weight: 600;
+    color: var(--ds-navy);
+    cursor: pointer;
+    list-style: none;
+}
+
+.contact-faq summary::-webkit-details-marker { display: none; }
+.contact-faq summary::after { content: '\25BE'; color: var(--ds-muted); font-size: .8rem; }
+.contact-faq[open] summary::after { transform: rotate(180deg); }
+.contact-faq p { margin: 0; padding: 0 14px 13px; font-size: .8rem; color: var(--ds-muted); line-height: 1.5; }
+
+/* ---- quick actions ---- */
+.contact-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) repeat(4, minmax(0, 1fr));
+    gap: 14px;
+    align-items: center;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+    padding: 18px 20px;
+}
+
+.contact-actions-copy b    { display: block; font-size: .95rem; color: var(--ds-blue); }
+.contact-actions-copy span { display: block; font-size: .76rem; color: var(--ds-muted); margin-top: 2px; }
+
+.contact-action {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    background: #f7f9fd;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-sm);
+    padding: 13px 14px;
+    cursor: pointer;
+    font-family: inherit;
+    text-align: left;
+    transition: .15s;
+}
+
+.contact-action:hover { background: #eef4ff; border-color: rgba(18,87,245,.3); }
+
+.contact-action-icon {
+    width: 36px; height: 36px;
+    border-radius: 9px;
+    background: var(--ds-blue-soft);
+    color: var(--ds-blue);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+
+.contact-action-icon svg { width: 17px; height: 17px; }
+.contact-action div  { flex: 1; min-width: 0; }
+.contact-action b    { display: block; font-size: .83rem; color: var(--ds-navy); }
+.contact-action span { display: block; font-size: .72rem; color: var(--ds-muted); }
+.contact-action em   { font-style: normal; color: #b9c4d6; }
+
+@media (max-width: 1150px) {
+    .contact-hero, .contact-grid { grid-template-columns: 1fr; }
+    .contact-hero-art { display: none; }
+    .contact-channels { grid-template-columns: 1fr; }
+    .contact-faq-grid { grid-template-columns: 1fr; }
+    .contact-actions  { grid-template-columns: 1fr 1fr; }
+    .service-col > .service-card,
+    .service-col > .file-list-card,
+    .service-col > .activity-log-section,
+    .service-col > .activity-log-section > .activity-log-card { height: auto; }
+    .service-col { grid-template-rows: auto auto; }
+}
+
+/* =====================================================================
+   ROUND 7 - density pass + fixes
+   ===================================================================== */
+
+/* ---- 5. centre screen ka background hata do (plain white) ---- */
+:root { --ds-page: #ffffff; }
+body, .center-content { background: #fff; }
+
+/* ---- 8 + 9. card ka icon aur title split ho rahe the ----
+   upgradeCardHeaders() icon ko <h3> ke andar daalta hai, par kai h3 par
+   display:flex nahi tha, isliye icon apni line par chala jata tha. */
+h3:has(> .ds-card-icon),
+.notif-head h3,
+.ds-card-head h3 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.ds-card-head h3 > .ds-card-icon { display: none; }
+.ds-card-head { align-items: center; }
+
+/* ---- 2. DENSITY: chhote paddings, chhote fonts, kam white space ---- */
+.center-content { padding: 14px 22px 16px; }
+
+.service-card, .file-list-card, .activity-log-card, .payment-card,
+.history-card, .plan-history-card, .api-key-card, .content-section,
+.company-details-card, .company-map-card, .balance-add-card,
+.balance-pay-panel { padding: 14px 16px; }
+
+.service-card > h3, .file-list-card h3, .activity-log-card .log-header h3,
+.payment-card > h3, .history-card > h3, .api-key-card > h3 {
+    font-size: .95rem;
+    margin-bottom: 12px;
+}
+
+h3 .ds-card-icon { width: 30px; height: 30px; border-radius: 8px; margin-right: 8px; }
+h3 .ds-card-icon svg { width: 15px; height: 15px; }
+.ds-card-icon { width: 34px; height: 34px; border-radius: 9px; }
+.ds-card-icon svg { width: 17px; height: 17px; }
+.ds-card-head { margin-bottom: 12px; }
+.ds-card-sub  { font-size: .76rem; }
+
+input[type="text"], input[type="email"], input[type="password"],
+input[type="number"], input[type="date"], select, textarea {
+    padding: 8px 11px;
+    font-size: .84rem;
+    border-radius: 8px;
+}
+
+label { font-size: .76rem; }
+
+.add-btn, .submit-btn, .plan-cta-btn, .filter-btn, .process-btn,
+.api-action-btn, .admin-btn, .default-btn, .remove-btn {
+    padding: 8px 13px;
+    font-size: .81rem;
+}
+
+/* ---- ROUND 13 ----
+   ONE rule for every report-card table's th/td font-size/padding -
+   Payment History, Today's Transactions and Notification already
+   shared .history-table as a base class; Support's <table> now carries
+   it too (js/app.js), so this single rule reaches all four instead of
+   each one carrying (or silently NOT carrying) its own copy. This is
+   also now the ONLY place these two properties are set for
+   .history-table - a second, conflicting declaration used to exist
+   earlier in this same file (11px 10px/.82rem vs this rule's values),
+   and a THIRD one only for Today's Transactions specifically
+   (.dash-txn-card .history-table th/td, 9px 8px/.71rem) - that extra
+   specificity is exactly why Today's Transactions visibly had smaller
+   text than Payment History/Notification even though all three carry
+   the same base class. */
+.history-table th, .history-table td { padding: 8px 9px; font-size: .79rem; }
+.file-table th, .file-table td       { padding: 8px 7px; font-size: .75rem; }
+.history-summary { padding: 14px 8px; }
+.history-summary .summary-value { font-size: 1.25rem; }
+.summary-icon { width: 42px; height: 42px; background-size: 20px 20px; }
+.dashboard-grid, .balance-grid, .plans-grid, .contact-grid { gap: 12px; }
+.dash-card { padding: 11px 13px; }
+.dash-card-value { font-size: 1.02rem; }
+.plan-card { padding: 18px 16px 16px; }
+.plan-price { font-size: 1.7rem; margin: 3px 0 12px; }
+.plan-features { padding-top: 12px; margin-bottom: 14px; }
+.plan-features li { font-size: .8rem; padding: 3px 0; }
+.contact-hero-copy h2 { font-size: 1.5rem; }
+.contact-channel { padding: 12px 13px; }
+.contact-row { padding: 9px 0; }
+.footer { padding: 5px 20px; font-size: .68rem; }
+
+/* ---- 3. copyright center, social right ---- */
+.footer-inner { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; }
+.footer-copy   { grid-column: 2; text-align: center; }
+.footer-spacer { grid-column: 1; }
+#footerSocial  { grid-column: 3; justify-self: end; }
+
+/* ---- 7. service tab strips ---- */
+.service-page-grid.is-tabbed {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.svc-strip {
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.svc-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 6px 8px 0;
+    border-bottom: 1px solid var(--ds-line);
+    background: #f7f9fd;
+}
+
+.svc-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--ds-muted);
+    font-family: inherit;
+    font-size: .85rem;
+    font-weight: 600;
+    padding: 9px 14px;
+    margin-bottom: -1px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.svc-tab .ds-card-icon { width: 24px; height: 24px; border-radius: 7px; margin: 0; }
+.svc-tab .ds-card-icon svg { width: 13px; height: 13px; }
+.svc-tab:hover { color: var(--ds-blue); }
+.svc-tab.is-active { color: var(--ds-blue); border-bottom-color: var(--ds-blue); background: #fff; }
+
+.svc-panes { flex: 1; min-height: 0; }
+.svc-pane  { display: none; }
+.svc-pane.is-active { display: block; height: 100%; }
+
+.svc-card-inner {
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    background: transparent !important;
+    padding: 14px 16px !important;
+}
+
+.svc-card-inner > .card-body { overflow: visible; height: auto; }
+.service-page-grid.is-tabbed .drop-zone { padding: 14px; }
+.service-page-grid.is-tabbed .drop-art  { width: 88px; height: 58px; }
+
+/* ---- 10. Find Us card = Company Details ki height ---- */
+.contact-grid { align-items: stretch; }
+.contact-right { height: 100%; }
+.company-map-card { flex: 1; display: flex; flex-direction: column; }
+.company-map-card.is-image-only { padding: 0; overflow: hidden; }
+.company-map-card.is-image-only .contact-map-wrap { flex: 1; height: 100%; }
+.company-map-card.is-image-only .contact-map-fallback-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.contact-map-wrap { flex: 1; min-height: 180px; }
+.contact-map-wrap iframe { height: 100%; min-height: 180px; }
+
+/* ---- 12 + 13. login page ---- */
+.auth-page { min-height: 100vh; display: flex; flex-direction: column; padding-bottom: 0; }
+.auth-main { flex: 1; }
+
+/* Copyright bar hamesha neeche chipka rehta hai (page chhota ho to bhi). */
+.auth-footer { margin-top: auto; border-radius: 0.9em 0.9em 0 0; }
+
+.auth-tools-card {
+    display: grid;
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+    gap: 1.4em;
+    background: #fff;
+    border: 1px solid var(--lx-line);
+    border-radius: 0.9em;
+    box-shadow: 0 0.15em 0.75em rgba(11, 21, 51, 0.05);
+    padding: 1.1em 1.3em;
+    margin-top: 1.2em;
+}
+
+.auth-tools-col.is-free { border-left: 1px solid var(--lx-line); padding-left: 1.4em; }
+
+.auth-tools-head {
+    display: flex;
+    align-items: center;
+    gap: 0.55em;
+    font-size: 1.05em;
+    font-weight: 700;
+    color: var(--lx-navy);
+    margin-bottom: 0.7em;
+}
+
+.auth-tools-head em {
+    font-style: normal;
+    font-size: 0.78em;
+    font-weight: 500;
+    color: var(--lx-muted);
+    margin-left: auto;
+}
+
+.auth-tools-dot { width: 0.6em; height: 0.6em; border-radius: 50%; }
+.auth-tools-dot.is-paid { background: #1257f5; }
+.auth-tools-dot.is-free { background: #16a34a; }
+
+.auth-tools-list { list-style: none; padding: 0; margin: 0; }
+
+.auth-tools-list li {
+    padding: 0.3em 0;
+    line-height: 1.3;
+}
+
+.auth-tools-list b    { display: block; font-size: 0.92em; color: var(--lx-navy); }
+.auth-tools-list span { display: block; font-size: 0.82em; color: var(--lx-muted); }
+
+.auth-free-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6em 1.2em; }
+.auth-free-cat b    { display: block; font-size: 0.9em; color: #15803d; }
+.auth-free-cat span { display: block; font-size: 0.8em; color: var(--lx-muted); line-height: 1.4; }
+
+@media (max-width: 900px) {
+    .auth-tools-card { grid-template-columns: 1fr; }
+    .auth-tools-col.is-free { border-left: none; padding-left: 0; border-top: 1px solid var(--lx-line); padding-top: 1em; }
+    .auth-free-grid { grid-template-columns: 1fr; }
+}
+
+/* ---- Login page services - thumbnail grid redesign ----
+   Purana do-column list layout (Paid ek list, Free ek jodi hui sentence
+   me) hata kar screenshot ke mutabik ek hi thumbnail-card grid banaya
+   hai: upar "All Services / Free Services / Paid Services" filter
+   buttons (All default active), neeche har service apna icon + title +
+   description ke saath alag card me - koi bhi service ek sentence me
+   ghusi hui nahi hai, aur har card ka apna icon/symbol hamesha dikhta
+   hai (emoji free tools ke liye, SVG paid tools ke liye - kabhi khaali
+   nahi rehta). */
+.auth-services-card {
+    display: block;
+    background: #fff;
+    border: none;
+    border-top: 1px solid var(--lx-line);
+    border-radius: 0;
+    box-shadow: 0 0.15em 0.75em rgba(11, 21, 51, 0.05);
+    padding: 1.2em 3em 1.4em;
+    margin-top: 0;
+    width: calc(100% + 2 * var(--auth-pad-x));
+    margin-left: calc(-1 * var(--auth-pad-x));
+    margin-right: calc(-1 * var(--auth-pad-x));
+    box-sizing: border-box;
+}
+
+.auth-services-heading {
+    text-align: center;
+    margin-bottom: 1.3em;
+}
+
+.auth-services-heading h2 {
+    font-size: 1.9em;
+    font-weight: 800;
+    color: var(--lx-navy);
+    margin: 0 0 0.25em;
+}
+
+.auth-services-heading p {
+    font-size: 1em;
+    color: var(--lx-muted);
+    margin: 0;
+}
+
+.auth-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6em;
+    margin-bottom: 1.1em;
+}
+
+.auth-filter-btn {
+    border: 1.5px solid var(--lx-line);
+    background: #fff;
+    color: var(--lx-navy);
+    border-radius: 999px;
+    padding: 0.5em 1.1em;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+}
+
+.auth-filter-btn em {
+    font-style: normal;
+    font-size: 0.82em;
+    font-weight: 500;
+    color: var(--lx-muted);
+}
+
+.auth-filter-btn:hover {
+    border-color: #1257f5;
+    color: #1257f5;
+}
+
+.auth-filter-btn.active {
+    background: #1257f5;
+    border-color: #1257f5;
+    color: #fff;
+}
+
+.auth-filter-btn.active em {
+    color: rgba(255,255,255,0.7);
+}
+
+.auth-thumb-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 20px;
+    align-items: stretch;
+    align-content: start;
+}
+
+.auth-thumb-card {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    min-height: 104px;
+    border: 1px solid #E6ECFF;
+    border-radius: 12px;
+    padding: 0;
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(11, 21, 51, 0.04);
+    transition: 0.15s;
+    box-sizing: border-box;
+    cursor: pointer;
+    overflow: hidden;
+}
+
+.auth-thumb-card:hover {
+    border-color: #2563EB;
+    box-shadow: 0 0.4em 1em rgba(11, 21, 51, 0.08);
+    transform: translateY(-2px);
+}
+
+.auth-thumb-icon {
+    flex: 0 0 30%;
+    border-right: 1px solid #E6ECFF;
+    background: transparent;
+    color: #2563EB;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+.auth-thumb-icon svg { width: 72%; height: 72%; min-width: 46px; min-height: 46px; }
+
+.auth-thumb-text { flex: 1; min-width: 0; padding: 16px; }
+
+.auth-thumb-title {
+    font-size: 15.5px;
+    font-weight: 700;
+    color: #0F172A;
+    margin-bottom: 2px;
+}
+
+.auth-thumb-desc {
+    font-size: 13px;
+    line-height: 1.5;
+    color: #64748B;
+}
+
+@media (max-width: 1100px) {
+    .auth-thumb-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 700px) {
+    .auth-thumb-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 480px) {
+    .auth-thumb-grid { grid-template-columns: 1fr; }
+}
+.auth-thumb-emoji { font-size: 34px; line-height: 1; }
+
+/* =====================================================================
+   ROUND 8
+   ===================================================================== */
+
+/* ---- login ka footer ab bilkul dashboard wala hi hai ----
+   Pehle .auth-footer alag banaya tha; ab wahi .footer / .footer-inner
+   markup hai, bas page ke padding se bahar bleed karta hai taaki
+   full-width dikhe. */
+/* Full-bleed: container ki padding/max-width/centering se azaad hokar
+   poori viewport width leta hai. Negative-margin trick se 4px ka overflow
+   reh jata tha kyunki page center bhi hota hai. */
+.auth-page > .footer {
+    width: 100vw;
+    margin-left: calc(50% - 50vw);
+    margin-right: calc(50% - 50vw);
+    /* auto = flex column me neeche chipak jata hai AUR bachi hui jagah
+       khud le leta hai. Fixed margin dene par footer 100vh ke BAAD add
+       hota tha, isliye har viewport par exactly footer-jitna (~50px)
+       scroll aa raha tha. */
+    margin-top: auto;
+    border-radius: 0;
+}
+
+/* 100vw scrollbar ko count karta hai - is ek jagah horizontal scroll rok do. */
+.auth-screen { overflow-x: hidden; }
+
+#authFooterSocial { display: inline-flex; gap: 10px; justify-self: end; grid-column: 3; }
+
+#authFooterSocial a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px; height: 30px;
+    border-radius: 8px;
+    background: rgba(255,255,255,.15);
+    color: #fff;
+}
+
+#authFooterSocial a:hover { background: rgba(255,255,255,.28); }
+
+
+
+/* ---- profile cards ab config se size lete hain ---- */
+.profile-photo-card, .profile-info-card { display: flex; flex-direction: column; }
+.profile-photo-card > .card-body, .profile-info-card > .card-body { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* ---- admin: Card Sizes panel ---- */
+.card-sizes-card .admin-files-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+
+.card-sizes-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.card-size-section { margin-top: 16px; }
+
+.card-size-section h4 {
+    font-size: .84rem;
+    font-weight: 700;
+    color: var(--ds-blue);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin: 0 0 8px;
+}
+
+.card-size-table { width: 100%; border: 1px solid var(--ds-line); border-radius: var(--ds-radius-sm); overflow: hidden; }
+.card-size-table td b    { display: block; font-size: .84rem; color: var(--ds-navy); }
+.card-size-table td code { font-size: .72rem; color: var(--ds-muted); }
+
+.card-size-field { display: flex; gap: 6px; align-items: center; }
+.card-size-field select { width: 78px; padding: 6px 8px; font-size: .8rem; }
+.card-size-field input  { width: 96px; padding: 6px 8px; font-size: .8rem; }
+.card-size-field input:disabled { background: #f2f5fa; color: #b0bcd0; }
+
+/* =====================================================================
+   ROUND 9
+   ===================================================================== */
+
+/* ---- 3. login: side art gaya, tools card poori width ---- */
+.auth-side-art { display: none; }
+.auth-tools-wrap { width: 100%; }
+.auth-tools-card { margin-top: 1.1em; }
+
+/* ---- 4. logo double, text thoda bada ---- */
+.auth-brand-logo { height: 10.4em; margin-bottom: 0.35em; }
+
+/* Logo aur fonts bade hue to hero art ko utni hi jagah chhodni padi -
+   warna page viewport se bahar nikal jata tha. */
+.auth-hero-art img { max-height: 30vh; }
+.auth-hero { gap: 1.2em; }
+.auth-brand-sub { margin-bottom: 0.8em; }
+.auth-stats-row { margin-bottom: 0.85em; }
+.auth-check-grid { gap: 0.55em 1.8em; }
+.auth-tools-card { margin-top: 0.8em; padding: 0.85em 1.1em; }
+.auth-tools-head { margin-bottom: 0.5em; }
+.auth-tools-list li { padding: 0.2em 0; }
+.auth-free-grid { gap: 0.4em 1.2em; }
+.auth-page { font-size: clamp(10px, 0.86vw, 15px); }
+.auth-brand-tagline { font-size: 1.75em; }
+.auth-brand-sub { font-size: 1.2em; }
+.auth-check { font-size: 1.05em; }
+.auth-stat-num { font-size: 1.6em; }
+.auth-stat-label { font-size: 0.92em; }
+.auth-card-title { font-size: 1.9em; }
+.auth-card-note, .auth-input, .auth-btn-primary, .auth-btn-secondary { font-size: 1.12em; }
+.auth-tools-list b, .auth-free-cat b { font-size: 0.98em; }
+.auth-tools-list span, .auth-free-cat span { font-size: 0.88em; }
+
+/* ---- 5. browser (free) tools ka badge ---- */
+.api-method.browser { background: #15803d; }
+.api-ref-nav { max-height: none; }
+
+/* ---- 1. admin card-sizes table: har cell editable ---- */
+.card-size-table td { vertical-align: middle; padding: 8px 9px; }
+
+.card-size-text {
+    width: 100%;
+    padding: 6px 9px;
+    font-size: .79rem;
+    border: 1px solid var(--ds-line);
+    border-radius: 7px;
+    background: #fff;
+}
+
+.card-size-text.is-code {
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: .74rem;
+    color: var(--ds-blue);
+}
+
+.card-size-del {
+    width: 28px; height: 28px;
+    border-radius: 7px;
+    border: 1px solid rgba(220,47,56,.3);
+    background: #fff;
+    color: var(--ds-red);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.card-size-del:hover { background: rgba(220,47,56,.08); }
+
+/* =====================================================================
+   ROUND 10
+   ===================================================================== */
+
+/* ---- 4. premium 2-colour gradient; logo ka koi box/background nahi ----
+   Logo ka wordmark navy hai, isliye chrome light rakha gaya - dark par
+   wo gayab ho jata tha aur white box lagana padta tha. */
+:root {
+    --ds-nav: linear-gradient(115deg, #ffffff 0%, #d8e6fb 100%);
+    --ds-page: #ffffff;
+}
+
+.top-menu-bar {
+    border-bottom: 1px solid rgba(18, 87, 245, .14);
+    box-shadow: 0 2px 16px rgba(11, 42, 114, .07);
+}
+
+.company-logo {
+    background: transparent;
+    box-shadow: none;
+    border-radius: 0;
+    padding: 0;
+    height: 42px;
+}
+
+.company-name, .user-name { color: var(--ds-navy); }
+.company-name .separator  { color: rgba(11, 21, 51, .22); }
+.current-menu-name        { color: var(--ds-muted); }
+.current-menu-name span   { color: var(--ds-navy); }
+
+.menu-item > a { color: #23324d; }
+.menu-item > a:hover { background: rgba(18, 87, 245, .09); color: var(--ds-blue); }
+
+.menu-item.active > a,
+.menu-item > a.active {
+    background: rgba(18, 87, 245, .12);
+    color: var(--ds-blue);
+    box-shadow: inset 0 0 0 1px rgba(18, 87, 245, .3);
+}
+
+.user-profile:hover { background: rgba(18, 87, 245, .09); }
+.user-dropdown-arrow { color: var(--ds-muted); }
+.notification-badge { border-color: #eaf1fd; }
+
+.footer { color: var(--ds-muted); border-top: 1px solid rgba(18, 87, 245, .14); }
+.footer span, .footer-copy { color: var(--ds-navy); }
+#footerSocial a, #authFooterSocial a { background: rgba(18, 87, 245, .11); color: var(--ds-blue); }
+#footerSocial a:hover, #authFooterSocial a:hover { background: rgba(18, 87, 245, .22); }
+
+.auth-screen {
+    background:
+        radial-gradient(circle at 12% 8%, rgba(255,255,255,.95) 0%, transparent 46%),
+        linear-gradient(115deg, #ffffff 0%, #d8e6fb 100%);
+}
+
+body, .center-content { background: #fff; }
+
+/* ---- 3. login ka copyright bar scroll me bhi bottom par chipka rahe ---- */
+.auth-page > .footer { position: sticky; bottom: 0; z-index: 5; }
+
+/* ---- 6. balance tiles ab history-summary jaisa ek hi card ---- */
+.balance-grid {
+    display: flex;
+    gap: 0;
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+    padding: 16px 8px;
+}
+
+.balance-grid .balance-card {
+    flex: 1;
+    background: transparent !important;
+    border: none !important;
+    border-right: 1px solid var(--ds-line) !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding: 0 22px;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-areas: "icon label" "icon num";
+    column-gap: 15px;
+    align-items: center;
+    text-align: left;
+}
+
+.balance-grid .balance-card:last-child { border-right: none !important; }
+.balance-grid .balance-card::after { display: none; }
+.balance-grid .balance-card::before { width: 46px; height: 46px; border-radius: 12px; }
+.balance-grid .balance-card .balance-label { grid-area: label; font-size: .8rem; text-transform: none; letter-spacing: 0; font-weight: 500; }
+.balance-grid .balance-card .balance-number { grid-area: num; font-size: 1.45rem; }
+
+/* ---- 7. login: hero image aur checklist gaye, tools card designed ---- */
+.auth-hero { grid-template-columns: 1fr; }
+.auth-hero-art { display: none; }
+.auth-hero-copy { max-width: 62em; }
+
+.auth-tools-card {
+    background: linear-gradient(160deg, #ffffff 0%, #f6f9ff 100%);
+    border: 1px solid rgba(18, 87, 245, .16);
+    box-shadow: 0 0.6em 1.8em rgba(11, 42, 114, .08);
+    padding: 1.1em 1.4em;
+}
+
+.auth-tools-list li {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.7em;
+    padding: 0.32em 0;
+}
+
+.auth-tool-icon {
+    width: 2.05em;
+    height: 2.05em;
+    border-radius: 0.6em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.auth-tool-icon svg { width: 1.05em; height: 1.05em; }
+.auth-tool-icon.is-paid { background: #e4edfe; color: #1257f5; }
+.auth-tool-icon.is-free { background: #dcf3e7; color: #15803d; }
+
+.auth-free-cat {
+    background: #fff;
+    border: 1px solid rgba(18, 87, 245, .12);
+    border-radius: 0.7em;
+    padding: 0.6em 0.75em;
+}
+
+.auth-free-cat-head { display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.25em; }
+.auth-free-cat-head b { flex: 1; }
+
+.auth-free-cat-head em {
+    font-style: normal;
+    font-size: 0.76em;
+    font-weight: 700;
+    color: #15803d;
+    background: #dcf3e7;
+    border-radius: 999px;
+    padding: 0.12em 0.6em;
+}
+
+.auth-free-grid { grid-template-columns: 1fr 1fr 1fr; gap: 0.55em; }
+.auth-free-cat span { padding-left: 2.75em; }
+
+/* ---- 1. card-layout modal ---- */
+.card-layout-modal { width: min(1180px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
+.card-layout-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--ds-line); border-radius: var(--ds-radius-sm); margin: 10px 0 14px; }
+.admin-modal-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+@media (max-width: 1150px) {
+    .balance-grid { flex-direction: column; gap: 14px; }
+    .balance-grid .balance-card { border-right: none !important; padding: 0 16px; }
+    .auth-free-grid { grid-template-columns: 1fr; }
+}
+
+/* =====================================================================
+   ROUND 11 - Upload File(s) | Setup side by side, neeche tab strip
+   ===================================================================== */
+.service-page-grid.is-tabbed { display: flex; flex-direction: column; gap: 14px; }
+
+.svc-top-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 14px;
+    align-items: stretch;
+}
+
+/* Dono top cards apne poore card ki tarah dikhte hain (tab strip nahi). */
+.svc-top-card {
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius);
+    box-shadow: var(--ds-shadow);
+    padding: 14px 16px;
+    height: auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.svc-top-card > .card-body { flex: 1; min-height: 0; overflow: visible; }
+
+/* Back button wala heading row: title left, button right. */
+.svc-top-card > h3.card-head-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.svc-top-card > h3.card-head-row > span:not(.ds-card-icon) { flex: 1; }
+.card-back-btn { font-size: .76rem; padding: 6px 11px; }
+
+@media (max-width: 900px) {
+    .svc-top-row { grid-template-columns: 1fr; }
+}
+
+/* =====================================================================
+   ADMIN > DATABASE card
+   ===================================================================== */
+.db-status-table { width: 100%; border-collapse: collapse; }
+.db-status-table td { padding: 7px 0; font-size: .84rem; border-bottom: 1px solid var(--ds-line); }
+.db-status-table tr:last-child td { border-bottom: none; }
+.db-status-table td:first-child { color: var(--ds-muted); width: 230px; }
+.db-status-table code { font-family: 'SFMono-Regular', Consolas, monospace; font-size: .78rem; color: var(--ds-blue); }
+
+.db-chip {
+    display: inline-block;
+    border-radius: 999px;
+    font-size: .72rem;
+    font-weight: 700;
+    padding: 3px 11px;
+}
+
+.db-chip.is-on  { background: #dcf5e6; color: #15803d; }
+.db-chip.is-off { background: #eceff5; color: #5b6a86; }
+
+.db-note { font-size: .78rem; color: var(--ds-muted); margin-left: 8px; }
+.db-note.is-bad { color: var(--ds-red); margin-left: 0; }
+
+.db-warn {
+    margin-top: 12px;
+    padding: 11px 13px;
+    border-radius: var(--ds-radius-sm);
+    background: #fdf3d0;
+    border: 1px solid #e8cf7a;
+    color: #7a5b00;
+    font-size: .81rem;
+    line-height: 1.5;
+}
+
+.db-warn code { background: rgba(0,0,0,.06); padding: 1px 5px; border-radius: 4px; }
+
+.db-balances {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--ds-line);
+    font-size: .82rem;
+}
+
+.db-balances span { color: var(--ds-muted); }
+.db-balances em   { font-style: normal; font-weight: 700; color: var(--ds-navy); margin-left: 5px; }
+
+.db-txn-source { padding: 10px 12px; border-bottom: 1px solid var(--ds-line); font-size: .8rem; }
+.db-txn-table { width: 100%; }
+.db-txn-table th, .db-txn-table td { font-size: .78rem; white-space: nowrap; }
+.db-txn-table td code { font-family: 'SFMono-Regular', Consolas, monospace; font-size: .74rem; }
+.db-txn-table .num { text-align: right; }
+.db-txn-table .credit { color: var(--ds-green); font-weight: 600; }
+.db-txn-table .debit  { color: var(--ds-red);   font-weight: 600; }
+
+/* ---- Admin > Database: table list ---- */
+.db-tables {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--ds-line);
+}
+
+.db-tables > b { display: block; font-size: .82rem; color: var(--ds-navy); margin-bottom: 8px; }
+
+.db-table-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--ds-line);
+}
+
+.db-table-row:last-child { border-bottom: none; }
+.db-table-row code { flex: 1; font-family: 'SFMono-Regular', Consolas, monospace; font-size: .8rem; color: var(--ds-blue); }
+.db-table-row .admin-btn { padding: 5px 12px; font-size: .76rem; }
+
+/* ---- Admin Overview (Profile > Overview) ---- */
+.admin-ov-header {
+    padding: 4px 2px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 14px;
+}
+.admin-ov-header h2 { margin: 0; }
+/* Item 11 - Start Date/End Date/Clear, same look as Payment History's
+   own date filter (.history-filter-bar), just without that bar's
+   usual bottom border/margin since this sits inline with the title. */
+.admin-ov-date-filter {
+    margin: 0;
+    padding: 0;
+    border: none;
+}
+.admin-ov-header h2 { margin: 0 0 4px; font-size: 1.35rem; font-weight: 800; color: var(--ds-navy); }
+.admin-ov-header p { margin: 0; font-size: .88rem; color: var(--ds-blue); }
+
+.admin-ov-stat-row {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.admin-ov-stat-card {
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 14px;
+    padding: 18px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+.admin-ov-stat-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.15rem;
+    flex-shrink: 0;
+    background: #eef1fb;
+    color: var(--ds-navy);
+}
+
+.admin-ov-stat-icon-revenue { background: #e3f8ef; color: #15803d; }
+.admin-ov-stat-icon-tickets { background: #fde8e8; color: #c0392b; }
+.admin-ov-stat-icon-newusers { background: #eef1fb; color: var(--ds-navy); }
+.admin-ov-stat-icon-active { background: #e3f8ef; color: #15803d; }
+
+.admin-ov-stat-value { font-size: 1.3rem; font-weight: 800; color: var(--ds-navy); line-height: 1.2; }
+.admin-ov-stat-value.is-revenue { color: #15803d; }
+.admin-ov-stat-value.is-tickets { color: #c0392b; }
+.admin-ov-stat-label { font-size: .82rem; color: var(--ds-blue); margin-top: 2px; }
+
+.admin-ov-row-2col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.admin-ov-card {
+    background: #fff;
+    border: 1px solid var(--ds-line);
+    border-radius: 14px;
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+    min-height: 220px;
+}
+
+.admin-ov-card h3 { margin: 0 0 14px; font-size: 1rem; font-weight: 700; color: var(--ds-navy); }
+
+.admin-ov-donut-wrap { display: flex; align-items: center; justify-content: center; padding: 10px 0; }
+
+.admin-ov-empty { color: var(--ds-blue); font-size: .88rem; margin: 0; }
+
+.admin-ov-ranked-list { list-style: none; margin: 0; padding: 0; }
+
+.admin-ov-ranked-list li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--ds-line);
+    font-size: .9rem;
+}
+
+.admin-ov-ranked-list li:last-child { border-bottom: none; }
+
+.admin-ov-rank-badge {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #eef1fb;
+    color: var(--ds-navy);
+    font-size: .78rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.admin-ov-rank-name { flex: 1; color: var(--ds-ink); font-weight: 600; }
+.admin-ov-rank-value { color: var(--ds-blue); font-size: .85rem; font-weight: 600; }
+
+@media (max-width: 1100px) {
+    .admin-ov-stat-row { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 900px) {
+    .admin-ov-stat-row { grid-template-columns: repeat(2, 1fr); }
+    .admin-ov-row-2col { grid-template-columns: 1fr; }
+}
+
+/* ---- ROUND 11 ----
+   Item 4 (login section) - the page background was still showing a
+   faint blue-gray tint despite several earlier passes' stated intent
+   of "plain white" (--ds-page redeclared #ffffff multiple times
+   above) - forcing it directly on body removes any doubt, regardless
+   of which --ds-page declaration the cascade was actually resolving to. */
+body { background: #ffffff; }
+
+/* ---- ROUND 12 (superseded by the .report-table-scroll consolidation
+   below - every one of Payment History/Today's Transactions/
+   Notification/Support/PostgreSQL's inner table-scroll areas now
+   carries this ONE shared class in its markup, so there is a single
+   place that sets height/overflow/colours/fonts for all of them,
+   instead of five separately-maintained copies that kept drifting out
+   of sync with each other - which is exactly what caused the repeated
+   height/header bugs this session). */
+.report-table-scroll {
+    height: 280px;
+    flex: none;
+    min-height: 0;
+    /* Item 8/16 - "auto" only reserves scrollbar width WHEN a scrollbar
+       is actually showing, so a page with few enough rows to not need
+       one ends up slightly WIDER than the header (which always reserves
+       matching space via its own padding-right below) - "scroll" always
+       reserves that space, scrollbar visible or not, so the available
+       width for columns is identical regardless of row count. Kept
+       scrollbar-gutter too as a belt-and-suspenders for browsers where
+       it's supported. */
+    overflow-y: scroll;
+    scrollbar-gutter: stable;
+}
+
+/* ---- ROUND 12b ----
+   Item 5 (login section) - when Login is showing, the top nav AND the
+   footer/copyright are hidden entirely (not just margin/padding
+   zeroed) - the login section is the ONLY thing on the page, and gets
+   the full 100vh so both its panels can be exactly 100% height with
+   zero gap above or below. Scoped to only when the login section is
+   actually showing, so every other prelogin section keeps its normal
+   nav+footer. */
+.auth-page:has(.auth-login-section) {
+    height: 100vh;
+    max-width: 100%;
+    padding: 0;
+}
+.auth-page:has(.auth-login-section) > .auth-top-menu-bar,
+.auth-page:has(.auth-login-section) > .footer {
+    display: none;
+}
+.auth-section-body:has(> .auth-login-section) {
+    padding: 0;
+    margin: 0;
+    height: 100%;
+}
+.auth-login-section {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+}
+
+/* =====================================================================
+   UNIFIED REPORT-TABLE SYSTEM (single source of truth)
+   =====================================================================
+   Used by ALL FIVE report-style tables - Payment History, Today's
+   Transactions, Notification, Support, PostgreSQL admin. This is the
+   direct answer to being asked "why not just build ONE shared CSS
+   system instead of patching five separate ones over and over" -
+   every table/th/td/border/radius/font rule that used to be scattered
+   (and duplicated, and silently conflicting) across both CSS files for
+   these five tables is replaced by exactly the rules below. Nothing
+   else in either file should declare .rt-table/.rt-wrap-*
+   backgrounds/fonts/borders/radii - if a future change is needed, it
+   belongs HERE, once, not as a sixth new override somewhere else.
+
+   Column WIDTHS are deliberately NOT here - those are inherently
+   per-table content, set by JS (autofitSplitTableColumns() / the
+   single-table equivalent, app.js) at render time, not something a
+   shared stylesheet rule could express. */
+
+/* Item (single unified system) - every property below is !important.
+   This session repeatedly turned up ANOTHER hidden, previously-
+   unnoticed conflicting declaration for these same five tables (same
+   selector, different value, written at some earlier point and never
+   cleaned up) - four separate times, across two files. Rather than
+   claim this file is now exhaustively free of every such duplicate
+   (which turned out wrong three times already), !important makes this
+   block unconditionally the last word for these five tables' shared
+   look, regardless of whatever else does or doesn't still exist
+   elsewhere. Column WIDTHS are the one exception - JS sets those
+   per-element via inline style at render time, which already beats
+   !important by definition, so they're untouched by this. */
+.rt-table {
+    border-collapse: collapse !important;
+    font-size: 0.79rem !important;
+}
+.rt-table thead th {
+    background: #f7f9fd !important;
+    color: var(--ds-muted) !important;
+    font-size: 0.78rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.2px !important;
+    text-align: left !important;
+    padding: 12px 14px !important;
+    border-bottom: 1px solid var(--ds-line) !important;
+    border-top: 1px solid var(--ds-line) !important;
+    white-space: nowrap !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+}
+.rt-table tbody td {
+    padding: 8px 14px !important;
+    font-size: 0.79rem !important;
+    color: var(--ds-ink) !important;
+    vertical-align: middle !important;
+    height: 40px !important;
+    white-space: nowrap !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+    border-bottom: 1px solid var(--ds-line) !important;
+}
+.rt-table tbody tr:hover { background: #f9fbff !important; }
+.rt-table tbody tr:last-child td { border-bottom: none !important; }
+.rt-table th:first-child,
+.rt-table td:first-child { text-align: center !important; }
+
+/* Split header/body tables (two separate <table> elements - Payment
+   History, Today's Transactions, Notification): header gets the top-
+   rounded half of the border, the body wrapper gets the bottom-rounded
+   half, together reading as one continuous bordered box. */
+.rt-wrap-top {
+    border: 1px solid rgba(0,0,139,0.1) !important;
+    border-bottom: none !important;
+    border-radius: 6px 6px 0 0 !important;
+    flex-shrink: 0 !important;
+    padding-right: 16px !important;
+    box-sizing: border-box !important;
+    overflow-x: hidden !important;
+}
+.rt-wrap-bottom {
+    border: 1px solid rgba(0,0,139,0.1) !important;
+    border-top: none !important;
+    border-radius: 0 0 6px 6px !important;
+    overflow-y: scroll !important;
+    scrollbar-gutter: stable !important;
+    height: 280px !important;
+    flex: none !important;
+    min-height: 0 !important;
+}
+
+/* Single <table> report cards (Support, PostgreSQL admin): one full-
+   radius wrapper instead of a split top/bottom pair. */
+.rt-wrap-full {
+    border: 1px solid rgba(0,0,139,0.1) !important;
+    border-radius: 6px !important;
+    overflow-x: auto !important;
+    overflow-y: scroll !important;
+    scrollbar-gutter: stable !important;
+    height: 280px !important;
+}

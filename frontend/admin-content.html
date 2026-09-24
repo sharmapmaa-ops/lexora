@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+    <title>Admin | Lexora AI Solutions</title>
+    <link rel="manifest" href="manifest.json" />
+    <meta name="theme-color" content="#00008B" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Lexora" />
+    <!-- Inter: mockups ki geometric sans. Offline/blocked ho to
+         font-family stack apne aap Segoe UI par gir jaata hai. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+    <link rel="stylesheet" href="css/style.css">
+    <!-- Loaded last on purpose: design-system.css re-skins the whole app
+         (nav, cards, tables, buttons, footer) without touching markup. -->
+    <link rel="stylesheet" href="css/design-system.css">
+    <link rel="stylesheet" href="css/iframe-embed.css">
+</head>
+<body class="lexora-embedded" data-nav-action="Admin">
+
+    <!-- ===== AUTH SCREEN (login / register / forgot password / verify) ===== -->
+    <div id="authScreen" class="auth-screen"></div>
+
+    <!-- ===== MAIN APP SHELL (hidden until logged in) ===== -->
+    <div id="appShell" style="display:none;">
+
+    <!-- ===== TOP MENU BAR ===== -->
+    <div class="top-menu-bar" id="topMenuBar">
+        <div class="menu-left">
+            <div class="company-logo" id="companyLogo">🏢</div>
+            <div class="company-info">
+                <span class="company-name" id="companyName">
+                    Lexora
+                    <span class="separator" id="separator">|</span>
+                </span>
+                <span class="current-menu-name" id="currentMenuLabel">
+                    <span id="currentMenuDisplay">Dashboard</span>
+                </span>
+            </div>
+        </div>
+
+        <div class="menu-wrapper" id="menuWrapper">
+            <ul class="menu" id="mainMenu"></ul>
+
+            <div class="user-profile" id="userProfile" onclick="toggleUserDropdown(event)">
+                <span class="user-name" id="userNameDisplay"></span>
+                <div class="user-avatar" id="userAvatar">
+                    <span id="avatarText"></span>
+                    <img id="avatarImg" src="" alt="" style="display:none;" />
+                    <span class="notification-badge" id="notificationBadge" style="display:none;"></span>
+                </div>
+                <span class="user-dropdown-arrow" id="dropdownArrow">▼</span>
+
+                <div class="user-dropdown" id="userDropdown">
+                    <!-- User dropdown items will be generated from JSON -->
+                </div>
+            </div>
+        </div>
+
+        <button class="menu-toggle" id="menuToggle" onclick="toggleMenu()">☰</button>
+    </div>
+
+    <!-- ===== CENTER CONTENT ===== -->
+    <div class="center-content" id="centerContent">
+        <div class="content-area" id="contentArea">
+            <div id="contentBody"></div>
+        </div>
+    </div>
+
+    <!-- ===== FOOTER ===== -->
+    <div class="footer" id="footer">
+        <div class="footer-inner">
+            <span class="footer-spacer"></span>
+            <span class="footer-copy">&copy; 2026 <span id="footerCompany">Lexora AI Solutions</span>. All rights reserved. | Version 1.0.0</span>
+            <span id="footerSocial"></span>
+        </div>
+    </div>
+
+    </div> <!-- /#appShell -->
+
+    <!-- ===== MESSAGEBOX OVERLAY ===== -->
+    <div class="msg-overlay" id="messageOverlay">
+        <div class="msg-card">
+            <div class="msg-card-inner">
+                <button class="msg-close-btn" onclick="handleButtonClick('Close')" aria-label="Close">✕</button>
+                <div class="msg-title-bar">
+                    <span class="msg-title" id="msgTitle">Message</span>
+                </div>
+                <div class="msg-content">
+                    <div class="msg-text" id="msgText"></div>
+                    <div class="msg-buttons" id="msgButtons"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Offline (Hybrid-off) translation: browser-side pdf.js + JSZip +
+         Test.html ka exact offline logic (translation-offline.js). -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- pdf-lib: client-side PDF writing (split/merge/image-to-PDF). pdf.js
+         above only READS PDFs; this writes them. Both run in the browser, so
+         the Free Services tools need no server round-trip and cost nothing. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <!-- SheetJS: writes real .xlsx workbooks for Data Extraction output. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+    <!-- QR + barcode rendering for the generator tools (client-side only). -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
+    <script>
+      if (window.pdfjsLib) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      }
+    </script>
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <script src="js/translation-offline.js"></script>
+    <script src="js/service-runner.js"></script>
+    <script src="js/tools.js"></script>
+    <script src="js/tools-files.js"></script>
+    <script src="js/tools-docs.js"></script>
+    <script src="js/free-services.js"></script>
+    <script src="js/data-extraction.js"></script>
+    <script src="js/ocr-service.js"></script>
+    <script src="js/bai2.js"></script>
+    <script src="js/storage-destinations.js"></script>
+    <script src="js/paid-calculators.js"></script>
+    <script src="js/app.js"></script>
+    <script src="js/iframe-content-loader.js"></script>
+
+</body>
+</html>
