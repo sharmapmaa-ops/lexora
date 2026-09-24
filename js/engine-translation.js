@@ -6483,6 +6483,37 @@ ${JSON.stringify(texts)}`;
       const images = await extractPageImagesForDocx(page, 2, pageHPt);
       const { simpleRects, complexPaths } = extractPageVectorsForDocx(ops, pageHPt);
 
+      // A thin rect that the earlier underline-detection pass (in
+      // buildBasePdf) already consumed - marking a text box's
+      // box.underline=true, rendered as a text-level <w:u> that correctly
+      // moves/resizes with the translated text - would otherwise ALSO get
+      // rendered here as its own independent, fixed-position <v:rect>.
+      // That duplicate does NOT move when the text is translated, leaving
+      // a stray line at the original word's old coordinates. Drop any
+      // thin rect that matches an underlined box's position.
+      const underlinedBoxesPt = [];
+      pd.pageRegions.forEach(function (region) {
+        region.blue_boxes.forEach(function (b) {
+          if (b.underline || (b.markupText && /<u>/.test(b.markupText))) {
+            underlinedBoxesPt.push({
+              left: b.left * pd.sx, right: b.right * pd.sx,
+              bottom: (b.yTop + b.height) * pd.sy, height: b.height * pd.sy
+            });
+          }
+        });
+      });
+      const simpleRectsFiltered = underlinedBoxesPt.length === 0 ? simpleRects : simpleRects.filter(function (r) {
+        if (r.h > 3) return true;
+        const consumed = underlinedBoxesPt.some(function (b) {
+          const tolY = Math.max(2, b.height * 0.4);
+          const withinY = Math.abs(r.yTop - b.bottom) <= tolY;
+          const bw = b.right - b.left;
+          const overlapsX = !(r.x + r.w < b.left + bw * 0.2 || r.x > b.left + bw * 0.8);
+          return withinY && overlapsX;
+        });
+        return !consumed;
+      });
+
       const textContentForCrop = await page.getTextContent();
       const cropTextItems = textContentForCrop.items.filter(function (it) { return it.str && it.str.trim(); }).map(function (it) {
         const tr = it.transform;
@@ -6502,7 +6533,7 @@ ${JSON.stringify(texts)}`;
         pageXml += buildDocxImageShapeXml('crop' + pageNum + '_' + z, crop.x, crop.yTop, crop.w, crop.h, rId, z);
         z++;
       }
-      simpleRects.forEach(function (r) {
+      simpleRectsFiltered.forEach(function (r) {
         pageXml += buildDocxRectShapeXml('rect' + pageNum + '_' + z, r.x, r.yTop, r.w, r.h, r.color, z);
         z++;
       });
@@ -6631,12 +6662,36 @@ ${JSON.stringify(texts)}`;
     if (groupBlueBoxes.length >= 2) {
       const sorted = groupBlueBoxes.slice().sort(function (a, b) { return a.yTop - b.yTop; });
       const nonLast = sorted.slice(0, -1);
-      const isJustified = nonLast.length > 0 && nonLast.every(function (b) {
+      // A justified paragraph can have the occasional short INTERNAL line
+      // (a sentence ending mid-paragraph, before the next sentence starts
+      // a new line) that doesn't reach the right margin - requiring EVERY
+      // non-last line to touch both margins broke on exactly that case.
+      // A large majority matching is enough to call the paragraph justified.
+      const touchesBothMargins = function (b) {
         const nl = (b.naturalLeft != null) ? b.naturalLeft : b.left;
         const nr = (b.naturalRight != null) ? b.naturalRight : b.right;
         return (nl - areaLeft) <= tol && (areaRight - nr) <= tol;
-      });
+      };
+      const justifiedMatches = nonLast.filter(touchesBothMargins).length;
+      const isJustified = nonLast.length > 0 && (justifiedMatches / nonLast.length) >= 0.7;
       if (isJustified) return 'justify';
+      // Even short of that threshold, a genuinely multi-line paragraph
+      // whose lines mostly start at the SAME left edge is body text, not
+      // a centered heading - the naturalLeft/naturalRight MIN/MAX
+      // comparison below only looks at the two most extreme lines across
+      // the whole group and would misread this as centered just because
+      // some line happens to reach close to each margin (near-guaranteed
+      // in any long paragraph, even a left-aligned one).
+      if (nonLast.length >= 2) {
+        const touchesLeftMargin = function (b) {
+          const nl = (b.naturalLeft != null) ? b.naturalLeft : b.left;
+          return (nl - areaLeft) <= tol;
+        };
+        const leftMatches = nonLast.filter(touchesLeftMargin).length;
+        if ((leftMatches / nonLast.length) >= 0.7) {
+          return direction === 'rtl' ? 'right' : 'left';
+        }
+      }
     }
     const naturalLeft = Math.min.apply(null, groupBlueBoxes.map(function (b) { return (b.naturalLeft != null) ? b.naturalLeft : b.left; }));
     const naturalRight = Math.max.apply(null, groupBlueBoxes.map(function (b) { return (b.naturalRight != null) ? b.naturalRight : b.right; }));
