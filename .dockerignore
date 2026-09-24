@@ -1,8 +1,0 @@
-Users/*/
-!Users/.gitkeep
-__pycache__/
-*.pyc
-.env
-*.log
-.git/
-.devcontainer/
