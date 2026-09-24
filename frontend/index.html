@@ -141,6 +141,15 @@
         pdfjsLib.GlobalWorkerOptions.workerSrc =
           'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
       }
+      // Amiri (Arabic/RTL) font, embedded via pdf-lib/fontkit when a
+      // translation's source or target text needs it - used by all 5
+      // engine-*.js copies (js/engine-translation.js and its per-service
+      // duplicates) and by the Node translation worker (which reads the
+      // exact same URLs from its own copies of these 4 lines).
+      const AMIRI_FONT_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Regular.ttf';
+      const AMIRI_BOLD_FONT_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Bold.ttf';
+      const AMIRI_ITALIC_FONT_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Italic.ttf';
+      const AMIRI_BOLDITALIC_FONT_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-BoldItalic.ttf';
     </script>
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
     <!-- FULLY SEPARATE per-service engine copies (not one shared

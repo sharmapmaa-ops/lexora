@@ -45,7 +45,7 @@ const block = src.slice(anchorIdx, src.indexOf('pagesCharged = 1;', anchorIdx) +
 assert(block.includes('if (file.isDocxUpload) {'), 'A Word upload is detected before deciding how to obtain a PDF');
 assert(block.includes("fetch('/api/translation/docx-to-pdf'"), 'A Word upload calls the docx-to-pdf conversion endpoint');
 assert(block.includes('pdfFileForPipeline = new Blob(['), 'The converted PDF bytes are wrapped into a real Blob for the pipeline');
-assert(block.includes('window.__translationEngine.buildPdfjsTranslatedDocxBlob(pdfFileForPipeline'), 'The new pdf.js text-layer pipeline is called with the (possibly converted) PDF');
+assert(block.includes('runTranslationAsBackgroundJob(pdfFileForPipeline'), 'The pdf.js text-layer pipeline runs as a server-side background job (Phase 4a) with the (possibly converted) PDF');
 assert(block.includes("targetLang: targetLanguage"), 'The target language is passed through to the pipeline');
 assert(block.includes("_downloadBlobImmediately(offlineBlob, baseName + ' Final Output.docx')"), 'The Final Output document downloads immediately once the pipeline finishes');
 

@@ -1718,6 +1718,76 @@
                 });
             }
 
+            // Phase 4a - drop-in replacement for a direct in-browser
+            // buildPdfjsTranslatedDocxBlob call: same (file, opts, logFn)
+            // -> Promise<Blob> contract, but the actual heavy processing
+            // runs as a server-side background job (see JOB_SYSTEM.md)
+            // that keeps running even if this browser tab closes or
+            // navigates away. Uploads the file, starts the job, polls its
+            // status (forwarding each new progress-log line to logFn
+            // exactly as the in-browser pipeline did), and once done
+            // downloads+decodes the result docx into a Blob.
+            async function runTranslationAsBackgroundJob(file, opts, logFn) {
+                opts = opts || {};
+                logFn('Uploading document...');
+                const dataUrl = await readFileAsDataURL(file);
+                const dataBase64 = dataUrl.split(',')[1];
+
+                const startRes = await authFetch('/api/translation/job/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        userId: CURRENT_USER_ID,
+                        fileName: (file && file.name) || 'input.pdf',
+                        dataBase64: dataBase64,
+                        targetLang: opts.targetLang,
+                        model: opts.model
+                    })
+                });
+                if (!startRes.ok) {
+                    const errData = await startRes.json().catch(function () { return {}; });
+                    throw new Error(errData.error || 'Failed to start the translation job.');
+                }
+                const startData = await startRes.json();
+                const jobId = startData.jobId;
+
+                let seenLogCount = 0;
+                // Polls until the job reaches a terminal state. There is
+                // no client-side timeout here on purpose - the job keeps
+                // running server-side for as long as it takes regardless
+                // of how long this tab stays on this screen; closing the
+                // tab simply stops watching it, it does not stop the job
+                // (see the job/active resume-check on page load).
+                while (true) {
+                    await new Promise(function (r) { setTimeout(r, 3000); });
+                    let statusRes;
+                    try {
+                        statusRes = await authFetch('/api/translation/job/status?jobId=' + encodeURIComponent(jobId) + '&userId=' + encodeURIComponent(CURRENT_USER_ID));
+                    } catch (e) {
+                        continue; // transient network hiccup - the job is still running server-side, just keep polling
+                    }
+                    if (!statusRes.ok) continue;
+                    const statusData = await statusRes.json();
+                    const job = statusData.job || {};
+                    const allLogs = job.progressLog || [];
+                    allLogs.slice(seenLogCount).forEach(function (entry) { logFn(entry.msg); });
+                    seenLogCount = allLogs.length;
+
+                    if (job.status === 'done') {
+                        const resultRes = await authFetch('/api/translation/job/result?jobId=' + encodeURIComponent(jobId) + '&userId=' + encodeURIComponent(CURRENT_USER_ID));
+                        if (!resultRes.ok) throw new Error('The job finished but its result could not be downloaded.');
+                        const resultData = await resultRes.json();
+                        const binaryStr = atob(resultData.dataBase64);
+                        const bytes = new Uint8Array(binaryStr.length);
+                        for (let bi = 0; bi < binaryStr.length; bi++) bytes[bi] = binaryStr.charCodeAt(bi);
+                        return new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+                    }
+                    if (job.status === 'failed') {
+                        throw new Error(job.error || 'The translation job failed.');
+                    }
+                }
+            }
+
             async function postJSON(url, payload) {
                 const res = await authFetch(url, {
                     method: 'POST',
@@ -2906,7 +2976,7 @@
                                     refreshServicePage('translation');
                                 }
 
-                                offlineBlob = await window.__translationEngine.buildPdfjsTranslatedDocxBlob(pdfFileForPipeline, {
+                                offlineBlob = await runTranslationAsBackgroundJob(pdfFileForPipeline, {
                                     targetLang: targetLanguage
                                 }, onLog);
 
@@ -14635,6 +14705,109 @@
                 console.log('Payment History:', paymentHistory);
                 console.log('Lease Files:', getMyLeaseFiles());
                 console.log('Translation Files:', getMyTranslationFiles());
+
+                checkForActiveTranslationJobs();
+            }
+
+            // Phase 4a resume-awareness: a translation job runs as a
+            // server-side background process (see JOB_SYSTEM.md) that
+            // keeps going even if the browser that started it closed,
+            // navigated away, or lost its connection - so on every app
+            // load, ask whether this user has one still processing or
+            // finished-but-not-yet-downloaded, and surface a plain notice
+            // if so. Deliberately does NOT auto-download or auto-bill:
+            // that still happens only through the same one-time flow
+            // runTranslationAsBackgroundJob's caller already uses, so a
+            // job discovered here is never charged/downloaded twice.
+            async function checkForActiveTranslationJobs() {
+                try {
+                    const res = await authFetch('/api/translation/job/active?userId=' + encodeURIComponent(CURRENT_USER_ID));
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    (data.jobs || []).forEach(function (job) {
+                        const name = job.originalFileName || 'your document';
+                        if (job.status === 'done') {
+                            addActivity('translation', `System > Translation of "${name}" has finished and is ready.`, 'Info');
+                            if (confirm(`Your translation of "${name}" has finished. Download it now?`)) {
+                                claimFinishedTranslationJob(job).catch(function (err) {
+                                    addActivity('translation', `System > Could not finalize "${name}": ${err.message}`, 'Failed');
+                                });
+                            }
+                        } else {
+                            addActivity('translation', `System > Translation of "${name}" is still processing in the background - it will keep going even while you use other services.`, 'Info');
+                        }
+                    });
+                } catch (e) {
+                    // Non-critical - if this check fails, the user simply
+                    // won't see a resume notice this time; it will be
+                    // checked again on the next app load.
+                }
+            }
+
+            // Finalizes a translation job discovered via the resume-check
+            // above: claims it server-side FIRST (idempotent - see
+            // _handle_translation_job_claim - so a double-click or two
+            // open tabs can never charge the wallet twice), then
+            // downloads the result and records the SAME one-time billing
+            // steps the normal in-progress flow would have, using the
+            // current plan's rate exactly as getServicePrice/
+            // isPerDocumentBilling already do for a live file.
+            async function claimFinishedTranslationJob(job) {
+                const jobId = job.jobId;
+                const claimRes = await authFetch('/api/translation/job/claim', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId: CURRENT_USER_ID, jobId: jobId })
+                });
+                const claimData = await claimRes.json().catch(function () { return {}; });
+                if (!claimRes.ok) throw new Error(claimData.error || 'Could not claim the job.');
+                if (claimData.alreadyClaimed) {
+                    addActivity('translation', `System > "${job.originalFileName}" was already claimed earlier.`, 'Info');
+                    return;
+                }
+
+                const resultRes = await authFetch('/api/translation/job/result?jobId=' + encodeURIComponent(jobId) + '&userId=' + encodeURIComponent(CURRENT_USER_ID));
+                if (!resultRes.ok) throw new Error('Could not download the finished document.');
+                const resultData = await resultRes.json();
+                const binaryStr = atob(resultData.dataBase64);
+                const bytes = new Uint8Array(binaryStr.length);
+                for (let bi = 0; bi < binaryStr.length; bi++) bytes[bi] = binaryStr.charCodeAt(bi);
+                const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+
+                const perPageRate = getServicePrice('translation', 1);
+                const totalCharged = perPageRate;
+                const baseNameResumed = (job.originalFileName || 'document').replace(/\.[^.]+$/, '');
+                const targetLabel = (!job.targetLang || job.targetLang === 'original') ? 'Without Translation' : job.targetLang;
+                const docName = baseNameResumed + ' Text-based - ' + targetLabel + ' - Translation';
+                const fileId = 'resumed_' + jobId;
+                translationBlobStore[fileId] = { blob: blob, name: docName + '.docx' };
+
+                let fileTxnId = '';
+                if (totalCharged > 0) {
+                    const nowF = new Date();
+                    fileTxnId = 'TXN' + String(nextTransactionId++).padStart(3, '0');
+                    paymentHistory.push({
+                        id: fileTxnId,
+                        date: localDateStr(nowF),
+                        time: nowF.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+                        userId: CURRENT_USER_ID,
+                        paymentType: 'Service Fee',
+                        paymentMode: 'Wallet Balance',
+                        description: buildServiceChargeDescription('translation', 'Translation', 1),
+                        credit: 0,
+                        debit: totalCharged
+                    });
+                    persistPaymentHistory();
+                }
+
+                addActivity('translation', `File: ${job.originalFileName} > Generate Output > ${docName}.docx`, 'Success');
+                if (totalCharged > 0) {
+                    addActivity('translation', `File: ${job.originalFileName} > Amount Deducted from Wallet=${currencySymbol()}${totalCharged.toFixed(2)}`, 'Info');
+                }
+                _downloadBlobImmediately(blob, docName + '.docx');
+                if (totalCharged > 0) {
+                    notifyProcessCompletion('Translation', job.originalFileName, totalCharged, fileTxnId);
+                }
             }
 
             // Fetches the current Terms & Conditions text from the backend
