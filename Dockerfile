@@ -22,11 +22,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-fra \
     tesseract-ocr-spa \
     tesseract-ocr-deu \
+    curl gnupg build-essential \
+    libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Translation background-job worker (backend/worker/) - Node port of the
+# pdf.js text-layer translation pipeline, spawned per-job by server.py so
+# a translation keeps running server-side after the browser navigates
+# away or closes. See backend/worker/translation_worker.js and
+# JOB_SYSTEM.md.
+COPY backend/worker/package.json backend/worker/package.json
+RUN cd backend/worker && npm_config_nodedir=/usr/include/node CPPFLAGS="-I/usr/include/node" npm install --omit=dev
 
 COPY . .
 
