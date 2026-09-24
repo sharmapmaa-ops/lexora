@@ -84,6 +84,7 @@ PORT = int(os.environ.get("PORT", 8000))
 # routed to the correct one of these two directories.
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = os.path.join(os.path.dirname(ROOT_DIR), "frontend")
+WORKER_DIR = os.path.join(ROOT_DIR, "worker")
 
 # ---------------------------------------------------------------------------
 # PERSISTENT DATA LOCATION
@@ -3315,6 +3316,9 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/admin/read": self._handle_admin_read,
             "/api/auth/me": self._handle_auth_me,
             "/api/maintenance-status": self._handle_maintenance_status,
+            "/api/translation/job/status": self._handle_translation_job_status,
+            "/api/translation/job/result": self._handle_translation_job_result,
+            "/api/translation/job/active": self._handle_translation_job_active,
             "/api/auth/directory": self._handle_auth_directory,
             "/api/auth/oauth/google/start": lambda q: self._handle_oauth_start("google", q),
             "/api/auth/oauth/google/callback": lambda q: self._handle_oauth_callback("google", q),
@@ -3876,6 +3880,8 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/rules/update-approved": self._handle_rules_update_approved,
             "/api/lease/generate-pdf": self._handle_lease_generate_pdf,
             "/api/translation/upload": self._handle_translation_upload,
+            "/api/translation/job/start": self._handle_translation_job_start,
+            "/api/translation/job/claim": self._handle_translation_job_claim,
             "/api/translation/translate-start": self._handle_translation_translate_start,
             "/api/translation/generate-pdf-start": self._handle_translation_generate_pdf_start,
             "/api/translation/save-output": self._handle_translation_save_output,
@@ -4753,6 +4759,165 @@ class Handler(SimpleHTTPRequestHandler):
             f.write(base64.b64decode(data_b64))
 
         return 200, {"ok": True, "stagingPath": _rel_to_root(out_path), "originalFileName": original_name}
+
+    def _handle_translation_job_start(self, body):
+        """Phase 4a - starts a server-side background job running the SAME
+        pdf.js text-layer pipeline (backend/worker/translation_worker.js,
+        a Node port of buildPdfjsTranslatedDocxBlob) that used to run
+        entirely in the browser. The worker is spawned DETACHED (its own
+        session, not a child of this request) so it keeps running to
+        completion on the server even if the browser that started it
+        closes, navigates away, or the user's connection drops - see
+        JOB_SYSTEM.md. Returns immediately with a jobId; the browser polls
+        /api/translation/job/status for progress and calls
+        /api/translation/job/result once status is "done"."""
+        user_id = _safe_id(self._resolve_user_id(body))
+        data_b64 = body.get("dataBase64")
+        if not data_b64:
+            raise ValueError("dataBase64 is required")
+        original_name = _safe_filename(body.get("fileName"), "document.pdf")
+        target_lang = body.get("targetLang") or "original"
+        model = body.get("model") or "google/gemini-2.5-flash"
+
+        token = ""
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[len("Bearer "):].strip()
+
+        job_id = uuid.uuid4().hex[:16]
+        job_dir = _user_dir(user_id, "Translation", "_jobs", job_id)
+        os.makedirs(job_dir, exist_ok=True)
+
+        input_path = os.path.join(job_dir, "input.pdf")
+        with open(input_path, "wb") as f:
+            f.write(base64.b64decode(data_b64))
+
+        job_record = {
+            "jobId": job_id,
+            "userId": user_id,
+            "token": token,
+            "originalFileName": original_name,
+            "targetLang": target_lang,
+            "model": model,
+            "port": PORT,
+            "status": "queued",
+            "progressLog": [],
+            "createdAt": datetime.datetime.utcnow().isoformat() + "Z",
+        }
+        with open(os.path.join(job_dir, "job.json"), "w", encoding="utf-8") as f:
+            json.dump(job_record, f, indent=2)
+
+        worker_script = os.path.join(WORKER_DIR, "translation_worker.js")
+        log_path = os.path.join(job_dir, "worker.log")
+        with open(log_path, "wb") as log_f:
+            subprocess.Popen(
+                ["node", worker_script, job_dir],
+                cwd=WORKER_DIR,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+        return 200, {"ok": True, "jobId": job_id}
+
+    def _job_dir_for(self, user_id, job_id):
+        job_id = _safe_id(job_id)
+        return _user_dir(user_id, "Translation", "_jobs", job_id)
+
+    def _handle_translation_job_status(self, query):
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        job_id = (query.get("jobId", [""])[0] or "").strip()
+        if not job_id:
+            return self._send_json(400, {"error": "jobId is required"})
+        job_dir = self._job_dir_for(user_id, job_id)
+        job_json_path = os.path.join(job_dir, "job.json")
+        if not os.path.isfile(job_json_path):
+            return self._send_json(404, {"error": "Job not found"})
+        with open(job_json_path, "r", encoding="utf-8") as f:
+            record = json.load(f)
+        # Never expose the session token back to the browser.
+        record.pop("token", None)
+        return self._send_json(200, {"ok": True, "job": record})
+
+    def _handle_translation_job_result(self, query):
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        job_id = (query.get("jobId", [""])[0] or "").strip()
+        if not job_id:
+            return self._send_json(400, {"error": "jobId is required"})
+        job_dir = self._job_dir_for(user_id, job_id)
+        job_json_path = os.path.join(job_dir, "job.json")
+        if not os.path.isfile(job_json_path):
+            return self._send_json(404, {"error": "Job not found"})
+        with open(job_json_path, "r", encoding="utf-8") as f:
+            record = json.load(f)
+        if record.get("status") != "done":
+            return self._send_json(409, {"error": "Job is not finished yet", "status": record.get("status")})
+        output_path = os.path.join(job_dir, "output.docx")
+        if not os.path.isfile(output_path):
+            return self._send_json(500, {"error": "Job says done but output.docx is missing"})
+        with open(output_path, "rb") as f:
+            out_bytes = f.read()
+        return self._send_json(200, {
+            "ok": True,
+            "dataBase64": base64.b64encode(out_bytes).decode("ascii"),
+            "originalFileName": record.get("originalFileName") or "document.pdf",
+        })
+
+    def _handle_translation_job_active(self, query):
+        """Lets the frontend check, right when the Translation service
+        loads, whether this user already has a job running or finished-
+        but-not-yet-downloaded - so switching services and coming back
+        (or closing the browser and returning later) shows the SAME job
+        continuing, instead of a blank upload screen, per explicit
+        direction that a service switch must never look like the process
+        stopped."""
+        user_id = _safe_id(self._resolve_user_id_query(query))
+        jobs_root = _user_dir(user_id, "Translation", "_jobs")
+        active = []
+        if os.path.isdir(jobs_root):
+            for name in os.listdir(jobs_root):
+                job_json_path = os.path.join(jobs_root, name, "job.json")
+                if not os.path.isfile(job_json_path):
+                    continue
+                try:
+                    with open(job_json_path, "r", encoding="utf-8") as f:
+                        record = json.load(f)
+                except (OSError, ValueError):
+                    continue
+                record.pop("token", None)
+                if record.get("claimed"):
+                    continue
+                if record.get("status") in ("queued", "processing", "done"):
+                    active.append(record)
+        active.sort(key=lambda r: r.get("createdAt", ""), reverse=True)
+        return self._send_json(200, {"ok": True, "jobs": active})
+
+    def _handle_translation_job_claim(self, body):
+        """Idempotently marks a finished job as claimed once the browser
+        has downloaded its result and recorded the one-time wallet
+        charge for it - so job/active stops listing it, and a repeat
+        claim attempt (a double-click, two tabs open, a retried request)
+        is a safe no-op rather than a path to double billing."""
+        user_id = _safe_id(self._resolve_user_id(body))
+        job_id = (body.get("jobId") or "").strip()
+        if not job_id:
+            return 400, {"error": "jobId is required"}
+        job_dir = self._job_dir_for(user_id, job_id)
+        job_json_path = os.path.join(job_dir, "job.json")
+        if not os.path.isfile(job_json_path):
+            return 404, {"error": "Job not found"}
+        with open(job_json_path, "r", encoding="utf-8") as f:
+            record = json.load(f)
+        if record.get("status") != "done":
+            return 409, {"error": "Job is not finished yet", "status": record.get("status")}
+        already = bool(record.get("claimed"))
+        if not already:
+            record["claimed"] = True
+            record["claimedAt"] = datetime.datetime.utcnow().isoformat() + "Z"
+            with open(job_json_path, "w", encoding="utf-8") as f:
+                json.dump(record, f, indent=2)
+        return 200, {"ok": True, "alreadyClaimed": already}
 
     def _handle_translation_translate_start(self, body):
         text = body.get("text") or ""
