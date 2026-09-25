@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+    <title>Support | Lexora AI Solutions</title>
+    <meta name="theme-color" content="#00008B" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+    <link rel="stylesheet" href="css/style.css?v=20260809d">
+    <link rel="stylesheet" href="css/design-system.css?v=20260809d">
+</head>
+<body>
+
+    <!-- Phase 4d: this file is loaded into index.html's #contentFrame -
+         it is one real, standalone section page (not innerHTML injected
+         into a shared shell). window.__lexoraSectionId tells app.js's
+         existing loadContent()/CONTENT_DATA dispatch which section this
+         is; app.js itself is unchanged from the shell's copy, so every
+         mechanism already defined there (billing, activity logs,
+         background-job polling, etc.) works exactly the same here. -->
+    <div id="contentArea" class="content-area">
+        <div id="contentBody"></div>
+    </div>
+
+    <div class="msg-overlay" id="messageOverlay">
+        <div class="msg-card">
+            <div class="msg-card-inner">
+                <button class="msg-close-btn" onclick="handleButtonClick('Close')" aria-label="Close">✕</button>
+                <div class="msg-title-bar">
+                    <span class="msg-title" id="msgTitle">Message</span>
+                </div>
+                <div class="msg-content">
+                    <div class="msg-text" id="msgText"></div>
+                    <div class="msg-buttons" id="msgButtons"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
+    <script>
+      if (window.pdfjsLib) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      }
+      const AMIRI_FONT_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Regular.ttf';
+      const AMIRI_BOLD_FONT_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Bold.ttf';
+      const AMIRI_ITALIC_FONT_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Italic.ttf';
+      const AMIRI_BOLDITALIC_FONT_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-BoldItalic.ttf';
+      // Tells app.js (loaded below, identical to the shell's copy) which
+      // section this standalone page represents.
+      window.__lexoraSectionId = 'support';
+    </script>
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <script src="js/engine-translation.js?v=engine-translation-2026-08-20b"></script>
+    <script src="js/engine-ocr.js?v=engine-ocr-2026-08-20b"></script>
+    <script src="js/engine-dataextraction.js?v=engine-dataextraction-2026-08-20b"></script>
+    <script src="js/engine-bai2.js?v=engine-bai2-2026-08-20b"></script>
+    <script src="js/engine-calculators.js?v=engine-calculators-2026-08-20b"></script>
+    <script src="js/service-runner.js?v=20260809d"></script>
+    <script src="js/tools.js?v=20260809d"></script>
+    <script src="js/tools-files.js?v=20260809d"></script>
+    <script src="js/tools-docs.js?v=20260809d"></script>
+    <script src="js/free-services.js?v=20260809d"></script>
+    <script src="js/data-extraction.js?v=20260809d"></script>
+    <script src="js/ocr-service.js?v=20260809d"></script>
+    <script src="js/bai2.js?v=20260809d"></script>
+    <script src="js/storage-destinations.js?v=20260809d"></script>
+    <script src="js/paid-calculators.js?v=20260809d"></script>
+    <script src="js/app.js?v=20260809e"></script>
+</body>
+</html>
