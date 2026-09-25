@@ -14758,6 +14758,22 @@
                 console.log('Translation Files:', getMyTranslationFiles());
             }
 
+            // Fetches the current Terms & Conditions text from the backend
+            // (an admin-editable/replaceable file - see backend/json/terms-and-conditions.txt)
+            // and shows it as a blocking overlay. onAccepted runs once the
+            // user clicks "I Agree" and the server has recorded it.
+            function showTermsGate(onAccepted) {
+                window.__termsGateOnAccepted = onAccepted;
+                const overlay = document.getElementById('termsGateOverlay');
+                const contentEl = document.getElementById('termsGateContent');
+                overlay.style.display = 'flex';
+                fetchJSON('/api/terms').then(function (data) {
+                    contentEl.textContent = (data && data.content) || 'Terms & Conditions are not available right now.';
+                }).catch(function () {
+                    contentEl.textContent = 'Terms & Conditions could not be loaded. Please refresh and try again.';
+                });
+            }
+
             async function acceptTermsGate() {
                 const btn = document.getElementById('termsGateAcceptBtn');
                 btn.disabled = true;
