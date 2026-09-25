@@ -14774,7 +14774,7 @@
                 });
             }
 
-            async function acceptTermsGate() {
+            window.acceptTermsGate = async function () {
                 const btn = document.getElementById('termsGateAcceptBtn');
                 btn.disabled = true;
                 try {
