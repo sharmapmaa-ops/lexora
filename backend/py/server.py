@@ -3141,7 +3141,7 @@ class Handler(SimpleHTTPRequestHandler):
         # intentionally left to that layer, since this process itself
         # doesn't know whether it's actually being reached over https.
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
 
         # No caching for the app's own static files - CSS/JS/HTML edits
