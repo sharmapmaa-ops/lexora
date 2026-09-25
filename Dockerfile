@@ -4,6 +4,15 @@
 # package (not a pip package), and most platforms' native "detect a
 # Python app and pip install" build path has no way to run apt-get - a
 # container image is the reliable way to guarantee it's present.
+#
+# NOTE: the live Render service for this app is currently configured as
+# a native Python environment (Build Command "pip install -r
+# backend/requirements.txt", Start Command "python3 backend/py/
+# server.py"), NOT this Dockerfile - so tesseract-ocr is not actually
+# installed there today. This file is kept accurate and ready in case
+# the service is ever migrated to Render's Docker/Blueprint deploy
+# (see render.yaml), which is the only way to get tesseract-ocr (and
+# anything else needing a system package) actually working.
 FROM python:3.12-slim
 
 # tesseract-ocr: OCR fallback for scanned PDFs (see py/lease_engine.py).
@@ -22,23 +31,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-fra \
     tesseract-ocr-spa \
     tesseract-ocr-deu \
-    curl gnupg build-essential \
-    libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Translation background-job worker (backend/worker/) - Node port of the
-# pdf.js text-layer translation pipeline, spawned per-job by server.py so
-# a translation keeps running server-side after the browser navigates
-# away or closes. See backend/worker/translation_worker.js and
-# JOB_SYSTEM.md.
-COPY backend/worker/package.json backend/worker/package.json
-RUN cd backend/worker && npm_config_nodedir=/usr/include/node CPPFLAGS="-I/usr/include/node" npm install --omit=dev
 
 COPY . .
 

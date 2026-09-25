@@ -1,0 +1,13 @@
+[
+    {
+        "id": "TXN001",
+        "date": "2026-07-02",
+        "time": "09:00 AM",
+        "userId": "U0000001",
+        "paymentType": "Add Balance",
+        "paymentMode": "HDFC Bank Debit Card",
+        "description": "Initial balance top-up",
+        "credit": 100000,
+        "debit": 0
+    }
+]

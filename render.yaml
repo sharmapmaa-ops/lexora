@@ -5,6 +5,15 @@
 # needed for scanned-PDF OCR actually gets installed - Render's native
 # Python build has no apt-get step.
 #
+# CURRENT STATUS: the live "lexora-ai-solutions" service on Render was
+# created manually (Environment: Python 3, not this Blueprint), with its
+# own Build/Start Command set directly in its Settings tab - Render does
+# NOT read this file for that service. That means tesseract-ocr, the
+# persistent disk, and LEXORA_DATA_DIR below are NOT active on the live
+# service today; everything in this file only takes effect if that
+# service is ever recreated via New -> Blueprint (pointing at this same
+# repo) instead.
+#
 # PERSISTENCE: the container filesystem is rebuilt from this repo on every
 # deploy, so anything written at runtime (registered users, wallet
 # transactions, admin edits to json/plans.json, processed files) would be
