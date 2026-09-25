@@ -6942,7 +6942,7 @@
                 const changedFields = Object.keys(before).filter(k => before[k] !== profileData[k]);
                 const detailsChanged = changedFields.length > 0 || passwordChanged;
 
-                userNameDisplay.textContent = profileData.firstName + ' ' + profileData.lastName;
+                if (userNameDisplay) userNameDisplay.textContent = profileData.firstName + ' ' + profileData.lastName;
                 MENU_CONFIG.user.name = profileData.firstName + ' ' + profileData.lastName;
                 updateAvatarDisplay();
                 persistProfile();
@@ -10769,7 +10769,8 @@
             function resetContentArea() {
                 contentArea.classList.add('loading');
                 contentBody.innerHTML = '';
-                centerContent.scrollTop = 0;
+                if (centerContent) centerContent.scrollTop = 0;
+                else if (contentArea) contentArea.scrollTop = 0;
             }
 
             // ============================================================
@@ -11472,7 +11473,7 @@
                 upgradeCardHeaders(contentBody);
                 applyCardLayout();
                 enhanceServicePage(contentBody);
-                currentMenuDisplay.textContent = breadcrumbLabel;
+                if (currentMenuDisplay) currentMenuDisplay.textContent = breadcrumbLabel;
                 wireSplitTableScrollSync(contentBody);
 
                 if (breadcrumb && breadcrumb.includes('Payment Mode')) {
@@ -11832,7 +11833,27 @@
                 }
                 resetContentArea();
 
+                const PROFILE_MENU_SECTIONS = {
+                    'profile': { breadcrumb: '👤 Profile', body: function () { return buildProfileBody(); } },
+                    'admin': { breadcrumb: '🛠️ Admin', body: function () { return buildAdminFilesBody(); }, after: function () { refreshDbStatus(); loadMaintenanceCard(); } },
+                    'admin-overview': { breadcrumb: '📈 Overview', body: function () { return buildAdminOverviewBody(); } },
+                    'api-documentation': { breadcrumb: '📚 API Documentation', body: function () { return CONTENT_DATA['api-documentation'].body(); } },
+                    'support': { breadcrumb: '🎫 Support', body: function () { return CONTENT_DATA['support'].body(); } },
+                    'notification': { breadcrumb: '🔔 Notification', body: function () { return buildNotificationBody(); }, after: function () { renderNotificationTable(); } },
+                };
+
                 setTimeout(() => {
+                    if (PROFILE_MENU_SECTIONS[parentId]) {
+                        const section = PROFILE_MENU_SECTIONS[parentId];
+                        activeItemId = parentId;
+                        activeSubItemId = null;
+                        updateContent({ body: section.body() }, section.breadcrumb);
+                        if (section.after) section.after();
+                        closeAllSubMenus();
+                        contentArea.classList.remove('loading');
+                        return;
+                    }
+
                     const parent = MENU_CONFIG.mainMenu.find(item => item.id === parentId);
                     if (!parent) return;
 
@@ -14676,7 +14697,6 @@
                         }
                         return;
                     }
-                    setupUserProfile();
                     _revealAppAfterInit();
                     return;
                 }
