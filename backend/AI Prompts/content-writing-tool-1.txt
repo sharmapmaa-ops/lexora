@@ -1,3 +1,0 @@
-Write a {tone} {type} about the following topic. Target length: {length}. Return only the finished content, no preamble or explanation.
-
-Topic: {topic}
