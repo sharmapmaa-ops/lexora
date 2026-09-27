@@ -2906,12 +2906,22 @@
                                     refreshServicePage('translation');
                                 }
 
-                                offlineBlob = await window.__translationEngine.buildPdfjsTranslatedDocxBlob(pdfFileForPipeline, {
+                                const pdfjsResult = await window.__translationEngine.buildPdfjsTranslatedDocxBlob(pdfFileForPipeline, {
                                     targetLang: targetLanguage
                                 }, onLog);
+                                offlineBlob = pdfjsResult.blob;
 
                                 _downloadBlobImmediately(offlineBlob, baseName + ' Final Output.docx');
                                 addActivity('translation', `${fl}System > Final Output file downloaded`, 'Info');
+                                // Final combined translation JSON (v18's
+                                // translate_response_ALL) downloads WITH the
+                                // Final Output, in place of the old
+                                // "Text-based" docx download.
+                                if (pdfjsResult.combinedResponse) {
+                                    const jsonName = baseName + ' translate_response_ALL.json';
+                                    _downloadBlobImmediately(new Blob([JSON.stringify(pdfjsResult.combinedResponse, null, 2)], { type: 'application/json' }), jsonName);
+                                    addActivity('translation', `${fl}System > ${jsonName} downloaded`, 'Info');
+                                }
                                 file.progress = '80';
                                 refreshServicePage('translation');
 
@@ -2972,7 +2982,11 @@
                             // Browser me bana docx blob ko sirf is session me rakhte
                             // hain — user isi process ke dauran download karta hai.
                             // Koi server file, koi Output.docx disk pe nahi.
-                            translationBlobStore[file.id] = { blob: offlineBlob, name: docName + outExt };
+                            // Stored/delivered file is the Final Output
+                            // (not the old "Text-based" name) - Email/Drive
+                            // etc. send this; Desktop already has it (above).
+                            const finalOutputName = baseName + ' Final Output' + outExt;
+                            translationBlobStore[file.id] = { blob: offlineBlob, name: finalOutputName };
                             file.progress = '95';
 
                             // Per-document plans: the whole file is one flat
@@ -3011,11 +3025,21 @@
                             file.outputFormat = 'docx';
                             file.sessionDownload = true;   // browser-only download
                             file.progress = '100';
-                            addActivity('translation', `${fl}Generate Output > ${docName}${outExt}`, 'Success');
+                            addActivity('translation', `${fl}Generate Output > ${finalOutputName}`, 'Success');
                             if (totalCharged > 0) {
                                 notifyProcessCompletion('Translation', file.name, totalCharged, fileTxnId);
                             }
-                            await autoDeliverBySystemConfig('translation', file, async () => translationBlobStore[file.id]);
+                            // Desktop: Final Output + JSON were already
+                            // downloaded above, so no second (Text-based)
+                            // download. Any other System Configuration
+                            // (Email, Google Drive, ...) gets Final Output.docx.
+                            const tcHasSysCfg = SERVICES_CATALOG['translation'] && SERVICES_CATALOG['translation'].systemConfig === 'Yes';
+                            const tcSelected = tcHasSysCfg ? currentSystemConfig.trim().toLowerCase() : 'desktop';
+                            if (tcSelected === 'desktop') {
+                                file.autoDelivered = true;
+                            } else {
+                                await autoDeliverBySystemConfig('translation', file, async () => translationBlobStore[file.id]);
+                            }
                             file.status = 'completed';
                             activeAgentId = null;
                             // NOTE: previously deleted translationFileBlobs[file.id]

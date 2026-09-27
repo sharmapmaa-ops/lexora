@@ -4615,9 +4615,11 @@ You will receive a list of paragraph entries, each with: id, the ORIGINAL source
 For each entry, check specifically for:
 - Terminology a professional in your field, in ${targetCountry || 'your jurisdiction'} specifically, would never phrase this way - including your field's standard terms, defined-term consistency, and country-specific conventions.
 - Any meaning that was lost, changed, added, or that no longer matches what the original actually says or legally/professionally means.
-- Duplicated sentences, lines, or trailing phrases that look like an extraction/OCR artifact rather than something the source intentionally repeats.
 - Numbering, dates, names, amounts, and identifiers that do not exactly match the original.
 - Phrasing that is technically correct but that no working professional in your field would actually write this way in a real ${(domainInfo && domainInfo.docType) || 'document'}.
+
+TRANSLATION RULES (Final_Working_v18.html) - the translator had to follow these, and every correction you make must follow them too. Each entry is one translation group the translator already formed from the source boxes; you may correct an entry's text only, never merge, split, drop or add entries, so the grouping rules (R1-R4, R15, R16) are already fixed for you:
+${v18TranslationRuleLines(targetLanguageLabel).join('\n')}
 
 Only include an entry in your response if you are making an actual correction to it. If an entry's current translation is already correct and professionally sound, do NOT include it at all - most entries in a good translation need no change.
 
@@ -7806,38 +7808,477 @@ ${JSON.stringify(texts)}`;
   // is the same shared call every other engine in this file already uses,
   // so glossary/agent behavior (and any future improvement to either) stays
   // in ONE place rather than being duplicated a second time here.
-  // Detects paragraph boundaries WITHIN a flowing-text region (a 'green'
-  // region can span multiple actual paragraphs - e.g. a title, an intro
-  // sentence, and several lettered/numbered clauses, all grouped into ONE
-  // region purely by column-alignment/proximity). Treating the WHOLE
-  // region as a single paragraph would tell v14TranslateAllPages to merge
-  // and translate all of it as ONE block, collapsing the original
-  // page's layout into one oversized shape. A new paragraph starts at a
-  // large vertical gap from the previous line, or at a line that visibly
-  // begins a new legal clause (a lettered/numbered marker like "A.",
-  // "1.", "a)").
-  function splitRegionIntoParagraphs(blueBoxes) {
-    const sorted = blueBoxes.slice().sort(function (a, b) { return a.yTop - b.yTop; });
-    const clauseMarkerRe = /^\s*(?:[A-Za-z]|\d{1,2})[.)]\s+\S/;
-    const paragraphs = [];
-    let current = [];
-    for (let i = 0; i < sorted.length; i++) {
-      const box = sorted[i];
-      if (current.length > 0) {
-        const prev = current[current.length - 1];
-        const gap = box.yTop - (prev.yTop + prev.height);
-        const avgHeight = (prev.height + box.height) / 2 || 1;
-        const bigGap = gap > avgHeight * 0.6;
-        const looksLikeNewClause = clauseMarkerRe.test(box.text || '');
-        if (bigGap || looksLikeNewClause) {
-          paragraphs.push(current);
-          current = [];
+  // ---- Final_Working_v18.html translation rules (per explicit direction) ----
+  // The Document Translation service follows EVERY rule from
+  // Final_Working_v18.html: the R1-R17 prompt rules (the AI itself groups
+  // blue boxes into sentences - R2/R3/R4 - instead of a code heuristic),
+  // plus v18's code-level rules: skip regions already in the target
+  // language, per-region "note" (R14), min-calls batching with token
+  // growth / split on truncation, missing-region retry (3x), untranslated
+  // retry (2x), response_format json_object + reasoning none. The reviewer
+  // agent gets the same R1-R17 rules. Lexora-only extras are kept: domain
+  // glossary persona, target country, learned rules, PII masking, reviewer
+  // (Translation Health). Lexora prompt rules that do not conflict with
+  // R1-R17 are kept too (subordinate to R1-R17); "OCR DUPLICATE DETECTION"
+  // was dropped because it contradicts R8/R9.
+  const LANGUAGE_TO_BCP47 = { English: 'en', Arabic: 'ar', Hindi: 'hi', Urdu: 'ur', French: 'fr', Spanish: 'es', German: 'de', Chinese: 'zh' };
+
+  function v18TranslationRuleLines(targetLanguage) {
+    return [
+      'R1. Every blue_box id must appear in EXACTLY ONE group.',
+      'R2. Do NOT assume one blue_box = one sentence.',
+      'R3. Do NOT split one sentence merely because it spans multiple blue_boxes.',
+      'R4. Do NOT combine two independent sentences.',
+      'R5. Preserve reading order.',
+      'R6. Reuse the same translation for the same defined term.',
+      'R7. Never invent, infer, or complete text.',
+      'R8. DUPLICATES: preserve exact repetition.',
+      'R9. IDENTICAL TEXTS in different blue_boxes are legitimate.',
+      'R10. If already in ' + targetLanguage + ', return UNCHANGED.',
+      'R11. ABBREVIATIONS: Do NOT expand.',
+      'R12. SHORT PHRASES: Translate as short.',
+      'R13. MIXED-LANGUAGE GROUPS: translate source, keep target unchanged, preserve both.',
+      'R14. Follow "note" field if present.',
+      'R15. Verify: every blue_box id once; no split/merge; repetition preserved.',
+      'R16. Do NOT repeat the source text in your output — we already have it. Return only source_box_ids and translated_text per group, nothing else.',
+      'R17. FORMATTING MARKUP: source text may contain <b></b> (bold), <i></i> (italic), <u></u> (underline) tags around specific words/phrases. In translated_text, wrap the CORRESPONDING translated words with the SAME tags — same meaning, not necessarily the same word order or word count. Do not add tags where the source had none, and do not drop tags that were present.'
+    ];
+  }
+
+  // Lexora's own translation rules that do NOT conflict with R1-R17
+  // (copied verbatim from v14BuildTranslationPrompt; only the sentence
+  // asking for a "target_variant" output field was removed, since the
+  // v18 output shape has no such field).
+  function lexoraAdditionalTranslationRules(targetLanguageLabel, targetCountry, domainInfo) {
+    const countryInstruction = targetCountry
+      ? `\n\nTARGET COUNTRY SPECIFIED: ${targetCountry}. Use the standard variant of ${targetLanguageLabel} as spoken/written in ${targetCountry} specifically - its spelling conventions, its official/legal terminology, its units and formatting conventions (dates, currency, addresses), and the terms ${targetCountry}'s own administrative/legal system actually uses for each concept. This takes priority over guessing a variant from the source document.`
+      : '';
+    const expert = domainInfo && TRANSLATION_DOMAIN_EXPERTS[domainInfo.domain];
+    const domainPersonaInstruction = expert
+      ? `\n\nDOMAIN EXPERT PERSONA:\nThis document was pre-classified as domain "${domainInfo.domain}" (document type: "${domainInfo.docType || 'Document'}"). Translate it as ${expert.role}. Write in ${targetLanguageLabel} as a native professional in this field would - natural, fluent, idiomatic, and using this field's precise terminology.\n\nDOMAIN TERMINOLOGY (use these exact ${targetLanguageLabel} equivalents consistently wherever the source term or its clear equivalent appears - these override your own judgment call on which synonym to pick):\n${expert.terms}`
+      : '';
+    return `IMPORTANT — PICK THE RIGHT REGIONAL VARIANT OF ${targetLanguageLabel}:
+Most languages have several standard regional variants that differ in spelling, official terminology, and legal/administrative vocabulary (for example a language may have distinct European vs. North/South American vs. South Asian standards). Decide which variant of ${targetLanguageLabel} best fits this document's domain and likely audience, then apply it CONSISTENTLY throughout: its spelling conventions, its standard professional/official terminology, and the terms that variant's own legal or administrative system actually uses for each concept. If nothing indicates a specific region, use the most widely-understood neutral standard form of ${targetLanguageLabel}.${countryInstruction}${domainPersonaInstruction}
+
+IMPORTANT — TERMINOLOGY MUST STAY CONSISTENT ACROSS THE WHOLE DOCUMENT:
+Before translating, mentally note the key recurring terms and concepts in the document — legal, financial, technical, or otherwise (e.g. rent, tenant, landlord, terminate, deposit, premises, party, agreement, or whatever else actually recurs in THIS document). For each such term, pick ONE precise ${targetLanguageLabel} equivalent appropriate to the document_type's register, and use that EXACT SAME word every single time that term/concept appears, on every page. Do not vary it with a different synonym from one occurrence to the next - inconsistent terminology changes the meaning of a document like this (especially a legal or technical one), it isn't a stylistic choice.
+
+IMPORTANT — TRANSLATE LIKE A NATIVE PROFESSIONAL WRITER OF ${targetLanguageLabel}, NOT WORD-FOR-WORD:
+Do not produce a literal, word-by-word rendering that mirrors the source language's sentence structure, word order, or idioms. Instead, understand what each sentence/clause is actually saying and re-express that same meaning the way a native ${targetLanguageLabel}-speaking professional would naturally write it for a document of this document_type - using that field's own standard conventions, set phrases, and idiomatic terminology for the equivalent concept, not a dictionary-literal translation of the source wording. This matters most for formal documents (legal/contract, official government, academic, business) where the target language has its own established drafting conventions:
+- For a legal/contractual document_type: use the standard terms and set phrases a professional in that legal tradition would use for each concept (e.g. how that legal system's professionals normally phrase ending an agreement, standard boilerplate expressions, standard clause openers) - a concept-for-concept translation of what the clause legally does, not a literal word-for-word one. If a long sentence's source-language structure would read as awkward or unnatural when translated word-for-word, restructure it into the sentence structure ${targetLanguageLabel} would normally use for that kind of clause, while preserving the exact legal meaning and effect - do not change what any party is agreeing to, obligated to, or entitled to.
+- Official entity names, company/organization titles, authority names, and any term the source document treats as a defined/formal term (capitalized, quoted, or explicitly defined) should be translated to their standard recognized ${targetLanguageLabel} equivalent if one exists, and otherwise kept in a single consistent form - never translated one way in one place and a different way elsewhere.
+- Preserve IN-SENTENCE cross-references to other parts of the document exactly as given (e.g. "see Article 15", "as defined in Clause 4", "pursuant to Section II") - translate only the text around them, never the reference itself. This does NOT apply to a numbering marker that starts the block itself (e.g. a block whose source text begins "1.", "2.", "(a)", "b)") - that marker has ALREADY been removed before this text reached you (it's rendered separately by the document's own numbering), so never reconstruct or prepend it yourself. If a block's translated text would otherwise start with a number/letter followed by a period or parenthesis in that position, you have added a numbering marker that doesn't belong there - remove it and translate only the substantive content.
+
+IMPORTANT — ELIMINATE LITERAL TRANSLATION PATTERNS:
+Rewrite awkward, stiff constructions that come from translating word-for-word into natural ${targetLanguageLabel} a native professional would actually write. For example (English source shown for illustration - apply the same principle regardless of source/target language pair): "The appearing parties mutually and reciprocally acknowledge" -> "The parties acknowledge"; "free disposal thereof" -> "full legal authority"; "interest and will" -> "intention"; "price of lease" -> "rent" (in a Real Estate document); "cannot be adapted to regulations" -> "cannot be brought into regulatory compliance". Apply this same kind of simplification and naturalization throughout, in whichever language pair you are actually translating.
+This does NOT license shortening a set legal phrase that carries a specific combined meaning just because it sounds wordy - e.g. "in the name and on behalf of" (a distinct legal-agency concept in many jurisdictions - acting IN THE NAME OF a principal, not merely generally "on behalf of" them) must stay complete, not become just "on behalf of". The difference from the examples above: those trim genuinely redundant restatement (saying the same thing twice - "mutually AND reciprocally"), this would drop actual legal content the source phrase specifically conveys. If unsure whether a phrase is redundant filler or a set legal term-of-art, keep it complete rather than risk losing meaning.
+
+IMPORTANT — TERMINOLOGY PREFERENCES FOR THIS DOCUMENT TYPE (real estate / lease):
+- A party's right to unilaterally exit a contract without alleging breach ("recesso" in Italian, and equivalent concepts in other civil-law languages) should be translated as "withdraw"/"right of withdrawal" - NOT "terminate"/"termination". Keep this distinct from a party ending the contract FOR BREACH (which is legitimately "terminate"/"termination"). Conflating the two loses a real legal distinction between a no-fault contractual exit right and a breach-based remedy.
+- For a clause about a document being registered with a tax/revenue authority within a legally mandated period, prefer the phrasing "registration within the mandatory statutory period" over "fixed-term registration" - it reads as more natural, standard legal English for this concept.
+
+IMPORTANT — NEVER ALTER FACTUAL DATA WHILE TRANSLATING:
+The following must come through EXACTLY as in the source, never re-worded, re-formatted, recalculated, converted, or "corrected": dates, personal and organization names, addresses, all numbers, monetary amounts and currency symbols/codes, units of measurement, identifiers (tax/VAT/registration/file/account numbers), and cross-references to laws, articles, or clauses. Translate the words around them, but copy these through verbatim. Do not convert a currency into another currency, do not convert units, and do not change a date's format or calendar. Do not add any information that is not in the source, and do not omit any information that is.
+
+IMPORTANT — DO NOT TRANSLATE NON-TEXT MARKS:
+If a block is a signature, a logo/wordmark, a stamp or seal legend, a barcode/QR label, or a similar mark rather than readable body text, leave its text exactly as-is rather than translating it. Only translate genuine readable language content.
+
+IMPORTANT — NEVER RECONSTRUCT OR COMPLETE BROKEN OCR:
+Never infer missing text, never reconstruct an incomplete OCR block, never complete a sentence that was cut off mid-word or mid-thought, and never repair a paragraph that reads as damaged or garbled. Translate only what genuinely exists in the source text for that block. If the OCR text you were given is incomplete or truncated, the translated output for that block must remain equally incomplete/truncated in the same way - do not "fix" it by guessing what the rest of the sentence probably said.
+
+IMPORTANT — CROSS-REFERENCE AND LABEL-WORD PRESERVATION:
+Internal references to other parts of the document - "Article 15", "Clause 4", "Annex B", "Schedule 2", "Section III", and similar - must be preserved exactly, including the LABEL WORD itself (Article/Clause/Annex/Schedule/Section/etc.), not just the number. Never substitute one label word for another (e.g. never turn "Article 15" into "Section 15") even if the target language's normal convention would usually use a different word for that kind of division - these are cross-references INTO this specific document's own numbering scheme and must point to the exact same label+number the source used.
+
+IMPORTANT — SELF-CONSISTENCY FOR REPEATED SENTENCES AND CLAUSES:
+Beyond individual terminology (covered above), if the exact same sentence or clause appears more than once in the document (as is common with standard/boilerplate legal clauses), translate it identically every time it appears, word for word the same in the output - never produce two different-sounding translations of what was the same sentence in the source, unless the surrounding context makes the same source sentence mean something different in that specific spot.
+
+IMPORTANT — DEFINED ENTITY PROTECTION:
+In addition to personal and organization names (covered above under factual data), never translate fund names, project names, building/property names, product names, or trademark/brand names - carry these through exactly as written in the source, in their original script/language, even when translating the sentence around them.
+
+IMPORTANT — PUNCTUATION AND CAPITALIZATION FIDELITY:
+Preserve the source's actual punctuation marks rather than substituting a look-alike: an em dash (—) or en dash (–) in the source must stay an em/en dash in the output, not become a plain hyphen (-), and vice versa; preserve curly/smart quotation marks as such rather than converting them to straight quotes. For any term the source treats as a defined term (capitalized consistently in the source, e.g. "the Premises", "the Agreement", "the Party"), keep that same capitalization EVERY time it appears in the translation - never capitalize it in one paragraph and lowercase the same word used the same way in another.
+
+The translated document must preserve the legal/practical meaning, effect, structure, and evidential value of the source document - the translation must never alter what any party is agreeing to, obligated to, entitled to, or bound by.
+
+IMPORTANT — DO NOT WORRY ABOUT LINE-FITTING OR BOX WIDTHS:
+Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabel}, at whatever length that naturally takes - do not artificially shorten or pad it, and do not try to match the line-count or per-line length of the source. Exactly how the translated text gets fitted back into the page's layout is handled entirely outside of this step; your only job is an accurate, natural, complete translation of each entry's full content.`;
+  }
+
+  function buildTranslationSystemPrompt(targetLanguage, extras) {
+    extras = extras || {};
+    return [
+      'You are a professional document translator. Translate document regions into ' + targetLanguage + '.',
+      '',
+      'INPUT: a JSON array of regions, each with a region_id and a list of blue_boxes.',
+      '',
+      'RULES:'
+    ].concat(v18TranslationRuleLines(targetLanguage)).concat([
+      '',
+      'ADDITIONAL RULES (these never override R1-R17 - if anything below conflicts with R1-R17, R1-R17 win; "document_type" below means the document type stated in the DOMAIN EXPERT PERSONA, or the type you infer from the content if none is given):',
+      '',
+      lexoraAdditionalTranslationRules(targetLanguage, extras.targetCountry, extras.domainInfo) + (extras.learnedRulesBlock || ''),
+      '',
+      'OUTPUT: return ONLY a JSON object (no source text, only the translation):',
+      '{"regions": [{"region_id": "...", "translation_groups": [{"group_order": 1, "source_box_ids": ["..."], "translated_text": "..."}]}]}'
+    ]).join('\n');
+  }
+
+  function parseRegionResponse(content) {
+    let text = (content || '').trim();
+    text = text.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '');
+    try {
+      const obj = JSON.parse(text);
+      if (obj && Array.isArray(obj.regions)) return { regions: obj.regions, complete: true };
+    } catch (e) { /* fall through */ }
+    return { regions: [], complete: false };
+  }
+
+  // v18's callOpenRouterRegions, routed through Lexora's server proxy
+  // (the OpenRouter key stays server-side). The server's own 180s request
+  // timeout acts as the per-call timeout (its error text contains
+  // "timed out", which translateRegionsMinCalls treats as a timeout).
+  async function callOpenRouterRegions(model, targetLanguage, maxTokens, regionBatch, extras) {
+    const systemPrompt = buildTranslationSystemPrompt(targetLanguage, extras);
+    const modelBatch = regionBatch.map(function (region) {
+      const combinedText = region.blue_boxes.map(function (b) { return b.text; }).join(' ');
+      const entry = {
+        region_id: region.region_id,
+        blue_boxes: region.blue_boxes.map(function (b) { return { id: b.id, text: (b.markupText || b.text) }; })
+      };
+      const rep = detectRepeatedPhrase(combinedText);
+      if (rep) entry.note = 'This region contains the phrase "' + rep.phrase + '" repeated ' + rep.count + ' times. Preserve exact repetition.';
+      else if (isLikelyAbbreviation(combinedText)) entry.note = 'This is an abbreviation/acronym. Do NOT expand it.';
+      return entry;
+    });
+
+    const data = await v14ProxyJson({
+      model: model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: 'REGIONS:\n' + JSON.stringify(modelBatch) }
+      ],
+      temperature: 0,
+      max_tokens: maxTokens,
+      reasoning: { effort: 'none' },
+      response_format: { type: 'json_object' }
+    });
+    const choice = data.choices && data.choices[0];
+    const finishReason = choice && choice.finish_reason;
+    const content = (choice && choice.message && choice.message.content) || '';
+    const parsed = parseRegionResponse(content);
+    const truncated = finishReason === 'length' || !parsed.complete;
+    return { regions: parsed.regions, truncated: truncated };
+  }
+
+  function estimateOutputTokensForRegion(region) {
+    let chars = 0;
+    (region.blue_boxes || []).forEach(function (b) { chars += (b.text ? b.text.length : 0); });
+    return Math.max(15, Math.ceil((chars / 3.2) * 1.3));
+  }
+
+  function computeAdaptiveChunkSize(regions, maxTokens) {
+    if (regions.length === 0) return 1;
+    let totalTokens = 0;
+    regions.forEach(function (r) { totalTokens += estimateOutputTokensForRegion(r); });
+    const avgTokensPerRegion = totalTokens / regions.length;
+    const budget = maxTokens * 0.75; // headroom: real usage varies around the average
+    const size = Math.floor(budget / avgTokensPerRegion);
+    // Cap regardless of estimate — a huge count of tiny regions would otherwise
+    // make one call's PROMPT (not just output) enormous, which is its own drag
+    // on latency even without truncation.
+    return Math.max(1, Math.min(regions.length, Math.min(size, 500)));
+  }
+
+  async function translateRegionsMinCalls(regions, callOnce, opts) {
+    opts = opts || {};
+    const initialMaxTokens = opts.initialMaxTokens || 8000;
+    const maxTokenCeiling = opts.maxTokenCeiling || 64000;
+    const maxAttemptsPerBatch = opts.maxAttemptsPerBatch || 4;
+    const initialTimeoutMs = opts.initialTimeoutMs || 120000;
+    // Chunk size follows the model's TRUE ceiling (not the smaller per-call
+    // starting value) so the document is split into as few batches as the
+    // model's real capacity allows — the starting value only controls how
+    // big the FIRST attempt of each batch is, not how many regions go in it.
+    const chunkSize = opts.chunkSize || computeAdaptiveChunkSize(regions, maxTokenCeiling);
+    const concurrency = opts.concurrency || 4;
+    const onLog = opts.onLog || function () {};
+    const resultByRegionId = new Map();
+
+    async function handleBatch(batch, maxTokens, depth) {
+      if (batch.length === 0) return;
+      let remaining = batch;
+      let tokens = maxTokens;
+      let timeoutMs = initialTimeoutMs;
+
+      for (let attempt = 1; attempt <= maxAttemptsPerBatch; attempt++) {
+        onLog('Translating ' + remaining.length + ' region(s) (depth ' + depth + ', attempt ' + attempt + ', max_tokens=' + tokens + ', timeout=' + Math.round(timeoutMs / 1000) + 's)...');
+        let res;
+        let timedOut = false;
+        try {
+          res = await callOnce(remaining, tokens, timeoutMs);
+        } catch (e) {
+          timedOut = /timed out/i.test(e.message || '');
+          onLog((timedOut ? 'Timed out — ' : 'Call failed — ') + e.message);
+          res = { regions: [], truncated: !timedOut };
+        }
+        (res.regions || []).forEach(function (r) {
+          if (r && r.region_id && Array.isArray(r.translation_groups)) {
+            resultByRegionId.set(String(r.region_id), r.translation_groups);
+          }
+        });
+        remaining = remaining.filter(function (r) { return !resultByRegionId.has(String(r.region_id)); });
+        if (remaining.length === 0) return;
+
+        if (timedOut) {
+          if (remaining.length > 1) {
+            const mid = Math.ceil(remaining.length / 2);
+            onLog('Timed out — splitting remaining ' + remaining.length + ' region(s) into smaller/faster batches (running in parallel)...');
+            await Promise.all([
+              handleBatch(remaining.slice(0, mid), tokens, depth + 1),
+              handleBatch(remaining.slice(mid), tokens, depth + 1)
+            ]);
+            return;
+          }
+          // Down to a single region and it still timed out — give it more
+          // time rather than more tokens, capped at 5 minutes.
+          timeoutMs = Math.min(timeoutMs * 1.5, 300000);
+          continue;
+        }
+
+        // Truncated: grow max_tokens toward the ceiling first, regardless of
+        // how many regions are left — this alone resolves most truncations
+        // without ever needing to split into more calls.
+        if (res.truncated && tokens < maxTokenCeiling) {
+          tokens = Math.min(maxTokenCeiling, tokens * 2);
+          onLog('Response truncated — retrying with bigger max_tokens...');
+          continue;
+        }
+
+        // Still truncated even at the ceiling: splitting is the last resort.
+        if (remaining.length > 1) {
+          const mid = Math.ceil(remaining.length / 2);
+          onLog('Still truncated at the token ceiling — splitting remaining ' + remaining.length + ' region(s) (running in parallel)...');
+          await Promise.all([
+            handleBatch(remaining.slice(0, mid), initialMaxTokens, depth + 1),
+            handleBatch(remaining.slice(mid), initialMaxTokens, depth + 1)
+          ]);
+          return;
+        }
+        tokens = maxTokenCeiling;
+      }
+    }
+
+    // Proactively split into capped-size chunks up front (a no-op single chunk
+    // for small documents), then run up to `concurrency` chunks at the same time.
+    const chunks = [];
+    for (let i = 0; i < regions.length; i += chunkSize) chunks.push(regions.slice(i, i + chunkSize));
+    if (chunks.length > 1) {
+      onLog(regions.length + ' region(s) split into ' + chunks.length + ' batch(es) of up to ' + chunkSize + ', running ' + Math.min(concurrency, chunks.length) + ' at a time...');
+    }
+    let nextChunkIdx = 0;
+    async function worker() {
+      while (nextChunkIdx < chunks.length) {
+        const idx = nextChunkIdx++;
+        const chunk = chunks[idx];
+        let estimated = 0;
+        chunk.forEach(function (r) { estimated += estimateOutputTokensForRegion(r); });
+        const startTokens = Math.min(maxTokenCeiling, Math.max(initialMaxTokens, Math.ceil(estimated * 1.3)));
+        await handleBatch(chunk, startTokens, 0);
+      }
+    }
+    const workers = [];
+    for (let w = 0; w < Math.min(concurrency, chunks.length); w++) workers.push(worker());
+    await Promise.all(workers);
+
+    return resultByRegionId;
+  }
+
+  // v18's acquireTranslations (OpenRouter mode), plus Lexora's PII masking,
+  // domain glossary, learned rules and reviewer agent. Returns
+  // Map(region_id -> translation_groups) with the FINAL text (after
+  // reviewer corrections and PII restore).
+  async function translateRegionsV18(model, allRegions, targetLanguage) {
+    const onLog = function (msg) { log(String(msg).trim()); };
+    const targetCode = LANGUAGE_TO_BCP47[targetLanguage] || 'en';
+    const initialMaxTokens = 8000;
+    const modelTokenCeiling = 64000;
+
+    const regionsToTranslate = [];
+    let skippedCount = 0;
+    for (const region of allRegions) {
+      const combined = region.blue_boxes.map(function (b) { return b.text; }).join(' ');
+      const detected = detectLanguageSimple(combined);
+      if (detected === targetCode && detected !== 'mixed') skippedCount++;
+      else regionsToTranslate.push(region);
+    }
+    if (skippedCount) onLog(skippedCount + ' region(s) already in ' + targetLanguage + ' - kept unchanged.');
+    const translationByRegionId = new Map();
+    if (regionsToTranslate.length === 0) return translationByRegionId;
+
+    // PII masking (same patterns as v14TranslateAllPages) - the model only
+    // ever sees placeholder tokens; real values are restored at the end.
+    const piiMap = {};
+    let piiCounter = 0;
+    function maskPiiInText(text) {
+      if (!text) return text;
+      let masked = text;
+      const patterns = [
+        /[\w.+-]+@[\w-]+\.[\w.-]+/g,
+        /\b[A-Z]{2}\d{2}[A-Z0-9]{4,30}\b/g,
+        /\b(?:\d{4}[ -]){3}\d{4}\b|\b\d{13,19}\b/g,
+        /\+?\d{1,3}[\s.-]?\(?\d{2,4}\)?(?:[\s.-]\d{2,4}){2,4}/g,
+      ];
+      patterns.forEach(function (re) {
+        masked = masked.replace(re, function (match) {
+          piiCounter++;
+          const token = '[[PII' + piiCounter + ']]';
+          piiMap[token] = match;
+          return token;
+        });
+      });
+      return masked;
+    }
+    function unmaskPiiInText(text) {
+      if (!text) return text;
+      let out = text;
+      Object.keys(piiMap).forEach(function (token) {
+        if (out.indexOf(token) !== -1) out = out.split(token).join(piiMap[token]);
+      });
+      return out;
+    }
+    const maskedRegions = regionsToTranslate.map(function (region) {
+      return {
+        region_id: region.region_id,
+        blue_boxes: region.blue_boxes.map(function (b) {
+          const maskedText = maskPiiInText(b.text);
+          const maskedMarkup = !b.markupText ? b.markupText : (b.markupText === b.text ? maskedText : maskPiiInText(b.markupText));
+          return { id: b.id, text: maskedText, markupText: maskedMarkup };
+        })
+      };
+    });
+    if (piiCounter > 0) onLog('PII masking: ' + piiCounter + ' sensitive value(s) masked before sending to translation.');
+
+    // Domain classification + glossary persona (same matching as v14TranslateAllPages).
+    const sampleText = [];
+    maskedRegions.forEach(function (r) { r.blue_boxes.forEach(function (b) { if (sampleText.length < 25 && b.text) sampleText.push(b.text); }); });
+    log('Detecting document domain for terminology matching...', 'info');
+    const domainInfo = await v14ClassifyTranslationDomain(model, sampleText.join('\n').slice(0, 1500));
+    let matchedDomainKey = null;
+    const dynamicDomains = await v14FetchDynamicDomains();
+    const knownDomainNames = Object.keys(TRANSLATION_DOMAIN_EXPERTS).concat(Object.keys(dynamicDomains));
+    for (const d of knownDomainNames) {
+      if (d.toLowerCase() === domainInfo.domain.toLowerCase()) { matchedDomainKey = d; break; }
+    }
+    if (!matchedDomainKey) {
+      for (const d of knownDomainNames) {
+        if (domainInfo.domain.toLowerCase().includes(d.toLowerCase()) || d.toLowerCase().includes(domainInfo.domain.toLowerCase())) {
+          matchedDomainKey = d; break;
         }
       }
-      current.push(box);
     }
-    if (current.length) paragraphs.push(current);
-    return paragraphs;
+    if (matchedDomainKey) {
+      if (!TRANSLATION_DOMAIN_EXPERTS[matchedDomainKey] && dynamicDomains[matchedDomainKey]) {
+        TRANSLATION_DOMAIN_EXPERTS[matchedDomainKey] = dynamicDomains[matchedDomainKey];
+      }
+      domainInfo.domain = matchedDomainKey;
+      log(`Detected domain: ${domainInfo.domain} (${domainInfo.docType})`, 'info');
+    } else {
+      log(`Detected a new domain not seen before: "${domainInfo.domain}" - generating a matching expert profile...`, 'info');
+      try {
+        const newProfile = await v14GenerateAndSaveDomainExpert(model, domainInfo.domain, domainInfo.docType, sampleText.join('\n').slice(0, 1500));
+        TRANSLATION_DOMAIN_EXPERTS[domainInfo.domain] = newProfile;
+        log(`New domain profile created and saved for future documents: "${domainInfo.domain}"`, 'info');
+      } catch (genErr) {
+        log('Could not generate a new domain profile (' + genErr.message + ') - continuing with General Business terminology instead.', 'warn');
+        domainInfo.domain = 'General Business';
+      }
+    }
+    const targetCountry = window.getSetupPref ? window.getSetupPref('translation', 'targetCountry', '') : '';
+    const learnedRulesBlock = await v14FetchTranslationRules();
+    const extras = { domainInfo: domainInfo, targetCountry: targetCountry, learnedRulesBlock: learnedRulesBlock };
+    const callOnce = function (batch, maxTokens) { return callOpenRouterRegions(model, targetLanguage, maxTokens, batch, extras); };
+
+    const firstPass = await translateRegionsMinCalls(maskedRegions, callOnce,
+      { initialMaxTokens: initialMaxTokens, maxTokenCeiling: modelTokenCeiling, onLog: onLog });
+    firstPass.forEach(function (groups, id) { translationByRegionId.set(id, groups); });
+
+    let stillMissing = maskedRegions.filter(function (r) { return !translationByRegionId.has(r.region_id); });
+    for (let attempt = 1; stillMissing.length > 0 && attempt <= 3; attempt++) {
+      onLog(`${stillMissing.length} region(s) missing — retrying (attempt ${attempt})...`);
+      for (const region of stillMissing) {
+        try {
+          const res = await callOnce([region], modelTokenCeiling);
+          (res.regions || []).forEach(function (r) {
+            if (r && r.region_id && Array.isArray(r.translation_groups)) translationByRegionId.set(String(r.region_id), r.translation_groups);
+          });
+        } catch (e) {
+          onLog('Retry failed for ' + region.region_id + ': ' + e.message);
+        }
+      }
+      stillMissing = maskedRegions.filter(function (r) { return !translationByRegionId.has(r.region_id); });
+    }
+
+    function regionLooksUntranslated(region) {
+      const groups = translationByRegionId.get(region.region_id);
+      if (!groups) return false;
+      return groups.some(function (g) { return looksLikelyUntranslated(g.translated_text || '', targetLanguage); });
+    }
+    let stillBad = maskedRegions.filter(regionLooksUntranslated);
+    for (let attempt = 1; stillBad.length > 0 && attempt <= 2; attempt++) {
+      onLog(`${stillBad.length} region(s) still look untranslated — retrying (attempt ${attempt})...`);
+      for (const region of stillBad) {
+        try {
+          const res = await callOnce([region], modelTokenCeiling);
+          (res.regions || []).forEach(function (r) {
+            const stillBadNew = Array.isArray(r.translation_groups) && r.translation_groups.some(function (g) { return looksLikelyUntranslated(g.translated_text || '', targetLanguage); });
+            if (r && r.region_id && Array.isArray(r.translation_groups) && !stillBadNew) {
+              translationByRegionId.set(String(r.region_id), r.translation_groups);
+            }
+          });
+        } catch (e) {
+          onLog('Retranslate-retry failed for ' + region.region_id + ': ' + e.message);
+        }
+      }
+      stillBad = maskedRegions.filter(regionLooksUntranslated);
+    }
+
+    // Reviewer agent: one entry per translation group (the AI's own
+    // grouping - the reviewer can correct a group's text, never regroup).
+    const maskedById = new Map(maskedRegions.map(function (r) { return [r.region_id, r]; }));
+    const reviewEntries = [];
+    const reviewTranslations = [];
+    translationByRegionId.forEach(function (groups, regionId) {
+      const region = maskedById.get(regionId);
+      if (!region) return;
+      const boxById = new Map(region.blue_boxes.map(function (b) { return [b.id, b]; }));
+      groups.forEach(function (g, gi) {
+        const src = (g.source_box_ids || []).map(function (id) { const b = boxById.get(id); return b ? (b.markupText || b.text) : ''; }).filter(Boolean).join(' ');
+        const reviewId = regionId + '::' + gi;
+        reviewEntries.push({ id: reviewId, text: src });
+        reviewTranslations.push({ id: reviewId, translated_text: g.translated_text || '' });
+      });
+    });
+    try {
+      const reviewed = await v14ReviewTranslation(model, reviewEntries, reviewTranslations, targetLanguage, targetCountry, domainInfo);
+      const reviewedById = {};
+      (reviewed || []).forEach(function (t) { if (t && t.id) reviewedById[t.id] = t.translated_text; });
+      translationByRegionId.forEach(function (groups, regionId) {
+        groups.forEach(function (g, gi) {
+          const v = reviewedById[regionId + '::' + gi];
+          if (typeof v === 'string') g.translated_text = v;
+        });
+      });
+    } catch (reviewErr) {
+      try { console.error('Review pass failed, shipping unreviewed translation:', reviewErr.message); } catch (e) {}
+      log('Review pass could not complete (' + reviewErr.message + ') - using the primary translation as-is.', 'warn');
+    }
+
+    if (piiCounter > 0) {
+      translationByRegionId.forEach(function (groups) {
+        groups.forEach(function (g) { if (typeof g.translated_text === 'string') g.translated_text = unmaskPiiInText(g.translated_text); });
+      });
+    }
+    return translationByRegionId;
   }
 
   async function buildPdfjsTranslatedDocxBlob(file, opts, logFn) {
@@ -7873,6 +8314,7 @@ ${JSON.stringify(texts)}`;
     const pageNumbers = Array.from(pageData.keys()).sort(function (a, b) { return a - b; });
 
     let responseByRegionId = new Map();
+    let combinedResponse = null;
 
     if (!keepOriginal) {
       const allRegions = [];
@@ -7884,87 +8326,20 @@ ${JSON.stringify(texts)}`;
         });
       }
       log('Total ' + allRegions.length + ' region(s) with text.');
-
-      // A paragraph_id per REAL paragraph within a flowing-text region
-      // (region_type 'green'), not per whole region - see
-      // splitRegionIntoParagraphs above. Single-line/table-cell regions
-      // ('red') get no paragraph_id, translated as standalone entries
-      // (they're independent fields, not parts of a flowing paragraph).
-      const blocks = [];
-      const boxIdToBlockId = {};   // our own globally-unique box.id -> v14 block id
-      const regionParagraphs = new Map();  // region_id -> array of {paraId, boxes}
-      let counter = 0;
-      allRegions.forEach(function (region) {
-        const pd = pageData.get(region._pageNum);
-        const isFlowing = region.region_type === 'green' && region.blue_boxes.length > 1;
-        const paraGroups = isFlowing
-          ? splitRegionIntoParagraphs(region.blue_boxes).map(function (boxes, idx) {
-              return { paraId: boxes.length > 1 ? (region.region_id + '_p' + idx) : null, boxes: boxes };
-            })
-          : region.blue_boxes.map(function (box) { return { paraId: null, boxes: [box] }; });
-        regionParagraphs.set(region.region_id, paraGroups);
-
-        paraGroups.forEach(function (pg) {
-          pg.boxes.forEach(function (box) {
-            if (!box.text || !box.text.trim()) return;
-            counter++;
-            const id = 'ln' + counter;
-            blocks.push({
-              id: id,
-              page: region._pageNum,
-              paragraph_id: pg.paraId || undefined,
-              reading_order: counter,
-              text: box.markupText || box.text,
-              language: 'unknown',
-              direction: box.direction || 'ltr',
-              width: (box.right - box.left) * pd.sx * 96 / 72,
-              font_size_px: (box.fontSize || 10) * pd.sy * 96 / 72,
-              style: box.bold ? 'bold' : ''
-            });
-            boxIdToBlockId[box.id] = id;
-          });
-        });
-      });
-
-      if (blocks.length > 0) {
-        log('Translating ' + blocks.length + ' line(s) to ' + targetLang + ' (domain glossary + reviewer agent)...');
-        const translationResult = await v14TranslateAllPages(model, blocks, targetLang, true);
-        const translatedById = {};
-        (translationResult.translations || []).forEach(function (t) { translatedById[t.id] = t.translated_text; });
-
-        // Rebuild OUR OWN responseByRegionId shape (region_id -> groups of
-        // {group_order, source_box_ids, translated_text}) from v14's
-        // result, one group per REAL paragraph decided above - v14's own
-        // paragraph-merged result comes back as id = 'para_' + paragraph_id
-        // (the WHOLE paragraph's translated text); a non-merged block
-        // comes back under its own block id.
-        const byRegion = new Map();
-        allRegions.forEach(function (region) {
-          const paraGroups = regionParagraphs.get(region.region_id) || [];
-          const groups = [];
-          paraGroups.forEach(function (pg, idx) {
-            if (pg.paraId) {
-              const translated = translatedById['para_' + pg.paraId];
-              if (translated == null) return;
-              groups.push({ group_order: idx, source_box_ids: pg.boxes.map(function (b) { return b.id; }), translated_text: translated });
-            } else {
-              pg.boxes.forEach(function (box) {
-                const blockId = boxIdToBlockId[box.id];
-                const translated = blockId ? translatedById[blockId] : null;
-                if (translated == null) return;
-                groups.push({ group_order: idx, source_box_ids: [box.id], translated_text: translated });
-              });
-            }
-          });
-          if (groups.length) byRegion.set(region.region_id, groups);
-        });
-        responseByRegionId = byRegion;
+      if (allRegions.length > 0) {
+        log('Translating ' + allRegions.length + ' region(s) to ' + targetLang + ' (v18 rules R1-R17 + domain glossary + reviewer agent)...');
+        responseByRegionId = await translateRegionsV18(model, allRegions, targetLang);
+        // Final combined response JSON (v18's translate_response_ALL shape),
+        // built AFTER reviewer corrections and PII restore.
+        combinedResponse = { regions: Array.from(responseByRegionId.entries()).map(function (entry) {
+          return { region_id: entry[0], translation_groups: entry[1] };
+        }) };
       }
     }
 
     log('Building translated Word document...');
     const blob = await buildTranslatedDocxV2(pdfJsDoc, pageData, pageNumbers, responseByRegionId, log, fontForChar);
-    return blob;
+    return { blob: blob, combinedResponse: combinedResponse };
   }
 
 

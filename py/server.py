@@ -4827,6 +4827,13 @@ class Handler(SimpleHTTPRequestHandler):
             "max_tokens": int(body.get("max_tokens", 8000)),
             "messages": messages,
         }
+        # Final_Working_v18.html rules: translation calls send
+        # reasoning={"effort":"none"} and response_format={"type":"json_object"}.
+        # Forwarded only when the browser sends them - zero effect on every
+        # other call.
+        for _key in ("reasoning", "response_format"):
+            if isinstance(body.get(_key), dict):
+                payload[_key] = body[_key]
         # v14 Clean Image: image-output models ko "modalities" chahiye.
         # Un calls ke liye HTML-tool parity — payload me SIRF
         # model+messages+modalities (temperature/max_tokens nahi, kyunki
