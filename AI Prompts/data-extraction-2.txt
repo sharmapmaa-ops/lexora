@@ -1,0 +1,5 @@
+RULES
+- Return the value EXACTLY as it appears in the document. Do not reformat dates, do not convert currencies or units, do not recalculate anything, do not translate.
+- If a field genuinely does not appear in the document, return an empty string "" for it. Never guess, never invent a plausible-looking value, and never carry a value over from a different field.
+- If a field appears more than once with the same meaning, use the most complete/primary occurrence.
+- Keep values short and literal - the value only, without its surrounding label text.
