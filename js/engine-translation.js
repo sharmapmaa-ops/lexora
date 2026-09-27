@@ -8100,8 +8100,6 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
   async function translateRegionsV18(model, allRegions, targetLanguage) {
     const onLog = function (msg) { log(String(msg).trim()); };
     const targetCode = LANGUAGE_TO_BCP47[targetLanguage] || 'en';
-    const initialMaxTokens = 8000;
-    const modelTokenCeiling = 64000;
 
     const regionsToTranslate = [];
     let skippedCount = 0;
@@ -8114,6 +8112,14 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
     if (skippedCount) onLog(skippedCount + ' region(s) already in ' + targetLanguage + ' - kept unchanged.');
     const translationByRegionId = new Map();
     if (regionsToTranslate.length === 0) return translationByRegionId;
+
+    // Token settings = the ones used BEFORE the v18 port (per explicit
+    // direction): max_tokens = entries x 220, clamped to 24000..60000,
+    // and one bigger limit (x2, max 100000) when a response is truncated.
+    // "entries" = regions to translate (the v18 unit sent to the model).
+    const initialMaxTokens = Math.min(60000, Math.max(24000, regionsToTranslate.length * 220));
+    const modelTokenCeiling = Math.min(100000, initialMaxTokens * 2);
+    onLog('Translation max_tokens: ' + initialMaxTokens + ' (up to ' + modelTokenCeiling + ' if a response is truncated)');
 
     // PII masking (same patterns as v14TranslateAllPages) - the model only
     // ever sees placeholder tokens; real values are restored at the end.
