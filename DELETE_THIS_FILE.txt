@@ -1,0 +1,7 @@
+Please DELETE this file from your project (it's no longer used, replaced by nothing - Syncfusion test tool fully removed):
+
+  py/syncfusion_test_pipeline.py
+
+This zip only contains ADDs/MODIFIEDs (zip can't represent a deletion). All references to it
+elsewhere in the codebase (server.py route + handler, app.js UI tab/pane/JS function, db.py
+comment, aspose_test_pipeline.py docstring) have already been removed in the files included here.

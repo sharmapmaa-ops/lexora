@@ -1,0 +1,24 @@
+{
+    "name": "Lexora AI Solutions",
+    "short_name": "Lexora",
+    "description": "Lease Abstraction & Translation platform",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#ffffff",
+    "theme_color": "#00008B",
+    "orientation": "any",
+    "icons": [
+        {
+            "src": "Pictures/logo.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "Pictures/logo.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any maskable"
+        }
+    ]
+}

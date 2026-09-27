@@ -4,15 +4,6 @@
 # package (not a pip package), and most platforms' native "detect a
 # Python app and pip install" build path has no way to run apt-get - a
 # container image is the reliable way to guarantee it's present.
-#
-# NOTE: the live Render service for this app is currently configured as
-# a native Python environment (Build Command "pip install -r
-# backend/requirements.txt", Start Command "python3 backend/py/
-# server.py"), NOT this Dockerfile - so tesseract-ocr is not actually
-# installed there today. This file is kept accurate and ready in case
-# the service is ever migrated to Render's Docker/Blueprint deploy
-# (see render.yaml), which is the only way to get tesseract-ocr (and
-# anything else needing a system package) actually working.
 FROM python:3.12-slim
 
 # tesseract-ocr: OCR fallback for scanned PDFs (see py/lease_engine.py).
@@ -34,12 +25,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY backend/requirements.txt .
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Render (and most platforms) inject PORT at runtime - backend/py/server.py
-# already reads it via os.environ.get("PORT", 8000) and binds 0.0.0.0.
+# Render (and most platforms) inject PORT at runtime - py/server.py already
+# reads it via os.environ.get("PORT", 8000) and binds 0.0.0.0.
 EXPOSE 8000
-CMD ["python3", "-u", "backend/py/server.py"]
+CMD ["python3", "-u", "py/server.py"]
