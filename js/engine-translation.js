@@ -7410,6 +7410,15 @@ ${JSON.stringify(texts)}`;
     return results;
   }
 
+  // Arabic font URLs - same constants as Final_Working_v18.html. These were
+  // missing from this engine, so fetch(AMIRI_FONT_URL) threw a
+  // ReferenceError (caught silently) and every Arabic character fell back
+  // to Helvetica, which pdf-lib cannot encode ("WinAnsi cannot encode").
+  const AMIRI_FONT_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Regular.ttf';
+  const AMIRI_BOLD_FONT_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Bold.ttf';
+  const AMIRI_ITALIC_FONT_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Italic.ttf';
+  const AMIRI_BOLDITALIC_FONT_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-BoldItalic.ttf';
+
   async function buildBasePdf(arrayBuffer, opts) {
     opts = opts || {};
     const downloadBase = opts.downloadBase !== false;
@@ -7939,11 +7948,24 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
   // "timed out", which translateRegionsMinCalls treats as a timeout).
   async function callOpenRouterRegions(model, targetLanguage, maxTokens, regionBatch, extras) {
     const systemPrompt = buildTranslationSystemPrompt(targetLanguage, extras);
-    const modelBatch = regionBatch.map(function (region) {
+    // Short ids (r1, b1, ...) instead of the long position ids: the model
+    // echoes every id back in its output, and output tokens are the
+    // expensive part. Mapped back to the real ids below, so everything
+    // after this call sees exactly the same ids as before.
+    const regionIdByShort = {};
+    const boxIdByShort = {};
+    let boxCounter = 0;
+    const modelBatch = regionBatch.map(function (region, ri) {
       const combinedText = region.blue_boxes.map(function (b) { return b.text; }).join(' ');
+      const shortRegionId = 'r' + (ri + 1);
+      regionIdByShort[shortRegionId] = region.region_id;
       const entry = {
-        region_id: region.region_id,
-        blue_boxes: region.blue_boxes.map(function (b) { return { id: b.id, text: (b.markupText || b.text) }; })
+        region_id: shortRegionId,
+        blue_boxes: region.blue_boxes.map(function (b) {
+          const shortBoxId = 'b' + (++boxCounter);
+          boxIdByShort[shortBoxId] = b.id;
+          return { id: shortBoxId, text: (b.markupText || b.text) };
+        })
       };
       const rep = detectRepeatedPhrase(combinedText);
       if (rep) entry.note = 'This region contains the phrase "' + rep.phrase + '" repeated ' + rep.count + ' times. Preserve exact repetition.';
@@ -7967,7 +7989,21 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
     const content = (choice && choice.message && choice.message.content) || '';
     const parsed = parseRegionResponse(content);
     const truncated = finishReason === 'length' || !parsed.complete;
-    return { regions: parsed.regions, truncated: truncated };
+    // Map short ids back to the real ids. A region id the model invented
+    // (not in this request) is dropped, so it is treated as missing and
+    // retried; an unknown box id is dropped from its group.
+    const regions = [];
+    (parsed.regions || []).forEach(function (r) {
+      if (!r || !Object.prototype.hasOwnProperty.call(regionIdByShort, String(r.region_id))) return;
+      const groups = Array.isArray(r.translation_groups) ? r.translation_groups.map(function (g) {
+        const ids = (g && Array.isArray(g.source_box_ids) ? g.source_box_ids : [])
+          .map(function (id) { return boxIdByShort[String(id)]; })
+          .filter(Boolean);
+        return Object.assign({}, g, { source_box_ids: ids });
+      }) : r.translation_groups;
+      regions.push(Object.assign({}, r, { region_id: regionIdByShort[String(r.region_id)], translation_groups: groups }));
+    });
+    return { regions: regions, truncated: truncated };
   }
 
   function estimateOutputTokensForRegion(region) {
@@ -8199,7 +8235,7 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
     const callOnce = function (batch, maxTokens) { return callOpenRouterRegions(model, targetLanguage, maxTokens, batch, extras); };
 
     // Page-wise sending (per explicit direction): each page's regions go in
-    // their own request(s), one page after another (sequential). Token
+    // their own request(s); pages run in parallel, max 4 at a time. Token
     // settings = the pre-v18 ones, computed PER PAGE: max_tokens = that
     // page's regions x 220, clamped to 24000..60000, and up to x2 (max
     // 100000) when a response is truncated. Inside a page, v18's
@@ -8211,17 +8247,29 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
       regionsByPage.get(r._pageNum).push(r);
     });
     const ceilingByPage = new Map();
-    for (let pi = 0; pi < pageOrder.length; pi++) {
-      const pageNum = pageOrder[pi];
-      const pageRegions = regionsByPage.get(pageNum);
-      const initialMaxTokens = Math.min(60000, Math.max(24000, pageRegions.length * 220));
-      const modelTokenCeiling = Math.min(100000, initialMaxTokens * 2);
-      ceilingByPage.set(pageNum, modelTokenCeiling);
-      onLog('Page ' + pageNum + ' (' + (pi + 1) + '/' + pageOrder.length + '): ' + pageRegions.length + ' region(s), max_tokens ' + initialMaxTokens + ' (up to ' + modelTokenCeiling + ' if truncated)');
-      const pagePass = await translateRegionsMinCalls(pageRegions, callOnce,
-        { initialMaxTokens: initialMaxTokens, maxTokenCeiling: modelTokenCeiling, onLog: onLog });
-      pagePass.forEach(function (groups, id) { translationByRegionId.set(id, groups); });
+    pageOrder.forEach(function (pageNum) {
+      const n = regionsByPage.get(pageNum).length;
+      ceilingByPage.set(pageNum, Math.min(100000, Math.min(60000, Math.max(24000, n * 220)) * 2));
+    });
+    // Pages run in parallel, at most 4 at a time (v18's concurrency).
+    const PAGE_CONCURRENCY = 4;
+    let nextPageIdx = 0;
+    async function pageWorker() {
+      while (nextPageIdx < pageOrder.length) {
+        const pi = nextPageIdx++;
+        const pageNum = pageOrder[pi];
+        const pageRegions = regionsByPage.get(pageNum);
+        const initialMaxTokens = Math.min(60000, Math.max(24000, pageRegions.length * 220));
+        const modelTokenCeiling = ceilingByPage.get(pageNum);
+        onLog('Page ' + pageNum + ' (' + (pi + 1) + '/' + pageOrder.length + '): ' + pageRegions.length + ' region(s), max_tokens ' + initialMaxTokens + ' (up to ' + modelTokenCeiling + ' if truncated)');
+        const pagePass = await translateRegionsMinCalls(pageRegions, callOnce,
+          { initialMaxTokens: initialMaxTokens, maxTokenCeiling: modelTokenCeiling, onLog: onLog });
+        pagePass.forEach(function (groups, id) { translationByRegionId.set(id, groups); });
+      }
     }
+    const pageWorkers = [];
+    for (let w = 0; w < Math.min(PAGE_CONCURRENCY, pageOrder.length); w++) pageWorkers.push(pageWorker());
+    await Promise.all(pageWorkers);
 
     let stillMissing = maskedRegions.filter(function (r) { return !translationByRegionId.has(r.region_id); });
     for (let attempt = 1; stillMissing.length > 0 && attempt <= 3; attempt++) {
@@ -8261,6 +8309,20 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
         }
       }
       stillBad = maskedRegions.filter(regionLooksUntranslated);
+    }
+
+    // Never silent: anything still missing or still untranslated after all
+    // retries is reported as a warning (shown as a Failed row in the log).
+    function pagesOf(list) {
+      const seen = [];
+      list.forEach(function (r) { if (seen.indexOf(r._pageNum) === -1) seen.push(r._pageNum); });
+      return seen.sort(function (a, b) { return a - b; }).join(', ');
+    }
+    if (stillMissing.length) {
+      log(stillMissing.length + ' region(s) got no translation after all retries - original text kept (page(s) ' + pagesOf(stillMissing) + ').', 'warn');
+    }
+    if (stillBad.length) {
+      log(stillBad.length + ' region(s) still contain untranslated text after all retries (page(s) ' + pagesOf(stillBad) + ').', 'warn');
     }
 
     // Reviewer agent: one entry per translation group (the AI's own
