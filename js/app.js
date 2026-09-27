@@ -1893,6 +1893,12 @@
                     files = sel;
                 }
 
+                // Translation: har naye run par sirf usi run ka log dikhe -
+                // pichhle runs ki entries yahin hata di jaati hain.
+                if (serviceId === 'translation') {
+                    translationActivityLog = translationActivityLog.filter(a => a.userId !== CURRENT_USER_ID);
+                }
+
                 // Item 6 - plan status/expiry is checked BEFORE the wallet
                 // balance check, and before any file starts - an expired
                 // plan blocks the whole batch, same as insufficient balance
@@ -12769,9 +12775,10 @@
 
             function persistServiceFiles(serviceId) {
                 if (serviceId === 'translation') {
+                    // Translation Activity Log database me save nahi hota
+                    // (sirf chal rahe run ka log browser me dikhta hai).
                     return Promise.all([
-                        saveJSON('translation-files', translationFiles),
-                        saveJSON('translation-activity-log', translationActivityLog)
+                        saveJSON('translation-files', translationFiles)
                     ]);
                 }
                 return Promise.all([
@@ -12898,7 +12905,13 @@
                 leaseFiles = leaseFilesData;
                 translationFiles = translationFilesData;
                 leaseActivityLog = leaseActivityLogData;
-                translationActivityLog = translationActivityLogData;
+                // Translation log load nahi hota. Purani saved rows (agar
+                // abhi bhi hain) ek baar delete kar di jaati hain - uske baad
+                // table khaali rehti hai aur ye PUT dobara nahi chalta.
+                translationActivityLog = [];
+                if (Array.isArray(translationActivityLogData) && translationActivityLogData.length) {
+                    saveJSON('translation-activity-log', []);
+                }
                 notifications = notificationsData;
 
                 // The only user record the browser ever holds - just the
