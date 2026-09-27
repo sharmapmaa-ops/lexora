@@ -8113,13 +8113,6 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
     const translationByRegionId = new Map();
     if (regionsToTranslate.length === 0) return translationByRegionId;
 
-    // Token settings = the ones used BEFORE the v18 port (per explicit
-    // direction): max_tokens = entries x 220, clamped to 24000..60000,
-    // and one bigger limit (x2, max 100000) when a response is truncated.
-    // "entries" = regions to translate (the v18 unit sent to the model).
-    const initialMaxTokens = Math.min(60000, Math.max(24000, regionsToTranslate.length * 220));
-    const modelTokenCeiling = Math.min(100000, initialMaxTokens * 2);
-    onLog('Translation max_tokens: ' + initialMaxTokens + ' (up to ' + modelTokenCeiling + ' if a response is truncated)');
 
     // PII masking (same patterns as v14TranslateAllPages) - the model only
     // ever sees placeholder tokens; real values are restored at the end.
@@ -8155,6 +8148,7 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
     const maskedRegions = regionsToTranslate.map(function (region) {
       return {
         region_id: region.region_id,
+        _pageNum: region._pageNum,
         blue_boxes: region.blue_boxes.map(function (b) {
           const maskedText = maskPiiInText(b.text);
           const maskedMarkup = !b.markupText ? b.markupText : (b.markupText === b.text ? maskedText : maskPiiInText(b.markupText));
@@ -8204,16 +8198,37 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
     const extras = { domainInfo: domainInfo, targetCountry: targetCountry, learnedRulesBlock: learnedRulesBlock };
     const callOnce = function (batch, maxTokens) { return callOpenRouterRegions(model, targetLanguage, maxTokens, batch, extras); };
 
-    const firstPass = await translateRegionsMinCalls(maskedRegions, callOnce,
-      { initialMaxTokens: initialMaxTokens, maxTokenCeiling: modelTokenCeiling, onLog: onLog });
-    firstPass.forEach(function (groups, id) { translationByRegionId.set(id, groups); });
+    // Page-wise sending (per explicit direction): each page's regions go in
+    // their own request(s), one page after another (sequential). Token
+    // settings = the pre-v18 ones, computed PER PAGE: max_tokens = that
+    // page's regions x 220, clamped to 24000..60000, and up to x2 (max
+    // 100000) when a response is truncated. Inside a page, v18's
+    // translateRegionsMinCalls still handles truncation growth / splitting.
+    const pageOrder = [];
+    const regionsByPage = new Map();
+    maskedRegions.forEach(function (r) {
+      if (!regionsByPage.has(r._pageNum)) { regionsByPage.set(r._pageNum, []); pageOrder.push(r._pageNum); }
+      regionsByPage.get(r._pageNum).push(r);
+    });
+    const ceilingByPage = new Map();
+    for (let pi = 0; pi < pageOrder.length; pi++) {
+      const pageNum = pageOrder[pi];
+      const pageRegions = regionsByPage.get(pageNum);
+      const initialMaxTokens = Math.min(60000, Math.max(24000, pageRegions.length * 220));
+      const modelTokenCeiling = Math.min(100000, initialMaxTokens * 2);
+      ceilingByPage.set(pageNum, modelTokenCeiling);
+      onLog('Page ' + pageNum + ' (' + (pi + 1) + '/' + pageOrder.length + '): ' + pageRegions.length + ' region(s), max_tokens ' + initialMaxTokens + ' (up to ' + modelTokenCeiling + ' if truncated)');
+      const pagePass = await translateRegionsMinCalls(pageRegions, callOnce,
+        { initialMaxTokens: initialMaxTokens, maxTokenCeiling: modelTokenCeiling, onLog: onLog });
+      pagePass.forEach(function (groups, id) { translationByRegionId.set(id, groups); });
+    }
 
     let stillMissing = maskedRegions.filter(function (r) { return !translationByRegionId.has(r.region_id); });
     for (let attempt = 1; stillMissing.length > 0 && attempt <= 3; attempt++) {
       onLog(`${stillMissing.length} region(s) missing — retrying (attempt ${attempt})...`);
       for (const region of stillMissing) {
         try {
-          const res = await callOnce([region], modelTokenCeiling);
+          const res = await callOnce([region], ceilingByPage.get(region._pageNum));
           (res.regions || []).forEach(function (r) {
             if (r && r.region_id && Array.isArray(r.translation_groups)) translationByRegionId.set(String(r.region_id), r.translation_groups);
           });
@@ -8234,7 +8249,7 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
       onLog(`${stillBad.length} region(s) still look untranslated — retrying (attempt ${attempt})...`);
       for (const region of stillBad) {
         try {
-          const res = await callOnce([region], modelTokenCeiling);
+          const res = await callOnce([region], ceilingByPage.get(region._pageNum));
           (res.regions || []).forEach(function (r) {
             const stillBadNew = Array.isArray(r.translation_groups) && r.translation_groups.some(function (g) { return looksLikelyUntranslated(g.translated_text || '', targetLanguage); });
             if (r && r.region_id && Array.isArray(r.translation_groups) && !stillBadNew) {
