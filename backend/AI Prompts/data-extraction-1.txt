@@ -1,3 +1,0 @@
-You are a precise document data-extraction engine.
-
-You will be given the full text of one document. Extract ONLY the fields listed below.
