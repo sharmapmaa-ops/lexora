@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terms &amp; Conditions - Lexora</title>
+    <!-- Terms & Conditions page. Content Word file se aata hai:
+         py/terms/Lexora_Terms_and_Conditions.docx
+         T&C badalne ke liye sirf wo Word file replace karo - is page me
+         koi change nahi karna padega. Word -> HTML conversion browser me
+         mammoth se hota hai (wahi library/version jo index.html use karta hai). -->
+    <style>
+        body { margin: 0; background: #f4f6fa; color: #1f2937; font-family: "Segoe UI", Arial, sans-serif; line-height: 1.6; }
+        .terms-page { max-width: 900px; margin: 2em auto; padding: 2em 2.5em; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+        .terms-page h1 { font-size: 1.25em; margin: 1.6em 0 0.5em; }
+        .terms-page h2 { font-size: 1.1em; margin: 1.3em 0 0.4em; }
+        .terms-page p { margin: 0 0 0.8em; }
+        .terms-page ul, .terms-page ol { margin: 0 0 0.8em; padding-left: 1.6em; }
+        .terms-page li { margin-bottom: 0.35em; }
+        .terms-page table { border-collapse: collapse; width: 100%; }
+        .terms-page td, .terms-page th { border: 1px solid #d1d5db; padding: 0.4em 0.6em; }
+        .terms-status { text-align: center; color: #6b7280; }
+        @media (max-width: 600px) { .terms-page { margin: 0; padding: 1.2em; border-radius: 0; } }
+    </style>
+</head>
+<body>
+    <div class="terms-page" id="termsContent">
+        <p class="terms-status">Loading Terms &amp; Conditions...</p>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+    <script>
+        (async function () {
+            const box = document.getElementById('termsContent');
+            try {
+                // no-cache: Word file replace hone par browser purani copy na dikhaye.
+                const res = await fetch('py/terms/Lexora_Terms_and_Conditions.docx', { cache: 'no-cache' });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const result = await mammoth.convertToHtml({ arrayBuffer: await res.arrayBuffer() });
+                box.innerHTML = result.value;
+            } catch (err) {
+                console.error('Terms & Conditions load failed:', err);
+                box.innerHTML = '<p class="terms-status">Terms &amp; Conditions could not be loaded. Please try again later.</p>';
+            }
+        })();
+    </script>
+</body>
+</html>

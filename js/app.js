@@ -13465,6 +13465,12 @@
             }
 
             window.startOAuthLogin = function(provider) {
+                // Login card par Terms & Conditions checkbox compulsory hai.
+                const termsEl = document.getElementById('loginTermsAgree');
+                if (termsEl && !termsEl.checked) {
+                    showAuthError('Please agree to the Terms & Conditions to continue.');
+                    return;
+                }
                 window.location.href = '/api/auth/oauth/' + encodeURIComponent(provider) + '/start';
             };
 
@@ -13490,6 +13496,12 @@
                             <span>Remember me</span>
                         </label>
                         <a onclick="authGoTo('forgot')">Forgot Password?</a>
+                    </div>
+                    <div class="auth-remember-row">
+                        <label class="auth-remember">
+                            <input type="checkbox" id="loginTermsAgree" />
+                            <span>I agree to the <a href="terms.html" target="_blank" rel="noopener">Terms &amp; Conditions</a></span>
+                        </label>
                     </div>
                     <div id="authErrorBox" class="auth-error-box" style="display:none;"></div>
                     <div class="auth-btn-row">
@@ -13850,6 +13862,8 @@
                 const password = document.getElementById('loginPassword').value;
                 const rememberEl = document.getElementById('loginRemember');
                 if (!email || !password) { showAuthError('Please enter both email and password.'); return; }
+                const termsEl = document.getElementById('loginTermsAgree');
+                if (!termsEl || !termsEl.checked) { showAuthError('Please agree to the Terms & Conditions to continue.'); return; }
 
                 // Remember the email before the request goes out, so a 2FA
                 // detour (which re-renders the card) doesn't lose the tick.
