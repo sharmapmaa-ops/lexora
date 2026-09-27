@@ -8311,49 +8311,74 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
       stillBad = maskedRegions.filter(regionLooksUntranslated);
     }
 
-    // Never silent: anything still missing or still untranslated after all
-    // retries is reported as a warning (shown as a Failed row in the log).
+    // Reviewer agent - ONLY on flagged groups (per explicit direction):
+    //  - a group whose text still looks untranslated after the retries, and
+    //  - a region that got no translation at all (sent as one entry with
+    //    all its boxes and an empty current translation; if the reviewer
+    //    returns text, the region gets ONE group covering all its boxes).
+    // Nothing flagged -> no reviewer call at all.
+    const reviewEntries = [];
+    const reviewTranslations = [];
+    maskedRegions.forEach(function (region) {
+      const regionId = region.region_id;
+      const boxById = new Map(region.blue_boxes.map(function (b) { return [b.id, b]; }));
+      const groups = translationByRegionId.get(regionId);
+      if (!groups) {
+        const src = region.blue_boxes.map(function (b) { return b.markupText || b.text; }).filter(Boolean).join(' ');
+        reviewEntries.push({ id: regionId + '::all', text: src });
+        reviewTranslations.push({ id: regionId + '::all', translated_text: '' });
+        return;
+      }
+      groups.forEach(function (g, gi) {
+        if (!looksLikelyUntranslated(g.translated_text || '', targetLanguage)) return;
+        const src = (g.source_box_ids || []).map(function (id) { const b = boxById.get(id); return b ? (b.markupText || b.text) : ''; }).filter(Boolean).join(' ');
+        reviewEntries.push({ id: regionId + '::' + gi, text: src });
+        reviewTranslations.push({ id: regionId + '::' + gi, translated_text: g.translated_text || '' });
+      });
+    });
+    if (reviewEntries.length === 0) {
+      onLog('Review pass skipped - no flagged (untranslated/missing) groups.');
+    } else {
+      onLog('Review pass on ' + reviewEntries.length + ' flagged group(s) only.');
+      try {
+        const reviewed = await v14ReviewTranslation(model, reviewEntries, reviewTranslations, targetLanguage, targetCountry, domainInfo);
+        const reviewedById = {};
+        (reviewed || []).forEach(function (t) { if (t && t.id) reviewedById[t.id] = t.translated_text; });
+        maskedRegions.forEach(function (region) {
+          const regionId = region.region_id;
+          const groups = translationByRegionId.get(regionId);
+          if (!groups) {
+            const v = reviewedById[regionId + '::all'];
+            if (typeof v === 'string' && v.trim()) {
+              translationByRegionId.set(regionId, [{ group_order: 1, source_box_ids: region.blue_boxes.map(function (b) { return b.id; }), translated_text: v }]);
+            }
+            return;
+          }
+          groups.forEach(function (g, gi) {
+            const v = reviewedById[regionId + '::' + gi];
+            if (typeof v === 'string' && v.trim()) g.translated_text = v;
+          });
+        });
+      } catch (reviewErr) {
+        try { console.error('Review pass failed, shipping unreviewed translation:', reviewErr.message); } catch (e) {}
+        log('Review pass could not complete (' + reviewErr.message + ') - using the primary translation as-is.', 'warn');
+      }
+    }
+
+    // Never silent: anything still missing or still untranslated after the
+    // retries AND the reviewer is reported as a warning (Failed row).
     function pagesOf(list) {
       const seen = [];
       list.forEach(function (r) { if (seen.indexOf(r._pageNum) === -1) seen.push(r._pageNum); });
       return seen.sort(function (a, b) { return a - b; }).join(', ');
     }
-    if (stillMissing.length) {
-      log(stillMissing.length + ' region(s) got no translation after all retries - original text kept (page(s) ' + pagesOf(stillMissing) + ').', 'warn');
+    const finalMissing = maskedRegions.filter(function (r) { return !translationByRegionId.has(r.region_id); });
+    const finalBad = maskedRegions.filter(regionLooksUntranslated);
+    if (finalMissing.length) {
+      log(finalMissing.length + ' region(s) got no translation after all retries - original text kept (page(s) ' + pagesOf(finalMissing) + ').', 'warn');
     }
-    if (stillBad.length) {
-      log(stillBad.length + ' region(s) still contain untranslated text after all retries (page(s) ' + pagesOf(stillBad) + ').', 'warn');
-    }
-
-    // Reviewer agent: one entry per translation group (the AI's own
-    // grouping - the reviewer can correct a group's text, never regroup).
-    const maskedById = new Map(maskedRegions.map(function (r) { return [r.region_id, r]; }));
-    const reviewEntries = [];
-    const reviewTranslations = [];
-    translationByRegionId.forEach(function (groups, regionId) {
-      const region = maskedById.get(regionId);
-      if (!region) return;
-      const boxById = new Map(region.blue_boxes.map(function (b) { return [b.id, b]; }));
-      groups.forEach(function (g, gi) {
-        const src = (g.source_box_ids || []).map(function (id) { const b = boxById.get(id); return b ? (b.markupText || b.text) : ''; }).filter(Boolean).join(' ');
-        const reviewId = regionId + '::' + gi;
-        reviewEntries.push({ id: reviewId, text: src });
-        reviewTranslations.push({ id: reviewId, translated_text: g.translated_text || '' });
-      });
-    });
-    try {
-      const reviewed = await v14ReviewTranslation(model, reviewEntries, reviewTranslations, targetLanguage, targetCountry, domainInfo);
-      const reviewedById = {};
-      (reviewed || []).forEach(function (t) { if (t && t.id) reviewedById[t.id] = t.translated_text; });
-      translationByRegionId.forEach(function (groups, regionId) {
-        groups.forEach(function (g, gi) {
-          const v = reviewedById[regionId + '::' + gi];
-          if (typeof v === 'string') g.translated_text = v;
-        });
-      });
-    } catch (reviewErr) {
-      try { console.error('Review pass failed, shipping unreviewed translation:', reviewErr.message); } catch (e) {}
-      log('Review pass could not complete (' + reviewErr.message + ') - using the primary translation as-is.', 'warn');
+    if (finalBad.length) {
+      log(finalBad.length + ' region(s) still contain untranslated text after all retries (page(s) ' + pagesOf(finalBad) + ').', 'warn');
     }
 
     if (piiCounter > 0) {
