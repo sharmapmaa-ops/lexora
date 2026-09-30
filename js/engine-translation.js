@@ -8017,6 +8017,178 @@ The translated document must preserve the legal/practical meaning, effect, struc
     return { regions: regions, truncated: truncated };
   }
 
+  // ---- Two-step translation (per explicit direction) ----
+  // Call 1 (grouping): the WHOLE document in ONE call. Every region's lines
+  // (its blue boxes, in order) are numbered and the model returns only
+  // line-number ranges per region, e.g. {"region_id":"r1","groups":[[1,1],
+  // [2,4],[5,9]]}. Uses v18's grouping rules (R1-R5, R9, R15). Code then
+  // validates every region (each line in exactly one range, ranges in
+  // order, nothing missing); an invalid region is retried ONCE, and if it
+  // is still invalid each of its lines becomes its own group.
+  // Call 2 (translation): each group's full text is one entry; the model
+  // returns only {"id","translated_text"} per entry (v18's R6-R14, R16,
+  // R17). Grouping is already fixed, so the translator cannot break it.
+  function buildGroupingPrompt() {
+    return [
+      'You are a professional document analyst. You will receive document regions. Each region has numbered lines, in reading order. Group each region\'s lines into translation units (sentences).',
+      '',
+      'RULES:',
+      'R1. Every line number must appear in EXACTLY ONE group.',
+      'R2. Do NOT assume one line = one sentence.',
+      'R3. Do NOT split one sentence merely because it spans multiple lines.',
+      'R4. Do NOT combine two independent sentences.',
+      'R5. Preserve reading order: every group is a continuous range of line numbers [first, last], and the groups follow each other in line order.',
+      'R9. IDENTICAL TEXTS on different lines are legitimate - never merge or drop a line because it repeats another.',
+      'R15. Verify: every line number exactly once; no split/merge of sentences; ranges continuous and in order.',
+      'Do NOT translate anything and do NOT repeat any text - return only the ranges.',
+      '',
+      'OUTPUT: return ONLY a JSON object:',
+      '{"regions": [{"region_id": "r1", "groups": [[1, 1], [2, 4], [5, 9]]}]}'
+    ].join('\n');
+  }
+
+  // Returns sorted, validated ranges for a region with n lines, or null.
+  function validateLineRanges(groups, n) {
+    if (!Array.isArray(groups) || !groups.length) return null;
+    const ranges = [];
+    for (const g of groups) {
+      if (!Array.isArray(g) || g.length < 1) return null;
+      const a = Number(g[0]), b = Number(g.length > 1 ? g[1] : g[0]);
+      if (!Number.isInteger(a) || !Number.isInteger(b) || a < 1 || b < a || b > n) return null;
+      ranges.push([a, b]);
+    }
+    ranges.sort(function (x, y) { return x[0] - y[0]; });
+    let next = 1;
+    for (const r of ranges) {
+      if (r[0] !== next) return null;
+      next = r[1] + 1;
+    }
+    return next === n + 1 ? ranges : null;
+  }
+
+  // One grouping request (with ONE bigger-max_tokens retry if truncated).
+  // Returns Map(region_id -> validated ranges) for the regions that came
+  // back valid; regions missing from the map are invalid/missing.
+  async function callGroupingOnce(model, regions, onLog) {
+    const regionIdByShort = {};
+    const batch = regions.map(function (region, ri) {
+      const shortId = 'r' + (ri + 1);
+      regionIdByShort[shortId] = region;
+      return {
+        region_id: shortId,
+        lines: region.blue_boxes.map(function (b, bi) { return '[' + (bi + 1) + '] ' + b.text; })
+      };
+    });
+    let maxTokens = Math.min(60000, Math.max(24000, regions.length * 220));
+    const ceiling = Math.min(100000, maxTokens * 2);
+    const valid = new Map();
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      let parsed = { regions: [], complete: false };
+      let finishReason = null;
+      try {
+        const data = await v14ProxyJson({
+          model: model,
+          messages: [
+            { role: 'system', content: buildGroupingPrompt() },
+            { role: 'user', content: 'REGIONS:\n' + JSON.stringify(batch) }
+          ],
+          temperature: 0,
+          max_tokens: maxTokens,
+          reasoning: { effort: 'none' },
+          response_format: { type: 'json_object' }
+        });
+        const choice = data.choices && data.choices[0];
+        finishReason = choice && choice.finish_reason;
+        parsed = parseRegionResponse((choice && choice.message && choice.message.content) || '');
+      } catch (e) {
+        onLog('Grouping call failed — ' + e.message);
+      }
+      (parsed.regions || []).forEach(function (r) {
+        const region = r && regionIdByShort[String(r.region_id)];
+        if (!region) return;
+        const ranges = validateLineRanges(r.groups, region.blue_boxes.length);
+        if (ranges) valid.set(region.region_id, ranges);
+      });
+      const truncated = finishReason === 'length' || !parsed.complete;
+      if (!truncated || maxTokens >= ceiling) break;
+      maxTokens = ceiling;
+      onLog('Grouping response truncated — retrying with bigger max_tokens (' + maxTokens + ')...');
+    }
+    return valid;
+  }
+
+  function buildGroupTranslationPrompt(targetLanguage) {
+    return [
+      'You are a professional document translator. Translate each entry into ' + targetLanguage + '.',
+      '',
+      'INPUT: a JSON array of entries, each with an id and a text. Each entry is ONE complete translation unit that has already been grouped - translate it as a whole.',
+      '',
+      'RULES:',
+      'R1. Every entry id must appear in your output EXACTLY ONCE.',
+      'R6. Reuse the same translation for the same defined term.',
+      'R7. Never invent, infer, or complete text.',
+      'R8. DUPLICATES: preserve exact repetition.',
+      'R9. IDENTICAL TEXTS in different entries are legitimate.',
+      'R10. If already in ' + targetLanguage + ', return UNCHANGED.',
+      'R11. ABBREVIATIONS: Do NOT expand.',
+      'R12. SHORT PHRASES: Translate as short.',
+      'R13. MIXED-LANGUAGE TEXT: translate source, keep target unchanged, preserve both.',
+      'R14. Follow "note" field if present.',
+      'R16. Do NOT repeat the source text in your output — we already have it. Return only id and translated_text per entry, nothing else.',
+      'R17. FORMATTING MARKUP: source text may contain <b></b> (bold), <i></i> (italic), <u></u> (underline) tags around specific words/phrases. In translated_text, wrap the CORRESPONDING translated words with the SAME tags — same meaning, not necessarily the same word order or word count. Do not add tags where the source had none, and do not drop tags that were present.',
+      '',
+      'OUTPUT: return ONLY a JSON object:',
+      '{"translations": [{"id": "g1", "translated_text": "..."}]}'
+    ].join('\n');
+  }
+
+  // Call 2 request for a batch of units. A "unit" looks like a region to
+  // translateRegionsMinCalls (region_id = unit key, blue_boxes = one entry
+  // carrying the unit's text) so v18's batching / truncation growth /
+  // split logic is reused unchanged. Short ids g1.. are sent and mapped
+  // back; the reply is returned in the region shape that function expects.
+  async function callGroupTranslationOnce(model, targetLanguage, maxTokens, unitBatch) {
+    const keyByShort = {};
+    const entries = unitBatch.map(function (u, i) {
+      const shortId = 'g' + (i + 1);
+      keyByShort[shortId] = u.region_id;
+      const text = u.blue_boxes[0].markupText || u.blue_boxes[0].text;
+      const entry = { id: shortId, text: text };
+      const plain = u.blue_boxes[0].text;
+      const rep = detectRepeatedPhrase(plain);
+      if (rep) entry.note = 'This entry contains the phrase "' + rep.phrase + '" repeated ' + rep.count + ' times. Preserve exact repetition.';
+      else if (isLikelyAbbreviation(plain)) entry.note = 'This is an abbreviation/acronym. Do NOT expand it.';
+      return entry;
+    });
+    const data = await v14ProxyJson({
+      model: model,
+      messages: [
+        { role: 'system', content: buildGroupTranslationPrompt(targetLanguage) },
+        { role: 'user', content: 'ENTRIES:\n' + JSON.stringify(entries) }
+      ],
+      temperature: 0,
+      max_tokens: maxTokens,
+      reasoning: { effort: 'none' },
+      response_format: { type: 'json_object' }
+    });
+    const choice = data.choices && data.choices[0];
+    const finishReason = choice && choice.finish_reason;
+    let text = ((choice && choice.message && choice.message.content) || '').trim();
+    text = text.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '');
+    let list = null;
+    try {
+      const obj = JSON.parse(text);
+      if (obj && Array.isArray(obj.translations)) list = obj.translations;
+    } catch (e) { /* truncated / malformed */ }
+    const regions = [];
+    (list || []).forEach(function (t) {
+      const key = t && keyByShort[String(t.id)];
+      if (!key || typeof t.translated_text !== 'string') return;
+      regions.push({ region_id: key, translation_groups: [{ group_order: 1, translated_text: t.translated_text }] });
+    });
+    return { regions: regions, truncated: finishReason === 'length' || !list };
+  }
+
   function estimateOutputTokensForRegion(region) {
     let chars = 0;
     (region.blue_boxes || []).forEach(function (b) { chars += (b.text ? b.text.length : 0); });
@@ -8242,196 +8414,182 @@ The translated document must preserve the legal/practical meaning, effect, struc
     }
     const targetCountry = window.getSetupPref ? window.getSetupPref('translation', 'targetCountry', '') : '';
     const learnedRulesBlock = await v14FetchTranslationRules();
-    const callOnce = function (batch, maxTokens) { return callOpenRouterRegions(model, targetLanguage, maxTokens, batch); };
+    const PAGE_CONCURRENCY = 4;
 
-    // Page-wise sending (per explicit direction): each page's regions go in
-    // their own request(s); pages run in parallel, max 4 at a time. Token
-    // settings = the pre-v18 ones, computed PER PAGE: max_tokens = that
-    // page's regions x 220, clamped to 24000..60000, and up to x2 (max
-    // 100000) when a response is truncated. Inside a page, v18's
-    // translateRegionsMinCalls still handles truncation growth / splitting.
+    // ---- Call 1: grouping, whole document in ONE call ----
+    onLog('Grouping: sending ' + maskedRegions.length + ' region(s) in one call...');
+    const rangesByRegion = await callGroupingOnce(model, maskedRegions, onLog);
+    let invalid = maskedRegions.filter(function (r) { return !rangesByRegion.has(r.region_id); });
+    if (invalid.length) {
+      onLog('Grouping: ' + invalid.length + ' region(s) invalid or missing — retrying them once...');
+      const retry = await callGroupingOnce(model, invalid, onLog);
+      retry.forEach(function (ranges, id) { rangesByRegion.set(id, ranges); });
+      invalid = maskedRegions.filter(function (r) { return !rangesByRegion.has(r.region_id); });
+    }
+    invalid.forEach(function (r) {
+      rangesByRegion.set(r.region_id, r.blue_boxes.map(function (b, i) { return [i + 1, i + 1]; }));
+    });
+    if (invalid.length) {
+      log(invalid.length + ' region(s) could not be grouped after 1 retry - each of their lines is translated as its own group.', 'warn');
+    }
+
+    // Build the translation units (one per group) in document order.
+    const units = [];
+    const unitsByRegion = new Map();
+    maskedRegions.forEach(function (region) {
+      const list = [];
+      rangesByRegion.get(region.region_id).forEach(function (rg, gi) {
+        const boxes = region.blue_boxes.slice(rg[0] - 1, rg[1]);
+        const unit = {
+          region_id: region.region_id + '::' + gi,
+          _pageNum: region._pageNum,
+          _regionId: region.region_id,
+          _boxIds: boxes.map(function (b) { return b.id; }),
+          blue_boxes: [{
+            id: 'u',
+            text: boxes.map(function (b) { return b.text; }).join(' '),
+            markupText: boxes.map(function (b) { return b.markupText || b.text; }).join(' ')
+          }]
+        };
+        list.push(unit);
+        units.push(unit);
+      });
+      unitsByRegion.set(region.region_id, list);
+    });
+    onLog('Grouping: ' + maskedRegions.length + ' region(s) -> ' + units.length + ' group(s).');
+
+    // ---- Call 2: translation of the groups, page-wise, 4 pages at a time ----
+    const textByUnit = new Map();
+    const callOnce = function (batch, maxTokens) { return callGroupTranslationOnce(model, targetLanguage, maxTokens, batch); };
     const pageOrder = [];
-    const regionsByPage = new Map();
-    maskedRegions.forEach(function (r) {
-      if (!regionsByPage.has(r._pageNum)) { regionsByPage.set(r._pageNum, []); pageOrder.push(r._pageNum); }
-      regionsByPage.get(r._pageNum).push(r);
+    const unitsByPage = new Map();
+    units.forEach(function (u) {
+      if (!unitsByPage.has(u._pageNum)) { unitsByPage.set(u._pageNum, []); pageOrder.push(u._pageNum); }
+      unitsByPage.get(u._pageNum).push(u);
     });
     const ceilingByPage = new Map();
     pageOrder.forEach(function (pageNum) {
-      const n = regionsByPage.get(pageNum).length;
+      const n = unitsByPage.get(pageNum).length;
       ceilingByPage.set(pageNum, Math.min(100000, Math.min(60000, Math.max(24000, n * 220)) * 2));
     });
-    // Pages run in parallel, at most 4 at a time (v18's concurrency).
-    const PAGE_CONCURRENCY = 4;
+    function storeResults(resultMap) {
+      resultMap.forEach(function (groups, key) {
+        const t = groups && groups[0] && groups[0].translated_text;
+        if (typeof t === 'string') textByUnit.set(key, t);
+      });
+    }
     let nextPageIdx = 0;
     async function pageWorker() {
       while (nextPageIdx < pageOrder.length) {
         const pi = nextPageIdx++;
         const pageNum = pageOrder[pi];
-        const pageRegions = regionsByPage.get(pageNum);
-        const initialMaxTokens = Math.min(60000, Math.max(24000, pageRegions.length * 220));
+        const pageUnits = unitsByPage.get(pageNum);
+        const initialMaxTokens = Math.min(60000, Math.max(24000, pageUnits.length * 220));
         const modelTokenCeiling = ceilingByPage.get(pageNum);
-        onLog('Page ' + pageNum + ' (' + (pi + 1) + '/' + pageOrder.length + '): ' + pageRegions.length + ' region(s), max_tokens ' + initialMaxTokens + ' (up to ' + modelTokenCeiling + ' if truncated)');
-        const pagePass = await translateRegionsMinCalls(pageRegions, callOnce,
-          { initialMaxTokens: initialMaxTokens, maxTokenCeiling: modelTokenCeiling, onLog: onLog });
-        pagePass.forEach(function (groups, id) { translationByRegionId.set(id, groups); });
+        onLog('Page ' + pageNum + ' (' + (pi + 1) + '/' + pageOrder.length + '): ' + pageUnits.length + ' group(s), max_tokens ' + initialMaxTokens + ' (up to ' + modelTokenCeiling + ' if truncated)');
+        storeResults(await translateRegionsMinCalls(pageUnits, callOnce,
+          { initialMaxTokens: initialMaxTokens, maxTokenCeiling: modelTokenCeiling, onLog: onLog }));
       }
     }
     const pageWorkers = [];
     for (let w = 0; w < Math.min(PAGE_CONCURRENCY, pageOrder.length); w++) pageWorkers.push(pageWorker());
     await Promise.all(pageWorkers);
 
-    let stillMissing = maskedRegions.filter(function (r) { return !translationByRegionId.has(r.region_id); });
+    // Retries: all still-missing groups together per round (max 3 rounds),
+    // then all still-untranslated groups together per round (max 2 rounds).
+    function retryTokens(list) {
+      const start = Math.min(60000, Math.max(24000, list.length * 220));
+      return { initialMaxTokens: start, maxTokenCeiling: Math.min(100000, start * 2), onLog: onLog };
+    }
+    let stillMissing = units.filter(function (u) { return !textByUnit.has(u.region_id); });
     for (let attempt = 1; stillMissing.length > 0 && attempt <= 3; attempt++) {
-      onLog(`${stillMissing.length} region(s) missing — retrying (attempt ${attempt})...`);
-      for (const region of stillMissing) {
-        try {
-          const res = await callOnce([region], ceilingByPage.get(region._pageNum));
-          (res.regions || []).forEach(function (r) {
-            if (r && r.region_id && Array.isArray(r.translation_groups)) translationByRegionId.set(String(r.region_id), r.translation_groups);
-          });
-        } catch (e) {
-          onLog('Retry failed for ' + region.region_id + ': ' + e.message);
-        }
-      }
-      stillMissing = maskedRegions.filter(function (r) { return !translationByRegionId.has(r.region_id); });
+      onLog(stillMissing.length + ' group(s) missing — retrying (attempt ' + attempt + ')...');
+      storeResults(await translateRegionsMinCalls(stillMissing, callOnce, retryTokens(stillMissing)));
+      stillMissing = units.filter(function (u) { return !textByUnit.has(u.region_id); });
     }
-
-    function regionLooksUntranslated(region) {
-      const groups = translationByRegionId.get(region.region_id);
-      if (!groups) return false;
-      return groups.some(function (g) { return looksLikelyUntranslated(g.translated_text || '', targetLanguage); });
+    function unitLooksUntranslated(u) {
+      return textByUnit.has(u.region_id) && looksLikelyUntranslated(textByUnit.get(u.region_id) || '', targetLanguage);
     }
-    let stillBad = maskedRegions.filter(regionLooksUntranslated);
+    let stillBad = units.filter(unitLooksUntranslated);
     for (let attempt = 1; stillBad.length > 0 && attempt <= 2; attempt++) {
-      onLog(`${stillBad.length} region(s) still look untranslated — retrying (attempt ${attempt})...`);
-      for (const region of stillBad) {
-        try {
-          const res = await callOnce([region], ceilingByPage.get(region._pageNum));
-          (res.regions || []).forEach(function (r) {
-            const stillBadNew = Array.isArray(r.translation_groups) && r.translation_groups.some(function (g) { return looksLikelyUntranslated(g.translated_text || '', targetLanguage); });
-            if (r && r.region_id && Array.isArray(r.translation_groups) && !stillBadNew) {
-              translationByRegionId.set(String(r.region_id), r.translation_groups);
-            }
+      onLog(stillBad.length + ' group(s) still look untranslated — retrying (attempt ' + attempt + ')...');
+      const res = await translateRegionsMinCalls(stillBad, callOnce, retryTokens(stillBad));
+      res.forEach(function (groups, key) {
+        const t = groups && groups[0] && groups[0].translated_text;
+        if (typeof t === 'string' && !looksLikelyUntranslated(t, targetLanguage)) textByUnit.set(key, t);
+      });
+      stillBad = units.filter(unitLooksUntranslated);
+    }
+
+    // ---- Call 3: final agent, ONLY on pending groups ----
+    // Pending = still missing, or still looks untranslated, after the
+    // retries. One call with the selected Lexora rules + domain persona +
+    // target country + learned rules. Nothing pending -> no call.
+    const pending = units.filter(function (u) { return !textByUnit.has(u.region_id) || unitLooksUntranslated(u); });
+    if (!pending.length) {
+      onLog('Final agent skipped - no pending (missing/untranslated) groups.');
+    } else {
+      onLog('Final agent on ' + pending.length + ' pending group(s) only.');
+      const finalRules = finalAgentRulesBlock(targetLanguage, targetCountry, domainInfo) + (learnedRulesBlock || '');
+      const collect = {};
+      try {
+        const reviewed = await v14ReviewTranslation(model,
+          pending.map(function (u) { return { id: u.region_id, text: u.blue_boxes[0].markupText || u.blue_boxes[0].text }; }),
+          pending.map(function (u) { return { id: u.region_id, translated_text: textByUnit.get(u.region_id) || '' }; }),
+          targetLanguage, targetCountry, domainInfo, { extraRulesBlock: finalRules, collect: collect });
+        (reviewed || []).forEach(function (t) {
+          if (t && t.id && typeof t.translated_text === 'string' && t.translated_text.trim()) textByUnit.set(t.id, t.translated_text);
+        });
+        const scores = collect.scores || [];
+        const codeIssues = collect.codeIssues || [];
+        const learnedRules = collect.learnedRules || [];
+        log('Final agent: ' + (collect.applied || 0) + ' correction(s) applied' +
+          (codeIssues.length ? (', ' + codeIssues.length + ' possible code-level issue(s) flagged for review') : '') +
+          (learnedRules.length ? (', ' + learnedRules.length + ' possible new rule(s) suggested for review') : '') + '.', 'info');
+        if (scores.length) log('Faithfulness score (pending groups): ' + scores[0] + '/100', scores[0] >= 90 ? 'info' : 'warn');
+        if (codeIssues.length) {
+          v14SaveCodeIssues(codeIssues, domainInfo).catch(function (e) {
+            try { console.error('Could not save flagged code issue(s):', e.message); } catch (err) {}
           });
-        } catch (e) {
-          onLog('Retranslate-retry failed for ' + region.region_id + ': ' + e.message);
         }
+        if (learnedRules.length) {
+          v14SaveLearnedRules(learnedRules, domainInfo).catch(function (e) {
+            try { console.error('Could not save learned rule(s):', e.message); } catch (err) {}
+          });
+        }
+      } catch (agentErr) {
+        try { console.error('Final agent failed:', agentErr.message); } catch (e) {}
+        log('Final agent could not complete (' + agentErr.message + ') - pending groups kept as they are.', 'warn');
       }
-      stillBad = maskedRegions.filter(regionLooksUntranslated);
     }
 
-    // Final agent (per explicit direction, option 2): after the v18
-    // translation + retries, the reviewer (v14ReviewTranslation) goes over
-    // EVERY group with the selected Lexora rules (finalAgentRulesBlock) and
-    // learned rules added to its prompt. It only returns corrections to a
-    // group's text - it never regroups (R1-R4 stay as the translator made
-    // them). A region with no translation at all is sent as one entry with
-    // all its boxes and an empty translation; a returned text becomes ONE
-    // group covering all its boxes. Page-wise, max 4 pages at a time; code
-    // issues / learned rules / faithfulness are collected and saved/logged
-    // once at the end.
-    const finalRules = finalAgentRulesBlock(targetLanguage, targetCountry, domainInfo) + (learnedRulesBlock || '');
-    const agentEntriesByPage = new Map();
+    // Assemble the v18 output shape: region_id -> translation_groups. A
+    // group that never got a translation keeps its original text.
     maskedRegions.forEach(function (region) {
-      const regionId = region.region_id;
-      if (!agentEntriesByPage.has(region._pageNum)) agentEntriesByPage.set(region._pageNum, { entries: [], translations: [] });
-      const bucket = agentEntriesByPage.get(region._pageNum);
-      const boxById = new Map(region.blue_boxes.map(function (b) { return [b.id, b]; }));
-      const groups = translationByRegionId.get(regionId);
-      if (!groups) {
-        const src = region.blue_boxes.map(function (b) { return b.markupText || b.text; }).filter(Boolean).join(' ');
-        bucket.entries.push({ id: regionId + '::all', text: src });
-        bucket.translations.push({ id: regionId + '::all', translated_text: '' });
-        return;
-      }
-      groups.forEach(function (g, gi) {
-        const src = (g.source_box_ids || []).map(function (id) { const b = boxById.get(id); return b ? (b.markupText || b.text) : ''; }).filter(Boolean).join(' ');
-        bucket.entries.push({ id: regionId + '::' + gi, text: src });
-        bucket.translations.push({ id: regionId + '::' + gi, translated_text: g.translated_text || '' });
-      });
+      const list = unitsByRegion.get(region.region_id);
+      if (!list.some(function (u) { return textByUnit.has(u.region_id); })) return;
+      translationByRegionId.set(region.region_id, list.map(function (u, gi) {
+        return {
+          group_order: gi + 1,
+          source_box_ids: u._boxIds,
+          translated_text: textByUnit.has(u.region_id) ? textByUnit.get(u.region_id) : (u.blue_boxes[0].markupText || u.blue_boxes[0].text)
+        };
+      }));
     });
-    const agentPages = Array.from(agentEntriesByPage.keys());
-    const collect = {};
-    const reviewedById = {};
-    let agentFailedPages = [];
-    if (agentPages.length) {
-      log('Final agent: reviewing ' + agentPages.length + ' page(s) as a ' + ((domainInfo && domainInfo.domain) || 'domain') + ' professional qualified in ' + (targetCountry || targetLanguage) + '...', 'info');
-      let nextAgentIdx = 0;
-      const agentWorker = async function () {
-        while (nextAgentIdx < agentPages.length) {
-          const pageNum = agentPages[nextAgentIdx++];
-          const bucket = agentEntriesByPage.get(pageNum);
-          try {
-            const reviewed = await v14ReviewTranslation(model, bucket.entries, bucket.translations, targetLanguage, targetCountry, domainInfo,
-              { extraRulesBlock: finalRules, collect: collect });
-            (reviewed || []).forEach(function (t) { if (t && t.id) reviewedById[t.id] = t.translated_text; });
-          } catch (agentErr) {
-            agentFailedPages.push(pageNum);
-            try { console.error('Final agent failed on page ' + pageNum + ':', agentErr.message); } catch (e) {}
-          }
-        }
-      };
-      const agentWorkers = [];
-      for (let w = 0; w < Math.min(PAGE_CONCURRENCY, agentPages.length); w++) agentWorkers.push(agentWorker());
-      await Promise.all(agentWorkers);
 
-      maskedRegions.forEach(function (region) {
-        const regionId = region.region_id;
-        const groups = translationByRegionId.get(regionId);
-        if (!groups) {
-          const v = reviewedById[regionId + '::all'];
-          if (typeof v === 'string' && v.trim()) {
-            translationByRegionId.set(regionId, [{ group_order: 1, source_box_ids: region.blue_boxes.map(function (b) { return b.id; }), translated_text: v }]);
-          }
-          return;
-        }
-        groups.forEach(function (g, gi) {
-          const v = reviewedById[regionId + '::' + gi];
-          if (typeof v === 'string' && v.trim()) g.translated_text = v;
-        });
-      });
-
-      const scores = collect.scores || [];
-      const codeIssues = collect.codeIssues || [];
-      const learnedRules = collect.learnedRules || [];
-      log('Final agent: ' + (collect.applied || 0) + ' correction(s) applied' +
-        (codeIssues.length ? (', ' + codeIssues.length + ' possible code-level issue(s) flagged for review') : '') +
-        (learnedRules.length ? (', ' + learnedRules.length + ' possible new rule(s) suggested for review') : '') + '.', 'info');
-      if (scores.length) {
-        const avg = Math.round(scores.reduce(function (x, y) { return x + y; }, 0) / scores.length);
-        const low = Math.min.apply(null, scores);
-        log('Faithfulness score: ' + avg + '/100 average (lowest page ' + low + '/100)', low >= 90 ? 'info' : 'warn');
-      }
-      if (agentFailedPages.length) {
-        log('Final agent could not complete page(s) ' + agentFailedPages.sort(function (x, y) { return x - y; }).join(', ') + ' - those pages keep the v18 translation as-is.', 'warn');
-      }
-      if (codeIssues.length) {
-        v14SaveCodeIssues(codeIssues, domainInfo).catch(function (e) {
-          try { console.error('Could not save flagged code issue(s):', e.message); } catch (err) {}
-        });
-      }
-      if (learnedRules.length) {
-        v14SaveLearnedRules(learnedRules, domainInfo).catch(function (e) {
-          try { console.error('Could not save learned rule(s):', e.message); } catch (err) {}
-        });
-      }
-    }
-
-    // Never silent: anything still missing or still untranslated after the
-    // retries AND the reviewer is reported as a warning (Failed row).
+    // Never silent: remaining problems are reported with page numbers.
     function pagesOf(list) {
       const seen = [];
-      list.forEach(function (r) { if (seen.indexOf(r._pageNum) === -1) seen.push(r._pageNum); });
-      return seen.sort(function (a, b) { return a - b; }).join(', ');
+      list.forEach(function (u) { if (seen.indexOf(u._pageNum) === -1) seen.push(u._pageNum); });
+      return seen.sort(function (x, y) { return x - y; }).join(', ');
     }
-    const finalMissing = maskedRegions.filter(function (r) { return !translationByRegionId.has(r.region_id); });
-    const finalBad = maskedRegions.filter(regionLooksUntranslated);
+    const finalMissing = units.filter(function (u) { return !textByUnit.has(u.region_id); });
+    const finalBad = units.filter(unitLooksUntranslated);
     if (finalMissing.length) {
-      log(finalMissing.length + ' region(s) got no translation after all retries - original text kept (page(s) ' + pagesOf(finalMissing) + ').', 'warn');
+      log(finalMissing.length + ' group(s) got no translation after all retries - original text kept (page(s) ' + pagesOf(finalMissing) + ').', 'warn');
     }
     if (finalBad.length) {
-      log(finalBad.length + ' region(s) still contain untranslated text after all retries (page(s) ' + pagesOf(finalBad) + ').', 'warn');
+      log(finalBad.length + ' group(s) still contain untranslated text after all retries (page(s) ' + pagesOf(finalBad) + ').', 'warn');
     }
 
     if (piiCounter > 0) {
