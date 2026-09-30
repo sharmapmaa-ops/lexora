@@ -38,8 +38,15 @@
   // malformed and got retried genuinely cost 2 calls, and the log/billing
   // should say so rather than assuming 1 per page).
   let _apiCalls = { json: 0, image: 0 };
-  function resetApiCalls() { _apiCalls = { json: 0, image: 0 }; }
-  function getApiCalls() { return { json: _apiCalls.json, image: _apiCalls.image }; }
+  function resetApiCalls() { _apiCalls = { json: 0, image: 0 }; _apiUsage = { cost: 0, costKnown: false, input: 0, output: 0, reasoning: 0 }; }
+  // Totals from OpenRouter's usage object (cost is included in every
+  // non-streaming response by default).
+  let _apiUsage = { cost: 0, costKnown: false, input: 0, output: 0, reasoning: 0 };
+  function getApiCalls() {
+    return { json: _apiCalls.json, image: _apiCalls.image,
+      cost: _apiUsage.costKnown ? _apiUsage.cost : null,
+      inputTokens: _apiUsage.input, outputTokens: _apiUsage.output, reasoningTokens: _apiUsage.reasoning };
+  }
   // Running number for the per-call "Sent" / "Received" Activity Log lines.
   let _apiCallSeq = 0;
   function snapshotApiCalls() { return { json: _apiCalls.json, image: _apiCalls.image }; }
@@ -3282,9 +3289,14 @@ STRICT RULES:
     const u = data.usage || {};
     const reasoningTokens = u.completion_tokens_details && u.completion_tokens_details.reasoning_tokens;
     const finish = data.choices && data.choices[0] && data.choices[0].finish_reason;
+    if (typeof u.prompt_tokens === 'number') _apiUsage.input += u.prompt_tokens;
+    if (typeof u.completion_tokens === 'number') _apiUsage.output += u.completion_tokens;
+    if (typeof reasoningTokens === 'number') _apiUsage.reasoning += reasoningTokens;
+    if (typeof u.cost === 'number') { _apiUsage.cost += u.cost; _apiUsage.costKnown = true; }
     log('API Call #' + seq + ' > Received > ' + what + ' (finish ' + (finish || '-') +
       ', input ' + (u.prompt_tokens != null ? u.prompt_tokens : '?') + ' tokens, output ' + (u.completion_tokens != null ? u.completion_tokens : '?') + ' tokens' +
-      (reasoningTokens ? (', of which reasoning ' + reasoningTokens) : '') + ')');
+      (reasoningTokens ? (', of which reasoning ' + reasoningTokens) : '') +
+      (typeof u.cost === 'number' ? (', cost $' + u.cost.toFixed(6)) : '') + ')');
     return data;
   }
 

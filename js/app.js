@@ -2812,6 +2812,7 @@
                             const perPageRate = getServicePrice('translation', 1);
                             const perDocument = isPerDocumentBilling('translation');
                             let totalJsonCalls = 0, totalImageCalls = 0;
+                            let translationApiUsage = null;
                             let totalCharged = 0, pagesCharged = 0;
 
                             let offlineBlob;
@@ -2937,9 +2938,14 @@
                                 }
                                 // Every OpenRouter call this file made
                                 // (grouping, translation, retries, agent...).
-                                const pdfjsCalls = window.__translationEngine.getPipelineApiCounters();
-                                totalJsonCalls += pdfjsCalls.json;
-                                totalImageCalls += pdfjsCalls.image;
+                                // Guarded: a stale cached engine file without
+                                // this function must not abort a finished file.
+                                if (typeof window.__translationEngine.getPipelineApiCounters === 'function') {
+                                    const pdfjsCalls = window.__translationEngine.getPipelineApiCounters();
+                                    totalJsonCalls += pdfjsCalls.json;
+                                    totalImageCalls += pdfjsCalls.image;
+                                    translationApiUsage = pdfjsCalls;
+                                }
                                 file.progress = '80';
                                 refreshServicePage('translation');
 
@@ -3035,6 +3041,12 @@
                             }
                             addActivity('translation',
                                 `${fl}Page(All) > API Call(s) > JSON=${totalJsonCalls}, IMAGE=${totalImageCalls}`, 'Info');
+                            if (translationApiUsage) {
+                                addActivity('translation',
+                                    `${fl}Page(All) > API Usage > input ${translationApiUsage.inputTokens} tokens, output ${translationApiUsage.outputTokens} tokens` +
+                                    (translationApiUsage.reasoningTokens ? ` (of which reasoning ${translationApiUsage.reasoningTokens})` : '') +
+                                    `, OpenRouter cost ` + (translationApiUsage.cost != null ? `$${translationApiUsage.cost.toFixed(6)}` : 'not reported'), 'Info');
+                            }
                             addActivity('translation',
                                 `${fl}Page(All) > Amount Deducted from Wallet=${currencySymbol()}${totalCharged.toFixed(2)}` +
                                 (perDocument ? ` (flat per-document rate, ${pagesCharged} page(s))` : ` (${pagesCharged} page(s) @ ${currencySymbol()}${perPageRate.toFixed(2)}/page)`), 'Info');
