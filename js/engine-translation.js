@@ -6453,18 +6453,32 @@ ${JSON.stringify(texts)}`;
         // out line-by-line with a forced left alignment and a last-line width
         // budget copied from the source, which made the translation spill
         // onto an extra line even when it would fit in fewer.
+        // "Shaped" = the lines do not all START at the same edge (e.g. text
+        // flowing around something). Judged on the START edge in the source's
+        // reading direction (left for LTR, right for RTL) of every line
+        // except the first (a first-line / hanging indent is normal) - NOT on
+        // line widths: ragged line ENDS (a short last line, or right-aligned
+        // RTL lines of different lengths) are normal paragraph text and go
+        // to the single-box path, which runs from the text's start edge to
+        // the blue box's far edge. Centered text is never "shaped".
         const linesInOrder = boxes.slice().sort(function (a, b) { return a.yTop - b.yTop; });
-        const shapeLines = linesInOrder.length > 1 ? linesInOrder.slice(0, -1) : linesInOrder;
-        const naturalWidths = shapeLines.map(function (b) { return (b.naturalRight != null ? b.naturalRight : b.right) - (b.naturalLeft != null ? b.naturalLeft : b.left); });
-        const minNW = Math.min.apply(null, naturalWidths), maxNW = Math.max.apply(null, naturalWidths);
-        const isShaped = shapeLines.length >= 2 && maxNW > 0 && (maxNW / Math.max(1, minNW)) > 1.25;
+        const startOf = function (b) {
+          return sourceDirection === 'rtl' ? (b.naturalRight != null ? b.naturalRight : b.right) : (b.naturalLeft != null ? b.naturalLeft : b.left);
+        };
+        const shapeStarts = linesInOrder.slice(1).map(startOf);
+        const startSpread = shapeStarts.length ? (Math.max.apply(null, shapeStarts) - Math.min.apply(null, shapeStarts)) : 0;
+        const isShaped = alignment !== 'center' && shapeStarts.length >= 2 && startSpread > Math.max(3, (right - left) * 0.02);
 
         if (isShaped && fontForChar) {
           const sortedBoxes = boxes.slice().sort(function (a, b) { return a.yTop - b.yTop; });
+          // Each line's slot runs from its text's start pixel (source reading
+          // direction) to the far edge of its blue box.
           const slots = sortedBoxes.map(function (b) {
             const nl = (b.naturalLeft != null ? b.naturalLeft : b.left);
             const nr = (b.naturalRight != null ? b.naturalRight : b.right);
-            return { xPt: nl * pd.sx, wPt: (nr - nl) * pd.sx, hPt: b.height * pd.sy };
+            const x0 = sourceDirection === 'rtl' ? b.left : nl;
+            const x1 = sourceDirection === 'rtl' ? nr : b.right;
+            return { xPt: x0 * pd.sx, wPt: Math.max(1, x1 - x0) * pd.sx, hPt: b.height * pd.sy };
           });
           const styledSpans = buildStyledSpansFromMarkup(text, fmt);
           const totalHPt = slots.reduce(function (s, sl) { return s + sl.hPt; }, 0);
@@ -6514,8 +6528,28 @@ ${JSON.stringify(texts)}`;
           if (sourceDirection === 'rtl') { boxRight = naturalRight; }
           else { boxLeft = naturalLeft; }
         }
-        const xPt = boxLeft * pd.sx, yTopPt = top * pd.sy, wPt = (boxRight - boxLeft) * pd.sx, hPt = (bottom - top) * pd.sy;
+        let xPt = boxLeft * pd.sx, wPt = (boxRight - boxLeft) * pd.sx;
+        const yTopPt = top * pd.sy, hPt = (bottom - top) * pd.sy;
         const styledSpans = buildStyledSpansFromMarkup(text, fmt);
+        // A single word / e-mail address / number (no whitespace) that is
+        // wider than its box is never wrapped or shrunk: the box is widened
+        // to fit it at its own font size, growing away from the side the
+        // text is anchored to (left-aligned -> to the right, right-aligned
+        // -> to the left, centered -> both sides).
+        const plainText = styledSpans.map(function (sp) { return sp.text || ''; }).join('').trim();
+        if (fontForChar && plainText && !/\s/.test(plainText)) {
+          let tokenW = 0;
+          styledSpans.forEach(function (sp) {
+            Array.from(sp.text || '').forEach(function (ch) { tokenW += fontForChar(ch, sp.bold, sp.italic).widthOfTextAtSize(ch, fontSizePt); });
+          });
+          const needW = tokenW + 1;
+          if (needW > wPt) {
+            const extra = needW - wPt;
+            if (alignment === 'right') xPt -= extra;
+            else if (alignment === 'center') xPt -= extra / 2;
+            wPt = needW;
+          }
+        }
         const fittedFontSizePt = computeFittedFontSizeRealSpans(styledSpans, wPt - indentLeftPt, hPt, fontSizePt, fontForChar);
         groupPlacements.push({
           x: xPt, yTop: yTopPt, w: wPt, h: hPt,
@@ -8120,6 +8154,7 @@ The translated document must preserve the legal/practical meaning, effect, struc
       'R2. Do NOT assume one line = one sentence.',
       'R3. Do NOT split one sentence merely because it spans multiple lines.',
       'R4. Do NOT combine two independent sentences.',
+      'R4a. A line that begins with its own item number or label (for example 1-1-5, 5-2, 3., 2), a), (b), ١-١-٥, ٢.) STARTS A NEW GROUP. Numbered/lettered items are separate groups even when they follow each other in sequence; a heading or lead-in line before them is its own group too.',
       'R5. Preserve reading order: every group is a continuous range of line numbers [first, last], and the groups follow each other in line order.',
       'R9. IDENTICAL TEXTS on different lines are legitimate - never merge or drop a line because it repeats another.',
       'R15. Verify: every line number exactly once; no split/merge of sentences; ranges continuous and in order.',
@@ -8128,6 +8163,29 @@ The translated document must preserve the legal/practical meaning, effect, struc
       'OUTPUT: return ONLY a JSON object:',
       '{"regions": [{"region_id": "r1", "groups": [[1, 1], [2, 4], [5, 9]]}]}'
     ].join('\n');
+  }
+
+  // A line that STARTS with an item number / label: compound numbers made of
+  // 1-3 digit parts (1-1-5, 5.2, ١-١-٥), a 1-3 digit number or a single
+  // letter followed by "." or ")" ("3.", "2)", "a)"), or a parenthesised one
+  // ("(b)", "(12)"), each followed by whitespace. Latin and Arabic-Indic
+  // digits. Parts of 4+ digits are excluded so a wrapped line starting with
+  // a date or year ("1445-09-22 ...") is not mistaken for an item.
+  const ITEM_MARKER_RE = /^\s*(?:[0-9\u0660-\u0669\u06F0-\u06F9]{1,3}(?:[-.][0-9\u0660-\u0669\u06F0-\u06F9]{1,3})+[.)]?|[0-9\u0660-\u0669\u06F0-\u06F9]{1,3}[.)]|[A-Za-z][.)]|\([0-9A-Za-z\u0660-\u0669]{1,3}\))\s/;
+  function lineStartsWithItemMarker(text) { return ITEM_MARKER_RE.test(text || ''); }
+
+  // R4a enforced in code: a range is split before every line (other than
+  // its first) that starts with an item marker.
+  function splitRangesAtItemMarkers(ranges, lines) {
+    const out = [];
+    ranges.forEach(function (rg) {
+      let start = rg[0];
+      for (let ln = rg[0] + 1; ln <= rg[1]; ln++) {
+        if (lineStartsWithItemMarker(lines[ln - 1] && lines[ln - 1].text)) { out.push([start, ln - 1]); start = ln; }
+      }
+      out.push([start, rg[1]]);
+    });
+    return out;
   }
 
   // Returns sorted, validated ranges for a region with n lines, or null.
@@ -8515,6 +8573,14 @@ The translated document must preserve the legal/practical meaning, effect, struc
     invalid.forEach(function (r) {
       rangesByRegion.set(r.region_id, r.blue_boxes.map(function (b, i) { return [i + 1, i + 1]; }));
     });
+    let markerSplits = 0;
+    maskedRegions.forEach(function (r) {
+      const before = rangesByRegion.get(r.region_id);
+      const after = splitRangesAtItemMarkers(before, r.blue_boxes);
+      markerSplits += after.length - before.length;
+      rangesByRegion.set(r.region_id, after);
+    });
+    if (markerSplits) onLog('Grouping: ' + markerSplits + ' group(s) split where a numbered/lettered item started inside them.');
     if (invalid.length) {
       log(invalid.length + ' region(s) could not be grouped after 1 retry - each of their lines is translated as its own group.', 'warn');
     }
