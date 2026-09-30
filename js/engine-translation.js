@@ -4597,7 +4597,7 @@ Return ONLY this JSON shape, nothing else:
   // actually be handed this document to use (an attorney for a legal
   // document, a physician for a medical one, a CPA for a financial one,
   // and so on), in that country's own jurisdiction/practice.
-  function v14BuildReviewerPrompt(targetLanguageLabel, targetCountry, domainInfo, existingRuleTexts) {
+  function v14BuildReviewerPrompt(targetLanguageLabel, targetCountry, domainInfo, existingRuleTexts, extraRulesBlock) {
     const expert = domainInfo && TRANSLATION_DOMAIN_EXPERTS[domainInfo.domain];
     const countryPhrase = targetCountry
       ? `licensed and currently qualified to practice in ${targetCountry} specifically (not generically "wherever ${targetLanguageLabel} is spoken" - ${targetCountry}'s own professional licensing, terminology conventions, and regulatory/legal standards)`
@@ -4615,13 +4615,13 @@ You will receive a list of paragraph entries, each with: id, the ORIGINAL source
 For each entry, check specifically for:
 - Terminology a professional in your field, in ${targetCountry || 'your jurisdiction'} specifically, would never phrase this way - including your field's standard terms, defined-term consistency, and country-specific conventions.
 - Any meaning that was lost, changed, added, or that no longer matches what the original actually says or legally/professionally means.
-- Numbering, dates, names, amounts, and identifiers that do not exactly match the original.
+- Numbering, dates, amounts, and identifiers that do not exactly match the original, and names that do not refer to exactly the same person/entity/place as the original.
 - Phrasing that is technically correct but that no working professional in your field would actually write this way in a real ${(domainInfo && domainInfo.docType) || 'document'}.
 
 TRANSLATION RULES (Final_Working_v18.html) - the translator had to follow these, and every correction you make must follow them too. Each entry is one translation group the translator already formed from the source boxes; you may correct an entry's text only, never merge, split, drop or add entries, so the grouping rules (R1-R4, R15, R16) are already fixed for you:
 ${v18TranslationRuleLines(targetLanguageLabel).join('\n')}
 
-Only include an entry in your response if you are making an actual correction to it. If an entry's current translation is already correct and professionally sound, do NOT include it at all - most entries in a good translation need no change.
+${extraRulesBlock ? ('ADDITIONAL RULES TO APPLY WHEN CORRECTING (these never override R1-R17 above - if anything below conflicts with R1-R17, R1-R17 win; "document_type" below means the document type named at the top of this prompt):\n\n' + extraRulesBlock + '\n\n') : ''}Only include an entry in your response if you are making an actual correction to it. If an entry's current translation is already correct and professionally sound, do NOT include it at all - most entries in a good translation need no change.
 
 SEPARATELY from those per-entry wording corrections, also watch for a DIFFERENT kind of problem: a PATTERN across multiple entries that looks like a defect in the software that PRODUCED this translation, not a wording/quality choice - for example:
 - The same short trailing phrase repeated right after several different, unrelated sentences (suggests a text-extraction/chunking bug, not a translation choice)
@@ -4651,7 +4651,14 @@ Return ONLY this JSON shape, nothing else, no commentary:
 }`;
   }
 
-  async function v14ReviewTranslation(model, compact, translations, targetLanguageLabel, targetCountry, domainInfo) {
+  // opts (optional, used by the Translation service's final agent):
+  //  - extraRulesBlock: extra rules added to the reviewer prompt
+  //  - collect: object; when given, the per-call faithfulness score, code
+  //    issues and learned rules are pushed into it instead of being logged
+  //    / saved here, so page-wise parallel calls can log and save ONCE.
+  async function v14ReviewTranslation(model, compact, translations, targetLanguageLabel, targetCountry, domainInfo, opts) {
+    opts = opts || {};
+    const collect = opts.collect || null;
     if (!translations || !translations.length) return translations;
     const byId = {};
     translations.forEach(function (t) { if (t && t.id) byId[t.id] = t.translated_text; });
@@ -4660,7 +4667,7 @@ Return ONLY this JSON shape, nothing else, no commentary:
       .map(function (b) { return { id: b.id, original: b.text, current_translation: byId[b.id] }; });
     if (!pairs.length) return translations;
 
-    log('Reviewing translation as a ' + ((domainInfo && domainInfo.domain) || 'domain') + ' professional qualified in ' + (targetCountry || targetLanguageLabel) + '...', 'info');
+    if (!collect) log('Reviewing translation as a ' + ((domainInfo && domainInfo.domain) || 'domain') + ' professional qualified in ' + (targetCountry || targetLanguageLabel) + '...', 'info');
     // Item - the reviewer needs to SEE what's already known before it
     // can avoid suggesting it again (a post-hoc exact-text duplicate
     // check alone isn't reliable - the same underlying rule can get
@@ -4680,7 +4687,7 @@ Return ONLY this JSON shape, nothing else, no commentary:
       }
     } catch (e) { /* proceed without the list - worst case, a rare re-suggestion gets caught by the exact-text check in v14SaveLearnedRules instead */ }
 
-    const prompt = v14BuildReviewerPrompt(targetLanguageLabel, targetCountry, domainInfo, existingRuleTexts) +
+    const prompt = v14BuildReviewerPrompt(targetLanguageLabel, targetCountry, domainInfo, existingRuleTexts, opts.extraRulesBlock) +
       '\n\nENTRIES TO REVIEW:\n' + JSON.stringify(pairs);
     const maxTokens = Math.min(40000, Math.max(8000, pairs.length * 150));
     const data = await v14ProxyJson({
@@ -4702,22 +4709,27 @@ Return ONLY this JSON shape, nothing else, no commentary:
     const codeIssues = parsed && Array.isArray(parsed.code_issues) ? parsed.code_issues : [];
     const learnedRules = parsed && Array.isArray(parsed.learned_rules) ? parsed.learned_rules : [];
     const score = parsed && typeof parsed.faithfulness_score === 'number' ? Math.max(0, Math.min(100, Math.round(parsed.faithfulness_score))) : null;
-    if (score != null) {
+    if (collect) {
+      if (score != null) (collect.scores = collect.scores || []).push(score);
+      (collect.codeIssues = collect.codeIssues || []).push.apply(collect.codeIssues, codeIssues);
+      (collect.learnedRules = collect.learnedRules || []).push.apply(collect.learnedRules, learnedRules);
+    } else if (score != null) {
       log('Faithfulness score: ' + score + '/100' + (parsed.faithfulness_notes ? ' - ' + parsed.faithfulness_notes : ''), score >= 90 ? 'info' : 'warn');
     }
 
-    if (codeIssues.length) {
+    if (!collect && codeIssues.length) {
       v14SaveCodeIssues(codeIssues, domainInfo).catch(function (e) {
         try { console.error('Could not save flagged code issue(s):', e.message); } catch (err) {}
       });
     }
-    if (learnedRules.length) {
+    if (!collect && learnedRules.length) {
       v14SaveLearnedRules(learnedRules, domainInfo).catch(function (e) {
         try { console.error('Could not save learned rule(s):', e.message); } catch (err) {}
       });
     }
 
     if (!corrections.length) {
+      if (collect) return translations;
       log('Review pass: no wording corrections needed' + (codeIssues.length ? (', ' + codeIssues.length + ' possible code-level issue(s) flagged for review') : '') + (learnedRules.length ? (', ' + learnedRules.length + ' possible new rule(s) suggested for review') : '') + '.', 'info');
       return translations;
     }
@@ -4735,6 +4747,7 @@ Return ONLY this JSON shape, nothing else, no commentary:
       }
       return t;
     });
+    if (collect) { collect.applied = (collect.applied || 0) + appliedCount; return refined; }
     log('Review pass: ' + appliedCount + ' correction(s) applied' + (codeIssues.length ? (', ' + codeIssues.length + ' possible code-level issue(s) flagged for review') : '') + (learnedRules.length ? (', ' + learnedRules.length + ' possible new rule(s) suggested for review') : '') + '.', 'info');
     return refined;
   }
@@ -7824,12 +7837,11 @@ ${JSON.stringify(texts)}`;
   // plus v18's code-level rules: skip regions already in the target
   // language, per-region "note" (R14), min-calls batching with token
   // growth / split on truncation, missing-region retry (3x), untranslated
-  // retry (2x), response_format json_object + reasoning none. The reviewer
-  // agent gets the same R1-R17 rules. Lexora-only extras are kept: domain
-  // glossary persona, target country, learned rules, PII masking, reviewer
-  // (Translation Health). Lexora prompt rules that do not conflict with
-  // R1-R17 are kept too (subordinate to R1-R17); "OCR DUPLICATE DETECTION"
-  // was dropped because it contradicts R8/R9.
+  // retry (2x), response_format json_object + reasoning none. The
+  // translator prompt is EXACTLY v18's. Afterwards a final agent (the
+  // reviewer) goes over every group with R1-R17 plus a selected,
+  // non-conflicting subset of Lexora's rules, domain glossary persona,
+  // target country and learned rules. PII masking is kept.
   const LANGUAGE_TO_BCP47 = { English: 'en', Arabic: 'ar', Hindi: 'hi', Urdu: 'ur', French: 'fr', Spanish: 'es', German: 'de', Chinese: 'zh' };
 
   function v18TranslationRuleLines(targetLanguage) {
@@ -7854,11 +7866,16 @@ ${JSON.stringify(texts)}`;
     ];
   }
 
-  // Lexora's own translation rules that do NOT conflict with R1-R17
-  // (copied verbatim from v14BuildTranslationPrompt; only the sentence
-  // asking for a "target_variant" output field was removed, since the
-  // v18 output shape has no such field).
-  function lexoraAdditionalTranslationRules(targetLanguageLabel, targetCountry, domainInfo) {
+  // Final agent rules (per explicit direction, option 2): the translator
+  // runs on v18's prompt only; afterwards the final agent (the reviewer,
+  // v14ReviewTranslation) applies this SELECTED subset of Lexora's former
+  // extra translation rules - only the ones that do not conflict with v18.
+  // Dropped: the numbering-marker instruction (wrong for this pipeline -
+  // markers are part of the text here), "do not translate non-text marks",
+  // and "do not worry about line-fitting". Rewritten (they kept names /
+  // addresses / entity names in the source script, which contradicts v18):
+  // "NEVER ALTER FACTUAL DATA" and "DEFINED ENTITY PROTECTION".
+  function finalAgentRulesBlock(targetLanguageLabel, targetCountry, domainInfo) {
     const countryInstruction = targetCountry
       ? `\n\nTARGET COUNTRY SPECIFIED: ${targetCountry}. Use the standard variant of ${targetLanguageLabel} as spoken/written in ${targetCountry} specifically - its spelling conventions, its official/legal terminology, its units and formatting conventions (dates, currency, addresses), and the terms ${targetCountry}'s own administrative/legal system actually uses for each concept. This takes priority over guessing a variant from the source document.`
       : '';
@@ -7876,7 +7893,7 @@ IMPORTANT — TRANSLATE LIKE A NATIVE PROFESSIONAL WRITER OF ${targetLanguageLab
 Do not produce a literal, word-by-word rendering that mirrors the source language's sentence structure, word order, or idioms. Instead, understand what each sentence/clause is actually saying and re-express that same meaning the way a native ${targetLanguageLabel}-speaking professional would naturally write it for a document of this document_type - using that field's own standard conventions, set phrases, and idiomatic terminology for the equivalent concept, not a dictionary-literal translation of the source wording. This matters most for formal documents (legal/contract, official government, academic, business) where the target language has its own established drafting conventions:
 - For a legal/contractual document_type: use the standard terms and set phrases a professional in that legal tradition would use for each concept (e.g. how that legal system's professionals normally phrase ending an agreement, standard boilerplate expressions, standard clause openers) - a concept-for-concept translation of what the clause legally does, not a literal word-for-word one. If a long sentence's source-language structure would read as awkward or unnatural when translated word-for-word, restructure it into the sentence structure ${targetLanguageLabel} would normally use for that kind of clause, while preserving the exact legal meaning and effect - do not change what any party is agreeing to, obligated to, or entitled to.
 - Official entity names, company/organization titles, authority names, and any term the source document treats as a defined/formal term (capitalized, quoted, or explicitly defined) should be translated to their standard recognized ${targetLanguageLabel} equivalent if one exists, and otherwise kept in a single consistent form - never translated one way in one place and a different way elsewhere.
-- Preserve IN-SENTENCE cross-references to other parts of the document exactly as given (e.g. "see Article 15", "as defined in Clause 4", "pursuant to Section II") - translate only the text around them, never the reference itself. This does NOT apply to a numbering marker that starts the block itself (e.g. a block whose source text begins "1.", "2.", "(a)", "b)") - that marker has ALREADY been removed before this text reached you (it's rendered separately by the document's own numbering), so never reconstruct or prepend it yourself. If a block's translated text would otherwise start with a number/letter followed by a period or parenthesis in that position, you have added a numbering marker that doesn't belong there - remove it and translate only the substantive content.
+- Preserve IN-SENTENCE cross-references to other parts of the document exactly as given (e.g. "see Article 15", "as defined in Clause 4", "pursuant to Section II") - translate only the text around them, never the reference itself.
 
 IMPORTANT — ELIMINATE LITERAL TRANSLATION PATTERNS:
 Rewrite awkward, stiff constructions that come from translating word-for-word into natural ${targetLanguageLabel} a native professional would actually write. For example (English source shown for illustration - apply the same principle regardless of source/target language pair): "The appearing parties mutually and reciprocally acknowledge" -> "The parties acknowledge"; "free disposal thereof" -> "full legal authority"; "interest and will" -> "intention"; "price of lease" -> "rent" (in a Real Estate document); "cannot be adapted to regulations" -> "cannot be brought into regulatory compliance". Apply this same kind of simplification and naturalization throughout, in whichever language pair you are actually translating.
@@ -7886,11 +7903,9 @@ IMPORTANT — TERMINOLOGY PREFERENCES FOR THIS DOCUMENT TYPE (real estate / leas
 - A party's right to unilaterally exit a contract without alleging breach ("recesso" in Italian, and equivalent concepts in other civil-law languages) should be translated as "withdraw"/"right of withdrawal" - NOT "terminate"/"termination". Keep this distinct from a party ending the contract FOR BREACH (which is legitimately "terminate"/"termination"). Conflating the two loses a real legal distinction between a no-fault contractual exit right and a breach-based remedy.
 - For a clause about a document being registered with a tax/revenue authority within a legally mandated period, prefer the phrasing "registration within the mandatory statutory period" over "fixed-term registration" - it reads as more natural, standard legal English for this concept.
 
-IMPORTANT — NEVER ALTER FACTUAL DATA WHILE TRANSLATING:
-The following must come through EXACTLY as in the source, never re-worded, re-formatted, recalculated, converted, or "corrected": dates, personal and organization names, addresses, all numbers, monetary amounts and currency symbols/codes, units of measurement, identifiers (tax/VAT/registration/file/account numbers), and cross-references to laws, articles, or clauses. Translate the words around them, but copy these through verbatim. Do not convert a currency into another currency, do not convert units, and do not change a date's format or calendar. Do not add any information that is not in the source, and do not omit any information that is.
-
-IMPORTANT — DO NOT TRANSLATE NON-TEXT MARKS:
-If a block is a signature, a logo/wordmark, a stamp or seal legend, a barcode/QR label, or a similar mark rather than readable body text, leave its text exactly as-is rather than translating it. Only translate genuine readable language content.
+IMPORTANT — NEVER ALTER FACTUAL DATA:
+Dates, all numbers, monetary amounts and currency symbols/codes, units of measurement, identifiers (tax/VAT/registration/file/account/ID/phone numbers), e-mail addresses and cross-references to laws, articles, or clauses must match the source EXACTLY - never re-worded, re-formatted, recalculated, converted, or "corrected". Do not convert a currency or a unit, and do not change a date's format or calendar. Do not add any information that is not in the source, and do not omit any information that is.
+Personal names, organization names, place names and addresses must refer to exactly the same person/entity/place as the source, written in ${targetLanguageLabel} (its standard recognized equivalent if one exists, otherwise a faithful transliteration) - never left in the source script - and written in the SAME form every time they appear.
 
 IMPORTANT — NEVER RECONSTRUCT OR COMPLETE BROKEN OCR:
 Never infer missing text, never reconstruct an incomplete OCR block, never complete a sentence that was cut off mid-word or mid-thought, and never repair a paragraph that reads as damaged or garbled. Translate only what genuinely exists in the source text for that block. If the OCR text you were given is incomplete or truncated, the translated output for that block must remain equally incomplete/truncated in the same way - do not "fix" it by guessing what the rest of the sentence probably said.
@@ -7901,20 +7916,20 @@ Internal references to other parts of the document - "Article 15", "Clause 4", "
 IMPORTANT — SELF-CONSISTENCY FOR REPEATED SENTENCES AND CLAUSES:
 Beyond individual terminology (covered above), if the exact same sentence or clause appears more than once in the document (as is common with standard/boilerplate legal clauses), translate it identically every time it appears, word for word the same in the output - never produce two different-sounding translations of what was the same sentence in the source, unless the surrounding context makes the same source sentence mean something different in that specific spot.
 
-IMPORTANT — DEFINED ENTITY PROTECTION:
-In addition to personal and organization names (covered above under factual data), never translate fund names, project names, building/property names, product names, or trademark/brand names - carry these through exactly as written in the source, in their original script/language, even when translating the sentence around them.
+IMPORTANT — DEFINED ENTITY NAMES:
+Fund names, project names, building/property names, product names and trademark/brand names must be kept in ONE consistent form throughout the document; if the source writes them in a different script from ${targetLanguageLabel}, render them in ${targetLanguageLabel} (standard equivalent if one exists, otherwise a faithful transliteration), never left in the source script.
 
 IMPORTANT — PUNCTUATION AND CAPITALIZATION FIDELITY:
 Preserve the source's actual punctuation marks rather than substituting a look-alike: an em dash (—) or en dash (–) in the source must stay an em/en dash in the output, not become a plain hyphen (-), and vice versa; preserve curly/smart quotation marks as such rather than converting them to straight quotes. For any term the source treats as a defined term (capitalized consistently in the source, e.g. "the Premises", "the Agreement", "the Party"), keep that same capitalization EVERY time it appears in the translation - never capitalize it in one paragraph and lowercase the same word used the same way in another.
 
-The translated document must preserve the legal/practical meaning, effect, structure, and evidential value of the source document - the translation must never alter what any party is agreeing to, obligated to, entitled to, or bound by.
-
-IMPORTANT — DO NOT WORRY ABOUT LINE-FITTING OR BOX WIDTHS:
-Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabel}, at whatever length that naturally takes - do not artificially shorten or pad it, and do not try to match the line-count or per-line length of the source. Exactly how the translated text gets fitted back into the page's layout is handled entirely outside of this step; your only job is an accurate, natural, complete translation of each entry's full content.`;
+The translated document must preserve the legal/practical meaning, effect, structure, and evidential value of the source document - the translation must never alter what any party is agreeing to, obligated to, entitled to, or bound by.`;
   }
 
-  function buildTranslationSystemPrompt(targetLanguage, extras) {
-    extras = extras || {};
+  // Translator prompt = EXACTLY Final_Working_v18.html's (per explicit
+  // direction). Lexora's extra rules are NOT given to the translator; a
+  // selected, non-conflicting subset is applied afterwards by the final
+  // agent (finalAgentRulesBlock + v14ReviewTranslation).
+  function buildTranslationSystemPrompt(targetLanguage) {
     return [
       'You are a professional document translator. Translate document regions into ' + targetLanguage + '.',
       '',
@@ -7922,10 +7937,6 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
       '',
       'RULES:'
     ].concat(v18TranslationRuleLines(targetLanguage)).concat([
-      '',
-      'ADDITIONAL RULES (these never override R1-R17 - if anything below conflicts with R1-R17, R1-R17 win; "document_type" below means the document type stated in the DOMAIN EXPERT PERSONA, or the type you infer from the content if none is given):',
-      '',
-      lexoraAdditionalTranslationRules(targetLanguage, extras.targetCountry, extras.domainInfo) + (extras.learnedRulesBlock || ''),
       '',
       'OUTPUT: return ONLY a JSON object (no source text, only the translation):',
       '{"regions": [{"region_id": "...", "translation_groups": [{"group_order": 1, "source_box_ids": ["..."], "translated_text": "..."}]}]}'
@@ -7946,8 +7957,8 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
   // (the OpenRouter key stays server-side). The server's own 180s request
   // timeout acts as the per-call timeout (its error text contains
   // "timed out", which translateRegionsMinCalls treats as a timeout).
-  async function callOpenRouterRegions(model, targetLanguage, maxTokens, regionBatch, extras) {
-    const systemPrompt = buildTranslationSystemPrompt(targetLanguage, extras);
+  async function callOpenRouterRegions(model, targetLanguage, maxTokens, regionBatch) {
+    const systemPrompt = buildTranslationSystemPrompt(targetLanguage);
     // Short ids (r1, b1, ...) instead of the long position ids: the model
     // echoes every id back in its output, and output tokens are the
     // expensive part. Mapped back to the real ids below, so everything
@@ -8231,8 +8242,7 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
     }
     const targetCountry = window.getSetupPref ? window.getSetupPref('translation', 'targetCountry', '') : '';
     const learnedRulesBlock = await v14FetchTranslationRules();
-    const extras = { domainInfo: domainInfo, targetCountry: targetCountry, learnedRulesBlock: learnedRulesBlock };
-    const callOnce = function (batch, maxTokens) { return callOpenRouterRegions(model, targetLanguage, maxTokens, batch, extras); };
+    const callOnce = function (batch, maxTokens) { return callOpenRouterRegions(model, targetLanguage, maxTokens, batch); };
 
     // Page-wise sending (per explicit direction): each page's regions go in
     // their own request(s); pages run in parallel, max 4 at a time. Token
@@ -8311,57 +8321,100 @@ Translate each paragraph/entry as naturally-flowing text in ${targetLanguageLabe
       stillBad = maskedRegions.filter(regionLooksUntranslated);
     }
 
-    // Reviewer agent - ONLY on flagged groups (per explicit direction):
-    //  - a group whose text still looks untranslated after the retries, and
-    //  - a region that got no translation at all (sent as one entry with
-    //    all its boxes and an empty current translation; if the reviewer
-    //    returns text, the region gets ONE group covering all its boxes).
-    // Nothing flagged -> no reviewer call at all.
-    const reviewEntries = [];
-    const reviewTranslations = [];
+    // Final agent (per explicit direction, option 2): after the v18
+    // translation + retries, the reviewer (v14ReviewTranslation) goes over
+    // EVERY group with the selected Lexora rules (finalAgentRulesBlock) and
+    // learned rules added to its prompt. It only returns corrections to a
+    // group's text - it never regroups (R1-R4 stay as the translator made
+    // them). A region with no translation at all is sent as one entry with
+    // all its boxes and an empty translation; a returned text becomes ONE
+    // group covering all its boxes. Page-wise, max 4 pages at a time; code
+    // issues / learned rules / faithfulness are collected and saved/logged
+    // once at the end.
+    const finalRules = finalAgentRulesBlock(targetLanguage, targetCountry, domainInfo) + (learnedRulesBlock || '');
+    const agentEntriesByPage = new Map();
     maskedRegions.forEach(function (region) {
       const regionId = region.region_id;
+      if (!agentEntriesByPage.has(region._pageNum)) agentEntriesByPage.set(region._pageNum, { entries: [], translations: [] });
+      const bucket = agentEntriesByPage.get(region._pageNum);
       const boxById = new Map(region.blue_boxes.map(function (b) { return [b.id, b]; }));
       const groups = translationByRegionId.get(regionId);
       if (!groups) {
         const src = region.blue_boxes.map(function (b) { return b.markupText || b.text; }).filter(Boolean).join(' ');
-        reviewEntries.push({ id: regionId + '::all', text: src });
-        reviewTranslations.push({ id: regionId + '::all', translated_text: '' });
+        bucket.entries.push({ id: regionId + '::all', text: src });
+        bucket.translations.push({ id: regionId + '::all', translated_text: '' });
         return;
       }
       groups.forEach(function (g, gi) {
-        if (!looksLikelyUntranslated(g.translated_text || '', targetLanguage)) return;
         const src = (g.source_box_ids || []).map(function (id) { const b = boxById.get(id); return b ? (b.markupText || b.text) : ''; }).filter(Boolean).join(' ');
-        reviewEntries.push({ id: regionId + '::' + gi, text: src });
-        reviewTranslations.push({ id: regionId + '::' + gi, translated_text: g.translated_text || '' });
+        bucket.entries.push({ id: regionId + '::' + gi, text: src });
+        bucket.translations.push({ id: regionId + '::' + gi, translated_text: g.translated_text || '' });
       });
     });
-    if (reviewEntries.length === 0) {
-      onLog('Review pass skipped - no flagged (untranslated/missing) groups.');
-    } else {
-      onLog('Review pass on ' + reviewEntries.length + ' flagged group(s) only.');
-      try {
-        const reviewed = await v14ReviewTranslation(model, reviewEntries, reviewTranslations, targetLanguage, targetCountry, domainInfo);
-        const reviewedById = {};
-        (reviewed || []).forEach(function (t) { if (t && t.id) reviewedById[t.id] = t.translated_text; });
-        maskedRegions.forEach(function (region) {
-          const regionId = region.region_id;
-          const groups = translationByRegionId.get(regionId);
-          if (!groups) {
-            const v = reviewedById[regionId + '::all'];
-            if (typeof v === 'string' && v.trim()) {
-              translationByRegionId.set(regionId, [{ group_order: 1, source_box_ids: region.blue_boxes.map(function (b) { return b.id; }), translated_text: v }]);
-            }
-            return;
+    const agentPages = Array.from(agentEntriesByPage.keys());
+    const collect = {};
+    const reviewedById = {};
+    let agentFailedPages = [];
+    if (agentPages.length) {
+      log('Final agent: reviewing ' + agentPages.length + ' page(s) as a ' + ((domainInfo && domainInfo.domain) || 'domain') + ' professional qualified in ' + (targetCountry || targetLanguage) + '...', 'info');
+      let nextAgentIdx = 0;
+      const agentWorker = async function () {
+        while (nextAgentIdx < agentPages.length) {
+          const pageNum = agentPages[nextAgentIdx++];
+          const bucket = agentEntriesByPage.get(pageNum);
+          try {
+            const reviewed = await v14ReviewTranslation(model, bucket.entries, bucket.translations, targetLanguage, targetCountry, domainInfo,
+              { extraRulesBlock: finalRules, collect: collect });
+            (reviewed || []).forEach(function (t) { if (t && t.id) reviewedById[t.id] = t.translated_text; });
+          } catch (agentErr) {
+            agentFailedPages.push(pageNum);
+            try { console.error('Final agent failed on page ' + pageNum + ':', agentErr.message); } catch (e) {}
           }
-          groups.forEach(function (g, gi) {
-            const v = reviewedById[regionId + '::' + gi];
-            if (typeof v === 'string' && v.trim()) g.translated_text = v;
-          });
+        }
+      };
+      const agentWorkers = [];
+      for (let w = 0; w < Math.min(PAGE_CONCURRENCY, agentPages.length); w++) agentWorkers.push(agentWorker());
+      await Promise.all(agentWorkers);
+
+      maskedRegions.forEach(function (region) {
+        const regionId = region.region_id;
+        const groups = translationByRegionId.get(regionId);
+        if (!groups) {
+          const v = reviewedById[regionId + '::all'];
+          if (typeof v === 'string' && v.trim()) {
+            translationByRegionId.set(regionId, [{ group_order: 1, source_box_ids: region.blue_boxes.map(function (b) { return b.id; }), translated_text: v }]);
+          }
+          return;
+        }
+        groups.forEach(function (g, gi) {
+          const v = reviewedById[regionId + '::' + gi];
+          if (typeof v === 'string' && v.trim()) g.translated_text = v;
         });
-      } catch (reviewErr) {
-        try { console.error('Review pass failed, shipping unreviewed translation:', reviewErr.message); } catch (e) {}
-        log('Review pass could not complete (' + reviewErr.message + ') - using the primary translation as-is.', 'warn');
+      });
+
+      const scores = collect.scores || [];
+      const codeIssues = collect.codeIssues || [];
+      const learnedRules = collect.learnedRules || [];
+      log('Final agent: ' + (collect.applied || 0) + ' correction(s) applied' +
+        (codeIssues.length ? (', ' + codeIssues.length + ' possible code-level issue(s) flagged for review') : '') +
+        (learnedRules.length ? (', ' + learnedRules.length + ' possible new rule(s) suggested for review') : '') + '.', 'info');
+      if (scores.length) {
+        const avg = Math.round(scores.reduce(function (x, y) { return x + y; }, 0) / scores.length);
+        const low = Math.min.apply(null, scores);
+        log('Faithfulness score: ' + avg + '/100 average (lowest page ' + low + '/100)', low >= 90 ? 'info' : 'warn');
+      }
+      if (agentFailedPages.length) {
+        log('Final agent could not complete page(s) ' + agentFailedPages.sort(function (x, y) { return x - y; }).join(', ') + ' - those pages keep the v18 translation as-is.', 'warn');
+      }
+      if (codeIssues.length) {
+        v14SaveCodeIssues(codeIssues, domainInfo).catch(function (e) {
+          try { console.error('Could not save flagged code issue(s):', e.message); } catch (err) {}
+        });
+      }
+      if (learnedRules.length) {
+        v14SaveLearnedRules(learnedRules, domainInfo).catch(function (e) {
+          try { console.error('Could not save learned rule(s):', e.message); } catch (err) {}
+        });
       }
     }
 
