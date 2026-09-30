@@ -6252,7 +6252,7 @@ ${JSON.stringify(texts)}`;
 
   // indentLeftPt / firstLineOffsetPt (optional): paragraph left indent and
   // first-line offset (negative = hanging) in points.
-  function buildDocxTextShapeXml(id, x, yTop, w, h, spans, fontSize, direction, align, zIndex, indentLeftPt, firstLineOffsetPt) {
+  function buildDocxTextShapeXml(id, x, yTop, w, h, spans, fontSize, direction, align, zIndex, indentLeftPt, firstLineOffsetPt, noWrap) {
     if (!spans || spans.length === 0) return '';
     const combinedText = spans.map(function (s) { return s.text; }).join('');
     if (!combinedText || !combinedText.trim()) return '';
@@ -6280,8 +6280,8 @@ ${JSON.stringify(texts)}`;
       ? '<w:ind w:left="' + indL + '"' + (indF > 0 ? ' w:firstLine="' + indF + '"' : (indF < 0 ? ' w:hanging="' + (-indF) + '"' : '')) + '/>'
       : '';
     const pPr = indXml + '<w:jc w:val="' + jc + '"/><w:spacing w:after="0" w:before="0" w:line="240" w:lineRule="auto"/>' + (direction === 'rtl' ? '<w:bidi/>' : '');
-    return '<w:r><w:pict><v:shape id="' + id + '" style="position:absolute;left:' + x.toFixed(2) + 'pt;top:' + yTop.toFixed(2) + 'pt;width:' + Math.max(4, w).toFixed(2) + 'pt;height:' + Math.max(4, h).toFixed(2) + 'pt;mso-position-horizontal-relative:page;mso-position-vertical-relative:page;mso-fit-shape-to-text:t;z-index:' + zIndex + '" filled="f" stroked="f">' +
-      '<v:textbox inset="0,0,0,0" style="mso-fit-shape-to-text:t"><w:txbxContent><w:p><w:pPr>' + pPr + '</w:pPr>' + runsXml + '</w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r>';
+    return '<w:r><w:pict><v:shape id="' + id + '" style="position:absolute;left:' + x.toFixed(2) + 'pt;top:' + yTop.toFixed(2) + 'pt;width:' + Math.max(4, w).toFixed(2) + 'pt;height:' + Math.max(4, h).toFixed(2) + 'pt;mso-position-horizontal-relative:page;mso-position-vertical-relative:page;mso-fit-shape-to-text:t' + (noWrap ? ';mso-wrap-style:none' : '') + ';z-index:' + zIndex + '" filled="f" stroked="f">' +
+      '<v:textbox inset="0,0,0,0" style="mso-fit-shape-to-text:t' + (noWrap ? ';mso-wrap-style:none' : '') + '"><w:txbxContent><w:p><w:pPr>' + pPr + '</w:pPr>' + runsXml + '</w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r>';
   }
 
   function estimateDocxTextHeight(text, fontSizePt, boxWidthPt, minHeightPt) {
@@ -6394,6 +6394,15 @@ ${JSON.stringify(texts)}`;
   function buildDocxTextPlacements(pageRegions, responseByRegionId, pd, fontForChar) {
     const groupPlacements = [];
     const fallbackCandidates = [];
+    // Horizontal extent of all detected content on this page (points): a
+    // widened single-token box is kept inside it, so e.g. white header
+    // text is not pushed past a table's edge onto the white page.
+    let contentMinX = Infinity, contentMaxX = -Infinity;
+    pageRegions.forEach(function (r) {
+      const rb = r.region_box;
+      if (rb) { contentMinX = Math.min(contentMinX, rb.left); contentMaxX = Math.max(contentMaxX, rb.left + rb.w); }
+      (r.blue_boxes || []).forEach(function (b) { contentMinX = Math.min(contentMinX, b.left); contentMaxX = Math.max(contentMaxX, b.right); });
+    });
 
     pageRegions.forEach(function (region) {
       if (!region.blue_boxes || region.blue_boxes.length === 0) return;
@@ -6415,7 +6424,8 @@ ${JSON.stringify(texts)}`;
         // position does, or the font renders at the wrong (scaled) size.
         const fontSizeRaw = Math.max.apply(null, boxes.map(function (b) { return b.fontSize || 10; }));
         const fontSizePt = fontSizeRaw * pd.sy;
-        const text = group.translated_text || group.source_text || '';
+        const text = mergeSplitAddresses(group.translated_text || group.source_text || '',
+          boxes.slice().sort(function (a, b) { return a.yTop - b.yTop; }).map(function (b) { return b.text; }));
         // Direction (character shaping/reading order) must reflect the
         // TRANSLATED text actually being shown, not the source box's own
         // script — translating Arabic to English changes which way the text
@@ -6537,25 +6547,62 @@ ${JSON.stringify(texts)}`;
         // text is anchored to (left-aligned -> to the right, right-aligned
         // -> to the left, centered -> both sides).
         const plainText = styledSpans.map(function (sp) { return sp.text || ''; }).join('').trim();
-        if (fontForChar && plainText && !/\s/.test(plainText)) {
+        const singleToken = !!plainText && !/\s/.test(plainText);
+        let tokenFontPt = fontSizePt;
+        if (fontForChar && singleToken) {
           let tokenW = 0;
           styledSpans.forEach(function (sp) {
             Array.from(sp.text || '').forEach(function (ch) { tokenW += fontForChar(ch, sp.bold, sp.italic).widthOfTextAtSize(ch, fontSizePt); });
           });
-          const needW = tokenW + 1;
+          // generous slack: Word/LibreOffice metrics differ slightly from
+          // pdf-lib's, and a single token must never break onto a 2nd line
+          let needW = tokenW * 1.08 + 4;
+          // If even the whole region (table cell) is narrower than the
+          // token, widening would run over the neighbouring cell's text:
+          // shrink the font (down to 70% at most) to fit the region
+          // first, and widen only for whatever still does not fit.
+          const rbx0 = region.region_box;
+          const regionW = rbx0 ? rbx0.w * pd.sx : 0;
+          if (regionW > 0 && needW > Math.max(wPt, regionW)) {
+            const f = Math.max(0.7, Math.max(wPt, regionW) / needW);
+            tokenFontPt = fontSizePt * f;
+            needW = tokenW * f * 1.08 + 4;
+          }
           if (needW > wPt) {
             const extra = needW - wPt;
             if (alignment === 'right') xPt -= extra;
             else if (alignment === 'center') xPt -= extra / 2;
             wPt = needW;
+            // Stay on the region's own background: never spill past the
+            // region's far edge on the side it would overflow (the space
+            // is taken from the other side instead).
+            const rbx = region.region_box;
+            if (rbx) {
+              const rL = rbx.left * pd.sx, rR = (rbx.left + rbx.w) * pd.sx;
+              if (wPt <= rR - rL) {
+                if (xPt + wPt > rR) xPt = rR - wPt;
+                if (xPt < rL) xPt = rL;
+              } else {
+                // wider than the region: keep the anchored edge inside it
+                const anchorRight = alignment === 'right' || (alignment === 'center' && sourceDirection === 'rtl');
+                xPt = anchorRight ? rR - wPt : rL;
+              }
+            }
+            if (isFinite(contentMaxX) && isFinite(contentMinX)) {
+              const minX = contentMinX * pd.sx, maxX = contentMaxX * pd.sx;
+              if (wPt <= (maxX - minX)) {
+                if (xPt + wPt > maxX) xPt = maxX - wPt;
+                if (xPt < minX) xPt = minX;
+              }
+            }
           }
         }
-        const fittedFontSizePt = computeFittedFontSizeRealSpans(styledSpans, wPt - indentLeftPt, hPt, fontSizePt, fontForChar);
+        const fittedFontSizePt = computeFittedFontSizeRealSpans(styledSpans, wPt - indentLeftPt, hPt, tokenFontPt, fontForChar);
         groupPlacements.push({
           x: xPt, yTop: yTopPt, w: wPt, h: hPt,
           spans: styledSpans, fontSize: fittedFontSizePt,
           direction: direction, align: docxAlignmentToJc(alignment),
-          indentLeftPt: indentLeftPt, firstLineOffsetPt: firstLineOffsetPt
+          indentLeftPt: indentLeftPt, firstLineOffsetPt: firstLineOffsetPt, noWrap: singleToken
         });
       });
       region.blue_boxes.forEach(function (b) {
@@ -6675,7 +6722,7 @@ ${JSON.stringify(texts)}`;
       }
       const placements = buildDocxTextPlacements(pd.pageRegions, responseByRegionId, pd, fontForChar);
       placements.forEach(function (p) {
-        pageXml += buildDocxTextShapeXml('txt' + pageNum + '_' + z, p.x, p.yTop, p.w, p.h, p.spans, p.fontSize, p.direction, p.align, z + 1000, p.indentLeftPt, p.firstLineOffsetPt);
+        pageXml += buildDocxTextShapeXml('txt' + pageNum + '_' + z, p.x, p.yTop, p.w, p.h, p.spans, p.fontSize, p.direction, p.align, z + 1000, p.indentLeftPt, p.firstLineOffsetPt, p.noWrap);
         z++;
       });
 
@@ -6784,6 +6831,43 @@ ${JSON.stringify(texts)}`;
     return leftMargin < rightMargin ? 'left' : 'right';
   }
 
+  // Joins the lines of one group with a space - EXCEPT where a line ends
+  // in the middle of an e-mail address / URL that the PDF wrapped onto
+  // the next line ("aalmajally@osoolre.co" + "m"): a space there would
+  // split the address into two words.
+  function joinGroupLineTexts(texts) {
+    let out = '';
+    texts.forEach(function (t) {
+      const cur = String(t == null ? '' : t).trim();
+      if (!cur) return;
+      if (!out) { out = cur; return; }
+      const lastTok = (out.match(/(\S+)$/) || ['', ''])[1];
+      const isAddr = /@|:\/\/|^www\./i.test(lastTok.replace(/<[^>]*>/g, '')) && !/[,;:)\]]$/.test(lastTok);
+      // after a trailing "." only a lowercase continuation ("osoolre." + "com")
+      const nextStartsWord = /\.$/.test(lastTok)
+        ? /^(?:<[^>]*>)*[a-z0-9]/.test(cur)
+        : /^(?:<[^>]*>)*[A-Za-z0-9]/.test(cur);
+      out += (isAddr && nextStartsWord) ? cur : (' ' + cur);
+    });
+    return out;
+  }
+
+  // The PDF wrapped an e-mail / URL across two lines and the translation
+  // kept that break as a space ("aalmajally@osoolre.co m"): re-join it
+  // using the unbroken address from the source lines.
+  function mergeSplitAddresses(translated, sourceLineTexts) {
+    let out = String(translated || '');
+    const src = joinGroupLineTexts(sourceLineTexts || []).replace(/<[^>]*>/g, '');
+    const addrs = src.split(/\s+/).map(function (t) { return t.replace(/[.,;:)\]]+$/, ''); })
+      .filter(function (t) { return t.length > 4 && /@|:\/\/|^www\./i.test(t); });
+    addrs.forEach(function (a) {
+      if (out.indexOf(a) !== -1) return;
+      const pat = Array.from(a).map(function (ch) { return ch.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&'); }).join('(?:\\s|<[^>]*>)*');
+      out = out.replace(new RegExp(pat, 'g'), function (m) { return m.replace(/\s+/g, ''); });
+    });
+    return out;
+  }
+
   function detectGroupAlignment(groupBlueBoxes, areaLeft, areaRight, direction, regionType) {
     const boxWidth = areaRight - areaLeft;
     const tol = Math.max(3, boxWidth * 0.04);
@@ -6820,6 +6904,28 @@ ${JSON.stringify(texts)}`;
           return direction === 'rtl' ? 'right' : 'left';
         }
       }
+    }
+    // Multi-line group that is not justified: the MIN-left / MAX-right
+    // comparison below would call it "center" whenever one long line
+    // spans the area and a short line hugs one edge (e.g. an RTL
+    // sentence whose 2nd line sits at the right margin). Decide per line
+    // instead: 'center' only if EVERY line is individually centered;
+    // otherwise the edge the lines hug.
+    if (groupBlueBoxes.length >= 2) {
+      let allCentered = true, rightHug = 0, leftHug = 0;
+      groupBlueBoxes.forEach(function (b) {
+        const nl = (b.naturalLeft != null) ? b.naturalLeft : b.left;
+        const nr = (b.naturalRight != null) ? b.naturalRight : b.right;
+        const lm = nl - areaLeft, rm = areaRight - nr;
+        const lineCentered = Math.abs(lm - rm) <= tol && lm > tol && rm > tol;
+        if (!lineCentered) allCentered = false;
+        if (rm <= tol) rightHug++;
+        if (lm <= tol) leftHug++;
+      });
+      if (allCentered) return 'center';
+      if (rightHug > leftHug) return 'right';
+      if (leftHug > rightHug) return 'left';
+      return direction === 'rtl' ? 'right' : 'left';
     }
     const naturalLeft = Math.min.apply(null, groupBlueBoxes.map(function (b) { return (b.naturalLeft != null) ? b.naturalLeft : b.left; }));
     const naturalRight = Math.max.apply(null, groupBlueBoxes.map(function (b) { return (b.naturalRight != null) ? b.naturalRight : b.right; }));
@@ -8599,8 +8705,8 @@ The translated document must preserve the legal/practical meaning, effect, struc
           _boxIds: boxes.map(function (b) { return b.id; }),
           blue_boxes: [{
             id: 'u',
-            text: boxes.map(function (b) { return b.text; }).join(' '),
-            markupText: boxes.map(function (b) { return b.markupText || b.text; }).join(' ')
+            text: joinGroupLineTexts(boxes.map(function (b) { return b.text; })),
+            markupText: joinGroupLineTexts(boxes.map(function (b) { return b.markupText || b.text; }))
           }]
         };
         list.push(unit);
