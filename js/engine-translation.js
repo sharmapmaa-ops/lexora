@@ -39,6 +39,9 @@
   // should say so rather than assuming 1 per page).
   let _apiCalls = { json: 0, image: 0 };
   function resetApiCalls() { _apiCalls = { json: 0, image: 0 }; }
+  function getApiCalls() { return { json: _apiCalls.json, image: _apiCalls.image }; }
+  // Running number for the per-call "Sent" / "Received" Activity Log lines.
+  let _apiCallSeq = 0;
   function snapshotApiCalls() { return { json: _apiCalls.json, image: _apiCalls.image }; }
 
   // OPTION A: vision calls SERVER PROXY se jaati hain (/api/translation/
@@ -3245,21 +3248,43 @@ STRICT RULES:
   }
 
   // ---- proxy calls (OpenRouter direct nahi — server key lagata hai) ----
-  async function v14ProxyJson(reqBody) {
+  // label (optional): what this call is for, shown in the per-call
+  // "API Call #N > Sent / Received" Activity Log lines.
+  async function v14ProxyJson(reqBody, label) {
     // Count before dispatch: a call that fails still consumed a call.
     if (reqBody && Array.isArray(reqBody.modalities) && reqBody.modalities.indexOf('image') !== -1) {
       _apiCalls.image++;
     } else {
       _apiCalls.json++;
     }
-    const resp = await _visionFetch(reqBody);
+    const seq = ++_apiCallSeq;
+    const what = label || 'Request';
+    log('API Call #' + seq + ' > Sent > ' + what + ' (model ' + (reqBody && reqBody.model || '-') + ', max_tokens ' + (reqBody && reqBody.max_tokens != null ? reqBody.max_tokens : '-') + ')');
+    let resp;
+    try {
+      resp = await _visionFetch(reqBody);
+    } catch (fetchErr) {
+      log('API Call #' + seq + ' > Failed > ' + what + ': ' + fetchErr.message, 'warn');
+      throw fetchErr;
+    }
     let data = null;
     try { data = await resp.json(); } catch (e) { /* non-json error body */ }
     if (!resp.ok) {
       const msg = (data && (data.error && data.error.message || data.error)) || ('HTTP ' + resp.status);
-      throw new Error('Vision proxy error: ' + (typeof msg === 'string' ? msg.substring(0, 300) : JSON.stringify(msg).substring(0, 300)));
+      const msgText = typeof msg === 'string' ? msg.substring(0, 300) : JSON.stringify(msg).substring(0, 300);
+      log('API Call #' + seq + ' > Failed > ' + what + ': ' + msgText, 'warn');
+      throw new Error('Vision proxy error: ' + msgText);
     }
-    if (!data) throw new Error('Vision proxy did not return a JSON response.');
+    if (!data) {
+      log('API Call #' + seq + ' > Failed > ' + what + ': no JSON response', 'warn');
+      throw new Error('Vision proxy did not return a JSON response.');
+    }
+    const u = data.usage || {};
+    const reasoningTokens = u.completion_tokens_details && u.completion_tokens_details.reasoning_tokens;
+    const finish = data.choices && data.choices[0] && data.choices[0].finish_reason;
+    log('API Call #' + seq + ' > Received > ' + what + ' (finish ' + (finish || '-') +
+      ', input ' + (u.prompt_tokens != null ? u.prompt_tokens : '?') + ' tokens, output ' + (u.completion_tokens != null ? u.completion_tokens : '?') + ' tokens' +
+      (reasoningTokens ? (', of which reasoning ' + reasoningTokens) : '') + ')');
     return data;
   }
 
@@ -4113,7 +4138,7 @@ Return ONLY this JSON shape, nothing else:
       temperature: 0.2,
       max_tokens: 800,
       messages: [{ role: 'user', content: genPrompt }]
-    });
+    }, 'Domain profile');
     const raw = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
     if (!raw) throw new Error('No content received generating a new domain-expert profile.');
     const parsed = JSON.parse(v14CleanJsonResponse(raw));
@@ -4177,7 +4202,7 @@ Return ONLY this JSON shape, nothing else:
           { role: 'system', content: systemPrompt },
           { role: 'user', content: String(sampleText || '').slice(0, 1500) }
         ]
-      });
+      }, 'Domain detection');
       const content = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
       const domainMatch = content.match(/DOMAIN:\s*([^\n]+)/i);
       const typeMatch = content.match(/TYPE:\s*([^\n]+)/i);
@@ -4695,7 +4720,7 @@ Return ONLY this JSON shape, nothing else, no commentary:
       temperature: 0,
       max_tokens: maxTokens,
       messages: [{ role: 'user', content: prompt }]
-    });
+    }, (opts.label || 'Review'));
     const raw = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
     if (!raw) return translations;
     let parsed;
@@ -6213,7 +6238,9 @@ ${JSON.stringify(texts)}`;
     return '<w:r><w:pict><v:rect id="' + id + '" style="position:absolute;left:' + x.toFixed(2) + 'pt;top:' + yTop.toFixed(2) + 'pt;width:' + Math.max(0.1, w).toFixed(2) + 'pt;height:' + Math.max(0.1, h).toFixed(2) + 'pt;mso-position-horizontal-relative:page;mso-position-vertical-relative:page;z-index:' + zIndex + '" fillcolor="#' + colorHex + '" stroked="f"/></w:pict></w:r>';
   }
 
-  function buildDocxTextShapeXml(id, x, yTop, w, h, spans, fontSize, direction, align, zIndex) {
+  // indentLeftPt / firstLineOffsetPt (optional): paragraph left indent and
+  // first-line offset (negative = hanging) in points.
+  function buildDocxTextShapeXml(id, x, yTop, w, h, spans, fontSize, direction, align, zIndex, indentLeftPt, firstLineOffsetPt) {
     if (!spans || spans.length === 0) return '';
     const combinedText = spans.map(function (s) { return s.text; }).join('');
     if (!combinedText || !combinedText.trim()) return '';
@@ -6235,7 +6262,12 @@ ${JSON.stringify(texts)}`;
       }).join('');
       return '<w:r><w:rPr>' + rPr + '</w:rPr>' + body + '</w:r>';
     }).join('');
-    const pPr = '<w:jc w:val="' + jc + '"/><w:spacing w:after="0" w:before="0" w:line="240" w:lineRule="auto"/>' + (direction === 'rtl' ? '<w:bidi/>' : '');
+    const indL = Math.round((indentLeftPt || 0) * 20);
+    const indF = Math.round((firstLineOffsetPt || 0) * 20);
+    const indXml = (indL || indF)
+      ? '<w:ind w:left="' + indL + '"' + (indF > 0 ? ' w:firstLine="' + indF + '"' : (indF < 0 ? ' w:hanging="' + (-indF) + '"' : '')) + '/>'
+      : '';
+    const pPr = indXml + '<w:jc w:val="' + jc + '"/><w:spacing w:after="0" w:before="0" w:line="240" w:lineRule="auto"/>' + (direction === 'rtl' ? '<w:bidi/>' : '');
     return '<w:r><w:pict><v:shape id="' + id + '" style="position:absolute;left:' + x.toFixed(2) + 'pt;top:' + yTop.toFixed(2) + 'pt;width:' + Math.max(4, w).toFixed(2) + 'pt;height:' + Math.max(4, h).toFixed(2) + 'pt;mso-position-horizontal-relative:page;mso-position-vertical-relative:page;mso-fit-shape-to-text:t;z-index:' + zIndex + '" filled="f" stroked="f">' +
       '<v:textbox inset="0,0,0,0" style="mso-fit-shape-to-text:t"><w:txbxContent><w:p><w:pPr>' + pPr + '</w:pPr>' + runsXml + '</w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r>';
   }
@@ -6380,11 +6412,40 @@ ${JSON.stringify(texts)}`;
         // heading) and is captured from the source geometry so it carries over.
         const direction = classifyDirection(text) === 'rtl' ? 'rtl' : 'ltr';
         const sourceDirection = boxes[0].direction || 'ltr';
-        const alignment = detectGroupAlignment(boxes, left, right, sourceDirection, region.region_type);
+        // First-line indent / hanging indent (e.g. "A. ..." or "a) ..." items
+        // whose continuation lines start further right than the first line):
+        // for a paragraph of 3+ lines whose continuation lines all start at
+        // the SAME left edge, but the first line starts elsewhere, the text
+        // column is the continuation lines' edge. Alignment is judged against
+        // that edge (otherwise a justified hanging-indent paragraph was
+        // misread as centered), and the indent is reproduced in the Word
+        // paragraph. LTR only; RTL keeps the previous behaviour.
+        const nlOf = function (b) { return (b.naturalLeft != null ? b.naturalLeft : b.left); };
+        const orderedLines = boxes.slice().sort(function (a, b) { return a.yTop - b.yTop; });
+        let indentInfo = null;
+        if (sourceDirection !== 'rtl' && orderedLines.length >= 3) {
+          const contLeftEdges = orderedLines.slice(1).map(nlOf);
+          const contLeft = Math.min.apply(null, contLeftEdges);
+          const sameTol = Math.max(3, (right - left) * 0.01);
+          const contAligned = contLeftEdges.every(function (x) { return (x - contLeft) <= sameTol; });
+          const firstLeft = nlOf(orderedLines[0]);
+          if (contAligned && Math.abs(firstLeft - contLeft) > sameTol) {
+            indentInfo = { firstLeft: firstLeft, contLeft: contLeft };
+          }
+        }
+        const alignment = detectGroupAlignment(boxes, indentInfo ? indentInfo.contLeft : left, right, sourceDirection, region.region_type);
 
-        const naturalWidths = boxes.map(function (b) { return (b.naturalRight != null ? b.naturalRight : b.right) - (b.naturalLeft != null ? b.naturalLeft : b.left); });
+        // A paragraph's LAST line being shorter is just where the paragraph
+        // ends, not a "shaped" layout - so it is left out of this check.
+        // Otherwise almost every normal (e.g. justified) paragraph was laid
+        // out line-by-line with a forced left alignment and a last-line width
+        // budget copied from the source, which made the translation spill
+        // onto an extra line even when it would fit in fewer.
+        const linesInOrder = boxes.slice().sort(function (a, b) { return a.yTop - b.yTop; });
+        const shapeLines = linesInOrder.length > 1 ? linesInOrder.slice(0, -1) : linesInOrder;
+        const naturalWidths = shapeLines.map(function (b) { return (b.naturalRight != null ? b.naturalRight : b.right) - (b.naturalLeft != null ? b.naturalLeft : b.left); });
         const minNW = Math.min.apply(null, naturalWidths), maxNW = Math.max.apply(null, naturalWidths);
-        const isShaped = boxes.length >= 2 && maxNW > 0 && (maxNW / Math.max(1, minNW)) > 1.25;
+        const isShaped = shapeLines.length >= 2 && maxNW > 0 && (maxNW / Math.max(1, minNW)) > 1.25;
 
         if (isShaped && fontForChar) {
           const sortedBoxes = boxes.slice().sort(function (a, b) { return a.yTop - b.yTop; });
@@ -6430,7 +6491,12 @@ ${JSON.stringify(texts)}`;
         // which made every line in a region equally wide regardless of where
         // its text actually began, and could visually shift/misalign it.
         let boxLeft = left, boxRight = right;
-        if (alignment === 'left' || alignment === 'right') {
+        let indentLeftPt = 0, firstLineOffsetPt = 0;
+        if (indentInfo) {
+          boxLeft = Math.min(indentInfo.firstLeft, indentInfo.contLeft);
+          indentLeftPt = (indentInfo.contLeft - boxLeft) * pd.sx;
+          firstLineOffsetPt = (indentInfo.firstLeft - indentInfo.contLeft) * pd.sx;
+        } else if (alignment === 'left' || alignment === 'right') {
           const naturalLeft = Math.min.apply(null, boxes.map(function (b) { return (b.naturalLeft != null ? b.naturalLeft : b.left); }));
           const naturalRight = Math.max.apply(null, boxes.map(function (b) { return (b.naturalRight != null ? b.naturalRight : b.right); }));
           if (sourceDirection === 'rtl') { boxRight = naturalRight; }
@@ -6438,11 +6504,12 @@ ${JSON.stringify(texts)}`;
         }
         const xPt = boxLeft * pd.sx, yTopPt = top * pd.sy, wPt = (boxRight - boxLeft) * pd.sx, hPt = (bottom - top) * pd.sy;
         const styledSpans = buildStyledSpansFromMarkup(text, fmt);
-        const fittedFontSizePt = computeFittedFontSizeRealSpans(styledSpans, wPt, hPt, fontSizePt, fontForChar);
+        const fittedFontSizePt = computeFittedFontSizeRealSpans(styledSpans, wPt - indentLeftPt, hPt, fontSizePt, fontForChar);
         groupPlacements.push({
           x: xPt, yTop: yTopPt, w: wPt, h: hPt,
           spans: styledSpans, fontSize: fittedFontSizePt,
-          direction: direction, align: docxAlignmentToJc(alignment)
+          direction: direction, align: docxAlignmentToJc(alignment),
+          indentLeftPt: indentLeftPt, firstLineOffsetPt: firstLineOffsetPt
         });
       });
       region.blue_boxes.forEach(function (b) {
@@ -6562,7 +6629,7 @@ ${JSON.stringify(texts)}`;
       }
       const placements = buildDocxTextPlacements(pd.pageRegions, responseByRegionId, pd, fontForChar);
       placements.forEach(function (p) {
-        pageXml += buildDocxTextShapeXml('txt' + pageNum + '_' + z, p.x, p.yTop, p.w, p.h, p.spans, p.fontSize, p.direction, p.align, z + 1000);
+        pageXml += buildDocxTextShapeXml('txt' + pageNum + '_' + z, p.x, p.yTop, p.w, p.h, p.spans, p.fontSize, p.direction, p.align, z + 1000, p.indentLeftPt, p.firstLineOffsetPt);
         z++;
       });
 
@@ -7701,7 +7768,11 @@ ${JSON.stringify(texts)}`;
           if (!annText) return;
           const rx0 = Math.min(item.rect[0], item.rect[2]) * scale;
           const rx1 = Math.max(item.rect[0], item.rect[2]) * scale;
-          const annLeft = rx0, annRight = rx1;
+          // The line starts where its text actually starts inside the
+          // annotation (e.g. to the right of a signature pen image), not at
+          // the annotation's left edge.
+          const textX = Number.isFinite(item.xPt) ? item.xPt * scale : rx0;
+          const annLeft = Math.min(Math.max(rx0, textX), rx1 - 1), annRight = rx1;
           if (!(annRight > annLeft)) return;
           const annFontSizeRaw = (item.fontSizePt || 8) * scale;
           const annHeight = Math.max(1, annFontSizeRaw * 1.3);
@@ -8096,7 +8167,7 @@ The translated document must preserve the legal/practical meaning, effect, struc
           max_tokens: maxTokens,
           reasoning: { effort: 'none' },
           response_format: { type: 'json_object' }
-        });
+        }, 'Grouping (' + regions.length + ' region(s))');
         const choice = data.choices && data.choices[0];
         finishReason = choice && choice.finish_reason;
         parsed = parseRegionResponse((choice && choice.message && choice.message.content) || '');
@@ -8160,6 +8231,9 @@ The translated document must preserve the legal/practical meaning, effect, struc
       else if (isLikelyAbbreviation(plain)) entry.note = 'This is an abbreviation/acronym. Do NOT expand it.';
       return entry;
     });
+    const pagesSeen = [];
+    unitBatch.forEach(function (u) { if (pagesSeen.indexOf(u._pageNum) === -1) pagesSeen.push(u._pageNum); });
+    const pagesLabel = (pagesSeen.length === 1 ? 'page ' : 'pages ') + pagesSeen.sort(function (x, y) { return x - y; }).join(',');
     const data = await v14ProxyJson({
       model: model,
       messages: [
@@ -8170,7 +8244,7 @@ The translated document must preserve the legal/practical meaning, effect, struc
       max_tokens: maxTokens,
       reasoning: { effort: 'none' },
       response_format: { type: 'json_object' }
-    });
+    }, 'Translation ' + pagesLabel + ' (' + unitBatch.length + ' group(s))');
     const choice = data.choices && data.choices[0];
     const finishReason = choice && choice.finish_reason;
     let text = ((choice && choice.message && choice.message.content) || '').trim();
@@ -8536,7 +8610,7 @@ The translated document must preserve the legal/practical meaning, effect, struc
         const reviewed = await v14ReviewTranslation(model,
           pending.map(function (u) { return { id: u.region_id, text: u.blue_boxes[0].markupText || u.blue_boxes[0].text }; }),
           pending.map(function (u) { return { id: u.region_id, translated_text: textByUnit.get(u.region_id) || '' }; }),
-          targetLanguage, targetCountry, domainInfo, { extraRulesBlock: finalRules, collect: collect });
+          targetLanguage, targetCountry, domainInfo, { extraRulesBlock: finalRules, collect: collect, label: 'Final agent (' + pending.length + ' pending group(s))' });
         (reviewed || []).forEach(function (t) {
           if (t && t.id && typeof t.translated_text === 'string' && t.translated_text.trim()) textByUnit.set(t.id, t.translated_text);
         });
@@ -8611,6 +8685,9 @@ The translated document must preserve the legal/practical meaning, effect, struc
     if (typeof PDFLib === 'undefined') throw new Error('pdf-lib failed to load');
 
     const buf = await file.arrayBuffer();
+    // Fresh API-call count / numbering for this file.
+    resetApiCalls();
+    _apiCallSeq = 0;
 
     // Safety check, per explicit direction (no OCR here - a genuinely
     // scanned/image-only PDF has no text layer for this pipeline to
@@ -8626,7 +8703,11 @@ The translated document must preserve the legal/practical meaning, effect, struc
     }
 
     log('Detecting regions and layout...');
-    const base = await buildBasePdf(buf, { downloadBase: false, boxMode: 'without' });
+    // 'with' draws the detected region/blue boxes onto the pdf-lib copy of
+    // the PDF (drawing only - detection is identical), so that copy is
+    // returned as the "With Box" PDF for checking where boxes were made.
+    const base = await buildBasePdf(buf, { downloadBase: false, boxMode: 'with' });
+    const withBoxPdfBlob = new Blob([await base.pdfDoc.save()], { type: 'application/pdf' });
     const pageData = base.pageData;
     const fontForChar = base.fontForChar;
     const pdfJsDoc = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
@@ -8658,7 +8739,7 @@ The translated document must preserve the legal/practical meaning, effect, struc
 
     log('Building translated Word document...');
     const blob = await buildTranslatedDocxV2(pdfJsDoc, pageData, pageNumbers, responseByRegionId, log, fontForChar);
-    return { blob: blob, combinedResponse: combinedResponse };
+    return { blob: blob, combinedResponse: combinedResponse, withBoxPdfBlob: withBoxPdfBlob };
   }
 
 
@@ -8674,6 +8755,7 @@ The translated document must preserve the legal/practical meaning, effect, struc
     lexoraProxyJson: v14ProxyJson,
     lexoraPdfToImages: v14PdfToImages,
     resetPipelineApiCounters: resetApiCalls,
+    getPipelineApiCounters: getApiCalls,
     abortVision: abortVision
   };
 })();

@@ -2928,6 +2928,18 @@
                                     _downloadBlobImmediately(new Blob([JSON.stringify(pdfjsResult.combinedResponse, null, 2)], { type: 'application/json' }), jsonName);
                                     addActivity('translation', `${fl}System > ${jsonName} downloaded`, 'Info');
                                 }
+                                // "With Box" PDF: the original PDF with the
+                                // detected region/blue boxes drawn on it.
+                                if (pdfjsResult.withBoxPdfBlob) {
+                                    const boxName = baseName + ' With Box.pdf';
+                                    _downloadBlobImmediately(pdfjsResult.withBoxPdfBlob, boxName);
+                                    addActivity('translation', `${fl}System > ${boxName} downloaded`, 'Info');
+                                }
+                                // Every OpenRouter call this file made
+                                // (grouping, translation, retries, agent...).
+                                const pdfjsCalls = window.__translationEngine.getPipelineApiCounters();
+                                totalJsonCalls += pdfjsCalls.json;
+                                totalImageCalls += pdfjsCalls.image;
                                 file.progress = '80';
                                 refreshServicePage('translation');
 
